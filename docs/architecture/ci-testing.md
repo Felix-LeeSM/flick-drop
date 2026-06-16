@@ -58,9 +58,10 @@ Merge strategy:
 scheduled or manually triggered infrastructure checks.
 
 `Review gate` is a metadata-only `pull_request_target` workflow. It must not
-execute PR head code. It enforces linked issue, milestone, label families, PR
-template completion, sensitive-path labels, and the latest-commit review label
-rule.
+execute PR head code. It publishes the required `Review gate` commit status to
+the PR head SHA. It enforces linked issue, milestone, label families, PR
+template completion, PR size, sensitive-path labels, exact-head subagent review
+comments, and label-after-review ordering.
 
 ## Go Tests
 

@@ -35,7 +35,9 @@ for guide in \
 done
 
 if [ -f .github/workflows/review-gate.yml ]; then
-  if grep -Eq 'pull_request\\.head|github\\.head_ref|github\\.event\\.pull_request\\.head' .github/workflows/review-gate.yml; then
+  if grep -Fq 'ref: ${{ github.event.pull_request.head.sha }}' .github/workflows/review-gate.yml ||
+    grep -Fq 'ref: ${{ github.event.pull_request.head.ref }}' .github/workflows/review-gate.yml ||
+    grep -Fq 'ref: ${{ github.head_ref }}' .github/workflows/review-gate.yml; then
     echo "repo-structure: review gate must not checkout or execute PR head code" >&2
     failed=1
   fi

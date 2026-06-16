@@ -32,15 +32,16 @@ Check these in order:
 
 1. Scope: PR matches the linked issue and milestone.
 2. Metadata: type, area, risk, and review labels match changed paths.
-3. Security: no plaintext, passphrases, derived keys, credentials, or private
+3. Size: PR is small enough for accurate review, or the size exception is clear.
+4. Security: no plaintext, passphrases, derived keys, credentials, or private
    deployment values are exposed.
-4. Ownership: API owns `api.db`; worker owns `worker.db`; NATS carries IDs and
+5. Ownership: API owns `api.db`; worker owns `worker.db`; NATS carries IDs and
    safe metadata only.
-5. Contracts: OpenAPI/event/env/docs are updated with behavior changes.
-6. Directory rules: new directories have clear owners and local `AGENTS.md`
+6. Contracts: OpenAPI/event/env/docs are updated with behavior changes.
+7. Directory rules: new directories have clear owners and local `AGENTS.md`
    where required.
-7. Tests: local and GitHub checks match the risk and affected areas.
-8. Regression risk: identify missing tests, unsafe defaults, or operational
+8. Tests: local and GitHub checks match the risk and affected areas.
+9. Regression risk: identify missing tests, unsafe defaults, or operational
    ambiguity.
 
 ## Output
@@ -51,6 +52,7 @@ Return a concise review with this shape:
 ## BurnLink Subagent Review
 
 Decision: approve | changes-requested
+Head: <exact PR head SHA reviewed>
 
 Findings:
 - severity: file:line - concrete issue
@@ -59,6 +61,7 @@ Metadata:
 - issue:
 - milestone:
 - labels:
+- size:
 - checks:
 
 Residual Risk:

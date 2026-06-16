@@ -23,9 +23,16 @@ require_env PR_NUMBER
 
 pr_json="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
 issue_json="$(gh api "repos/$GH_REPO/issues/$PR_NUMBER")"
+head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 files="$(
   gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" \
     --jq '.[].filename'
+)"
+file_count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')"
+changed_lines="$(
+  gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" \
+    --jq '.[] | .additions + .deletions' |
+    awk '{ total += $1 } END { print total + 0 }'
 )"
 labels="$(printf '%s' "$issue_json" | jq -r '.labels[].name')"
 body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
@@ -85,6 +92,7 @@ for heading in \
   "## Summary" \
   "## Linked Issue" \
   "## Acceptance Criteria" \
+  "## PR Size" \
   "## Test Plan" \
   "## Review Notes"; do
   if ! printf '%s' "$body" | grep -Fq "$heading"; then
@@ -104,6 +112,16 @@ if [ "$(count_prefix "risk:")" -ne 1 ]; then
   fail "pull request must have exactly one risk:* label"
 fi
 
+if [ "$file_count" -gt 20 ] || [ "$changed_lines" -gt 1000 ]; then
+  require_label "risk:high" "large pull request: $file_count files, $changed_lines changed lines"
+
+  if printf '%s' "$body" | grep -Eiq 'Size exception:[[:space:]]*(none|n/a)?[[:space:]]*$'; then
+    fail "large pull request must document a real size exception"
+  elif ! printf '%s' "$body" | grep -Eiq 'Size exception:'; then
+    fail "large pull request must include a Size exception entry"
+  fi
+fi
+
 if [ "$(count_prefix "area:")" -lt 1 ]; then
   fail "pull request must have at least one area:* label"
 fi
@@ -112,11 +130,19 @@ if has_label "review:changes-requested"; then
   fail "review:changes-requested blocks merge"
 fi
 
+subagent_review_at="$(
+  gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
+    --jq '.[] | select((.body // "") | contains("## BurnLink Subagent Review")) | select((.body // "") | contains("Decision: approve")) | select((.body // "") | contains("Head: '"$head_sha"'")) | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") | .created_at' |
+    tail -n 1
+)"
+
+if [ -z "$subagent_review_at" ]; then
+  fail "a trusted PR comment containing '## BurnLink Subagent Review', 'Decision: approve', and 'Head: $head_sha' is required"
+fi
+
 if ! has_label "review:approved"; then
   fail "review:approved label is required"
 else
-  head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
-  head_commit_date="$(gh api "repos/$GH_REPO/commits/$head_sha" --jq '.commit.committer.date')"
   approved_at="$(
     gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/events?per_page=100" \
       --jq '.[] | select(.event == "labeled" and .label.name == "review:approved") | .created_at' |
@@ -125,26 +151,13 @@ else
 
   if [ -z "$approved_at" ]; then
     fail "review:approved label event was not found"
-  elif [[ "$approved_at" < "$head_commit_date" ]]; then
-    fail "review:approved label must be applied after the latest commit"
+  elif [ -n "$subagent_review_at" ] && [[ "$approved_at" < "$subagent_review_at" ]]; then
+    fail "review:approved label must be applied after the latest approving subagent review comment"
   fi
 fi
 
-head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
-head_commit_date="$(gh api "repos/$GH_REPO/commits/$head_sha" --jq '.commit.committer.date')"
-subagent_review_at="$(
-  gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-    --jq '.[] | select((.body // "") | contains("## BurnLink Subagent Review")) | select((.body // "") | contains("Decision: approve")) | .created_at' |
-    tail -n 1
-)"
-
-if [ -z "$subagent_review_at" ]; then
-  fail "a PR comment containing '## BurnLink Subagent Review' and 'Decision: approve' is required"
-elif [[ "$subagent_review_at" < "$head_commit_date" ]]; then
-  fail "subagent review comment must be created after the latest commit"
-fi
-
 requires_medium_or_high_risk=0
+requires_high_risk=0
 while IFS= read -r file; do
   case "$file" in
     .github/*)
@@ -156,6 +169,9 @@ while IFS= read -r file; do
     .github/workflows/* | scripts/ci/*)
       require_label "area:ci" "$file changed"
       requires_medium_or_high_risk=1
+      ;;
+    .agents/skills/pr-review/SKILL.md)
+      requires_high_risk=1
       ;;
     web/*)
       require_label "area:web" "$file changed"
@@ -184,6 +200,9 @@ while IFS= read -r file; do
   esac
 
   case "$file" in
+    .github/workflows/review-gate.yml | scripts/ci/review-gate.sh | .agents/skills/pr-review/SKILL.md)
+      requires_high_risk=1
+      ;;
     docs/architecture/security-model.md | internal/secrets/* | web/src/lib/crypto/*)
       require_label "area:security" "$file changed"
       requires_medium_or_high_risk=1
@@ -195,6 +214,10 @@ EOF
 
 if [ "$requires_medium_or_high_risk" -eq 1 ]; then
   require_one_of_labels "sensitive path changed" "risk:medium" "risk:high"
+fi
+
+if [ "$requires_high_risk" -eq 1 ]; then
+  require_label "risk:high" "review-gate or review-skill path changed"
 fi
 
 if [ "$failed" -ne 0 ]; then

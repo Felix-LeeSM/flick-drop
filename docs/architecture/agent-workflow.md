@@ -91,6 +91,7 @@ Every PR must:
 - have a milestone
 - use the PR template sections
 - have no unchecked checklist items before merge
+- stay within the default PR size target unless a size exception is documented
 - have exactly one `type:*` label
 - have at least one `area:*` label
 - have exactly one `risk:*` label
@@ -100,6 +101,22 @@ Every PR must:
 
 The PR body should carry acceptance criteria and verification evidence. Durable
 decisions still belong in `docs/architecture/` or `docs/runbook/`.
+
+Default PR size target:
+
+- 10 changed files or fewer.
+- 500 changed lines or fewer.
+- one issue, one behavior change, one review story.
+
+Hard review-gate threshold:
+
+- more than 20 changed files or more than 1,000 changed lines requires
+  `risk:high`
+- large PRs must include a non-empty size exception in the `## PR Size` section
+
+Prefer splitting work before using a size exception. Good exceptions include
+initial scaffold, generated lockfile churn, or a mechanical rename that is
+easier to review as one unit.
 
 ## Labels
 
@@ -133,7 +150,7 @@ The workflow uses `pull_request_target` but only checks GitHub metadata:
 - milestone
 - labels
 - changed file paths
-- latest commit timestamp
+- PR size
 - label event timestamp
 - review comment timestamp
 
@@ -144,21 +161,30 @@ Required review labels:
 
 - `review:approved` is required.
 - `review:changes-requested` blocks merge.
-- `review:approved` must be applied after the latest PR commit.
+- `review:approved` must be applied after the latest approving subagent review
+  comment.
 
-If a new commit is pushed after approval, the existing approval label no longer
-satisfies the gate. Remove and re-apply `review:approved` after review.
+If a new commit is pushed after approval, the existing subagent review comment
+no longer satisfies the gate because it references the previous head SHA. Review
+the new head, add a new review comment, then remove and re-apply
+`review:approved`.
 
 Required review comment:
 
 - a PR comment containing `## BurnLink Subagent Review` is required
-- the comment must be created after the latest PR commit
-- the comment must include `Decision: approve` before `review:approved` can pass
+- the comment must include `Decision: approve`
+- the comment must include `Head: <current PR head SHA>`
+- the comment must be written by an owner, member, or collaborator
+- `review:approved` must be applied after that approving subagent review comment
 
 The main agent may orchestrate review, summarize findings, and update PR
 metadata, but it must not treat its own implementation pass as the review. A
 separate reviewer subagent should inspect the PR in read-only mode using the
 repo-owned review skill.
+
+The review gate publishes an explicit `Review gate` commit status to the PR head
+SHA. Branch protection should require that status context, not the
+`pull_request_target` workflow job name.
 
 When BurnLink has another maintainer or bot account that can perform real
 reviews, the repository can move from label-based review to native required
