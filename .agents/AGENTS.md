@@ -18,6 +18,8 @@ Agent workflow principles:
 - Keep the main assistant responsible for repo state, final decisions, and
   verification.
 - Reusable skills should encode stable workflow, not one-off project memory.
+- PR review should spawn a separate reviewer subagent and pass
+  `.agents/skills/pr-review/SKILL.md` as the review contract.
 - If a rule belongs to a code or docs boundary, put it in that directory's
   `AGENTS.md` instead of hiding it in a skill.
 - Do not require agents to read a large memory tree before ordinary edits.

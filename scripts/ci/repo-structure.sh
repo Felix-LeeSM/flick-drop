@@ -15,6 +15,7 @@ require_file() {
 for guide in \
   AGENTS.md \
   .agents/AGENTS.md \
+  .agents/skills/pr-review/SKILL.md \
   .github/AGENTS.md \
   .github/ISSUE_TEMPLATE/bug.yml \
   .github/ISSUE_TEMPLATE/config.yml \

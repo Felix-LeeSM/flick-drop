@@ -130,6 +130,20 @@ else
   fi
 fi
 
+head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
+head_commit_date="$(gh api "repos/$GH_REPO/commits/$head_sha" --jq '.commit.committer.date')"
+subagent_review_at="$(
+  gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
+    --jq '.[] | select((.body // "") | contains("## BurnLink Subagent Review")) | select((.body // "") | contains("Decision: approve")) | .created_at' |
+    tail -n 1
+)"
+
+if [ -z "$subagent_review_at" ]; then
+  fail "a PR comment containing '## BurnLink Subagent Review' and 'Decision: approve' is required"
+elif [[ "$subagent_review_at" < "$head_commit_date" ]]; then
+  fail "subagent review comment must be created after the latest commit"
+fi
+
 requires_medium_or_high_risk=0
 while IFS= read -r file; do
   case "$file" in

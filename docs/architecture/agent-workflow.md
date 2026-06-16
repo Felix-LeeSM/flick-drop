@@ -119,6 +119,11 @@ storage, or security code, it must use `risk:medium` or `risk:high`.
 BurnLink starts with label-based review because a single GitHub account cannot
 approve its own PR for native required reviews.
 
+Review has two parts:
+
+1. spawn a reviewer subagent with `.agents/skills/pr-review/SKILL.md`
+2. record the review result as a PR comment before applying review labels
+
 The gate is implemented by `.github/workflows/review-gate.yml` and
 `scripts/ci/review-gate.sh`.
 
@@ -130,6 +135,7 @@ The workflow uses `pull_request_target` but only checks GitHub metadata:
 - changed file paths
 - latest commit timestamp
 - label event timestamp
+- review comment timestamp
 
 It does not checkout, build, or execute untrusted PR code. Checkout is pinned to
 the base branch commit so the gate script comes from already-reviewed main.
@@ -142,6 +148,17 @@ Required review labels:
 
 If a new commit is pushed after approval, the existing approval label no longer
 satisfies the gate. Remove and re-apply `review:approved` after review.
+
+Required review comment:
+
+- a PR comment containing `## BurnLink Subagent Review` is required
+- the comment must be created after the latest PR commit
+- the comment must include `Decision: approve` before `review:approved` can pass
+
+The main agent may orchestrate review, summarize findings, and update PR
+metadata, but it must not treat its own implementation pass as the review. A
+separate reviewer subagent should inspect the PR in read-only mode using the
+repo-owned review skill.
 
 When BurnLink has another maintainer or bot account that can perform real
 reviews, the repository can move from label-based review to native required
