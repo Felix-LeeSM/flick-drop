@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      run_k3d:
+        description: Run k3d smoke if manifests and k3d are available
+        required: false
+        default: "false"
+  schedule:
+    - cron: "17 20 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  repo-checks:
+    name: Repo checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.7"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Run repo checks
+        run: scripts/ci/all.sh
+
+  nats-smoke:
+    name: NATS smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run NATS smoke
+        run: scripts/ci/compose-nats-smoke.sh
+
+  k3d-smoke:
+    name: k3d smoke
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_k3d == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run k3d smoke
+        run: scripts/ci/k3d-smoke.sh

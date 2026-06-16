@@ -1,0 +1,52 @@
+[tools]
+go = "1.24.7"
+node = "24.15.0"
+pnpm = "10.20.0"
+direnv = "2.37.1"
+sqlite = "3.53.2"
+kubectl = "1.36.2"
+kustomize = "5.8.1"
+
+[env]
+BURNLINK_ENV = "development"
+BURNLINK_LOG_LEVEL = "debug"
+BURNLINK_PUBLIC_BASE_URL = "http://localhost:5173"
+BURNLINK_API_BASE_URL = "http://localhost:8080"
+BURNLINK_INTERNAL_API_BASE_URL = "http://localhost:8080"
+BURNLINK_API_ADDR = ":8080"
+BURNLINK_NATS_URL = "nats://127.0.0.1:4222"
+BURNLINK_NATS_STREAM = "BURNLINK_JOBS"
+BURNLINK_NATS_JOB_SUBJECT = "burnlink.jobs"
+BURNLINK_DATA_DIR = "./var"
+BURNLINK_API_DB_PATH = "./var/api.db"
+BURNLINK_WORKER_DB_PATH = "./var/worker.db"
+BURNLINK_PAYLOAD_INLINE_MAX_BYTES = "1048576"
+BURNLINK_MAX_FILE_BYTES = "26214400"
+BURNLINK_DEFAULT_TTL_SECONDS = "3600"
+BURNLINK_ALLOWED_TTL_SECONDS = "600,3600,86400"
+BURNLINK_STORAGE_LARGE_BACKEND = "disabled"
+BURNLINK_WORKER_CONCURRENCY = "2"
+
+[tasks.doctor]
+description = "Show pinned tool versions and the resolved BurnLink environment"
+run = "mise current && mise env --redacted"
+
+[tasks.check]
+description = "Run local CI checks"
+run = "scripts/ci/all.sh"
+
+[tasks.smoke-nats]
+description = "Run the local NATS JetStream smoke test"
+run = "scripts/ci/compose-nats-smoke.sh"
+
+[tasks.smoke-k3d]
+description = "Run the k3d smoke test when deploy manifests exist"
+run = "scripts/ci/k3d-smoke.sh"
+
+[tasks.nats-up]
+description = "Start local NATS JetStream via compose"
+run = "docker compose up -d nats"
+
+[tasks.nats-down]
+description = "Stop local NATS JetStream"
+run = "docker compose down"

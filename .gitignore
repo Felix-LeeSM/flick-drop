@@ -1,0 +1,41 @@
+# Environment
+.env
+.env.*
+!.env.example
+.mise.local.toml
+
+# Local runtime data
+var/
+tmp/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+
+# Node / SvelteKit
+node_modules/
+.svelte-kit/
+web/.svelte-kit/
+web/build/
+web/dist/
+web/node_modules/
+
+# Go
+bin/
+coverage/
+*.test
+*.out
+
+# Kubernetes / ops secrets
+kubeconfig*
+*.kubeconfig
+deploy/overlays/private/
+deploy/production/
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,317 @@
+openapi: 3.1.0
+info:
+  title: BurnLink API
+  version: 0.1.0
+  description: HTTP contract for BurnLink web clients.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      responses:
+        "200":
+          description: API process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      operationId: getReadyz
+      responses:
+        "200":
+          description: API dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: API dependency is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /metrics:
+    get:
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/secrets:
+    post:
+      operationId: createSecret
+      summary: Create an encrypted secret.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSecretRequest"
+      responses:
+        "201":
+          description: Secret created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSecretResponse"
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Payload too large.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/secrets/{id}:
+    get:
+      operationId: getSecret
+      summary: Fetch encrypted payload and safe metadata.
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Ciphertext payload found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetSecretResponse"
+        "404":
+          description: Secret missing, expired, or consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Secret already consumed or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/secrets/{id}/consume:
+    post:
+      operationId: consumeSecret
+      summary: Mark a secret as consumed.
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "202":
+          description: Secret consumed and cleanup job queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumeSecretResponse"
+        "404":
+          description: Secret missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Secret already consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /internal/secrets/{id}/cleanup:
+    post:
+      operationId: cleanupSecret
+      summary: Internal worker endpoint for idempotent cleanup.
+      security:
+        - internalToken: []
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CleanupSecretRequest"
+      responses:
+        "200":
+          description: Cleanup completed or was already complete.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CleanupSecretResponse"
+        "401":
+          description: Missing or invalid internal token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  securitySchemes:
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-BurnLink-Internal-Token
+  parameters:
+    SecretId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    CreateSecretRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - ciphertext
+        - nonce
+        - kdf
+        - size_bytes
+        - ttl_seconds
+      properties:
+        kind:
+          type: string
+          enum: [text, file]
+        ciphertext:
+          type: string
+          description: Base64-encoded encrypted payload.
+        nonce:
+          type: string
+          description: Base64-encoded AES-GCM nonce.
+        kdf:
+          $ref: "#/components/schemas/KdfParams"
+        encrypted_filename:
+          type: string
+        content_type:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        ttl_seconds:
+          type: integer
+          enum: [600, 3600, 86400]
+        max_views:
+          type: integer
+          minimum: 1
+          default: 1
+    CreateSecretResponse:
+      type: object
+      additionalProperties: false
+      required: [id, expires_at]
+      properties:
+        id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    GetSecretResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - ciphertext
+        - nonce
+        - kdf
+        - size_bytes
+        - expires_at
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [text, file]
+        ciphertext:
+          type: string
+          description: Base64-encoded encrypted payload.
+        nonce:
+          type: string
+          description: Base64-encoded AES-GCM nonce.
+        kdf:
+          $ref: "#/components/schemas/KdfParams"
+        encrypted_filename:
+          type: string
+        content_type:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+    KdfParams:
+      type: object
+      additionalProperties: false
+      required:
+        - algorithm
+        - salt
+        - iterations
+        - key_length_bits
+      properties:
+        algorithm:
+          type: string
+          enum: [PBKDF2-SHA-256]
+        salt:
+          type: string
+          description: Base64-encoded random KDF salt.
+        iterations:
+          type: integer
+          minimum: 600000
+        key_length_bits:
+          type: integer
+          enum: [256]
+    ConsumeSecretResponse:
+      type: object
+      additionalProperties: false
+      required: [id, consumed]
+      properties:
+        id:
+          type: string
+        consumed:
+          type: boolean
+    CleanupSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [job_id, reason]
+      properties:
+        job_id:
+          type: string
+        reason:
+          type: string
+          enum: [consumed, expired, orphan, manual, retry]
+    CleanupSecretResponse:
+      type: object
+      additionalProperties: false
+      required: [id, cleaned]
+      properties:
+        id:
+          type: string
+        cleaned:
+          type: boolean

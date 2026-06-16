@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://burnlink.local/contracts/events/job.schema.json",
+  "title": "BurnLink Job Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "kind", "requested_at"],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "delete_secret",
+        "delete_oci_object",
+        "expire_secret",
+        "backup_verify"
+      ]
+    },
+    "secret_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "object_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["consumed", "expired", "orphan", "manual", "retry"]
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "integer", "boolean", "null"]
+      }
+    }
+  }
+}
