@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scripts="$(find scripts -type f -name "*.sh" | sort)"
+scripts=()
+while IFS= read -r script; do
+  scripts+=("$script")
+done < <(find scripts -type f -name "*.sh" | sort)
 
-if [ -z "$scripts" ]; then
+if [ "${#scripts[@]}" -eq 0 ]; then
   echo "shell: no scripts found"
   exit 0
 fi
 
-while IFS= read -r script; do
+for script in "${scripts[@]}"; do
   bash -n "$script"
-done <<EOF
-$scripts
-EOF
+done
 
 if command -v shellcheck >/dev/null 2>&1; then
-  # shellcheck disable=SC2086
-  shellcheck $scripts
+  shellcheck "${scripts[@]}"
 else
   echo "shell: shellcheck not installed; syntax-only check passed"
 fi

@@ -6,7 +6,8 @@ BurnLink separates fast PR checks from slower infrastructure smoke tests.
 
 ```text
 PR checks
-  shell/static structure
+  shell
+  repo structure
   env contract
   contracts
   Go checks

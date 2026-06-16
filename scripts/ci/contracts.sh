@@ -19,11 +19,15 @@ else
   echo "contracts: openapi.yaml not initialized yet; skipped"
 fi
 
-contract_files="$(find contracts -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) | sort)"
-if [ -n "$contract_files" ] &&
-  grep -InE "(decrypt[-_ ]?key|plaintext|passphrase|ciphertext_body)" $contract_files; then
-  echo "contracts: forbidden sensitive payload wording found" >&2
-  exit 1
+contract_files=()
+while IFS= read -r contract_file; do
+  contract_files+=("$contract_file")
+done < <(find contracts -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) | sort)
+if [ "${#contract_files[@]}" -gt 0 ]; then
+  if grep -InE "(decrypt[-_ ]?key|plaintext|passphrase|ciphertext_body)" "${contract_files[@]}"; then
+    echo "contracts: forbidden sensitive payload wording found" >&2
+    exit 1
+  fi
 fi
 
 echo "contracts: ok"

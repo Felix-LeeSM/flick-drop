@@ -8,6 +8,9 @@ Scripts are the shared local and CI entrypoints.
 Scripts should be safe to run before the app is fully scaffolded. If a component
 does not exist yet, print a clear skip message and exit successfully.
 
+`scripts/ci/repo-structure.sh` owns static enforcement for directory rules that
+can be checked without running the application.
+
 Do not embed credentials, production URLs, derived keys, or plaintext secret
 samples. Smoke tests may use dummy ciphertext only.
 
