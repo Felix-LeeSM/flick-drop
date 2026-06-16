@@ -35,6 +35,7 @@ for guide in \
 done
 
 if [ -f .github/workflows/review-gate.yml ]; then
+  # shellcheck disable=SC2016
   if grep -Fq 'ref: ${{ github.event.pull_request.head.sha }}' .github/workflows/review-gate.yml ||
     grep -Fq 'ref: ${{ github.event.pull_request.head.ref }}' .github/workflows/review-gate.yml ||
     grep -Fq 'ref: ${{ github.head_ref }}' .github/workflows/review-gate.yml; then
