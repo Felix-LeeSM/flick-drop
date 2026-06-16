@@ -29,6 +29,32 @@ mise run smoke-k3d
 The scripts are scaffold-aware. Missing Go or web components produce an explicit
 skip message until those parts are initialized.
 
+## GitHub Repository Policy
+
+`main` is protected after initialization.
+
+Required `main` policy:
+
+- Pull request required before merge.
+- Required approving reviews: 0 while the repository has a single maintainer.
+- Required status checks:
+  - `Repo checks`
+  - `NATS smoke`
+- Require the branch to be up to date before merge.
+- Require conversation resolution.
+- Enforce rules for administrators.
+- Disallow force pushes and branch deletion.
+
+Merge strategy:
+
+- Squash merge enabled.
+- Merge commits disabled.
+- Rebase merge disabled.
+- Delete head branches after merge.
+
+`k3d smoke` and OCI smoke checks are not required PR checks because they are
+scheduled or manually triggered infrastructure checks.
+
 ## Go Tests
 
 Expected coverage:

@@ -24,3 +24,14 @@ task needs a side-channel plan, decision log, or evidence record.
 
 When a temporary decision becomes durable, move the final decision into
 `architecture/` or `runbook/` and delete or archive the temporary note.
+
+Documentation principles:
+
+- Public docs should describe BurnLink as a production-facing open-source
+  self-hosted product.
+- Document residual risk plainly. Do not overclaim physical deletion,
+  anonymity, or perfect secrecy.
+- Prefer one durable decision in `architecture/` over repeated explanations in
+  temporary notes.
+- Directory-local `AGENTS.md` files carry working rules; avoid creating a
+  separate principle document unless the rules outgrow this structure.
