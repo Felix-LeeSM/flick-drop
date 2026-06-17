@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { createSecretAPIClient, type SecretKind } from '$lib/api/secrets';
+	import { createSecretAPIClient, SecretAPIError, type SecretKind } from '$lib/api/secrets';
 	import {
 		decryptFile,
 		decryptText,
@@ -98,10 +98,7 @@
 			status = 'Opened';
 			statusKind = 'success';
 		} catch (error) {
-			status = error instanceof Error ? error.message : 'Failed to open secret';
-			if (status === 'access proof is invalid') {
-				status = 'Passphrase is invalid. The secret is removed after five failed attempts.';
-			}
+			status = error instanceof SecretAPIError ? error.message : 'Could not open this secret.';
 			statusKind = 'error';
 		} finally {
 			isOpening = false;
@@ -117,8 +114,8 @@
 			window.setTimeout(() => {
 				copyState = 'idle';
 			}, 1600);
-		} catch (error) {
-			status = error instanceof Error ? error.message : 'Failed to copy secret';
+		} catch {
+			status = 'Could not copy secret.';
 			statusKind = 'error';
 		}
 	}

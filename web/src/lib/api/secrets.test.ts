@@ -8,7 +8,7 @@ import {
 	type EncryptedFilePayload,
 	type EncryptedTextPayload
 } from '$lib/crypto/text';
-import { createSecretAPIClient, createShareURL } from './secrets';
+import { createSecretAPIClient, createShareURL, SecretAPIError } from './secrets';
 
 const encryptedPayload: EncryptedTextPayload = {
 	ciphertext: 'ciphertext-base64',
@@ -170,5 +170,71 @@ describe('secret API client', () => {
 		expect(url).not.toContain('ciphertext');
 		expect(url).not.toContain('nonce');
 		expect(url).not.toContain('salt');
+	});
+
+	it('maps API errors to client-safe messages', async () => {
+		expect.assertions(8);
+
+		const cases = [
+			{
+				code: 'payload_too_large',
+				message: 'encrypted payload is too large',
+				status: 413,
+				expected: 'This file is too large.'
+			},
+			{
+				code: 'invalid_access',
+				message: 'access proof is invalid',
+				status: 403,
+				expected: 'Passphrase is invalid.'
+			},
+			{
+				code: 'expired',
+				message: 'secret has expired',
+				status: 410,
+				expected: 'This secret is no longer available.'
+			},
+			{
+				code: 'invalid_json',
+				message: 'request body does not match the create secret contract',
+				status: 400,
+				expected: 'Could not complete the request. Check the input and try again.'
+			}
+		];
+
+		for (const testCase of cases) {
+			const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: testCase.code,
+							message: testCase.message
+						}
+					}),
+					{ status: testCase.status, headers: { 'Content-Type': 'application/json' } }
+				)
+			);
+			const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+
+			await expect(client.createTextSecret(encryptedPayload, 600, accessVerifier)).rejects.toThrow(
+				testCase.expected
+			);
+			await expect(client.createTextSecret(encryptedPayload, 600, accessVerifier)).rejects.not.toThrow(
+				testCase.message
+			);
+		}
+	});
+
+	it('uses a client-safe message for network failures', async () => {
+		expect.assertions(3);
+
+		const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('Failed to fetch'));
+		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+
+		await expect(client.getSecretMetadata('secret-id')).rejects.toThrow(
+			'Could not reach BurnLink. Check your connection and try again.'
+		);
+		await expect(client.getSecretMetadata('secret-id')).rejects.toBeInstanceOf(SecretAPIError);
+		await expect(client.getSecretMetadata('secret-id')).rejects.not.toThrow('Failed to fetch');
 	});
 });

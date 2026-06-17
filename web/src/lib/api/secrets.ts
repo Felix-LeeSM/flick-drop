@@ -56,6 +56,18 @@ export type SecretAPIClient = {
 	openSecret(id: string, accessProof: string): Promise<GetSecretResponse>;
 };
 
+export class SecretAPIError extends Error {
+	readonly code: string;
+	readonly status: number;
+
+	constructor(message: string, code: string, status: number) {
+		super(message);
+		this.name = 'SecretAPIError';
+		this.code = code;
+		this.status = status;
+	}
+}
+
 type ClientOptions = {
 	baseURL?: string;
 	fetcher?: typeof fetch;
@@ -135,20 +147,64 @@ export function createShareURL(origin: string, id: string): string {
 	return url.toString();
 }
 
-async function requestJSON<T>(fetcher: typeof fetch, input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-	const response = await fetcher(input, init);
+async function requestJSON<T>(
+	fetcher: typeof fetch,
+	input: RequestInfo | URL,
+	init?: RequestInit
+): Promise<T> {
+	let response: Response;
+	try {
+		response = await fetcher(input, init);
+	} catch {
+		throw new SecretAPIError(
+			'Could not reach BurnLink. Check your connection and try again.',
+			'network_error',
+			0
+		);
+	}
+
 	if (!response.ok) {
-		throw new Error(await errorMessage(response));
+		const serverError = await readServerError(response);
+		throw new SecretAPIError(
+			clientErrorMessage(serverError.code, response.status),
+			serverError.code,
+			response.status
+		);
 	}
 	return (await response.json()) as T;
 }
 
-async function errorMessage(response: Response): Promise<string> {
+type ServerError = {
+	code: string;
+};
+
+async function readServerError(response: Response): Promise<ServerError> {
 	try {
-		const body = (await response.json()) as { error?: { message?: string } };
-		return body.error?.message ?? `Request failed with status ${response.status}`;
+		const body = (await response.json()) as { error?: { code?: string } };
+		return { code: body.error?.code ?? 'request_failed' };
 	} catch {
-		return `Request failed with status ${response.status}`;
+		return { code: 'request_failed' };
+	}
+}
+
+function clientErrorMessage(code: string, status: number): string {
+	switch (code) {
+		case 'invalid_access':
+			return 'Passphrase is invalid.';
+		case 'not_found':
+		case 'consumed':
+		case 'expired':
+			return 'This secret is no longer available.';
+		case 'payload_too_large':
+			return 'This file is too large.';
+		case 'unauthorized':
+		case 'not_ready':
+			return 'BurnLink is not ready. Try again shortly.';
+		default:
+			if (status >= 500) {
+				return 'BurnLink could not complete the request. Try again.';
+			}
+			return 'Could not complete the request. Check the input and try again.';
 	}
 }
 

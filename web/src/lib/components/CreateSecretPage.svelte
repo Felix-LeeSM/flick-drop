@@ -3,6 +3,7 @@
 	import {
 		createSecretAPIClient,
 		createShareURL,
+		SecretAPIError,
 		type TTLSeconds
 	} from '$lib/api/secrets';
 	import { createAccessVerifier, encryptFile, encryptText } from '$lib/crypto/text';
@@ -94,7 +95,7 @@
 			status = mode === 'text' ? 'Text secret created' : 'File secret created';
 			statusKind = 'success';
 		} catch (error) {
-			status = error instanceof Error ? error.message : 'Failed to create secret';
+			status = error instanceof SecretAPIError ? error.message : 'Could not create link. Try again.';
 			statusKind = 'error';
 		} finally {
 			isCreating = false;
@@ -110,8 +111,8 @@
 			window.setTimeout(() => {
 				copyState = 'idle';
 			}, 1600);
-		} catch (error) {
-			status = error instanceof Error ? error.message : 'Failed to copy link';
+		} catch {
+			status = 'Could not copy link.';
 			statusKind = 'error';
 		}
 	}
@@ -143,7 +144,7 @@
 
 	function requireSelectedFile(): File {
 		if (selectedFile === null) {
-			throw new Error('File is required');
+			throw new Error('file required');
 		}
 		return selectedFile;
 	}
@@ -256,7 +257,7 @@
 								</div>
 								{#if selectedFileTooLarge}
 									<p class="text-sm text-destructive">
-										File must be {formatBytes(localFileMaxBytes)} or smaller for local SQLite storage.
+										Choose a file up to {formatBytes(localFileMaxBytes)}.
 									</p>
 								{/if}
 							</div>
