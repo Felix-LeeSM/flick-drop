@@ -67,6 +67,17 @@ Out of scope:
 - File download decrypts in browser.
 - Size and content-type limits enforced.
 
+### Structured Credentials
+
+- Browser-side credential templates for login, card, identity, and custom
+  fields.
+- Credential payloads are serialized as `BLCR1:` text and encrypted through the
+  existing text-secret path.
+- API, DB, OpenAPI, storage, and worker behavior remain unchanged: structured
+  credentials are stored as encrypted `kind:"text"` payloads.
+- `secret` field flags are UI masking hints, not server-enforced access
+  controls.
+
 ### 5. OCI Object Storage
 
 - OCI adapter for larger ciphertext payloads.

@@ -94,6 +94,23 @@ encryption key.
 Argon2id is the preferred memory-hard direction for a later release, but it
 requires a browser WASM dependency and supply-chain review.
 
+## Structured Credentials
+
+Structured credentials are a browser-side text-secret encoding, not a new server
+secret kind.
+
+The create page serializes credential templates as `BLCR1:` followed by JSON
+matching `contracts/credential-payload.schema.json`, then encrypts that string
+through the existing text-secret path. The API stores and returns the encrypted
+payload as `kind:"text"` and never sees field labels, values, notes, titles, or
+which fields were marked secret.
+
+The `secret` field in the credential payload is a UI rendering hint. It tells
+the browser to mask a value before encryption and after decryption, but it is
+not a security boundary. All credential fields, notes, and titles rely on the
+same browser-side encryption, access proof gate, one-time open, and TTL cleanup
+as ordinary text secrets.
+
 ## Deletion and Residual Risk
 
 Deleting a secret means BurnLink no longer serves its ciphertext and no server
