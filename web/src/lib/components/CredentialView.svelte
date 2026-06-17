@@ -1,47 +1,51 @@
 <script lang="ts">
-	import { getCredentialTemplate, type CredentialEnvelope, type CredentialField } from '$lib/credentials';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { CheckIcon, CopyIcon, EyeIcon, EyeOffIcon } from '@lucide/svelte';
+import { CheckIcon, CopyIcon, EyeIcon, EyeOffIcon } from '@lucide/svelte';
+import { Badge } from '$lib/components/ui/badge';
+import { Button } from '$lib/components/ui/button';
+import {
+	type CredentialEnvelope,
+	type CredentialField,
+	getCredentialTemplate
+} from '$lib/credentials';
 
-	type Props = {
-		credential: CredentialEnvelope;
+type Props = {
+	credential: CredentialEnvelope;
+};
+
+let { credential }: Props = $props();
+
+let revealedFields = $state<Record<string, boolean>>({});
+let copiedFieldId = $state('');
+
+const template = $derived(getCredentialTemplate(credential.type));
+const title = $derived((credential.title ?? '').trim() || template.label);
+const hasNotes = $derived((credential.notes ?? '').trim().length > 0);
+
+export function copyText(): string {
+	return credential.fields.map((field) => `${field.label}: ${field.value}`).join('\n');
+}
+
+async function copyField(field: CredentialField): Promise<void> {
+	await navigator.clipboard.writeText(field.value);
+	copiedFieldId = field.id;
+	window.setTimeout(() => {
+		copiedFieldId = '';
+	}, 1400);
+}
+
+function toggleReveal(fieldId: string): void {
+	revealedFields = {
+		...revealedFields,
+		[fieldId]: !revealedFields[fieldId]
 	};
+}
 
-	let { credential }: Props = $props();
-
-	let revealedFields = $state<Record<string, boolean>>({});
-	let copiedFieldID = $state('');
-
-	const template = $derived(getCredentialTemplate(credential.type));
-	const title = $derived((credential.title ?? '').trim() || template.label);
-	const hasNotes = $derived((credential.notes ?? '').trim().length > 0);
-
-	export function copyText(): string {
-		return credential.fields.map((field) => `${field.label}: ${field.value}`).join('\n');
+function displayValue(field: CredentialField): string {
+	if (field.secret && !revealedFields[field.id]) {
+		return '••••••••';
 	}
-
-	async function copyField(field: CredentialField): Promise<void> {
-		await navigator.clipboard.writeText(field.value);
-		copiedFieldID = field.id;
-		window.setTimeout(() => {
-			copiedFieldID = '';
-		}, 1400);
-	}
-
-	function toggleReveal(fieldID: string): void {
-		revealedFields = {
-			...revealedFields,
-			[fieldID]: !revealedFields[fieldID]
-		};
-	}
-
-	function displayValue(field: CredentialField): string {
-		if (field.secret && !revealedFields[field.id]) {
-			return '••••••••';
-		}
-		return field.value;
-	}
+	return field.value;
+}
 </script>
 
 <div class="grid gap-4">
@@ -94,7 +98,7 @@
 							void copyField(field);
 						}}
 					>
-						{#if copiedFieldID === field.id}
+						{#if copiedFieldId === field.id}
 							<CheckIcon class="size-4" />
 						{:else}
 							<CopyIcon class="size-4" />

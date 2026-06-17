@@ -1,146 +1,154 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
-	import { createSecretAPIClient, SecretAPIError, type SecretKind } from '$lib/api/secrets';
-	import {
-		decryptFile,
-		decryptText,
-		deriveAccessProof,
-		type EncryptedFilePayload,
-		type EncryptedTextPayload
-	} from '$lib/crypto/text';
-	import CredentialView from '$lib/components/CredentialView.svelte';
-	import { parseCredential, type CredentialEnvelope } from '$lib/credentials';
-	import { onDestroy } from 'svelte';
-	import { Button, buttonVariants } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Textarea } from '$lib/components/ui/textarea';
-	import {
-		CheckIcon,
-		CopyIcon,
-		DownloadIcon,
-		EyeIcon,
-		FileIcon,
-		LockKeyholeIcon,
-		LockKeyholeOpenIcon
-	} from '@lucide/svelte';
+import {
+	CheckIcon,
+	CopyIcon,
+	DownloadIcon,
+	EyeIcon,
+	FileIcon,
+	LockKeyholeIcon,
+	LockKeyholeOpenIcon
+} from '@lucide/svelte';
+import { onDestroy } from 'svelte';
+import { resolve } from '$app/paths';
+import { createSecretApiClient, SecretApiError, type SecretKind } from '$lib/api/secrets';
+import CredentialView from '$lib/components/CredentialView.svelte';
+import { Button, buttonVariants } from '$lib/components/ui/button';
+import * as Card from '$lib/components/ui/card';
+import { Input } from '$lib/components/ui/input';
+import { Label } from '$lib/components/ui/label';
+import { Textarea } from '$lib/components/ui/textarea';
+import { type CredentialEnvelope, parseCredential } from '$lib/credentials';
+import {
+	decryptFile,
+	decryptText,
+	deriveAccessProof,
+	type EncryptedFilePayload,
+	type EncryptedTextPayload
+} from '$lib/crypto/text';
 
-	type Props = {
-		secretID: string;
-	};
+type Props = {
+	secretId: string;
+};
 
-	type StatusKind = 'idle' | 'success' | 'error';
+type StatusKind = 'idle' | 'success' | 'error';
 
-	let { secretID }: Props = $props();
+let { secretId }: Props = $props();
 
-	const api = createSecretAPIClient();
+const api = createSecretApiClient();
 
-	let passphrase = $state('');
-	let openedKind = $state<SecretKind | null>(null);
-	let decryptedText = $state('');
-	let credential = $state<CredentialEnvelope | null>(null);
-	let credentialView = $state<CredentialView | null>(null);
-	let downloadURL = $state('');
-	let downloadFilename = $state('');
-	let downloadSize = $state(0);
-	let status = $state('');
-	let statusKind = $state<StatusKind>('idle');
-	let isOpening = $state(false);
-	let hasOpened = $state(false);
-	let copyState = $state<'idle' | 'copied'>('idle');
+let passphrase = $state('');
+let openedKind = $state<SecretKind | null>(null);
+let decryptedText = $state('');
+let credential = $state<CredentialEnvelope | null>(null);
+let credentialView = $state<CredentialView | null>(null);
+let downloadUrl = $state('');
+let downloadFilename = $state('');
+let downloadSize = $state(0);
+let status = $state('');
+let statusKind = $state<StatusKind>('idle');
+let isOpening = $state(false);
+let hasOpened = $state(false);
+let copyState = $state<'idle' | 'copied'>('idle');
 
-	const canOpen = $derived(passphrase.length > 0 && !isOpening && !hasOpened);
+const canOpen = $derived(passphrase.length > 0 && !isOpening && !hasOpened);
 
-	onDestroy(() => {
-		revokeDownloadURL();
-	});
+onDestroy(() => {
+	revokeDownloadUrl();
+});
 
-	function submitOpen(event: SubmitEvent): void {
-		event.preventDefault();
-		void openSecret();
+function submitOpen(event: SubmitEvent): void {
+	event.preventDefault();
+	void openSecret();
+}
+
+async function openSecret(): Promise<void> {
+	if (hasOpened) {
+		status = 'Already opened in this tab';
+		statusKind = 'success';
+		return;
+	}
+	if (!canOpen) {
+		return;
 	}
 
-	async function openSecret(): Promise<void> {
-		if (hasOpened) {
-			status = 'Already opened in this tab';
-			statusKind = 'success';
-			return;
+	isOpening = true;
+	status = 'Opening';
+	statusKind = 'idle';
+	decryptedText = '';
+	credential = null;
+	copyState = 'idle';
+	revokeDownloadUrl();
+
+	try {
+		const metadata = await api.getSecretMetadata(secretId);
+		const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
+		const payload = await api.openSecret(secretId, accessProof);
+
+		if (payload.kind === 'file') {
+			const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
+			const fileBuffer = file.bytes.buffer.slice(
+				file.bytes.byteOffset,
+				file.bytes.byteOffset + file.bytes.byteLength
+			) as ArrayBuffer;
+			const blob = new Blob([fileBuffer], { type: file.contentType });
+			downloadUrl = URL.createObjectURL(blob);
+			downloadFilename = file.filename;
+			downloadSize = file.bytes.byteLength;
+			openedKind = 'file';
+		} else {
+			decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
+			credential = parseCredential(decryptedText);
+			openedKind = 'text';
 		}
-		if (!canOpen) return;
 
-		isOpening = true;
-		status = 'Opening';
-		statusKind = 'idle';
-		decryptedText = '';
-		credential = null;
-		copyState = 'idle';
-		revokeDownloadURL();
+		passphrase = '';
+		hasOpened = true;
+		status = 'Opened';
+		statusKind = 'success';
+	} catch (error) {
+		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+		statusKind = 'error';
+	} finally {
+		isOpening = false;
+	}
+}
 
-		try {
-			const metadata = await api.getSecretMetadata(secretID);
-			const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
-			const payload = await api.openSecret(secretID, accessProof);
-
-			if (payload.kind === 'file') {
-				const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
-				const fileBuffer = file.bytes.buffer.slice(
-					file.bytes.byteOffset,
-					file.bytes.byteOffset + file.bytes.byteLength
-				) as ArrayBuffer;
-				const blob = new Blob([fileBuffer], { type: file.contentType });
-				downloadURL = URL.createObjectURL(blob);
-				downloadFilename = file.filename;
-				downloadSize = file.bytes.byteLength;
-				openedKind = 'file';
-			} else {
-				decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
-				credential = parseCredential(decryptedText);
-				openedKind = 'text';
-			}
-
-			passphrase = '';
-			hasOpened = true;
-			status = 'Opened';
-			statusKind = 'success';
-		} catch (error) {
-			status = error instanceof SecretAPIError ? error.message : 'Could not open this secret.';
-			statusKind = 'error';
-		} finally {
-			isOpening = false;
-		}
+async function copySecret(): Promise<void> {
+	const copyText = credential ? credentialView?.copyText() : decryptedText;
+	if (!copyText || copyText.length === 0) {
+		return;
 	}
 
-	async function copySecret(): Promise<void> {
-		const copyText = credential ? credentialView?.copyText() : decryptedText;
-		if (!copyText || copyText.length === 0) return;
-
-		try {
-			await navigator.clipboard.writeText(copyText);
-			copyState = 'copied';
-			window.setTimeout(() => {
-				copyState = 'idle';
-			}, 1600);
-		} catch {
-			status = 'Could not copy secret.';
-			statusKind = 'error';
-		}
+	try {
+		await navigator.clipboard.writeText(copyText);
+		copyState = 'copied';
+		window.setTimeout(() => {
+			copyState = 'idle';
+		}, 1600);
+	} catch {
+		status = 'Could not copy secret.';
+		statusKind = 'error';
 	}
+}
 
-	function revokeDownloadURL(): void {
-		if (downloadURL.length > 0) {
-			URL.revokeObjectURL(downloadURL);
-		}
-		downloadURL = '';
-		downloadFilename = '';
-		downloadSize = 0;
+function revokeDownloadUrl(): void {
+	if (downloadUrl.length > 0) {
+		URL.revokeObjectURL(downloadUrl);
 	}
+	downloadUrl = '';
+	downloadFilename = '';
+	downloadSize = 0;
+}
 
-	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-		return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) {
+		return `${bytes} B`;
 	}
+	if (bytes < 1024 * 1024) {
+		return `${(bytes / 1024).toFixed(1)} KiB`;
+	}
+	return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+}
 </script>
 
 <svelte:head>
@@ -259,7 +267,7 @@
 								</div>
 								<a
 									class={buttonVariants({ variant: 'default' })}
-									href={downloadURL}
+									href={downloadUrl}
 									download={downloadFilename}
 									rel="external"
 								>

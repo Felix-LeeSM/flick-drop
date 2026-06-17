@@ -24,5 +24,6 @@ run_if_present() {
 }
 
 run_if_present check
+run_if_present lint
 run_if_present test
 run_if_present build

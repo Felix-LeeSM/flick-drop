@@ -1,8 +1,8 @@
 <script lang="ts">
-	import OpenSecretPage from '$lib/components/OpenSecretPage.svelte';
-	import type { PageData } from './$types';
+import OpenSecretPage from '$lib/components/OpenSecretPage.svelte';
+import type { PageData } from './$types';
 
-	let { data }: { data: PageData } = $props();
+let { data }: { data: PageData } = $props();
 </script>
 
-<OpenSecretPage secretID={data.secretID} />
+<OpenSecretPage secretId={data.secretId} />

@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	CREDENTIAL_PREFIX,
 	CREDENTIAL_VERSION,
-	parseCredential,
-	serializeCredential,
 	type CredentialEnvelope,
-	type CredentialType
+	type CredentialType,
+	parseCredential,
+	serializeCredential
 } from './index';
 
 const credentialTypes: CredentialType[] = ['login', 'card', 'identity', 'custom'];
@@ -95,10 +95,16 @@ describe('credential serialization', () => {
 			} as unknown as CredentialEnvelope)
 		).toThrow('Invalid credential envelope');
 		expect(() =>
-			serializeCredential({ ...sampleEnvelope('login'), type: 'unknown' } as unknown as CredentialEnvelope)
+			serializeCredential({
+				...sampleEnvelope('login'),
+				type: 'unknown'
+			} as unknown as CredentialEnvelope)
 		).toThrow('Invalid credential envelope');
 		expect(() =>
-			serializeCredential({ ...sampleEnvelope('login'), notes: null } as unknown as CredentialEnvelope)
+			serializeCredential({
+				...sampleEnvelope('login'),
+				notes: null
+			} as unknown as CredentialEnvelope)
 		).toThrow('Invalid credential envelope');
 	});
 });

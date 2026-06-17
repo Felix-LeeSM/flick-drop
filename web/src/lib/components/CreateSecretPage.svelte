@@ -1,239 +1,254 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
-	import {
-		createSecretAPIClient,
-		createShareURL,
-		SecretAPIError,
-		type TTLSeconds
-	} from '$lib/api/secrets';
-	import CredentialForm from '$lib/components/CredentialForm.svelte';
-	import { createAccessVerifier, encryptFile, encryptText } from '$lib/crypto/text';
-	import {
-		buildEnvelope,
-		CREDENTIAL_TEMPLATES,
-		CREDENTIAL_TYPES,
-		serializeCredential,
-		type CredentialEnvelope,
-		type CredentialType
-	} from '$lib/credentials';
-	import { Button, buttonVariants } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Textarea } from '$lib/components/ui/textarea';
-	import {
-		CheckIcon,
-		CopyIcon,
-		CreditCardIcon,
-		ExternalLinkIcon,
-		FileUpIcon,
-		IdCardIcon,
-		KeyRoundIcon,
-		ListPlusIcon,
-		LockKeyholeIcon,
-		TypeIcon
-	} from '@lucide/svelte';
+import {
+	CheckIcon,
+	CopyIcon,
+	CreditCardIcon,
+	ExternalLinkIcon,
+	FileUpIcon,
+	IdCardIcon,
+	KeyRoundIcon,
+	ListPlusIcon,
+	LockKeyholeIcon,
+	TypeIcon
+} from '@lucide/svelte';
+import { resolve } from '$app/paths';
+import {
+	type CreateSecretResponse,
+	createSecretApiClient,
+	createShareUrl,
+	SecretApiError,
+	type TtlSeconds
+} from '$lib/api/secrets';
+import CredentialForm from '$lib/components/CredentialForm.svelte';
+import { Button, buttonVariants } from '$lib/components/ui/button';
+import * as Card from '$lib/components/ui/card';
+import { Input } from '$lib/components/ui/input';
+import { Label } from '$lib/components/ui/label';
+import { Textarea } from '$lib/components/ui/textarea';
+import {
+	buildEnvelope,
+	CREDENTIAL_TEMPLATES,
+	CREDENTIAL_TYPES,
+	type CredentialEnvelope,
+	type CredentialType,
+	serializeCredential
+} from '$lib/credentials';
+import { createAccessVerifier, encryptFile, encryptText } from '$lib/crypto/text';
 
-	type StatusKind = 'idle' | 'success' | 'error';
-	type CreateMode = 'text' | 'file' | CredentialType;
+type StatusKind = 'idle' | 'success' | 'error';
+type CreateMode = 'text' | 'file' | CredentialType;
 
-	const ttlOptions: Array<{ label: string; value: TTLSeconds }> = [
-		{ label: '10 min', value: 600 },
-		{ label: '1 hour', value: 3600 },
-		{ label: '24 hours', value: 86400 }
-	];
+const ttlOptions: Array<{ label: string; value: TtlSeconds }> = [
+	{ label: '10 min', value: 600 },
+	{ label: '1 hour', value: 3600 },
+	{ label: '24 hours', value: 86_400 }
+];
 
-	const defaultLocalFileMaxBytes = 1024 * 1024 - 16;
-	const configuredLocalFileMaxBytes = Number(
-		import.meta.env.PUBLIC_BURNLINK_LOCAL_FILE_MAX_BYTES ?? defaultLocalFileMaxBytes
-	);
-	const localFileMaxBytes =
-		Number.isFinite(configuredLocalFileMaxBytes) && configuredLocalFileMaxBytes > 0
-			? configuredLocalFileMaxBytes
-			: defaultLocalFileMaxBytes;
-	const api = createSecretAPIClient();
-	const baseModeOptions = [
-		{ type: 'text', label: 'Text', icon: TypeIcon },
-		{ type: 'file', label: 'File', icon: FileUpIcon }
-	] as const;
-	const credentialIconComponents = {
-		'key-round': KeyRoundIcon,
-		'credit-card': CreditCardIcon,
-		'id-card': IdCardIcon,
-		'list-plus': ListPlusIcon
-	};
+const defaultLocalFileMaxBytes = 1024 * 1024 - 16;
+const configuredLocalFileMaxBytes = Number(
+	import.meta.env.PUBLIC_BURNLINK_LOCAL_FILE_MAX_BYTES ?? defaultLocalFileMaxBytes
+);
+const localFileMaxBytes =
+	Number.isFinite(configuredLocalFileMaxBytes) && configuredLocalFileMaxBytes > 0
+		? configuredLocalFileMaxBytes
+		: defaultLocalFileMaxBytes;
+const api = createSecretApiClient();
+const baseModeOptions = [
+	{ type: 'text', label: 'Text', icon: TypeIcon },
+	{ type: 'file', label: 'File', icon: FileUpIcon }
+] as const;
+const credentialIconComponents = {
+	'key-round': KeyRoundIcon,
+	'credit-card': CreditCardIcon,
+	'id-card': IdCardIcon,
+	'list-plus': ListPlusIcon
+};
 
-	let mode = $state<CreateMode>('text');
-	let plaintext = $state('');
-	let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
-	let passphrase = $state('');
-	let ttlSeconds = $state<TTLSeconds>(600);
-	let selectedFiles = $state<FileList>();
-	let selectedFile = $state<File | null>(null);
-	let fileInput = $state<HTMLInputElement | null>(null);
-	let shareURL = $state('');
-	let expiresAt = $state('');
-	let status = $state('');
-	let statusKind = $state<StatusKind>('idle');
-	let isCreating = $state(false);
-	let copyState = $state<'idle' | 'copied'>('idle');
+let mode = $state<CreateMode>('text');
+let plaintext = $state('');
+let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
+let passphrase = $state('');
+let ttlSeconds = $state<TtlSeconds>(600);
+let selectedFiles = $state<FileList>();
+let selectedFile = $state<File | null>(null);
+let fileInput = $state<HTMLInputElement | null>(null);
+let shareUrl = $state('');
+let expiresAt = $state('');
+let status = $state('');
+let statusKind = $state<StatusKind>('idle');
+let isCreating = $state(false);
+let copyState = $state<'idle' | 'copied'>('idle');
 
-	const selectedFileTooLarge = $derived(
-		selectedFile !== null && selectedFile.size > localFileMaxBytes
-	);
-	const hasCredentialPayload = $derived(
-		(credentialEnvelope.title ?? '').trim().length > 0 ||
-			(credentialEnvelope.notes ?? '').trim().length > 0 ||
-			credentialEnvelope.fields.some((field) => field.value.trim().length > 0)
-	);
-	const hasCreatePayload = $derived(
-		mode === 'text'
-			? plaintext.trim().length > 0
-			: mode === 'file'
-				? selectedFile !== null && !selectedFileTooLarge
-				: hasCredentialPayload
-	);
-	const canCreate = $derived(hasCreatePayload && passphrase.length > 0 && !isCreating);
-	const hasResult = $derived(shareURL.length > 0);
+const selectedFileTooLarge = $derived(
+	selectedFile !== null && selectedFile.size > localFileMaxBytes
+);
+const hasCredentialPayload = $derived(
+	(credentialEnvelope.title ?? '').trim().length > 0 ||
+		(credentialEnvelope.notes ?? '').trim().length > 0 ||
+		credentialEnvelope.fields.some((field) => field.value.trim().length > 0)
+);
+const hasCreatePayload = $derived(
+	mode === 'text'
+		? plaintext.trim().length > 0
+		: mode === 'file'
+			? selectedFile !== null && !selectedFileTooLarge
+			: hasCredentialPayload
+);
+const canCreate = $derived(hasCreatePayload && passphrase.length > 0 && !isCreating);
+const hasResult = $derived(shareUrl.length > 0);
 
-	function submitCreate(event: SubmitEvent): void {
-		event.preventDefault();
-		void createSecret();
+function submitCreate(event: SubmitEvent): void {
+	event.preventDefault();
+	void createSecret();
+}
+
+async function createSecret(): Promise<void> {
+	if (!canCreate) {
+		return;
 	}
 
-	async function createSecret(): Promise<void> {
-		if (!canCreate) return;
+	isCreating = true;
+	status = 'Encrypting';
+	statusKind = 'idle';
+	copyState = 'idle';
 
-		isCreating = true;
-		status = 'Encrypting';
-		statusKind = 'idle';
-		copyState = 'idle';
+	try {
+		const access = await createAccessVerifier(passphrase);
+		const created = await createSelectedSecret(access);
 
-		try {
-			const access = await createAccessVerifier(passphrase);
-			const created = await createSelectedSecret(access);
-
-			shareURL = createShareURL(window.location.origin, created.id);
-			expiresAt = created.expires_at;
-			plaintext = '';
-			passphrase = '';
-			clearSelectedFile();
-			if (isCredentialMode(mode)) {
-				credentialEnvelope = buildEnvelope(mode);
-			}
-			status = `${modeLabel(mode)} secret created`;
-			statusKind = 'success';
-		} catch (error) {
-			status = error instanceof SecretAPIError ? error.message : 'Could not create link. Try again.';
-			statusKind = 'error';
-		} finally {
-			isCreating = false;
+		shareUrl = createShareUrl(window.location.origin, created.id);
+		expiresAt = created.expires_at;
+		plaintext = '';
+		passphrase = '';
+		clearSelectedFile();
+		if (isCredentialMode(mode)) {
+			credentialEnvelope = buildEnvelope(mode);
 		}
+		status = `${modeLabel(mode)} secret created`;
+		statusKind = 'success';
+	} catch (error) {
+		status = error instanceof SecretApiError ? error.message : 'Could not create link. Try again.';
+		statusKind = 'error';
+	} finally {
+		isCreating = false;
+	}
+}
+
+async function createSelectedSecret(
+	access: Awaited<ReturnType<typeof createAccessVerifier>>
+): Promise<CreateSecretResponse> {
+	if (mode === 'text') {
+		return api.createTextSecret(await encryptText(plaintext, passphrase), ttlSeconds, access);
 	}
 
-	async function createSelectedSecret(
-		access: Awaited<ReturnType<typeof createAccessVerifier>>
-	): Promise<{ id: string; expires_at: string }> {
-		if (mode === 'text') {
-			return api.createTextSecret(await encryptText(plaintext, passphrase), ttlSeconds, access);
-		}
-
-		if (mode === 'file') {
-			return api.createFileSecret(
-				await encryptFile(requireSelectedFile(), passphrase),
-				ttlSeconds,
-				access
-			);
-		}
-
-		return api.createTextSecret(
-			await encryptText(serializeCredential(credentialEnvelope), passphrase),
+	if (mode === 'file') {
+		return api.createFileSecret(
+			await encryptFile(requireSelectedFile(), passphrase),
 			ttlSeconds,
 			access
 		);
 	}
 
-	async function copyShareURL(): Promise<void> {
-		if (shareURL.length === 0) return;
+	return api.createTextSecret(
+		await encryptText(serializeCredential(credentialEnvelope), passphrase),
+		ttlSeconds,
+		access
+	);
+}
 
-		try {
-			await navigator.clipboard.writeText(shareURL);
-			copyState = 'copied';
-			window.setTimeout(() => {
-				copyState = 'idle';
-			}, 1600);
-		} catch {
-			status = 'Could not copy link.';
-			statusKind = 'error';
+async function copyShareUrl(): Promise<void> {
+	if (shareUrl.length === 0) {
+		return;
+	}
+
+	try {
+		await navigator.clipboard.writeText(shareUrl);
+		copyState = 'copied';
+		window.setTimeout(() => {
+			copyState = 'idle';
+		}, 1600);
+	} catch {
+		status = 'Could not copy link.';
+		statusKind = 'error';
+	}
+}
+
+function switchMode(nextMode: CreateMode): void {
+	mode = nextMode;
+	status = '';
+	statusKind = 'idle';
+	if (nextMode === 'text') {
+		clearSelectedFile();
+	} else if (nextMode === 'file') {
+		plaintext = '';
+	} else {
+		plaintext = '';
+		clearSelectedFile();
+		if (credentialEnvelope.type !== nextMode) {
+			credentialEnvelope = buildEnvelope(nextMode);
 		}
 	}
+}
 
-	function switchMode(nextMode: CreateMode): void {
-		mode = nextMode;
-		status = '';
-		statusKind = 'idle';
-		if (nextMode === 'text') {
-			clearSelectedFile();
-		} else if (nextMode === 'file') {
-			plaintext = '';
-		} else {
-			plaintext = '';
-			clearSelectedFile();
-			if (credentialEnvelope.type !== nextMode) {
-				credentialEnvelope = buildEnvelope(nextMode);
-			}
-		}
-	}
+function syncSelectedFile(): void {
+	selectedFile = selectedFiles?.item(0) ?? null;
+	status = '';
+	statusKind = 'idle';
+}
 
-	function syncSelectedFile(): void {
-		selectedFile = selectedFiles?.item(0) ?? null;
-		status = '';
-		statusKind = 'idle';
+function clearSelectedFile(): void {
+	selectedFile = null;
+	selectedFiles = undefined;
+	if (fileInput) {
+		fileInput.value = '';
 	}
+}
 
-	function clearSelectedFile(): void {
-		selectedFile = null;
-		selectedFiles = undefined;
-		if (fileInput) {
-			fileInput.value = '';
-		}
+function requireSelectedFile(): File {
+	if (selectedFile === null) {
+		throw new Error('file required');
 	}
+	return selectedFile;
+}
 
-	function requireSelectedFile(): File {
-		if (selectedFile === null) {
-			throw new Error('file required');
-		}
-		return selectedFile;
+function formatExpiresAt(value: string): string {
+	if (value.length === 0) {
+		return 'Not created';
 	}
+	return new Intl.DateTimeFormat(undefined, {
+		dateStyle: 'medium',
+		timeStyle: 'short'
+	}).format(new Date(value));
+}
 
-	function formatExpiresAt(value: string): string {
-		if (value.length === 0) return 'Not created';
-		return new Intl.DateTimeFormat(undefined, {
-			dateStyle: 'medium',
-			timeStyle: 'short'
-		}).format(new Date(value));
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) {
+		return `${bytes} B`;
 	}
+	if (bytes < 1024 * 1024) {
+		return `${(bytes / 1024).toFixed(1)} KiB`;
+	}
+	return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+}
 
-	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-		return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
-	}
+function isCredentialMode(value: CreateMode): value is CredentialType {
+	const credentialTypes: readonly string[] = CREDENTIAL_TYPES;
+	return credentialTypes.includes(value);
+}
 
-	function isCredentialMode(value: CreateMode): value is CredentialType {
-		const credentialTypes: readonly string[] = CREDENTIAL_TYPES;
-		return credentialTypes.includes(value);
+function modeLabel(value: CreateMode): string {
+	if (value === 'text') {
+		return 'Text';
 	}
+	if (value === 'file') {
+		return 'File';
+	}
+	return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
+}
 
-	function modeLabel(value: CreateMode): string {
-		if (value === 'text') return 'Text';
-		if (value === 'file') return 'File';
-		return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
-	}
-
-	function credentialIcon(icon: string): typeof ListPlusIcon {
-		return credentialIconComponents[icon as keyof typeof credentialIconComponents] ?? ListPlusIcon;
-	}
+function credentialIcon(icon: string): typeof ListPlusIcon {
+	return credentialIconComponents[icon as keyof typeof credentialIconComponents] ?? ListPlusIcon;
+}
 </script>
 
 <svelte:head>
@@ -416,14 +431,14 @@
 								<div class="grid gap-2">
 									<Label for="share-url">Share URL</Label>
 									<div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-										<Input id="share-url" value={shareURL} readonly />
+										<Input id="share-url" value={shareUrl} readonly />
 										<Button
 											type="button"
 											variant="outline"
 											size="icon"
 											aria-label="Copy share URL"
 											title="Copy share URL"
-											onclick={copyShareURL}
+											onclick={copyShareUrl}
 										>
 											{#if copyState === 'copied'}
 												<CheckIcon class="size-4" />
@@ -437,7 +452,7 @@
 								<div class="grid gap-2 text-sm">
 									<a
 										class={buttonVariants({ variant: 'outline' }) + ' w-full border-emerald-300 bg-white/70'}
-										href={shareURL}
+										href={shareUrl}
 										rel="external"
 									>
 										<ExternalLinkIcon class="size-4" />

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-	KDF_ALGORITHM,
-	KDF_ITERATIONS,
-	KEY_LENGTH_BITS,
 	createAccessVerifier,
 	decryptFile,
 	decryptText,
 	deriveAccessProof,
 	encryptFile,
-	encryptText
+	encryptText,
+	KDF_ALGORITHM,
+	KDF_ITERATIONS,
+	KEY_LENGTH_BITS
 } from './text';
 
 describe('text encryption', () => {

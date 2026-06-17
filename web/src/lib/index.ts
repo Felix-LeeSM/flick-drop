@@ -1,2 +1,2 @@
-export * from './crypto/text';
 export * from './credentials';
+export * from './crypto/text';

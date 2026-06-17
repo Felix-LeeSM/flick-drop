@@ -1,123 +1,123 @@
 <script lang="ts">
-	import {
-		addCustomField,
-		getCredentialTemplate,
-		removeField,
-		setFieldValue,
-		type CredentialEnvelope,
-		type CredentialField,
-		type CredentialInputKind
-	} from '$lib/credentials';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Textarea } from '$lib/components/ui/textarea';
-	import { EyeIcon, EyeOffIcon, PlusIcon, Trash2Icon } from '@lucide/svelte';
-	import type { HTMLInputAttributes, HTMLInputTypeAttribute } from 'svelte/elements';
+import { EyeIcon, EyeOffIcon, PlusIcon, Trash2Icon } from '@lucide/svelte';
+import type { HTMLInputAttributes, HTMLInputTypeAttribute } from 'svelte/elements';
+import { Button } from '$lib/components/ui/button';
+import { Input } from '$lib/components/ui/input';
+import { Label } from '$lib/components/ui/label';
+import { Textarea } from '$lib/components/ui/textarea';
+import {
+	addCustomField,
+	type CredentialEnvelope,
+	type CredentialField,
+	type CredentialInputKind,
+	getCredentialTemplate,
+	removeField,
+	setFieldValue
+} from '$lib/credentials';
 
-	type Props = {
-		envelope: CredentialEnvelope;
-		disabled?: boolean;
+type Props = {
+	envelope: CredentialEnvelope;
+	disabled?: boolean;
+};
+
+type AutocompleteValue = HTMLInputAttributes['autocomplete'];
+type FieldInputType = Exclude<HTMLInputTypeAttribute, 'file'>;
+
+let { envelope = $bindable(), disabled = false }: Props = $props();
+
+let revealedFields = $state<Record<string, boolean>>({});
+
+const template = $derived(getCredentialTemplate(envelope.type));
+
+function textInputValue(event: Event): string {
+	return (event.currentTarget as HTMLInputElement | HTMLTextAreaElement).value;
+}
+
+function checkedInputValue(event: Event): boolean {
+	return (event.currentTarget as HTMLInputElement).checked;
+}
+
+function updateTitle(event: Event): void {
+	envelope = {
+		...envelope,
+		title: textInputValue(event)
 	};
+}
 
-	type AutocompleteValue = HTMLInputAttributes['autocomplete'];
-	type FieldInputType = Exclude<HTMLInputTypeAttribute, 'file'>;
+function updateNotes(event: Event): void {
+	envelope = {
+		...envelope,
+		notes: textInputValue(event)
+	};
+}
 
-	let { envelope = $bindable(), disabled = false }: Props = $props();
+function updateFieldLabel(fieldId: string, value: string): void {
+	envelope = {
+		...envelope,
+		fields: envelope.fields.map((field) =>
+			field.id === fieldId
+				? {
+						...field,
+						label: value
+					}
+				: field
+		)
+	};
+}
 
-	let revealedFields = $state<Record<string, boolean>>({});
+function updateFieldSecret(fieldId: string, secret: boolean): void {
+	envelope = {
+		...envelope,
+		fields: envelope.fields.map((field) =>
+			field.id === fieldId
+				? {
+						...field,
+						secret
+					}
+				: field
+		)
+	};
+}
 
-	const template = $derived(getCredentialTemplate(envelope.type));
+function updateFieldValue(fieldId: string, value: string): void {
+	envelope = setFieldValue(envelope, fieldId, value);
+}
 
-	function textInputValue(event: Event): string {
-		return (event.currentTarget as HTMLInputElement | HTMLTextAreaElement).value;
+function addField(): void {
+	envelope = addCustomField(envelope);
+}
+
+function removeCustomField(fieldId: string): void {
+	envelope = removeField(envelope, fieldId);
+}
+
+function toggleReveal(fieldId: string): void {
+	revealedFields = {
+		...revealedFields,
+		[fieldId]: !revealedFields[fieldId]
+	};
+}
+
+function inputTypeFor(field: CredentialField, input: CredentialInputKind): FieldInputType {
+	if (!field.secret) {
+		return input === 'textarea' ? 'text' : input;
 	}
+	return revealedFields[field.id] ? (input === 'password' ? 'text' : input) : 'password';
+}
 
-	function checkedInputValue(event: Event): boolean {
-		return (event.currentTarget as HTMLInputElement).checked;
-	}
+function fieldInputKind(field: CredentialField): CredentialInputKind {
+	const definition = template.fields.find((item) => item.id === field.id);
+	return definition?.input ?? 'text';
+}
 
-	function updateTitle(event: Event): void {
-		envelope = {
-			...envelope,
-			title: textInputValue(event)
-		};
-	}
+function fieldPlaceholder(field: CredentialField): string | undefined {
+	return template.fields.find((item) => item.id === field.id)?.placeholder;
+}
 
-	function updateNotes(event: Event): void {
-		envelope = {
-			...envelope,
-			notes: textInputValue(event)
-		};
-	}
-
-	function updateFieldLabel(fieldID: string, value: string): void {
-		envelope = {
-			...envelope,
-			fields: envelope.fields.map((field) =>
-				field.id === fieldID
-					? {
-							...field,
-							label: value
-						}
-					: field
-			)
-		};
-	}
-
-	function updateFieldSecret(fieldID: string, secret: boolean): void {
-		envelope = {
-			...envelope,
-			fields: envelope.fields.map((field) =>
-				field.id === fieldID
-					? {
-							...field,
-							secret
-						}
-					: field
-			)
-		};
-	}
-
-	function updateFieldValue(fieldID: string, value: string): void {
-		envelope = setFieldValue(envelope, fieldID, value);
-	}
-
-	function addField(): void {
-		envelope = addCustomField(envelope);
-	}
-
-	function removeCustomField(fieldID: string): void {
-		envelope = removeField(envelope, fieldID);
-	}
-
-	function toggleReveal(fieldID: string): void {
-		revealedFields = {
-			...revealedFields,
-			[fieldID]: !revealedFields[fieldID]
-		};
-	}
-
-	function inputTypeFor(field: CredentialField, input: CredentialInputKind): FieldInputType {
-		if (!field.secret) {
-			return input === 'textarea' ? 'text' : input;
-		}
-		return revealedFields[field.id] ? (input === 'password' ? 'text' : input) : 'password';
-	}
-
-	function fieldInputKind(field: CredentialField): CredentialInputKind {
-		const definition = template.fields.find((item) => item.id === field.id);
-		return definition?.input ?? 'text';
-	}
-
-	function fieldPlaceholder(field: CredentialField): string | undefined {
-		return template.fields.find((item) => item.id === field.id)?.placeholder;
-	}
-
-	function fieldAutocomplete(field: CredentialField): AutocompleteValue {
-		return (template.fields.find((item) => item.id === field.id)?.autocomplete ??
-			'off') as AutocompleteValue;
-	}
+function fieldAutocomplete(field: CredentialField): AutocompleteValue {
+	return (template.fields.find((item) => item.id === field.id)?.autocomplete ??
+		'off') as AutocompleteValue;
+}
 </script>
 
 <div class="grid gap-4">
@@ -138,7 +138,7 @@
 	<div class="grid gap-3">
 		{#each envelope.fields as field (field.id)}
 			{@const inputKind = fieldInputKind(field)}
-			{@const valueID = `credential-${envelope.type}-${field.id}-value`}
+			{@const valueId = `credential-${envelope.type}-${field.id}-value`}
 			<div class="grid gap-2 rounded-md border border-border bg-muted/20 p-3">
 				<div class="flex min-w-0 items-start justify-between gap-2">
 					{#if template.allowCustomFields}
@@ -171,14 +171,14 @@
 							<Trash2Icon class="size-4" />
 						</Button>
 					{:else}
-						<Label class="pt-1" for={valueID}>{field.label}</Label>
+						<Label class="pt-1" for={valueId}>{field.label}</Label>
 					{/if}
 				</div>
 
 				<div class="grid gap-2">
 					{#if inputKind === 'textarea'}
 						<Textarea
-							id={valueID}
+							id={valueId}
 							class="min-h-24 resize-y text-base md:text-sm"
 							autocomplete={fieldAutocomplete(field)}
 							placeholder={fieldPlaceholder(field)}
@@ -191,7 +191,7 @@
 					{:else}
 						<div class="relative">
 							<Input
-								id={valueID}
+								id={valueId}
 								type={inputTypeFor(field, inputKind)}
 								class={field.secret ? 'h-10 pr-11 text-base md:text-sm' : 'h-10 text-base md:text-sm'}
 								autocomplete={fieldAutocomplete(field)}

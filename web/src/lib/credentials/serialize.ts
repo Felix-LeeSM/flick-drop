@@ -1,9 +1,9 @@
 import {
 	CREDENTIAL_PREFIX,
 	CREDENTIAL_VERSION,
-	isCredentialType,
 	type CredentialEnvelope,
-	type CredentialField
+	type CredentialField,
+	isCredentialType
 } from './schema';
 
 const ENVELOPE_KEYS = new Set(['v', 'type', 'title', 'notes', 'fields']);
@@ -39,7 +39,11 @@ function parseEnvelope(value: unknown): CredentialEnvelope | null {
 		return null;
 	}
 
-	if (value.v !== CREDENTIAL_VERSION || !isCredentialType(value.type) || !Array.isArray(value.fields)) {
+	if (
+		value.v !== CREDENTIAL_VERSION ||
+		!isCredentialType(value.type) ||
+		!Array.isArray(value.fields)
+	) {
 		return null;
 	}
 

@@ -14,6 +14,7 @@ Run local checks:
 
 ```sh
 pnpm check
+pnpm lint
 pnpm test
 pnpm build
 ```
@@ -32,5 +33,5 @@ contain ciphertext and safe metadata only.
 The project was scaffolded with:
 
 ```sh
-pnpm dlx sv@0.16.1 create --template minimal --types ts --add eslint vitest="usages:unit" sveltekit-adapter="adapter:static" --no-download-check --install pnpm web
+pnpm dlx sv@0.16.1 create --template minimal --types ts --add vitest="usages:unit" sveltekit-adapter="adapter:static" --no-download-check --install pnpm web
 ```
