@@ -184,8 +184,7 @@ function formatBytes(bytes: number): string {
 							<Input
 								id="open-passphrase"
 								name="burnlink-open-passphrase"
-								type="text"
-								class="passphrase-mask"
+								type="password"
 								autocomplete="off"
 								autocapitalize="none"
 								spellcheck="false"
@@ -291,9 +290,3 @@ function formatBytes(bytes: number): string {
 		</section>
 	</div>
 </main>
-
-<style>
-	.passphrase-mask {
-		-webkit-text-security: disc;
-	}
-</style>

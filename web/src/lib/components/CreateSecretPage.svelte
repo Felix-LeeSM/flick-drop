@@ -365,8 +365,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							<Input
 								id="secret-passphrase"
 								name="burnlink-passphrase"
-								type="text"
-								class="passphrase-mask"
+								type="password"
 								autocomplete="off"
 								autocapitalize="none"
 								spellcheck="false"
@@ -469,9 +468,3 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 		</section>
 	</div>
 </main>
-
-<style>
-	.passphrase-mask {
-		-webkit-text-security: disc;
-	}
-</style>
