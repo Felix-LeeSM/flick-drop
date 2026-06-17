@@ -1,9 +1,7 @@
+import { CREDENTIAL_TYPES, type CredentialType } from './templates';
+
 export const CREDENTIAL_PREFIX = 'BLCR1:';
 export const CREDENTIAL_VERSION = 1;
-
-export const CREDENTIAL_TYPES = ['login', 'card', 'identity', 'custom'] as const;
-
-export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
 export type CredentialField = {
 	id: string;
