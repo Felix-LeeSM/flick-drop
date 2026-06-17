@@ -124,6 +124,34 @@ func TestCleanupClientReturnsErrorForRetryableFailure(t *testing.T) {
 	}
 }
 
+func TestCleanupClientReturnsErrorForStalledAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.(http.Flusher).Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"id":"sec_1","cleaned":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewCleanupClient(CleanupClientOptions{
+		BaseURL:       server.URL,
+		InternalToken: "test-token",
+		HTTPClient:    &http.Client{Timeout: 20 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("new cleanup client: %v", err)
+	}
+
+	_, err = client.CleanupSecret(context.Background(), CleanupRequest{
+		SecretID: "sec_1",
+		JobID:    "job_1",
+		Reason:   events.ReasonExpired,
+	})
+	if err == nil {
+		t.Fatal("cleanup error = nil, want stalled api timeout")
+	}
+}
+
 func TestCleanupClientRequiresConfiguration(t *testing.T) {
 	if _, err := NewCleanupClient(CleanupClientOptions{InternalToken: "test-token"}); err == nil {
 		t.Fatal("missing base url error = nil, want error")

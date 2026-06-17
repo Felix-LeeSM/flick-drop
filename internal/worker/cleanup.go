@@ -9,9 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Felix-LeeSM/burn-links/internal/events"
 )
+
+const defaultCleanupClientTimeout = 10 * time.Second
 
 type CleanupRequest struct {
 	SecretID string
@@ -50,7 +53,7 @@ func NewCleanupClient(opts CleanupClientOptions) (*CleanupClient, error) {
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultCleanupClientTimeout}
 	}
 	return &CleanupClient{
 		baseURL:    baseURL,
