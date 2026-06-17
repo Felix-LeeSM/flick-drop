@@ -142,6 +142,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CleanupSecretResponse"
+        "400":
+          description: Invalid cleanup metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Missing or invalid internal token.
           content:
@@ -303,6 +309,7 @@ components:
       properties:
         job_id:
           type: string
+          minLength: 1
         reason:
           type: string
           enum: [consumed, expired, orphan, manual, retry]

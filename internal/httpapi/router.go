@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"net/http"
 	"strings"
@@ -15,11 +17,13 @@ type Server struct {
 	secrets               *secrets.Store
 	payloadInlineMaxBytes int64
 	allowedOrigin         string
+	internalToken         string
 }
 
 type Options struct {
 	PayloadInlineMaxBytes int64
 	AllowedOrigin         string
+	InternalToken         string
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -33,6 +37,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		secrets:               secretStore,
 		payloadInlineMaxBytes: payloadInlineMaxBytes,
 		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
+		internalToken:         opts.InternalToken,
 	}
 
 	r := chi.NewRouter()
@@ -43,6 +48,10 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Post("/api/secrets", server.createSecret)
 	r.Get("/api/secrets/{id}", server.getSecret)
 	r.Post("/api/secrets/{id}/consume", server.consumeSecret)
+	r.Group(func(r chi.Router) {
+		r.Use(server.internalAuth)
+		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)
+	})
 	return r
 }
 
@@ -63,6 +72,26 @@ func (s Server) cors(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s Server) internalAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := r.Header.Get("X-BurnLink-Internal-Token")
+		if !secureTokenEqual(got, s.internalToken) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "internal token is missing or invalid")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func secureTokenEqual(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 }
 
 func (s Server) healthz(w http.ResponseWriter, _ *http.Request) {

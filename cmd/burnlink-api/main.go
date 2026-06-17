@@ -42,6 +42,7 @@ func main() {
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
 			PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 			AllowedOrigin:         cfg.PublicBaseURL,
+			InternalToken:         cfg.InternalToken,
 		}),
 	}
 

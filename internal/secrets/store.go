@@ -230,6 +230,38 @@ func (s *Store) Consume(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, ErrNotFound
+	}
+
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin cleanup secret: %w", err)
+	}
+	defer rollback(tx)
+
+	result, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete secret payload: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read cleanup row count: %w", err)
+	}
+	if affected > 0 {
+		if _, err := tx.ExecContext(ctx, `update secrets set updated_at = ? where id = ?`, formatTime(now), id); err != nil {
+			return false, fmt.Errorf("mark secret cleaned: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit cleanup secret: %w", err)
+	}
+	return affected > 0, nil
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }

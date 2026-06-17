@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,7 +122,114 @@ func TestCreateRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestCleanupSecretRequiresInternalToken(t *testing.T) {
+	router := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		InternalToken:         "test-token",
+	})
+
+	publicResp := performJSON(t, router, http.MethodPost, "/api/secrets", validCreateSecretBody(), nil)
+	if publicResp.Code != http.StatusCreated {
+		t.Fatalf("public create status = %d, body = %s", publicResp.Code, publicResp.Body.String())
+	}
+
+	for _, token := range []string{"", "wrong-token"} {
+		resp := performJSON(t, router, http.MethodPost, "/internal/secrets/s1/cleanup", map[string]any{
+			"job_id": "job-1",
+			"reason": "expired",
+		}, map[string]string{"X-BurnLink-Internal-Token": token})
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("cleanup status with token %q = %d, body = %s", token, resp.Code, resp.Body.String())
+		}
+	}
+
+	disabledRouter := newTestRouter(t)
+	disabledResp := performJSON(t, disabledRouter, http.MethodPost, "/internal/secrets/s1/cleanup", map[string]any{
+		"job_id": "job-1",
+		"reason": "expired",
+	}, map[string]string{"X-BurnLink-Internal-Token": "test-token"})
+	if disabledResp.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled cleanup status = %d, body = %s", disabledResp.Code, disabledResp.Body.String())
+	}
+}
+
+func TestCleanupSecretDeletesPayload(t *testing.T) {
+	router := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		InternalToken:         "test-token",
+	})
+
+	createResp := performJSON(t, router, http.MethodPost, "/api/secrets", validCreateSecretBody(), nil)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", createResp.Code, createResp.Body.String())
+	}
+	var created createSecretResponse
+	decodeBody(t, createResp, &created)
+
+	cleanupResp := performJSON(t, router, http.MethodPost, "/internal/secrets/"+created.ID+"/cleanup", map[string]any{
+		"job_id": "job-1",
+		"reason": "expired",
+	}, map[string]string{"X-BurnLink-Internal-Token": "test-token"})
+	if cleanupResp.Code != http.StatusOK {
+		t.Fatalf("cleanup status = %d, body = %s", cleanupResp.Code, cleanupResp.Body.String())
+	}
+	var cleaned cleanupSecretResponse
+	decodeBody(t, cleanupResp, &cleaned)
+	if cleaned.ID != created.ID || !cleaned.Cleaned {
+		t.Fatalf("cleanup response = %+v, want id %q cleaned true", cleaned, created.ID)
+	}
+
+	getResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil, nil)
+	if getResp.Code != http.StatusNotFound {
+		t.Fatalf("get after cleanup status = %d, body = %s", getResp.Code, getResp.Body.String())
+	}
+
+	secondCleanupResp := performJSON(t, router, http.MethodPost, "/internal/secrets/"+created.ID+"/cleanup", map[string]any{
+		"job_id": "job-2",
+		"reason": "retry",
+	}, map[string]string{"X-BurnLink-Internal-Token": "test-token"})
+	if secondCleanupResp.Code != http.StatusOK {
+		t.Fatalf("second cleanup status = %d, body = %s", secondCleanupResp.Code, secondCleanupResp.Body.String())
+	}
+	var secondCleaned cleanupSecretResponse
+	decodeBody(t, secondCleanupResp, &secondCleaned)
+	if secondCleaned.Cleaned {
+		t.Fatalf("second cleanup cleaned = true, want false")
+	}
+}
+
+func TestCleanupSecretRejectsInvalidMetadata(t *testing.T) {
+	router := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		InternalToken:         "test-token",
+	})
+
+	resp := performJSON(t, router, http.MethodPost, "/internal/secrets/s1/cleanup", map[string]any{
+		"job_id": "job-1",
+		"reason": "passphrase",
+	}, map[string]string{"X-BurnLink-Internal-Token": "test-token"})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid reason status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+
+	raw := strings.NewReader(`{"job_id":"job-1","reason":"expired","passphrase":"do-not-send"}`)
+	req := httptest.NewRequest(http.MethodPost, "/internal/secrets/s1/cleanup", raw)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-BurnLink-Internal-Token", "test-token")
+	sensitiveResp := httptest.NewRecorder()
+	router.ServeHTTP(sensitiveResp, req)
+	if sensitiveResp.Code != http.StatusBadRequest {
+		t.Fatalf("sensitive field status = %d, body = %s", sensitiveResp.Code, sensitiveResp.Body.String())
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
+	t.Helper()
+
+	return newTestRouterWithOptions(t, Options{PayloadInlineMaxBytes: 1024})
+}
+
+func newTestRouterWithOptions(t *testing.T, opts Options) http.Handler {
 	t.Helper()
 
 	ctx := context.Background()
@@ -136,7 +244,7 @@ func newTestRouter(t *testing.T) http.Handler {
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	return NewRouter(conn, store, Options{PayloadInlineMaxBytes: 1024})
+	return NewRouter(conn, store, opts)
 }
 
 func TestCORSAllowsConfiguredOrigin(t *testing.T) {
@@ -182,7 +290,7 @@ func openHTTPTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	return conn
 }
 
-func performJSON(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+func performJSON(t *testing.T, handler http.Handler, method, path string, body any, headers ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var requestBody bytes.Buffer
@@ -196,10 +304,31 @@ func performJSON(t *testing.T, handler http.Handler, method, path string, body a
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for _, set := range headers {
+		for key, value := range set {
+			req.Header.Set(key, value)
+		}
+	}
 
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 	return resp
+}
+
+func validCreateSecretBody() map[string]any {
+	return map[string]any{
+		"kind":       "text",
+		"ciphertext": base64.StdEncoding.EncodeToString([]byte("ciphertext")),
+		"nonce":      "nonce",
+		"kdf": map[string]any{
+			"algorithm":       secrets.KDFPBKDF2SHA256,
+			"salt":            "salt",
+			"iterations":      600000,
+			"key_length_bits": 256,
+		},
+		"size_bytes":  10,
+		"ttl_seconds": 600,
+	}
 }
 
 func decodeBody(t *testing.T, resp *httptest.ResponseRecorder, out any) {

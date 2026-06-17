@@ -68,6 +68,68 @@ func TestStoreCreateGetConsume(t *testing.T) {
 	}
 }
 
+func TestStoreCleanupDeletesPayload(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	created, err := store.Create(ctx, CreateInput{
+		Kind:       KindText,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		KDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		SizeBytes:  10,
+		TTLSeconds: 600,
+		MaxViews:   1,
+	})
+	if err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+
+	cleaned, err := store.Cleanup(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("cleanup secret: %v", err)
+	}
+	if !cleaned {
+		t.Fatal("cleanup cleaned = false, want true")
+	}
+
+	if _, err := store.Get(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get after cleanup error = %v, want ErrNotFound", err)
+	}
+
+	var payloadCount int
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+		t.Fatalf("count payloads: %v", err)
+	}
+	if payloadCount != 0 {
+		t.Fatalf("payload count = %d, want 0", payloadCount)
+	}
+
+	cleaned, err = store.Cleanup(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("second cleanup secret: %v", err)
+	}
+	if cleaned {
+		t.Fatal("second cleanup cleaned = true, want false")
+	}
+
+	cleaned, err = store.Cleanup(ctx, "missing-secret")
+	if err != nil {
+		t.Fatalf("missing cleanup secret: %v", err)
+	}
+	if cleaned {
+		t.Fatal("missing cleanup cleaned = true, want false")
+	}
+}
+
 func TestStoreRejectsInvalidKDF(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, openTestDB(t, ctx))

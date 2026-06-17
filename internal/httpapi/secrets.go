@@ -49,6 +49,16 @@ type consumeSecretResponse struct {
 	Consumed bool   `json:"consumed"`
 }
 
+type cleanupSecretRequest struct {
+	JobID  string `json:"job_id"`
+	Reason string `json:"reason"`
+}
+
+type cleanupSecretResponse struct {
+	ID      string `json:"id"`
+	Cleaned bool   `json:"cleaned"`
+}
+
 func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	bodyLimit := s.secretsPayloadLimit() + createBodyOverheadLimit
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
@@ -137,6 +147,48 @@ func (s Server) consumeSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s Server) cleanupSecret(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")
+		return
+	}
+	defer r.Body.Close()
+
+	if hasSensitiveField(body) {
+		writeError(w, http.StatusBadRequest, "sensitive_field_forbidden", "passphrases, plaintext, and keys must not be sent to the API")
+		return
+	}
+
+	var req cleanupSecretRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body does not match the cleanup secret contract")
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON object")
+		return
+	}
+	if req.JobID == "" || !validCleanupReason(req.Reason) {
+		writeError(w, http.StatusBadRequest, "invalid_cleanup", "cleanup metadata is invalid")
+		return
+	}
+
+	cleaned, err := s.secrets.Cleanup(r.Context(), id)
+	if err != nil {
+		s.writeSecretError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cleanupSecretResponse{
+		ID:      id,
+		Cleaned: cleaned,
+	})
+}
+
 func (s Server) writeConsumeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, secrets.ErrConsumed):
@@ -180,6 +232,15 @@ func hasSensitiveField(body []byte) bool {
 		}
 	}
 	return false
+}
+
+func validCleanupReason(reason string) bool {
+	switch reason {
+	case "consumed", "expired", "orphan", "manual", "retry":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeMaxViews(value int) int {
