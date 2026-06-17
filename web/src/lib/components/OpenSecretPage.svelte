@@ -12,6 +12,7 @@ import { onDestroy } from 'svelte';
 import { resolve } from '$app/paths';
 import { createSecretApiClient, SecretApiError, type SecretKind } from '$lib/api/secrets';
 import CredentialView from '$lib/components/CredentialView.svelte';
+import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 import { Button, buttonVariants } from '$lib/components/ui/button';
 import * as Card from '$lib/components/ui/card';
 import { Input } from '$lib/components/ui/input';
@@ -166,6 +167,7 @@ function formatBytes(bytes: number): string {
 			</a>
 
 			<nav class="flex items-center gap-2">
+				<ThemeToggle />
 				<a class={buttonVariants({ variant: 'outline', size: 'sm' })} href={resolve('/')}>Create</a>
 			</nav>
 		</header>

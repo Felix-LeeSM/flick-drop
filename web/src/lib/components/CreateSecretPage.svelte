@@ -20,6 +20,7 @@ import {
 	type TtlSeconds
 } from '$lib/api/secrets';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
+import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 import { Button, buttonVariants } from '$lib/components/ui/button';
 import * as Card from '$lib/components/ui/card';
 import { Input } from '$lib/components/ui/input';
@@ -266,6 +267,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 			</a>
 
 			<nav class="flex items-center gap-2">
+				<ThemeToggle />
 				<a class={buttonVariants({ size: 'sm' })} href={resolve('/')} aria-current="page">Create</a>
 			</nav>
 		</header>
