@@ -18,6 +18,15 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.APIDBPath != "./var/api.db" {
 		t.Fatalf("APIDBPath = %q, want ./var/api.db", cfg.APIDBPath)
 	}
+	if cfg.NATSURL != "nats://127.0.0.1:4222" {
+		t.Fatalf("NATSURL = %q, want nats://127.0.0.1:4222", cfg.NATSURL)
+	}
+	if cfg.NATSStream != "BURNLINK_JOBS" {
+		t.Fatalf("NATSStream = %q, want BURNLINK_JOBS", cfg.NATSStream)
+	}
+	if cfg.NATSJobSubject != "burnlink.jobs" {
+		t.Fatalf("NATSJobSubject = %q, want burnlink.jobs", cfg.NATSJobSubject)
+	}
 	if cfg.PayloadInlineMaxBytes != 1048576 {
 		t.Fatalf("PayloadInlineMaxBytes = %d, want 1048576", cfg.PayloadInlineMaxBytes)
 	}
@@ -41,6 +50,9 @@ func clearBurnLinkEnv(t *testing.T) {
 		"BURNLINK_PUBLIC_BASE_URL",
 		"BURNLINK_API_ADDR",
 		"BURNLINK_API_DB_PATH",
+		"BURNLINK_NATS_URL",
+		"BURNLINK_NATS_STREAM",
+		"BURNLINK_NATS_JOB_SUBJECT",
 		"BURNLINK_PAYLOAD_INLINE_MAX_BYTES",
 		"BURNLINK_DEFAULT_TTL_SECONDS",
 		"BURNLINK_ALLOWED_TTL_SECONDS",

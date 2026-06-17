@@ -12,6 +12,9 @@ type Config struct {
 	PublicBaseURL         string
 	APIAddr               string
 	APIDBPath             string
+	NATSURL               string
+	NATSStream            string
+	NATSJobSubject        string
 	PayloadInlineMaxBytes int64
 	DefaultTTLSeconds     int
 	AllowedTTLSeconds     []int
@@ -23,6 +26,9 @@ func Load() (Config, error) {
 		PublicBaseURL:         getenv("BURNLINK_PUBLIC_BASE_URL", "http://localhost:5173"),
 		APIAddr:               getenv("BURNLINK_API_ADDR", ":8080"),
 		APIDBPath:             getenv("BURNLINK_API_DB_PATH", "./var/api.db"),
+		NATSURL:               getenv("BURNLINK_NATS_URL", "nats://127.0.0.1:4222"),
+		NATSStream:            getenv("BURNLINK_NATS_STREAM", "BURNLINK_JOBS"),
+		NATSJobSubject:        getenv("BURNLINK_NATS_JOB_SUBJECT", "burnlink.jobs"),
 		PayloadInlineMaxBytes: 1048576,
 		DefaultTTLSeconds:     3600,
 		AllowedTTLSeconds:     []int{600, 3600, 86400},
