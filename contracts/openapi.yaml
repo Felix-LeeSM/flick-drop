@@ -122,7 +122,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Access proof is invalid.
+          description: Access proof is invalid. The fifth invalid proof attempt removes the stored payload.
           content:
             application/json:
               schema:

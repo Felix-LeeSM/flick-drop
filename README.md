@@ -13,6 +13,7 @@ and removed.
 - Creates one-time links for encrypted text secrets and small encrypted files.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
+- Removes a secret after five invalid passphrase attempts.
 - Stores only ciphertext and metadata on the server side.
 - Derives encryption keys in the browser from a user-entered passphrase.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.

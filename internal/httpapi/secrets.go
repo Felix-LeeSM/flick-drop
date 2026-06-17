@@ -231,6 +231,11 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 
 	secret, err := s.secrets.OpenTx(ctx, tx, id, accessProofHash)
 	if err != nil {
+		if errors.Is(err, secrets.ErrInvalidAccess) {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return secrets.Secret{}, fmt.Errorf("commit failed access attempt: %w", commitErr)
+			}
+		}
 		return secrets.Secret{}, err
 	}
 	if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
