@@ -35,6 +35,21 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at datetime not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
+		`create table if not exists outbox_events (
+			id text primary key,
+			subject text not null,
+			payload_json text not null,
+			state text not null default 'pending'
+				check (state in ('pending', 'published', 'failed')),
+			attempts integer not null default 0 check (attempts >= 0),
+			next_attempt_at datetime not null,
+			published_at datetime,
+			last_error text,
+			created_at datetime not null,
+			updated_at datetime not null
+		)`,
+		`create index if not exists idx_outbox_events_state_next_attempt
+			on outbox_events(state, next_attempt_at)`,
 	}
 
 	for _, statement := range statements {

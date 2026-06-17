@@ -38,12 +38,6 @@
     "trace_id": {
       "type": "string",
       "minLength": 1
-    },
-    "payload": {
-      "type": "object",
-      "additionalProperties": {
-        "type": ["string", "number", "integer", "boolean", "null"]
-      }
     }
   }
 }

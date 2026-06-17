@@ -23,7 +23,9 @@ Exact deployment values come from environment variables:
 
 The JSON schema is `contracts/events/job.schema.json`.
 
-Payloads contain IDs and small metadata only. They must not contain:
+Payloads contain IDs and explicit small metadata fields only. Arbitrary
+`payload` extension objects are not part of the initial contract. Payloads must
+not contain:
 
 - plaintext secret contents
 - passphrases
