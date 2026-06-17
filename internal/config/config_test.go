@@ -18,8 +18,14 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.InternalToken != "" {
 		t.Fatalf("InternalToken = %q, want empty default", cfg.InternalToken)
 	}
+	if cfg.InternalAPIBaseURL != "http://localhost:8080" {
+		t.Fatalf("InternalAPIBaseURL = %q, want http://localhost:8080", cfg.InternalAPIBaseURL)
+	}
 	if cfg.APIDBPath != "./var/api.db" {
 		t.Fatalf("APIDBPath = %q, want ./var/api.db", cfg.APIDBPath)
+	}
+	if cfg.WorkerDBPath != "./var/worker.db" {
+		t.Fatalf("WorkerDBPath = %q, want ./var/worker.db", cfg.WorkerDBPath)
 	}
 	if cfg.NATSURL != "nats://127.0.0.1:4222" {
 		t.Fatalf("NATSURL = %q, want nats://127.0.0.1:4222", cfg.NATSURL)
@@ -52,8 +58,10 @@ func clearBurnLinkEnv(t *testing.T) {
 		"BURNLINK_ENV",
 		"BURNLINK_PUBLIC_BASE_URL",
 		"BURNLINK_INTERNAL_TOKEN",
+		"BURNLINK_INTERNAL_API_BASE_URL",
 		"BURNLINK_API_ADDR",
 		"BURNLINK_API_DB_PATH",
+		"BURNLINK_WORKER_DB_PATH",
 		"BURNLINK_NATS_URL",
 		"BURNLINK_NATS_STREAM",
 		"BURNLINK_NATS_JOB_SUBJECT",

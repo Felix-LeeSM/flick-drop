@@ -11,8 +11,10 @@ type Config struct {
 	Env                   string
 	PublicBaseURL         string
 	InternalToken         string
+	InternalAPIBaseURL    string
 	APIAddr               string
 	APIDBPath             string
+	WorkerDBPath          string
 	NATSURL               string
 	NATSStream            string
 	NATSJobSubject        string
@@ -26,8 +28,10 @@ func Load() (Config, error) {
 		Env:                   getenv("BURNLINK_ENV", "development"),
 		PublicBaseURL:         getenv("BURNLINK_PUBLIC_BASE_URL", "http://localhost:5173"),
 		InternalToken:         getenv("BURNLINK_INTERNAL_TOKEN", ""),
+		InternalAPIBaseURL:    getenv("BURNLINK_INTERNAL_API_BASE_URL", "http://localhost:8080"),
 		APIAddr:               getenv("BURNLINK_API_ADDR", ":8080"),
 		APIDBPath:             getenv("BURNLINK_API_DB_PATH", "./var/api.db"),
+		WorkerDBPath:          getenv("BURNLINK_WORKER_DB_PATH", "./var/worker.db"),
 		NATSURL:               getenv("BURNLINK_NATS_URL", "nats://127.0.0.1:4222"),
 		NATSStream:            getenv("BURNLINK_NATS_STREAM", "BURNLINK_JOBS"),
 		NATSJobSubject:        getenv("BURNLINK_NATS_JOB_SUBJECT", "burnlink.jobs"),
