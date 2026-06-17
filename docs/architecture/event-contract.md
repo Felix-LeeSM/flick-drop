@@ -60,6 +60,11 @@ The API publishes through an outbox table:
 This prevents a successful API write from losing the worker job if the broker is
 temporarily unavailable.
 
+The publisher sends the stored `payload_json` bytes to
+`BURNLINK_NATS_JOB_SUBJECT`. On publish ack it marks the outbox row
+`published`; on publish failure it records the error and schedules the next
+attempt.
+
 ## Worker Semantics
 
 Worker jobs are at-least-once. Every handler must be idempotent.

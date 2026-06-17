@@ -27,6 +27,17 @@ mise run nats-down
 
 NATS monitoring is exposed at `http://localhost:8222`.
 
+The API outbox publisher uses:
+
+```text
+BURNLINK_NATS_URL
+BURNLINK_NATS_STREAM
+BURNLINK_NATS_JOB_SUBJECT
+```
+
+The publisher sends outbox rows to JetStream but does not carry plaintext,
+passphrases, derived keys, or ciphertext bodies.
+
 ## API
 
 Run the API service:
