@@ -162,6 +162,37 @@ func TestProcessorRejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestProcessorProcessMessageReturnsTerminateForDeadLetter(t *testing.T) {
+	ctx := context.Background()
+	store := newTestReceiptStore(t, ctx)
+	handler := &fakeJobHandler{err: errors.New("failed permanently")}
+	processor := newTestProcessor(t, store, handler, 1)
+
+	action, err := processor.ProcessMessage(ctx, testJobPayload(t, "job_dead_action"))
+	if err != nil {
+		t.Fatalf("process message: %v", err)
+	}
+	if action != events.MessageTerminate {
+		t.Fatalf("action = %q, want terminate", action)
+	}
+}
+
+func TestProcessorProcessMessageReturnsRetryableError(t *testing.T) {
+	ctx := context.Background()
+	store := newTestReceiptStore(t, ctx)
+	handlerErr := errors.New("api unavailable")
+	handler := &fakeJobHandler{err: handlerErr}
+	processor := newTestProcessor(t, store, handler, 3)
+
+	action, err := processor.ProcessMessage(ctx, testJobPayload(t, "job_retry_action"))
+	if !errors.Is(err, handlerErr) {
+		t.Fatalf("process message error = %v, want handler error", err)
+	}
+	if action != "" {
+		t.Fatalf("action = %q, want empty action for retryable error", action)
+	}
+}
+
 func newTestProcessor(t *testing.T, store *ReceiptStore, handler JobHandler, maxAttempts int) *Processor {
 	t.Helper()
 

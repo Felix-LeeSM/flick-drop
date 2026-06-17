@@ -65,6 +65,31 @@ The publisher sends the stored `payload_json` bytes to
 `published`; on publish failure it records the error and schedules the next
 attempt.
 
+## Consumer
+
+The worker uses a durable pull consumer for the job subject.
+
+Initial consumer defaults:
+
+```text
+durable: burnlink-worker
+ack policy: explicit
+max deliver: 3
+batch size: 8
+```
+
+Message disposition:
+
+- valid job processed successfully or already completed: ack
+- duplicate delivery while the same job is already processing: ack
+- transient processing error before the retry limit: nak
+- invalid payload: term
+- terminal dead-letter result: term
+
+Invalid payloads are not retried because they cannot become valid without a new
+producer write. Dead-lettered jobs are not retried because the worker already
+recorded the terminal state in `worker.db`.
+
 ## Worker Semantics
 
 Worker jobs are at-least-once. Every handler must be idempotent.

@@ -100,6 +100,17 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (ProcessRes
 	return result, nil
 }
 
+func (p *Processor) ProcessMessage(ctx context.Context, payloadJSON []byte) (events.MessageAction, error) {
+	result, err := p.Process(ctx, payloadJSON)
+	if err != nil {
+		return "", err
+	}
+	if result.DeadLettered {
+		return events.MessageTerminate, nil
+	}
+	return events.MessageAck, nil
+}
+
 func (p *Processor) finishFailed(
 	ctx context.Context,
 	event events.JobEvent,
