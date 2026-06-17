@@ -73,17 +73,17 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/secrets/{id}:
     get:
-      operationId: getSecret
-      summary: Fetch encrypted payload and safe metadata.
+      operationId: getSecretMetadata
+      summary: Fetch safe metadata needed to derive an access proof.
       parameters:
         - $ref: "#/components/parameters/SecretId"
       responses:
         "200":
-          description: Ciphertext payload found.
+          description: Metadata found.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GetSecretResponse"
+                $ref: "#/components/schemas/GetSecretMetadataResponse"
         "404":
           description: Secret missing, expired, or consumed.
           content:
@@ -96,27 +96,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/secrets/{id}/consume:
+  /api/secrets/{id}/open:
     post:
-      operationId: consumeSecret
-      summary: Mark a secret as consumed.
+      operationId: openSecret
+      summary: Atomically verify access, consume the secret, and return encrypted payload.
       parameters:
         - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenSecretRequest"
       responses:
-        "202":
-          description: Secret consumed.
+        "200":
+          description: Secret opened.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConsumeSecretResponse"
+                $ref: "#/components/schemas/OpenSecretResponse"
         "404":
           description: Secret missing.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Secret already consumed.
+        "403":
+          description: Access proof is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Secret already consumed or expired.
           content:
             application/json:
               schema:
@@ -199,6 +211,7 @@ components:
         - ciphertext
         - nonce
         - kdf
+        - access
         - size_bytes
         - ttl_seconds
       properties:
@@ -213,6 +226,8 @@ components:
           description: Base64-encoded AES-GCM nonce.
         kdf:
           $ref: "#/components/schemas/KdfParams"
+        access:
+          $ref: "#/components/schemas/AccessVerifier"
         encrypted_filename:
           type: string
         content_type:
@@ -237,7 +252,55 @@ components:
         expires_at:
           type: string
           format: date-time
-    GetSecretResponse:
+    AccessVerifier:
+      type: object
+      additionalProperties: false
+      required: [kdf, proof]
+      properties:
+        kdf:
+          $ref: "#/components/schemas/KdfParams"
+        proof:
+          type: string
+          description: Base64-encoded client-derived access proof.
+    AccessMetadata:
+      type: object
+      additionalProperties: false
+      required: [kdf]
+      properties:
+        kdf:
+          $ref: "#/components/schemas/KdfParams"
+    GetSecretMetadataResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - access
+        - size_bytes
+        - expires_at
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [text, file]
+        access:
+          $ref: "#/components/schemas/AccessMetadata"
+        size_bytes:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+    OpenSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [access_proof]
+      properties:
+        access_proof:
+          type: string
+          description: Base64-encoded proof derived from local user input and metadata access KDF.
+    OpenSecretResponse:
       type: object
       additionalProperties: false
       required:
@@ -293,15 +356,6 @@ components:
         key_length_bits:
           type: integer
           enum: [256]
-    ConsumeSecretResponse:
-      type: object
-      additionalProperties: false
-      required: [id, consumed]
-      properties:
-        id:
-          type: string
-        consumed:
-          type: boolean
     CleanupSecretRequest:
       type: object
       additionalProperties: false

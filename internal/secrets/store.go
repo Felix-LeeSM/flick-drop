@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -29,6 +30,8 @@ type CreateInput struct {
 	Ciphertext        []byte
 	Nonce             string
 	KDF               KDFParams
+	AccessKDF         KDFParams
+	AccessProofHash   string
 	EncryptedFilename *string
 	ContentType       *string
 	SizeBytes         int64
@@ -42,10 +45,20 @@ type Secret struct {
 	Ciphertext        []byte
 	Nonce             string
 	KDF               KDFParams
+	AccessKDF         KDFParams
 	EncryptedFilename *string
 	ContentType       *string
 	SizeBytes         int64
 	ExpiresAt         time.Time
+	accessProofHash   string
+}
+
+type Metadata struct {
+	ID        string
+	Kind      string
+	AccessKDF KDFParams
+	SizeBytes int64
+	ExpiresAt time.Time
 }
 
 type Store struct {
@@ -110,6 +123,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 	if err != nil {
 		return Secret{}, fmt.Errorf("marshal kdf params: %w", err)
 	}
+	accessKDFJSON, err := json.Marshal(input.AccessKDF)
+	if err != nil {
+		return Secret{}, fmt.Errorf("marshal access kdf params: %w", err)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -119,9 +136,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 
 	_, err = tx.ExecContext(ctx, `insert into secrets (
 		id, kind, storage_backend, storage_key, nonce, kdf_algorithm, kdf_salt,
-		kdf_params_json, encrypted_filename, content_type, size_bytes, max_views,
+		kdf_params_json, access_kdf_params_json, access_proof_hash,
+		encrypted_filename, content_type, size_bytes, max_views,
 		view_count, expires_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 		id,
 		input.Kind,
 		StorageSQLite,
@@ -130,6 +148,8 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 		input.KDF.Algorithm,
 		input.KDF.Salt,
 		string(kdfJSON),
+		string(accessKDFJSON),
+		input.AccessProofHash,
 		input.EncryptedFilename,
 		input.ContentType,
 		input.SizeBytes,
@@ -159,6 +179,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 		Ciphertext:        append([]byte(nil), input.Ciphertext...),
 		Nonce:             input.Nonce,
 		KDF:               input.KDF,
+		AccessKDF:         input.AccessKDF,
 		EncryptedFilename: input.EncryptedFilename,
 		ContentType:       input.ContentType,
 		SizeBytes:         input.SizeBytes,
@@ -178,6 +199,55 @@ func (s *Store) Get(ctx context.Context, id string) (Secret, error) {
 		return Secret{}, ErrExpired
 	}
 	return secret, nil
+}
+
+func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
+	if id == "" {
+		return Metadata{}, ErrNotFound
+	}
+
+	var metadata Metadata
+	var accessKDFJSON sql.NullString
+	var expiresRaw string
+	var consumedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, `select
+			s.id, s.kind, s.access_kdf_params_json, s.size_bytes, s.expires_at, s.consumed_at
+		from secrets s
+		join secret_payloads p on p.secret_id = s.id
+		where s.id = ?`,
+		id,
+	).Scan(
+		&metadata.ID,
+		&metadata.Kind,
+		&accessKDFJSON,
+		&metadata.SizeBytes,
+		&expiresRaw,
+		&consumedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Metadata{}, ErrNotFound
+	}
+	if err != nil {
+		return Metadata{}, fmt.Errorf("load secret metadata: %w", err)
+	}
+	if consumedAt.Valid {
+		return Metadata{}, ErrConsumed
+	}
+	if !accessKDFJSON.Valid {
+		return Metadata{}, ErrInvalidInput
+	}
+	if err := json.Unmarshal([]byte(accessKDFJSON.String), &metadata.AccessKDF); err != nil {
+		return Metadata{}, fmt.Errorf("decode access kdf params: %w", err)
+	}
+	expiresAt, err := parseTime(expiresRaw)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("parse expires_at: %w", err)
+	}
+	metadata.ExpiresAt = expiresAt
+	if !s.now().UTC().Before(metadata.ExpiresAt) {
+		return Metadata{}, ErrExpired
+	}
+	return metadata, nil
 }
 
 func (s *Store) Consume(ctx context.Context, id string) error {
@@ -240,6 +310,51 @@ func (s *Store) MarkConsumedTx(ctx context.Context, tx *sql.Tx, id string) error
 	return nil
 }
 
+func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHash string) (Secret, error) {
+	if tx == nil {
+		return Secret{}, fmt.Errorf("transaction is required")
+	}
+	if accessProofHash == "" {
+		return Secret{}, ErrInvalidAccess
+	}
+
+	now := s.now().UTC()
+	secret, consumedAt, err := s.load(ctx, tx, id)
+	if err != nil {
+		return Secret{}, err
+	}
+	if consumedAt.Valid {
+		return Secret{}, ErrConsumed
+	}
+	if !now.Before(secret.ExpiresAt) {
+		return Secret{}, ErrExpired
+	}
+	if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
+		return Secret{}, ErrInvalidAccess
+	}
+
+	result, err := tx.ExecContext(ctx, `update secrets
+		set view_count = view_count + 1,
+			consumed_at = ?,
+			updated_at = ?
+		where id = ? and consumed_at is null`,
+		formatTime(now),
+		formatTime(now),
+		id,
+	)
+	if err != nil {
+		return Secret{}, fmt.Errorf("mark secret opened: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Secret{}, fmt.Errorf("read open row count: %w", err)
+	}
+	if affected != 1 {
+		return Secret{}, ErrConsumed
+	}
+	return secret, nil
+}
+
 func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
 	if id == "" {
 		return false, ErrNotFound
@@ -283,6 +398,8 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 
 	var secret Secret
 	var kdfJSON string
+	var accessKDFJSON sql.NullString
+	var accessProofHash sql.NullString
 	var encryptedFilename sql.NullString
 	var contentType sql.NullString
 	var expiresRaw string
@@ -290,6 +407,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 
 	err := q.QueryRowContext(ctx, `select
 			s.id, s.kind, p.ciphertext, s.nonce, s.kdf_params_json,
+			s.access_kdf_params_json, s.access_proof_hash,
 			s.encrypted_filename, s.content_type, s.size_bytes, s.expires_at,
 			s.consumed_at
 		from secrets s
@@ -302,6 +420,8 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 		&secret.Ciphertext,
 		&secret.Nonce,
 		&kdfJSON,
+		&accessKDFJSON,
+		&accessProofHash,
 		&encryptedFilename,
 		&contentType,
 		&secret.SizeBytes,
@@ -321,6 +441,13 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	if err := json.Unmarshal([]byte(kdfJSON), &secret.KDF); err != nil {
 		return Secret{}, sql.NullString{}, fmt.Errorf("decode kdf params: %w", err)
 	}
+	if !accessKDFJSON.Valid || !accessProofHash.Valid {
+		return Secret{}, sql.NullString{}, ErrInvalidInput
+	}
+	if err := json.Unmarshal([]byte(accessKDFJSON.String), &secret.AccessKDF); err != nil {
+		return Secret{}, sql.NullString{}, fmt.Errorf("decode access kdf params: %w", err)
+	}
+	secret.accessProofHash = accessProofHash.String
 	expiresAt, err := parseTime(expiresRaw)
 	if err != nil {
 		return Secret{}, sql.NullString{}, fmt.Errorf("parse expires_at: %w", err)
@@ -357,6 +484,12 @@ func (s *Store) validateCreate(input CreateInput) error {
 		return ErrUnsupportedViews
 	}
 	if input.KDF.Algorithm != KDFPBKDF2SHA256 || input.KDF.Salt == "" || input.KDF.Iterations < 600000 || input.KDF.KeyLengthBits != 256 {
+		return ErrInvalidInput
+	}
+	if input.AccessKDF.Algorithm != KDFPBKDF2SHA256 || input.AccessKDF.Salt == "" || input.AccessKDF.Iterations < 600000 || input.AccessKDF.KeyLengthBits != 256 {
+		return ErrInvalidInput
+	}
+	if input.AccessProofHash == "" {
 		return ErrInvalidInput
 	}
 	return nil

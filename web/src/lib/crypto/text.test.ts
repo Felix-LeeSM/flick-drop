@@ -4,7 +4,9 @@ import {
 	KDF_ALGORITHM,
 	KDF_ITERATIONS,
 	KEY_LENGTH_BITS,
+	createAccessVerifier,
 	decryptText,
+	deriveAccessProof,
 	encryptText
 } from './text';
 
@@ -36,6 +38,21 @@ describe('text encryption', () => {
 		});
 
 		await expect(decryptText(encrypted, 'wrong passphrase')).rejects.toThrow();
+	});
+
+	it('derives reproducible access proofs without including the passphrase', async () => {
+		expect.assertions(5);
+
+		const verifier = await createAccessVerifier('correct passphrase', {
+			salt: new Uint8Array(16).fill(7)
+		});
+		const proof = await deriveAccessProof('correct passphrase', verifier.kdf);
+
+		expect(verifier.proof).toBe(proof);
+		expect(verifier.proof).not.toContain('correct passphrase');
+		expect(verifier.kdf.salt).not.toContain('correct passphrase');
+		expect(verifier.kdf.iterations).toBe(KDF_ITERATIONS);
+		await expect(deriveAccessProof('wrong passphrase', verifier.kdf)).resolves.not.toBe(proof);
 	});
 
 	it('rejects weak KDF parameters', async () => {

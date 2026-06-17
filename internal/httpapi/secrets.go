@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ type createSecretRequest struct {
 	Ciphertext        string            `json:"ciphertext"`
 	Nonce             string            `json:"nonce"`
 	KDF               secrets.KDFParams `json:"kdf"`
+	Access            accessRequest     `json:"access"`
 	EncryptedFilename *string           `json:"encrypted_filename"`
 	ContentType       *string           `json:"content_type"`
 	SizeBytes         int64             `json:"size_bytes"`
@@ -36,7 +38,28 @@ type createSecretResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-type getSecretResponse struct {
+type accessRequest struct {
+	KDF   secrets.KDFParams `json:"kdf"`
+	Proof string            `json:"proof"`
+}
+
+type accessMetadataResponse struct {
+	KDF secrets.KDFParams `json:"kdf"`
+}
+
+type getSecretMetadataResponse struct {
+	ID        string                 `json:"id"`
+	Kind      string                 `json:"kind"`
+	Access    accessMetadataResponse `json:"access"`
+	SizeBytes int64                  `json:"size_bytes"`
+	ExpiresAt string                 `json:"expires_at"`
+}
+
+type openSecretRequest struct {
+	AccessProof string `json:"access_proof"`
+}
+
+type openSecretResponse struct {
 	ID                string            `json:"id"`
 	Kind              string            `json:"kind"`
 	Ciphertext        string            `json:"ciphertext"`
@@ -46,11 +69,6 @@ type getSecretResponse struct {
 	ContentType       *string           `json:"content_type,omitempty"`
 	SizeBytes         int64             `json:"size_bytes"`
 	ExpiresAt         string            `json:"expires_at"`
-}
-
-type consumeSecretResponse struct {
-	ID       string `json:"id"`
-	Consumed bool   `json:"consumed"`
 }
 
 type cleanupSecretRequest struct {
@@ -94,12 +112,19 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_ciphertext", "ciphertext must be base64 encoded")
 		return
 	}
+	accessProofHash, err := hashAccessProof(req.Access.Proof)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
+		return
+	}
 
 	created, err := s.secrets.Create(r.Context(), secrets.CreateInput{
 		Kind:              req.Kind,
 		Ciphertext:        ciphertext,
 		Nonce:             req.Nonce,
 		KDF:               req.KDF,
+		AccessKDF:         req.Access.KDF,
+		AccessProofHash:   accessProofHash,
 		EncryptedFilename: req.EncryptedFilename,
 		ContentType:       req.ContentType,
 		SizeBytes:         req.SizeBytes,
@@ -117,15 +142,64 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s Server) getSecret(w http.ResponseWriter, r *http.Request) {
+func (s Server) getSecretMetadata(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	secret, err := s.secrets.Get(r.Context(), id)
+	metadata, err := s.secrets.Metadata(r.Context(), id)
 	if err != nil {
 		s.writeSecretError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, getSecretResponse{
+	writeJSON(w, http.StatusOK, getSecretMetadataResponse{
+		ID:   metadata.ID,
+		Kind: metadata.Kind,
+		Access: accessMetadataResponse{
+			KDF: metadata.AccessKDF,
+		},
+		SizeBytes: metadata.SizeBytes,
+		ExpiresAt: metadata.ExpiresAt.Format(timeFormat),
+	})
+}
+
+func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")
+		return
+	}
+	defer r.Body.Close()
+
+	if hasSensitiveField(body) {
+		writeError(w, http.StatusBadRequest, "sensitive_field_forbidden", "passphrases, plaintext, and keys must not be sent to the API")
+		return
+	}
+
+	var req openSecretRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body does not match the open secret contract")
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON object")
+		return
+	}
+
+	accessProofHash, err := hashAccessProof(req.AccessProof)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
+		return
+	}
+
+	secret, err := s.openAndEnqueueCleanup(r.Context(), id, accessProofHash)
+	if err != nil {
+		s.writeOpenError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, openSecretResponse{
 		ID:                secret.ID,
 		Kind:              secret.Kind,
 		Ciphertext:        base64.StdEncoding.EncodeToString(secret.Ciphertext),
@@ -138,38 +212,26 @@ func (s Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s Server) consumeSecret(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := s.consumeAndEnqueueCleanup(r.Context(), id); err != nil {
-		s.writeConsumeError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusAccepted, consumeSecretResponse{
-		ID:       id,
-		Consumed: true,
-	})
-}
-
-func (s Server) consumeAndEnqueueCleanup(ctx context.Context, id string) error {
+func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProofHash string) (secrets.Secret, error) {
 	if s.outbox == nil {
-		return fmt.Errorf("outbox store is required")
+		return secrets.Secret{}, fmt.Errorf("outbox store is required")
 	}
 	jobID, err := s.newJobID()
 	if err != nil {
-		return err
+		return secrets.Secret{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin consume cleanup transaction: %w", err)
+		return secrets.Secret{}, fmt.Errorf("begin open cleanup transaction: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
 
-	if err := s.secrets.MarkConsumedTx(ctx, tx, id); err != nil {
-		return err
+	secret, err := s.secrets.OpenTx(ctx, tx, id, accessProofHash)
+	if err != nil {
+		return secrets.Secret{}, err
 	}
 	if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
 		JobID:       jobID,
@@ -178,12 +240,12 @@ func (s Server) consumeAndEnqueueCleanup(ctx context.Context, id string) error {
 		Reason:      events.ReasonConsumed,
 		RequestedAt: time.Now().UTC(),
 	}); err != nil {
-		return fmt.Errorf("enqueue consumed cleanup job: %w", err)
+		return secrets.Secret{}, fmt.Errorf("enqueue consumed cleanup job: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit consume cleanup transaction: %w", err)
+		return secrets.Secret{}, fmt.Errorf("commit open cleanup transaction: %w", err)
 	}
-	return nil
+	return secret, nil
 }
 
 func (s Server) cleanupSecret(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +299,15 @@ func (s Server) writeConsumeError(w http.ResponseWriter, err error) {
 	}
 }
 
+func (s Server) writeOpenError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, secrets.ErrInvalidAccess):
+		writeError(w, http.StatusForbidden, "invalid_access", "access proof is invalid")
+	default:
+		s.writeSecretError(w, err)
+	}
+}
+
 func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, secrets.ErrNotFound):
@@ -245,6 +316,8 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusGone, "consumed", "secret has already been consumed")
 	case errors.Is(err, secrets.ErrExpired):
 		writeError(w, http.StatusGone, "expired", "secret has expired")
+	case errors.Is(err, secrets.ErrInvalidAccess):
+		writeError(w, http.StatusForbidden, "invalid_access", "access proof is invalid")
 	case errors.Is(err, secrets.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload is too large")
 	case errors.Is(err, secrets.ErrUnsupportedKind):
@@ -256,6 +329,18 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "request failed")
 	}
+}
+
+func hashAccessProof(proof string) (string, error) {
+	if proof == "" {
+		return "", fmt.Errorf("access proof is required")
+	}
+	proofBytes, err := base64.StdEncoding.DecodeString(proof)
+	if err != nil || len(proofBytes) == 0 {
+		return "", fmt.Errorf("invalid access proof")
+	}
+	sum := sha256.Sum256(proofBytes)
+	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
 func hasSensitiveField(body []byte) bool {

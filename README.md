@@ -39,8 +39,10 @@ The server should never know the plaintext secret, passphrase, or derived key.
 
 The browser derives a key from the user-entered passphrase and encrypts the text
 or file before upload. The API stores ciphertext, nonce, KDF salt/parameters,
-size, content type, expiration metadata, and storage location. The passphrase and
-derived key never leave the browser.
+size, content type, expiration metadata, storage location, and a hash of a
+separate access proof. The passphrase and derived key never leave the browser.
+Ciphertext is returned only after the API verifies the access proof and marks
+the secret consumed in the same operation.
 
 This does not make BurnLink a password manager or long-term vault. It is an
 ephemeral delivery service: short-lived, one-time, and intentionally limited.

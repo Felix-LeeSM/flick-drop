@@ -1,5 +1,8 @@
 <script lang="ts">
-	import SecretWorkspace from '$lib/components/SecretWorkspace.svelte';
+	import OpenSecretPage from '$lib/components/OpenSecretPage.svelte';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
 </script>
 
-<SecretWorkspace />
+<OpenSecretPage secretID={data.secretID} />

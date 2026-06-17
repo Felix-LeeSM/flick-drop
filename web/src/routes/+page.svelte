@@ -1,5 +1,5 @@
 <script lang="ts">
-	import SecretWorkspace from '$lib/components/SecretWorkspace.svelte';
+	import CreateSecretPage from '$lib/components/CreateSecretPage.svelte';
 </script>
 
-<SecretWorkspace />
+<CreateSecretPage />
