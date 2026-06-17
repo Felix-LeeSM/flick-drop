@@ -104,7 +104,7 @@ paths:
         - $ref: "#/components/parameters/SecretId"
       responses:
         "202":
-          description: Secret consumed and cleanup job queued.
+          description: Secret consumed.
           content:
             application/json:
               schema:
