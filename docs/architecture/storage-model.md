@@ -31,6 +31,9 @@ file > 1 MiB: OCI Object Storage when enabled
 max file size: 25 MiB
 ```
 
+The local web flow accepts files only up to the SQLite inline threshold while
+OCI large-object storage is disabled.
+
 Filesystem storage is not a persistent backend. It is allowed only for temporary
 upload files, local scratch, and test fixtures.
 

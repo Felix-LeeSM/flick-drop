@@ -19,10 +19,29 @@ export type EncryptedTextPayload = {
 	size_bytes: number;
 };
 
+export type EncryptedFilePayload = EncryptedTextPayload & {
+	encrypted_filename: string;
+	content_type: string;
+};
+
 type EncryptOptions = {
 	salt?: Uint8Array;
 	nonce?: Uint8Array;
 	iterations?: number;
+};
+
+type EncryptFileOptions = EncryptOptions & {
+	filenameNonce?: Uint8Array;
+};
+
+type EncryptionContext = {
+	key: CryptoKey;
+	kdf: KdfParams;
+};
+
+type EncryptedMetadata = {
+	nonce: string;
+	ciphertext: string;
 };
 
 type AccessVerifierOptions = {
@@ -41,40 +60,153 @@ export async function encryptText(
 	options: EncryptOptions = {}
 ): Promise<EncryptedTextPayload> {
 	const plaintextBytes = new TextEncoder().encode(plaintext);
+	return encryptBytes(plaintextBytes, passphrase, options);
+}
+
+export async function decryptText(payload: EncryptedTextPayload, passphrase: string): Promise<string> {
+	const plaintext = await decryptBytes(payload, passphrase);
+	return new TextDecoder().decode(plaintext);
+}
+
+export async function encryptFile(
+	file: File,
+	passphrase: string,
+	options: EncryptFileOptions = {}
+): Promise<EncryptedFilePayload> {
+	const fileBytes = new Uint8Array(await file.arrayBuffer());
+	const context = await createEncryptionContext(passphrase, options);
+	const encryptedPayload = await encryptBytesWithContext(
+		fileBytes,
+		context,
+		options.nonce ?? randomBytes(NONCE_BYTES)
+	);
+	const encryptedFilename = await encryptMetadata(
+		file.name || 'burnlink-file',
+		context.key,
+		options.filenameNonce ?? randomBytes(NONCE_BYTES)
+	);
+
+	return {
+		...encryptedPayload,
+		encrypted_filename: JSON.stringify(encryptedFilename),
+		content_type: file.type || 'application/octet-stream'
+	};
+}
+
+export async function decryptFile(
+	payload: EncryptedFilePayload,
+	passphrase: string
+): Promise<{ bytes: Uint8Array; filename: string; contentType: string }> {
+	assertKdf(payload.kdf);
+
+	const salt = base64ToBytes(payload.kdf.salt);
+	const key = await deriveAesGcmKey(passphrase, salt, payload.kdf.iterations);
+	const bytes = await decryptBytesWithKey(payload, key);
+	const filename = await decryptMetadata(payload.encrypted_filename, key);
+
+	return {
+		bytes,
+		filename,
+		contentType: payload.content_type || 'application/octet-stream'
+	};
+}
+
+export async function encryptBytes(
+	plaintextBytes: Uint8Array,
+	passphrase: string,
+	options: EncryptOptions = {}
+): Promise<EncryptedTextPayload> {
+	const context = await createEncryptionContext(passphrase, options);
+	return encryptBytesWithContext(plaintextBytes, context, options.nonce ?? randomBytes(NONCE_BYTES));
+}
+
+export async function decryptBytes(
+	payload: EncryptedTextPayload,
+	passphrase: string
+): Promise<Uint8Array> {
+	assertKdf(payload.kdf);
+
+	const salt = base64ToBytes(payload.kdf.salt);
+	const key = await deriveAesGcmKey(passphrase, salt, payload.kdf.iterations);
+	return decryptBytesWithKey(payload, key);
+}
+
+async function createEncryptionContext(
+	passphrase: string,
+	options: EncryptOptions
+): Promise<EncryptionContext> {
 	const salt = options.salt ?? randomBytes(SALT_BYTES);
-	const nonce = options.nonce ?? randomBytes(NONCE_BYTES);
 	const iterations = options.iterations ?? KDF_ITERATIONS;
-	const key = await deriveAesGcmKey(passphrase, salt, iterations);
+
+	return {
+		key: await deriveAesGcmKey(passphrase, salt, iterations),
+		kdf: {
+			algorithm: KDF_ALGORITHM,
+			salt: bytesToBase64(salt),
+			iterations,
+			key_length_bits: KEY_LENGTH_BITS
+		}
+	};
+}
+
+async function encryptBytesWithContext(
+	plaintextBytes: Uint8Array,
+	context: EncryptionContext,
+	nonce: Uint8Array
+): Promise<EncryptedTextPayload> {
 	const ciphertext = await crypto.subtle.encrypt(
 		{ name: 'AES-GCM', iv: arrayBufferFrom(nonce) },
-		key,
+		context.key,
 		arrayBufferFrom(plaintextBytes)
 	);
 
 	return {
 		ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
 		nonce: bytesToBase64(nonce),
-		kdf: {
-			algorithm: KDF_ALGORITHM,
-			salt: bytesToBase64(salt),
-			iterations,
-			key_length_bits: KEY_LENGTH_BITS
-		},
+		kdf: context.kdf,
 		size_bytes: plaintextBytes.byteLength
 	};
 }
 
-export async function decryptText(payload: EncryptedTextPayload, passphrase: string): Promise<string> {
-	assertKdf(payload.kdf);
-
-	const salt = base64ToBytes(payload.kdf.salt);
+async function decryptBytesWithKey(payload: EncryptedTextPayload, key: CryptoKey): Promise<Uint8Array> {
 	const nonce = base64ToBytes(payload.nonce);
 	const ciphertext = base64ToBytes(payload.ciphertext);
-	const key = await deriveAesGcmKey(passphrase, salt, payload.kdf.iterations);
 	const plaintext = await crypto.subtle.decrypt(
 		{ name: 'AES-GCM', iv: arrayBufferFrom(nonce) },
 		key,
 		arrayBufferFrom(ciphertext)
+	);
+
+	return new Uint8Array(plaintext);
+}
+
+async function encryptMetadata(
+	value: string,
+	key: CryptoKey,
+	nonce: Uint8Array
+): Promise<EncryptedMetadata> {
+	const ciphertext = await crypto.subtle.encrypt(
+		{ name: 'AES-GCM', iv: arrayBufferFrom(nonce) },
+		key,
+		arrayBufferFrom(new TextEncoder().encode(value))
+	);
+
+	return {
+		nonce: bytesToBase64(nonce),
+		ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+	};
+}
+
+async function decryptMetadata(value: string, key: CryptoKey): Promise<string> {
+	if (value.length === 0) {
+		throw new Error('Encrypted filename is required');
+	}
+
+	const metadata = JSON.parse(value) as EncryptedMetadata;
+	const plaintext = await crypto.subtle.decrypt(
+		{ name: 'AES-GCM', iv: arrayBufferFrom(base64ToBytes(metadata.nonce)) },
+		key,
+		arrayBufferFrom(base64ToBytes(metadata.ciphertext))
 	);
 
 	return new TextDecoder().decode(plaintext);

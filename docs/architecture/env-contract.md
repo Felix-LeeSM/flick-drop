@@ -17,6 +17,7 @@ Local development:
 | `BURNLINK_LOG_LEVEL` | Log verbosity. |
 | `BURNLINK_PUBLIC_BASE_URL` | Public web origin. |
 | `PUBLIC_BURNLINK_API_BASE_URL` | Browser-safe API base URL embedded in the web build. |
+| `PUBLIC_BURNLINK_LOCAL_FILE_MAX_BYTES` | Browser-safe local file size limit for SQLite-backed file secrets. |
 | `BURNLINK_API_BASE_URL` | Public API origin. |
 | `BURNLINK_INTERNAL_TOKEN` | Shared token for internal worker to API calls. |
 | `BURNLINK_DATA_DIR` | Base directory for local runtime data. |

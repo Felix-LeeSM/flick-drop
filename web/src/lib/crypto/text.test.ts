@@ -5,8 +5,10 @@ import {
 	KDF_ITERATIONS,
 	KEY_LENGTH_BITS,
 	createAccessVerifier,
+	decryptFile,
 	decryptText,
 	deriveAccessProof,
+	encryptFile,
 	encryptText
 } from './text';
 
@@ -38,6 +40,28 @@ describe('text encryption', () => {
 		});
 
 		await expect(decryptText(encrypted, 'wrong passphrase')).rejects.toThrow();
+	});
+
+	it('round trips file bytes and encrypted filename metadata', async () => {
+		expect.assertions(8);
+
+		const file = new File(['hello file'], 'sample.txt', { type: 'text/plain' });
+		const encrypted = await encryptFile(file, 'correct passphrase', {
+			salt: new Uint8Array(16).fill(8),
+			nonce: new Uint8Array(12).fill(9),
+			filenameNonce: new Uint8Array(12).fill(10)
+		});
+
+		expect(encrypted.ciphertext).not.toContain('hello file');
+		expect(encrypted.encrypted_filename).not.toContain('sample.txt');
+		expect(encrypted).not.toHaveProperty('filename');
+		expect(encrypted).not.toHaveProperty('passphrase');
+		expect(encrypted.content_type).toBe('text/plain');
+		expect(encrypted.size_bytes).toBe(10);
+
+		const decrypted = await decryptFile(encrypted, 'correct passphrase');
+		expect(new TextDecoder().decode(decrypted.bytes)).toBe('hello file');
+		expect(decrypted.filename).toBe('sample.txt');
 	});
 
 	it('derives reproducible access proofs without including the passphrase', async () => {

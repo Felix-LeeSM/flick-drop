@@ -24,6 +24,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			size_bytes integer not null check (size_bytes >= 0),
 			max_views integer not null default 1 check (max_views > 0),
 			view_count integer not null default 0 check (view_count >= 0),
+			failed_access_count integer not null default 0 check (failed_access_count >= 0),
 			expires_at datetime not null,
 			consumed_at datetime,
 			created_at datetime not null,
@@ -63,6 +64,9 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(ctx, conn, "secrets", "access_proof_hash", "text"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, conn, "secrets", "failed_access_count", "integer not null default 0 check (failed_access_count >= 0)"); err != nil {
 		return err
 	}
 	return nil

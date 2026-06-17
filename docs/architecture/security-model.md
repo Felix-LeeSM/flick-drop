@@ -60,11 +60,14 @@ OCI Object Storage
 - Passphrases and derived keys must never be sent to the API.
 - Ciphertext payloads are returned only by a verified open operation that marks
   the secret consumed in the same transaction.
+- Five invalid access-proof attempts mark the secret consumed and remove the
+  stored ciphertext payload.
 - NATS messages must never contain plaintext, passphrases, derived keys, or
   ciphertext bodies.
 - Logs and metrics must not include plaintext, passphrases, derived keys, or
   full ciphertext bodies.
 - Filenames stored server-side must be encrypted or opaque.
+- File names are encrypted in the browser as metadata before upload.
 - Internal worker to API calls require `BURNLINK_INTERNAL_TOKEN`.
 - Public repository files must not contain real credentials or production
   configuration.

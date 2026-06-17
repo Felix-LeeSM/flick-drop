@@ -92,6 +92,7 @@ Browser tests should prove:
 3. recipient enters passphrase and first open decrypts
 4. second open is blocked
 5. expired secret is blocked
+6. local file secret upload decrypts to a downloadable file
 
 ## Contracts
 

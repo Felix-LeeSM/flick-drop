@@ -122,7 +122,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Access proof is invalid.
+          description: Access proof is invalid. The fifth invalid proof attempt removes the stored payload.
           content:
             application/json:
               schema:
@@ -230,11 +230,14 @@ components:
           $ref: "#/components/schemas/AccessVerifier"
         encrypted_filename:
           type: string
+          description: Required for file secrets. Browser-encrypted JSON envelope containing filename metadata.
         content_type:
           type: string
+          description: Media type for file download, or application/octet-stream.
         size_bytes:
           type: integer
           minimum: 0
+          description: Plain payload byte length before browser encryption.
         ttl_seconds:
           type: integer
           enum: [600, 3600, 86400]
@@ -327,8 +330,10 @@ components:
           $ref: "#/components/schemas/KdfParams"
         encrypted_filename:
           type: string
+          description: Browser-encrypted JSON envelope containing filename metadata.
         content_type:
           type: string
+          description: Media type for file download, or application/octet-stream.
         size_bytes:
           type: integer
           minimum: 0

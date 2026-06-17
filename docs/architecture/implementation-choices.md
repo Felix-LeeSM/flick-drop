@@ -114,4 +114,6 @@ the secret.
 
 The browser also derives a separate access proof with its own KDF salt. The API
 stores a hash of that proof and returns ciphertext only from an atomic verified
-open operation that marks the secret consumed.
+open operation that marks the secret consumed. Invalid proof attempts increment
+a server-side counter without storing passphrases or decrypt keys; the fifth
+failed attempt marks the secret consumed and removes its ciphertext payload.

@@ -75,6 +75,60 @@ func TestStoreCreateGetConsume(t *testing.T) {
 	}
 }
 
+func TestStoreCreateFileSecret(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	encryptedFilename := `{"nonce":"filename-nonce","ciphertext":"filename-ciphertext"}`
+	contentType := "text/plain"
+	created, err := store.Create(ctx, CreateInput{
+		Kind:       KindFile,
+		Ciphertext: []byte("encrypted-file-bytes"),
+		Nonce:      "nonce",
+		KDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash:   "proof-hash",
+		EncryptedFilename: &encryptedFilename,
+		ContentType:       &contentType,
+		SizeBytes:         20,
+		TTLSeconds:        600,
+		MaxViews:          1,
+	})
+	if err != nil {
+		t.Fatalf("create file secret: %v", err)
+	}
+
+	loaded, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get file secret: %v", err)
+	}
+	if loaded.Kind != KindFile {
+		t.Fatalf("kind = %q, want %q", loaded.Kind, KindFile)
+	}
+	if loaded.EncryptedFilename == nil || *loaded.EncryptedFilename != encryptedFilename {
+		t.Fatalf("encrypted filename = %v, want %q", loaded.EncryptedFilename, encryptedFilename)
+	}
+	if loaded.ContentType == nil || *loaded.ContentType != contentType {
+		t.Fatalf("content type = %v, want %q", loaded.ContentType, contentType)
+	}
+	if string(loaded.Ciphertext) != "encrypted-file-bytes" {
+		t.Fatalf("ciphertext = %q, want encrypted-file-bytes", string(loaded.Ciphertext))
+	}
+}
+
 func TestStoreCleanupDeletesPayload(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -286,6 +340,72 @@ func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
 	}
 }
 
+func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	created, err := store.Create(ctx, CreateInput{
+		Kind:       KindText,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		KDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
+	})
+	if err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+
+	for attempt := 1; attempt <= maxFailedAccessAttempts; attempt++ {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin wrong proof tx %d: %v", attempt, err)
+		}
+		if _, err := store.OpenTx(ctx, tx, created.ID, "wrong-proof-hash"); !errors.Is(err, ErrInvalidAccess) {
+			t.Fatalf("wrong proof open attempt %d error = %v, want ErrInvalidAccess", attempt, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit wrong proof tx %d: %v", attempt, err)
+		}
+
+		var failedAccessCount int
+		if err := conn.QueryRowContext(ctx, `select failed_access_count from secrets where id = ?`, created.ID).Scan(&failedAccessCount); err != nil {
+			t.Fatalf("load failed access count after attempt %d: %v", attempt, err)
+		}
+		if failedAccessCount != attempt {
+			t.Fatalf("failed access count after attempt %d = %d, want %d", attempt, failedAccessCount, attempt)
+		}
+	}
+
+	if _, err := store.Get(ctx, created.ID); !errors.Is(err, ErrConsumed) {
+		t.Fatalf("get after failed access limit error = %v, want ErrConsumed", err)
+	}
+
+	var payloadCount int
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+		t.Fatalf("count payloads after failed access limit: %v", err)
+	}
+	if payloadCount != 0 {
+		t.Fatalf("payload count after failed access limit = %d, want 0", payloadCount)
+	}
+}
+
 func TestStoreRejectsInvalidKDF(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, openTestDB(t, ctx))
@@ -298,6 +418,36 @@ func TestStoreRejectsInvalidKDF(t *testing.T) {
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "salt",
 			Iterations:    10,
+			KeyLengthBits: 256,
+		},
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("create error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestStoreRejectsFileWithoutEncryptedFilename(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, openTestDB(t, ctx))
+
+	_, err := store.Create(ctx, CreateInput{
+		Kind:       KindFile,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		KDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "salt",
+			Iterations:    600000,
 			KeyLengthBits: 256,
 		},
 		AccessKDF: KDFParams{

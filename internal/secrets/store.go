@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	KindText        = "text"
-	StorageSQLite   = "sqlite_blob"
-	KDFPBKDF2SHA256 = "PBKDF2-SHA-256"
+	KindText                = "text"
+	KindFile                = "file"
+	StorageSQLite           = "sqlite_blob"
+	KDFPBKDF2SHA256         = "PBKDF2-SHA-256"
+	maxFailedAccessAttempts = 5
 )
 
 type KDFParams struct {
@@ -330,6 +332,9 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, ErrExpired
 	}
 	if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
+		if err := s.recordFailedAccessTx(ctx, tx, id, now); err != nil {
+			return Secret{}, err
+		}
 		return Secret{}, ErrInvalidAccess
 	}
 
@@ -353,6 +358,44 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, ErrConsumed
 	}
 	return secret, nil
+}
+
+func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `update secrets
+		set failed_access_count = failed_access_count + 1,
+			consumed_at = case
+				when failed_access_count + 1 >= ? then ?
+				else consumed_at
+			end,
+			updated_at = ?
+		where id = ? and consumed_at is null`,
+		maxFailedAccessAttempts,
+		formatTime(now),
+		formatTime(now),
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("record failed secret access: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read failed access row count: %w", err)
+	}
+	if affected != 1 {
+		return ErrConsumed
+	}
+
+	var failedAccessCount int
+	var consumedAt sql.NullString
+	if err := tx.QueryRowContext(ctx, `select failed_access_count, consumed_at from secrets where id = ?`, id).Scan(&failedAccessCount, &consumedAt); err != nil {
+		return fmt.Errorf("load failed secret access count: %w", err)
+	}
+	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+			return fmt.Errorf("delete locked secret payload: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
@@ -404,12 +447,13 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	var contentType sql.NullString
 	var expiresRaw string
 	var consumedAt sql.NullString
+	var failedAccessCount int
 
 	err := q.QueryRowContext(ctx, `select
 			s.id, s.kind, p.ciphertext, s.nonce, s.kdf_params_json,
 			s.access_kdf_params_json, s.access_proof_hash,
 			s.encrypted_filename, s.content_type, s.size_bytes, s.expires_at,
-			s.consumed_at
+			s.consumed_at, s.failed_access_count
 		from secrets s
 		left join secret_payloads p on p.secret_id = s.id
 		where s.id = ?`,
@@ -427,6 +471,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 		&secret.SizeBytes,
 		&expiresRaw,
 		&consumedAt,
+		&failedAccessCount,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Secret{}, sql.NullString{}, ErrNotFound
@@ -465,7 +510,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 }
 
 func (s *Store) validateCreate(input CreateInput) error {
-	if input.Kind != KindText {
+	if input.Kind != KindText && input.Kind != KindFile {
 		return ErrUnsupportedKind
 	}
 	if len(input.Ciphertext) == 0 || input.Nonce == "" {
@@ -491,6 +536,11 @@ func (s *Store) validateCreate(input CreateInput) error {
 	}
 	if input.AccessProofHash == "" {
 		return ErrInvalidInput
+	}
+	if input.Kind == KindFile {
+		if input.EncryptedFilename == nil || *input.EncryptedFilename == "" {
+			return ErrInvalidInput
+		}
 	}
 	return nil
 }
