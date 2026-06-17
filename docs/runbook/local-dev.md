@@ -27,11 +27,30 @@ mise run nats-down
 
 NATS monitoring is exposed at `http://localhost:8222`.
 
+## API
+
+Run the API service:
+
+```sh
+go run ./cmd/burnlink-api
+```
+
+The service listens on `BURNLINK_API_ADDR` and uses `BURNLINK_API_DB_PATH`.
+Defaults come from `.mise.toml` and local overrides should live in
+`.env.local`.
+
+Check the process:
+
+```sh
+curl -fsS http://localhost:8080/healthz
+curl -fsS http://localhost:8080/readyz
+```
+
 ## Data
 
 Local runtime files are under `./var` by default and are ignored by git.
 
-Expected files once the application exists:
+Expected files:
 
 ```text
 var/api.db
