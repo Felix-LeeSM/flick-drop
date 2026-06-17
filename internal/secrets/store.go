@@ -14,6 +14,7 @@ import (
 
 const (
 	KindText        = "text"
+	KindFile        = "file"
 	StorageSQLite   = "sqlite_blob"
 	KDFPBKDF2SHA256 = "PBKDF2-SHA-256"
 )
@@ -465,7 +466,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 }
 
 func (s *Store) validateCreate(input CreateInput) error {
-	if input.Kind != KindText {
+	if input.Kind != KindText && input.Kind != KindFile {
 		return ErrUnsupportedKind
 	}
 	if len(input.Ciphertext) == 0 || input.Nonce == "" {
@@ -491,6 +492,11 @@ func (s *Store) validateCreate(input CreateInput) error {
 	}
 	if input.AccessProofHash == "" {
 		return ErrInvalidInput
+	}
+	if input.Kind == KindFile {
+		if input.EncryptedFilename == nil || *input.EncryptedFilename == "" {
+			return ErrInvalidInput
+		}
 	}
 	return nil
 }

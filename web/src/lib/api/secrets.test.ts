@@ -5,6 +5,7 @@ import {
 	KDF_ITERATIONS,
 	KEY_LENGTH_BITS,
 	type AccessVerifierPayload,
+	type EncryptedFilePayload,
 	type EncryptedTextPayload
 } from '$lib/crypto/text';
 import { createSecretAPIClient, createShareURL } from './secrets';
@@ -29,6 +30,12 @@ const accessVerifier: AccessVerifierPayload = {
 		key_length_bits: KEY_LENGTH_BITS
 	},
 	proof: 'proof-base64'
+};
+
+const encryptedFilePayload: EncryptedFilePayload = {
+	...encryptedPayload,
+	encrypted_filename: '{"nonce":"filename-nonce","ciphertext":"filename-ciphertext"}',
+	content_type: 'text/plain'
 };
 
 describe('secret API client', () => {
@@ -112,6 +119,45 @@ describe('secret API client', () => {
 		expect(body).toEqual({ access_proof: accessVerifier.proof });
 		expect(body).not.toHaveProperty('passphrase');
 		expect(body).not.toHaveProperty('derived_key');
+	});
+
+	it('creates file secrets without plaintext filename fields', async () => {
+		expect.assertions(9);
+
+		const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+			new Response(JSON.stringify({ id: 'file-secret-id', expires_at: '2026-06-17T01:00:00Z' }), {
+				status: 201,
+				headers: { 'Content-Type': 'application/json' }
+			})
+		);
+		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+
+		await expect(client.createFileSecret(encryptedFilePayload, 3600, accessVerifier)).resolves.toEqual({
+			id: 'file-secret-id',
+			expires_at: '2026-06-17T01:00:00Z'
+		});
+
+		const [url, init] = fetcher.mock.calls[0];
+		expect(url).toBe('http://api.local/api/secrets');
+		expect(init?.method).toBe('POST');
+
+		const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+		expect(body).toMatchObject({
+			kind: 'file',
+			ciphertext: encryptedFilePayload.ciphertext,
+			nonce: encryptedFilePayload.nonce,
+			encrypted_filename: encryptedFilePayload.encrypted_filename,
+			content_type: 'text/plain',
+			size_bytes: 16,
+			ttl_seconds: 3600,
+			max_views: 1,
+			access: accessVerifier
+		});
+		expect(body).not.toHaveProperty('filename');
+		expect(body).not.toHaveProperty('passphrase');
+		expect(body).not.toHaveProperty('plaintext');
+		expect(body).not.toHaveProperty('derived_key');
+		expect(body).not.toHaveProperty('key');
 	});
 
 	it('creates ID-only share URLs', () => {

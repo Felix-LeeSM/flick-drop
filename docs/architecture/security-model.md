@@ -65,6 +65,7 @@ OCI Object Storage
 - Logs and metrics must not include plaintext, passphrases, derived keys, or
   full ciphertext bodies.
 - Filenames stored server-side must be encrypted or opaque.
+- File names are encrypted in the browser as metadata before upload.
 - Internal worker to API calls require `BURNLINK_INTERNAL_TOKEN`.
 - Public repository files must not contain real credentials or production
   configuration.

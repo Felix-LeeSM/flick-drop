@@ -132,6 +132,74 @@ func TestSecretHTTPFlow(t *testing.T) {
 	}
 }
 
+func TestFileSecretHTTPFlow(t *testing.T) {
+	fixture := newTestRouterFixture(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		NewJobID: func() (string, error) {
+			return "job-file-consume-1", nil
+		},
+	})
+	router := fixture.router
+
+	createBody := validCreateSecretBody()
+	createBody["kind"] = "file"
+	createBody["ciphertext"] = base64.StdEncoding.EncodeToString([]byte("encrypted-file-bytes"))
+	createBody["encrypted_filename"] = `{"nonce":"filename-nonce","ciphertext":"filename-ciphertext"}`
+	createBody["content_type"] = "text/plain"
+	createBody["size_bytes"] = 20
+
+	createResp := performJSON(t, router, http.MethodPost, "/api/secrets", createBody)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create file status = %d, body = %s", createResp.Code, createResp.Body.String())
+	}
+	var created createSecretResponse
+	decodeBody(t, createResp, &created)
+
+	getResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("file metadata status = %d, body = %s", getResp.Code, getResp.Body.String())
+	}
+	metadataBody := getResp.Body.String()
+	for _, forbidden := range []string{"ciphertext", "encrypted_filename", "filename-ciphertext"} {
+		if strings.Contains(metadataBody, forbidden) {
+			t.Fatalf("file metadata response contains %q: %s", forbidden, metadataBody)
+		}
+	}
+	var metadata getSecretMetadataResponse
+	decodeBody(t, getResp, &metadata)
+	if metadata.Kind != secrets.KindFile {
+		t.Fatalf("metadata kind = %q, want %q", metadata.Kind, secrets.KindFile)
+	}
+
+	openResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if openResp.Code != http.StatusOK {
+		t.Fatalf("file open status = %d, body = %s", openResp.Code, openResp.Body.String())
+	}
+	var opened openSecretResponse
+	decodeBody(t, openResp, &opened)
+	if opened.Kind != secrets.KindFile {
+		t.Fatalf("opened kind = %q, want %q", opened.Kind, secrets.KindFile)
+	}
+	if opened.Ciphertext != createBody["ciphertext"] {
+		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
+	}
+	if opened.EncryptedFilename == nil || *opened.EncryptedFilename != createBody["encrypted_filename"] {
+		t.Fatalf("opened encrypted filename = %v, want %q", opened.EncryptedFilename, createBody["encrypted_filename"])
+	}
+	if opened.ContentType == nil || *opened.ContentType != "text/plain" {
+		t.Fatalf("opened content type = %v, want text/plain", opened.ContentType)
+	}
+
+	secondOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if secondOpenResp.Code != http.StatusGone {
+		t.Fatalf("second file open status = %d, body = %s", secondOpenResp.Code, secondOpenResp.Body.String())
+	}
+}
+
 func TestOpenRollsBackWhenOutboxEnqueueFails(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)

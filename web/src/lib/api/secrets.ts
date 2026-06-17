@@ -1,4 +1,9 @@
-import type { AccessVerifierPayload, EncryptedTextPayload, KdfParams } from '$lib/crypto/text';
+import type {
+	AccessVerifierPayload,
+	EncryptedFilePayload,
+	EncryptedTextPayload,
+	KdfParams
+} from '$lib/crypto/text';
 
 export const DEFAULT_API_BASE_URL =
 	import.meta.env.PUBLIC_BURNLINK_API_BASE_URL || 'http://localhost:8080';
@@ -10,15 +15,25 @@ export type CreateSecretResponse = {
 	expires_at: string;
 };
 
-export type GetSecretResponse = EncryptedTextPayload & {
+export type SecretKind = 'text' | 'file';
+
+export type GetTextSecretResponse = EncryptedTextPayload & {
 	id: string;
 	kind: 'text';
 	expires_at: string;
 };
 
+export type GetFileSecretResponse = EncryptedFilePayload & {
+	id: string;
+	kind: 'file';
+	expires_at: string;
+};
+
+export type GetSecretResponse = GetTextSecretResponse | GetFileSecretResponse;
+
 export type GetSecretMetadataResponse = {
 	id: string;
-	kind: 'text';
+	kind: SecretKind;
 	access: {
 		kdf: KdfParams;
 	};
@@ -29,6 +44,11 @@ export type GetSecretMetadataResponse = {
 export type SecretAPIClient = {
 	createTextSecret(
 		payload: EncryptedTextPayload,
+		ttlSeconds: TTLSeconds,
+		access: AccessVerifierPayload
+	): Promise<CreateSecretResponse>;
+	createFileSecret(
+		payload: EncryptedFilePayload,
 		ttlSeconds: TTLSeconds,
 		access: AccessVerifierPayload
 	): Promise<CreateSecretResponse>;
@@ -52,6 +72,27 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 				ciphertext: payload.ciphertext,
 				nonce: payload.nonce,
 				kdf: payload.kdf,
+				size_bytes: payload.size_bytes,
+				ttl_seconds: ttlSeconds,
+				max_views: 1,
+				access
+			};
+
+			return requestJSON<CreateSecretResponse>(fetcher, `${baseURL}/api/secrets`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+		},
+
+		async createFileSecret(payload, ttlSeconds, access) {
+			const body = {
+				kind: 'file',
+				ciphertext: payload.ciphertext,
+				nonce: payload.nonce,
+				kdf: payload.kdf,
+				encrypted_filename: payload.encrypted_filename,
+				content_type: payload.content_type,
 				size_bytes: payload.size_bytes,
 				ttl_seconds: ttlSeconds,
 				max_views: 1,

@@ -10,20 +10,20 @@ and removed.
 
 ## What It Does
 
-- Creates one-time links for encrypted text secrets and files.
+- Creates one-time links for encrypted text secrets and small encrypted files.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
 - Stores only ciphertext and metadata on the server side.
 - Derives encryption keys in the browser from a user-entered passphrase.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.
 - Supports local SQLite storage for small encrypted payloads.
-- Supports OCI Object Storage for larger encrypted files.
+- Plans OCI Object Storage support for larger encrypted files.
 
 Example links:
 
 ```text
 https://drop.example.com/s/abc123
-https://drop.example.com/f/xyz789
+https://drop.example.com/s/xyz789
 ```
 
 The link contains only a secret ID. The recipient must enter the passphrase in

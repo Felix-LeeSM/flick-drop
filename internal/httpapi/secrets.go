@@ -82,7 +82,7 @@ type cleanupSecretResponse struct {
 }
 
 func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
-	bodyLimit := s.secretsPayloadLimit() + createBodyOverheadLimit
+	bodyLimit := s.createSecretBodyLimit()
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")
@@ -321,7 +321,7 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 	case errors.Is(err, secrets.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload is too large")
 	case errors.Is(err, secrets.ErrUnsupportedKind):
-		writeError(w, http.StatusBadRequest, "unsupported_kind", "only text secrets are supported in this milestone slice")
+		writeError(w, http.StatusBadRequest, "unsupported_kind", "only text and file secrets are supported")
 	case errors.Is(err, secrets.ErrUnsupportedViews):
 		writeError(w, http.StatusBadRequest, "unsupported_max_views", "only one-time secrets are supported")
 	case errors.Is(err, secrets.ErrInvalidInput):
@@ -376,4 +376,10 @@ func normalizeMaxViews(value int) int {
 
 func (s Server) secretsPayloadLimit() int64 {
 	return s.payloadInlineMaxBytes
+}
+
+func (s Server) createSecretBodyLimit() int64 {
+	payloadLimit := s.secretsPayloadLimit()
+	base64PayloadLimit := ((payloadLimit + 2) / 3) * 4
+	return base64PayloadLimit + createBodyOverheadLimit
 }

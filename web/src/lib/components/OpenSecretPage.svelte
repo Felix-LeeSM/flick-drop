@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { createSecretAPIClient } from '$lib/api/secrets';
-	import { decryptText, deriveAccessProof, type EncryptedTextPayload } from '$lib/crypto/text';
+	import { createSecretAPIClient, type SecretKind } from '$lib/api/secrets';
+	import {
+		decryptFile,
+		decryptText,
+		deriveAccessProof,
+		type EncryptedFilePayload,
+		type EncryptedTextPayload
+	} from '$lib/crypto/text';
+	import { onDestroy } from 'svelte';
 	import { Alert, AlertDescription, AlertTitle } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
@@ -12,7 +19,9 @@
 	import {
 		CheckIcon,
 		CopyIcon,
+		DownloadIcon,
 		EyeIcon,
+		FileIcon,
 		KeyRoundIcon,
 		LockKeyholeIcon,
 		LockKeyholeOpenIcon
@@ -29,7 +38,11 @@
 	const api = createSecretAPIClient();
 
 	let passphrase = $state('');
+	let openedKind = $state<SecretKind | null>(null);
 	let decryptedText = $state('');
+	let downloadURL = $state('');
+	let downloadFilename = $state('');
+	let downloadSize = $state(0);
 	let status = $state('');
 	let statusKind = $state<StatusKind>('idle');
 	let isOpening = $state(false);
@@ -37,6 +50,10 @@
 	let copyState = $state<'idle' | 'copied'>('idle');
 
 	const canOpen = $derived(passphrase.length > 0 && !isOpening && !hasOpened);
+
+	onDestroy(() => {
+		revokeDownloadURL();
+	});
 
 	function submitOpen(event: SubmitEvent): void {
 		event.preventDefault();
@@ -56,14 +73,29 @@
 		statusKind = 'idle';
 		decryptedText = '';
 		copyState = 'idle';
+		revokeDownloadURL();
 
 		try {
 			const metadata = await api.getSecretMetadata(secretID);
 			const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
 			const payload = await api.openSecret(secretID, accessProof);
-			const plaintext = await decryptText(payload as EncryptedTextPayload, passphrase);
 
-			decryptedText = plaintext;
+			if (payload.kind === 'file') {
+				const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
+				const fileBuffer = file.bytes.buffer.slice(
+					file.bytes.byteOffset,
+					file.bytes.byteOffset + file.bytes.byteLength
+				) as ArrayBuffer;
+				const blob = new Blob([fileBuffer], { type: file.contentType });
+				downloadURL = URL.createObjectURL(blob);
+				downloadFilename = file.filename;
+				downloadSize = file.bytes.byteLength;
+				openedKind = 'file';
+			} else {
+				decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
+				openedKind = 'text';
+			}
+
 			passphrase = '';
 			hasOpened = true;
 			status = 'Opened';
@@ -90,6 +122,21 @@
 			statusKind = 'error';
 		}
 	}
+
+	function revokeDownloadURL(): void {
+		if (downloadURL.length > 0) {
+			URL.revokeObjectURL(downloadURL);
+		}
+		downloadURL = '';
+		downloadFilename = '';
+		downloadSize = 0;
+	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+		return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+	}
 </script>
 
 <svelte:head>
@@ -115,24 +162,26 @@
 			</nav>
 		</header>
 
-		<section class="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+		<section class="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
 			<Card.Card class="rounded-lg">
 				<Card.Header class="border-b">
 					<Card.Title class="text-xl">Open secret</Card.Title>
 				</Card.Header>
 				<Card.Content>
-					<form class="grid gap-5" onsubmit={submitOpen}>
-						<div class="grid gap-2">
-							<Label for="secret-id">Secret ID</Label>
-							<Input id="secret-id" value={secretID} readonly />
-						</div>
-
+					<form class="grid gap-5" autocomplete="off" onsubmit={submitOpen}>
 						<div class="grid gap-2">
 							<Label for="open-passphrase">Passphrase</Label>
 							<Input
 								id="open-passphrase"
-								type="password"
-								autocomplete="current-password"
+								name="burnlink-open-passphrase"
+								type="text"
+								class="passphrase-mask"
+								autocomplete="off"
+								autocapitalize="none"
+								spellcheck="false"
+								data-1p-ignore="true"
+								data-bwignore="true"
+								data-lpignore="true"
 								placeholder={hasOpened ? 'Already opened' : 'Required'}
 								bind:value={passphrase}
 								disabled={isOpening || hasOpened}
@@ -168,7 +217,7 @@
 				<Card.Header class="border-b">
 					<div class="flex items-start justify-between gap-3">
 						<Card.Title class="text-xl">Secret</Card.Title>
-						{#if hasOpened}
+						{#if hasOpened && openedKind === 'text'}
 							<Button
 								type="button"
 								variant="outline"
@@ -189,13 +238,34 @@
 					</div>
 				</Card.Header>
 				<Card.Content>
-					{#if hasOpened}
+					{#if hasOpened && openedKind === 'text'}
 						<Textarea
 							class="min-h-80 resize-y font-mono text-sm"
 							value={decryptedText}
 							readonly
 							aria-label="Decrypted secret"
 						/>
+					{:else if hasOpened && openedKind === 'file'}
+						<div class="grid min-h-80 place-items-center rounded-lg border border-border bg-muted/30 p-6 text-center">
+							<div class="grid max-w-sm justify-items-center gap-4">
+								<span class="inline-flex size-12 items-center justify-center rounded-md bg-background text-foreground shadow-xs">
+									<FileIcon class="size-6" />
+								</span>
+								<div class="grid gap-1">
+									<p class="break-all text-sm font-medium">{downloadFilename}</p>
+									<p class="text-sm text-muted-foreground">{formatBytes(downloadSize)}</p>
+								</div>
+								<a
+									class={buttonVariants({ variant: 'default' })}
+									href={downloadURL}
+									download={downloadFilename}
+									rel="external"
+								>
+									<DownloadIcon class="size-4" />
+									Download
+								</a>
+							</div>
+						</div>
 					{:else if statusKind === 'error'}
 						<Alert variant="destructive">
 							<AlertTitle>Not opened</AlertTitle>
@@ -214,3 +284,9 @@
 		</section>
 	</div>
 </main>
+
+<style>
+	.passphrase-mask {
+		-webkit-text-security: disc;
+	}
+</style>
