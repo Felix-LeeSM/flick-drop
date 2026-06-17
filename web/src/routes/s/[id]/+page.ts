@@ -4,6 +4,6 @@ export const prerender = false;
 
 export const load: PageLoad = ({ params }) => {
 	return {
-		secretID: params.id
+		secretId: params.id
 	};
 };

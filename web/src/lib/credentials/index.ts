@@ -1,4 +1,4 @@
-export * from './templates';
+export * from './build';
 export * from './schema';
 export * from './serialize';
-export * from './build';
+export * from './templates';

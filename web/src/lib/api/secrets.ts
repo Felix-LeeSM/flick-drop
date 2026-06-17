@@ -8,7 +8,7 @@ import type {
 export const DEFAULT_API_BASE_URL =
 	import.meta.env.PUBLIC_BURNLINK_API_BASE_URL || 'http://localhost:8080';
 
-export type TTLSeconds = 600 | 3600 | 86400;
+export type TtlSeconds = 600 | 3600 | 86400;
 
 export type CreateSecretResponse = {
 	id: string;
@@ -41,44 +41,44 @@ export type GetSecretMetadataResponse = {
 	expires_at: string;
 };
 
-export type SecretAPIClient = {
+export type SecretApiClient = {
 	createTextSecret(
 		payload: EncryptedTextPayload,
-		ttlSeconds: TTLSeconds,
+		ttlSeconds: TtlSeconds,
 		access: AccessVerifierPayload
 	): Promise<CreateSecretResponse>;
 	createFileSecret(
 		payload: EncryptedFilePayload,
-		ttlSeconds: TTLSeconds,
+		ttlSeconds: TtlSeconds,
 		access: AccessVerifierPayload
 	): Promise<CreateSecretResponse>;
 	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
 	openSecret(id: string, accessProof: string): Promise<GetSecretResponse>;
 };
 
-export class SecretAPIError extends Error {
+export class SecretApiError extends Error {
 	readonly code: string;
 	readonly status: number;
 
 	constructor(message: string, code: string, status: number) {
 		super(message);
-		this.name = 'SecretAPIError';
+		this.name = 'SecretApiError';
 		this.code = code;
 		this.status = status;
 	}
 }
 
 type ClientOptions = {
-	baseURL?: string;
+	baseUrl?: string;
 	fetcher?: typeof fetch;
 };
 
-export function createSecretAPIClient(options: ClientOptions = {}): SecretAPIClient {
-	const baseURL = normalizeBaseURL(options.baseURL ?? DEFAULT_API_BASE_URL);
+export function createSecretApiClient(options: ClientOptions = {}): SecretApiClient {
+	const baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_API_BASE_URL);
 	const fetcher = options.fetcher ?? fetch;
 
 	return {
-		async createTextSecret(payload, ttlSeconds, access) {
+		createTextSecret(payload, ttlSeconds, access) {
 			const body = {
 				kind: 'text',
 				ciphertext: payload.ciphertext,
@@ -90,14 +90,14 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 				access
 			};
 
-			return requestJSON<CreateSecretResponse>(fetcher, `${baseURL}/api/secrets`, {
+			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
 			});
 		},
 
-		async createFileSecret(payload, ttlSeconds, access) {
+		createFileSecret(payload, ttlSeconds, access) {
 			const body = {
 				kind: 'file',
 				ciphertext: payload.ciphertext,
@@ -111,7 +111,7 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 				access
 			};
 
-			return requestJSON<CreateSecretResponse>(fetcher, `${baseURL}/api/secrets`, {
+			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
@@ -119,16 +119,16 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 		},
 
 		getSecretMetadata(id) {
-			return requestJSON<GetSecretMetadataResponse>(
+			return requestJson<GetSecretMetadataResponse>(
 				fetcher,
-				`${baseURL}/api/secrets/${encodeURIComponent(id)}`
+				`${baseUrl}/api/secrets/${encodeURIComponent(id)}`
 			);
 		},
 
 		openSecret(id, accessProof) {
-			return requestJSON<GetSecretResponse>(
+			return requestJson<GetSecretResponse>(
 				fetcher,
-				`${baseURL}/api/secrets/${encodeURIComponent(id)}/open`,
+				`${baseUrl}/api/secrets/${encodeURIComponent(id)}/open`,
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
@@ -139,7 +139,7 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 	};
 }
 
-export function createShareURL(origin: string, id: string): string {
+export function createShareUrl(origin: string, id: string): string {
 	const url = new URL(origin);
 	url.pathname = `/s/${encodeURIComponent(id)}`;
 	url.search = '';
@@ -147,7 +147,7 @@ export function createShareURL(origin: string, id: string): string {
 	return url.toString();
 }
 
-async function requestJSON<T>(
+async function requestJson<T>(
 	fetcher: typeof fetch,
 	input: RequestInfo | URL,
 	init?: RequestInit
@@ -156,7 +156,7 @@ async function requestJSON<T>(
 	try {
 		response = await fetcher(input, init);
 	} catch {
-		throw new SecretAPIError(
+		throw new SecretApiError(
 			'Could not reach BurnLink. Check your connection and try again.',
 			'network_error',
 			0
@@ -165,7 +165,7 @@ async function requestJSON<T>(
 
 	if (!response.ok) {
 		const serverError = await readServerError(response);
-		throw new SecretAPIError(
+		throw new SecretApiError(
 			clientErrorMessage(serverError.code, response.status),
 			serverError.code,
 			response.status
@@ -208,6 +208,6 @@ function clientErrorMessage(code: string, status: number): string {
 	}
 }
 
-function normalizeBaseURL(value: string): string {
+function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, '');
 }

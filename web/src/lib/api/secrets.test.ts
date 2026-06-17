@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-	KDF_ALGORITHM,
-	KDF_ITERATIONS,
-	KEY_LENGTH_BITS,
 	type AccessVerifierPayload,
 	type EncryptedFilePayload,
-	type EncryptedTextPayload
+	type EncryptedTextPayload,
+	KDF_ALGORITHM,
+	KDF_ITERATIONS,
+	KEY_LENGTH_BITS
 } from '$lib/crypto/text';
-import { createSecretAPIClient, createShareURL, SecretAPIError } from './secrets';
+import { createSecretApiClient, createShareUrl, SecretApiError } from './secrets';
 
 const encryptedPayload: EncryptedTextPayload = {
 	ciphertext: 'ciphertext-base64',
@@ -48,7 +48,7 @@ describe('secret API client', () => {
 				headers: { 'Content-Type': 'application/json' }
 			})
 		);
-		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+		const client = createSecretApiClient({ baseUrl: 'http://api.local/', fetcher });
 
 		await expect(client.createTextSecret(encryptedPayload, 600, accessVerifier)).resolves.toEqual({
 			id: 'secret-id',
@@ -103,7 +103,7 @@ describe('secret API client', () => {
 					{ status: 200, headers: { 'Content-Type': 'application/json' } }
 				)
 			);
-		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+		const client = createSecretApiClient({ baseUrl: 'http://api.local/', fetcher });
 
 		await expect(client.getSecretMetadata('secret-id')).resolves.toMatchObject({
 			access: { kdf: accessVerifier.kdf }
@@ -130,9 +130,11 @@ describe('secret API client', () => {
 				headers: { 'Content-Type': 'application/json' }
 			})
 		);
-		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+		const client = createSecretApiClient({ baseUrl: 'http://api.local/', fetcher });
 
-		await expect(client.createFileSecret(encryptedFilePayload, 3600, accessVerifier)).resolves.toEqual({
+		await expect(
+			client.createFileSecret(encryptedFilePayload, 3600, accessVerifier)
+		).resolves.toEqual({
 			id: 'file-secret-id',
 			expires_at: '2026-06-17T01:00:00Z'
 		});
@@ -163,7 +165,7 @@ describe('secret API client', () => {
 	it('creates ID-only share URLs', () => {
 		expect.assertions(5);
 
-		const url = createShareURL('https://drop.example.com/app?x=1#frag', 'abc 123');
+		const url = createShareUrl('https://drop.example.com/app?x=1#frag', 'abc 123');
 
 		expect(url).toBe('https://drop.example.com/s/abc%20123');
 		expect(url).not.toContain('passphrase');
@@ -214,14 +216,14 @@ describe('secret API client', () => {
 					{ status: testCase.status, headers: { 'Content-Type': 'application/json' } }
 				)
 			);
-			const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+			const client = createSecretApiClient({ baseUrl: 'http://api.local/', fetcher });
 
 			await expect(client.createTextSecret(encryptedPayload, 600, accessVerifier)).rejects.toThrow(
 				testCase.expected
 			);
-			await expect(client.createTextSecret(encryptedPayload, 600, accessVerifier)).rejects.not.toThrow(
-				testCase.message
-			);
+			await expect(
+				client.createTextSecret(encryptedPayload, 600, accessVerifier)
+			).rejects.not.toThrow(testCase.message);
 		}
 	});
 
@@ -229,12 +231,12 @@ describe('secret API client', () => {
 		expect.assertions(3);
 
 		const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('Failed to fetch'));
-		const client = createSecretAPIClient({ baseURL: 'http://api.local/', fetcher });
+		const client = createSecretApiClient({ baseUrl: 'http://api.local/', fetcher });
 
 		await expect(client.getSecretMetadata('secret-id')).rejects.toThrow(
 			'Could not reach BurnLink. Check your connection and try again.'
 		);
-		await expect(client.getSecretMetadata('secret-id')).rejects.toBeInstanceOf(SecretAPIError);
+		await expect(client.getSecretMetadata('secret-id')).rejects.toBeInstanceOf(SecretApiError);
 		await expect(client.getSecretMetadata('secret-id')).rejects.not.toThrow('Failed to fetch');
 	});
 });

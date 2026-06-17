@@ -1,9 +1,5 @@
-import {
-	CREDENTIAL_VERSION,
-	type CredentialEnvelope,
-	type CredentialField
-} from './schema';
-import { getCredentialTemplate, type CredentialType } from './templates';
+import { CREDENTIAL_VERSION, type CredentialEnvelope, type CredentialField } from './schema';
+import { type CredentialType, getCredentialTemplate } from './templates';
 
 export type BuildEnvelopeOptions = {
 	title?: string;

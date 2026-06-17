@@ -1,0 +1,242 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": ["**", "!build", "!.svelte-kit", "!node_modules", "!coverage"]
+	},
+	"formatter": {
+		"enabled": true,
+		"formatWithErrors": false,
+		"indentStyle": "tab",
+		"lineWidth": 100
+	},
+	"assist": {
+		"enabled": true,
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"complexity": {
+				"noBannedTypes": "error",
+				"noExcessiveCognitiveComplexity": "error",
+				"noUselessFragments": "error"
+			},
+			"correctness": {
+				"noChildrenProp": "error",
+				"noConstAssign": "error",
+				"noConstantCondition": "error",
+				"noGlobalObjectCalls": "error",
+				"noInvalidBuiltinInstantiation": "error",
+				"noInvalidUseBeforeDeclaration": "error",
+				"noPrecisionLoss": "error",
+				"noRenderReturnValue": "error",
+				"noSelfAssign": "error",
+				"noSetterReturn": "error",
+				"noSwitchDeclarations": "error",
+				"noUndeclaredDependencies": "error",
+				"noUndeclaredVariables": "error",
+				"noUnreachable": "error",
+				"noUnreachableSuper": "error",
+				"noUnsafeFinally": "error",
+				"noUnsafeOptionalChaining": "error",
+				"noUnusedImports": "error",
+				"noUnusedLabels": "error",
+				"noUnusedPrivateClassMembers": "error",
+				"noUnusedVariables": "error",
+				"useHookAtTopLevel": "error",
+				"useIsNan": "error",
+				"useValidForDirection": "error",
+				"useYield": "error"
+			},
+			"security": {
+				"noDangerouslySetInnerHtml": "error",
+				"noGlobalEval": "error"
+			},
+			"style": {
+				"noCommonJs": "error",
+				"noDoneCallback": "error",
+				"noEnum": "error",
+				"noImplicitBoolean": "error",
+				"noInferrableTypes": "error",
+				"noNamespace": "error",
+				"noNegationElse": "error",
+				"noNonNullAssertion": "error",
+				"noParameterAssign": "error",
+				"noRestrictedGlobals": "error",
+				"noShoutyConstants": "error",
+				"noUnusedTemplateLiteral": "error",
+				"useAsConstAssertion": "error",
+				"useBlockStatements": "error",
+				"useCollapsedElseIf": "error",
+				"useConst": "error",
+				"useDefaultParameterLast": "error",
+				"useDefaultSwitchClause": "error",
+				"useEnumInitializers": "error",
+				"useExponentiationOperator": "error",
+				"useExportType": "error",
+				"useForOf": "error",
+				"useFragmentSyntax": "error",
+				"useImportType": "error",
+				"useLiteralEnumMembers": "error",
+				"useNamingConvention": "error",
+				"useNodejsImportProtocol": "error",
+				"useNumberNamespace": "error",
+				"useNumericSeparators": "error",
+				"useSelfClosingElements": "error",
+				"useShorthandAssign": "error",
+				"useShorthandFunctionType": "error",
+				"useSingleVarDeclarator": "error",
+				"useTemplate": "error"
+			},
+			"suspicious": {
+				"noApproximativeNumericConstant": "error",
+				"noArrayIndexKey": "error",
+				"noAssignInExpressions": "error",
+				"noAsyncPromiseExecutor": "error",
+				"noCatchAssign": "error",
+				"noClassAssign": "error",
+				"noCommentText": "error",
+				"noCompareNegZero": "error",
+				"noConfusingLabels": "error",
+				"noConsole": "error",
+				"noConstEnum": "error",
+				"noControlCharactersInRegex": "error",
+				"noDebugger": "error",
+				"noDoubleEquals": "error",
+				"noDuplicateAtImportRules": "error",
+				"noDuplicateCase": "error",
+				"noDuplicateClassMembers": "error",
+				"noDuplicateCustomProperties": "error",
+				"noDuplicateElseIf": "error",
+				"noDuplicateFields": "error",
+				"noDuplicateFontNames": "error",
+				"noDuplicateJsxProps": "error",
+				"noDuplicateObjectKeys": "error",
+				"noDuplicateParameters": "error",
+				"noDuplicateProperties": "error",
+				"noDuplicateSelectorsKeyframeBlock": "error",
+				"noEmptyBlockStatements": "error",
+				"noEmptyInterface": "error",
+				"noExplicitAny": "error",
+				"noExportsInTest": "error",
+				"noExtraNonNullAssertion": "error",
+				"noFallthroughSwitchClause": "error",
+				"noFocusedTests": "error",
+				"noFunctionAssign": "error",
+				"noGlobalAssign": "error",
+				"noImplicitAnyLet": "error",
+				"noImportAssign": "error",
+				"noLabelVar": "error",
+				"noMisleadingCharacterClass": "error",
+				"noMisleadingInstantiator": "error",
+				"noMisplacedAssertion": "error",
+				"noPrototypeBuiltins": "error",
+				"noRedeclare": "error",
+				"noSelfCompare": "error",
+				"noShadowRestrictedNames": "error",
+				"noSkippedTests": "error",
+				"noSparseArray": "error",
+				"noSuspiciousSemicolonInJsx": "error",
+				"noThenProperty": "error",
+				"noUnsafeDeclarationMerging": "error",
+				"noUnsafeNegation": "error",
+				"useAwait": "error",
+				"useDefaultSwitchClauseLast": "error",
+				"useGetterReturn": "error",
+				"useNamespaceKeyword": "error"
+			}
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "single",
+			"semicolons": "always",
+			"trailingCommas": "none"
+		}
+	},
+	"css": {
+		"parser": {
+			"tailwindDirectives": true
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["src/lib/api/**/*.ts", "src/lib/crypto/**/*.ts", "src/lib/credentials/**/*.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"useNamingConvention": {
+							"level": "error",
+							"options": {
+								"conventions": [
+									{
+										"selector": {
+											"kind": "typeParameter"
+										},
+										"formats": ["PascalCase"]
+									},
+									{
+										"selector": {
+											"kind": "objectLiteralMember"
+										},
+										"formats": ["camelCase", "snake_case"]
+									},
+									{
+										"selector": {
+											"kind": "typeMember"
+										},
+										"formats": ["camelCase", "snake_case"]
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"includes": ["src/app.d.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noNamespace": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["**/*.svelte"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedImports": "off",
+						"noUnusedVariables": "off"
+					},
+					"style": {
+						"useImportType": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["vite.config.ts", "svelte.config.js"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUndeclaredDependencies": "off"
+					}
+				}
+			}
+		}
+	]
+}

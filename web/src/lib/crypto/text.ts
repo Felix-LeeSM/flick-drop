@@ -54,7 +54,7 @@ export type AccessVerifierPayload = {
 	proof: string;
 };
 
-export async function encryptText(
+export function encryptText(
 	plaintext: string,
 	passphrase: string,
 	options: EncryptOptions = {}
@@ -63,7 +63,10 @@ export async function encryptText(
 	return encryptBytes(plaintextBytes, passphrase, options);
 }
 
-export async function decryptText(payload: EncryptedTextPayload, passphrase: string): Promise<string> {
+export async function decryptText(
+	payload: EncryptedTextPayload,
+	passphrase: string
+): Promise<string> {
 	const plaintext = await decryptBytes(payload, passphrase);
 	return new TextDecoder().decode(plaintext);
 }
@@ -117,7 +120,11 @@ export async function encryptBytes(
 	options: EncryptOptions = {}
 ): Promise<EncryptedTextPayload> {
 	const context = await createEncryptionContext(passphrase, options);
-	return encryptBytesWithContext(plaintextBytes, context, options.nonce ?? randomBytes(NONCE_BYTES));
+	return encryptBytesWithContext(
+		plaintextBytes,
+		context,
+		options.nonce ?? randomBytes(NONCE_BYTES)
+	);
 }
 
 export async function decryptBytes(
@@ -168,7 +175,10 @@ async function encryptBytesWithContext(
 	};
 }
 
-async function decryptBytesWithKey(payload: EncryptedTextPayload, key: CryptoKey): Promise<Uint8Array> {
+async function decryptBytesWithKey(
+	payload: EncryptedTextPayload,
+	key: CryptoKey
+): Promise<Uint8Array> {
 	const nonce = base64ToBytes(payload.nonce);
 	const ciphertext = base64ToBytes(payload.ciphertext);
 	const plaintext = await crypto.subtle.decrypt(
@@ -239,7 +249,7 @@ export async function deriveAccessProof(passphrase: string, kdf: KdfParams): Pro
 	assertKdf(kdf);
 
 	const salt = base64ToBytes(kdf.salt);
-	const proof = await derivePBKDF2Bits(accessVerifierMaterial(passphrase), salt, kdf.iterations);
+	const proof = await derivePbkdf2Bits(accessVerifierMaterial(passphrase), salt, kdf.iterations);
 	return bytesToBase64(proof);
 }
 
@@ -266,7 +276,7 @@ async function deriveAesGcmKey(
 		throw new Error('PBKDF2 iterations are below the minimum');
 	}
 
-	const passphraseKey = await importPBKDF2Material(new TextEncoder().encode(passphrase));
+	const passphraseKey = await importPbkdf2Material(new TextEncoder().encode(passphrase));
 
 	return crypto.subtle.deriveKey(
 		{
@@ -282,7 +292,7 @@ async function deriveAesGcmKey(
 	);
 }
 
-async function derivePBKDF2Bits(
+async function derivePbkdf2Bits(
 	material: Uint8Array,
 	salt: Uint8Array,
 	iterations: number
@@ -294,7 +304,7 @@ async function derivePBKDF2Bits(
 		throw new Error('PBKDF2 iterations are below the minimum');
 	}
 
-	const passphraseKey = await importPBKDF2Material(material);
+	const passphraseKey = await importPbkdf2Material(material);
 	const bits = await crypto.subtle.deriveBits(
 		{
 			name: 'PBKDF2',
@@ -308,7 +318,7 @@ async function derivePBKDF2Bits(
 	return new Uint8Array(bits);
 }
 
-async function importPBKDF2Material(material: Uint8Array): Promise<CryptoKey> {
+function importPbkdf2Material(material: Uint8Array): Promise<CryptoKey> {
 	return crypto.subtle.importKey('raw', arrayBufferFrom(material), 'PBKDF2', false, [
 		'deriveBits',
 		'deriveKey'
@@ -334,7 +344,7 @@ function randomBytes(length: number): Uint8Array {
 
 export function bytesToBase64(bytes: Uint8Array): string {
 	let binary = '';
-	const chunkSize = 0x8000;
+	const chunkSize = 0x80_00;
 	for (let index = 0; index < bytes.length; index += chunkSize) {
 		const chunk = bytes.subarray(index, index + chunkSize);
 		binary += String.fromCharCode(...chunk);

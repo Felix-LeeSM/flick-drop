@@ -145,7 +145,12 @@ describe('credential envelope builders', () => {
 
 		expect(first).not.toBe(envelope);
 		expect(envelope.fields).toEqual([]);
-		expect(first.fields[0]).toEqual({ id: 'custom-1', label: 'Field 1', value: 'visible', secret: false });
+		expect(first.fields[0]).toEqual({
+			id: 'custom-1',
+			label: 'Field 1',
+			value: 'visible',
+			secret: false
+		});
 		expect(second.fields[1]).toEqual({
 			id: 'custom-2',
 			label: 'API key',
