@@ -4,6 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/Felix-LeeSM/burn-links/internal/config"
 	"github.com/Felix-LeeSM/burn-links/internal/db"
@@ -13,7 +17,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -41,6 +46,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
 	}
+	natsConn, err := events.ConnectNATS(cfg.NATSURL)
+	if err != nil {
+		log.Fatalf("connect nats: %v", err)
+	}
+	defer natsConn.Close()
+
+	natsPublisher, err := events.NewNATSJetStreamPublisher(natsConn)
+	if err != nil {
+		log.Fatalf("create nats publisher: %v", err)
+	}
+	if err := natsPublisher.EnsureStream(ctx, cfg.NATSStream, cfg.NATSJobSubject); err != nil {
+		log.Fatalf("ensure nats stream: %v", err)
+	}
+	outboxPublisher, err := events.NewOutboxPublisher(outboxStore, natsPublisher, events.OutboxPublisherOptions{})
+	if err != nil {
+		log.Fatalf("create outbox publisher: %v", err)
+	}
 
 	server := &http.Server{
 		Addr: cfg.APIAddr,
@@ -52,8 +74,54 @@ func main() {
 		}),
 	}
 
-	log.Printf("burnlink-api listening on %s", cfg.APIAddr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("serve api: %v", err)
+	publisherErr := make(chan error, 1)
+	go func() {
+		log.Printf("burnlink-api publishing outbox subject %s to stream %s", cfg.NATSJobSubject, cfg.NATSStream)
+		publisherErr <- events.RunOutboxPublisher(ctx, outboxPublisher, events.OutboxPublisherLoopOptions{
+			Logf: log.Printf,
+		})
+	}()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("burnlink-api listening on %s", cfg.APIAddr)
+		serverErr <- server.ListenAndServe()
+	}()
+
+	serverDone := false
+	publisherDone := false
+	select {
+	case err := <-serverErr:
+		serverDone = true
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("serve api: %v", err)
+		}
+		stop()
+	case err := <-publisherErr:
+		publisherDone = true
+		if err != nil {
+			log.Fatalf("run outbox publisher: %v", err)
+		}
+		stop()
+	case <-ctx.Done():
 	}
+
+	if !serverDone {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown api server: %v", err)
+		}
+		cancel()
+
+		if err := <-serverErr; err != nil && err != http.ErrServerClosed {
+			log.Fatalf("serve api: %v", err)
+		}
+	}
+	if !publisherDone {
+		if err := <-publisherErr; err != nil {
+			log.Fatalf("run outbox publisher: %v", err)
+		}
+	}
+
+	log.Print("burnlink-api stopped")
 }
