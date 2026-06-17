@@ -30,6 +30,17 @@ stop API, worker, web, and any NATS instance started by the task.
 If you want to use a separately managed NATS instance, set
 `FLICK_DEV_SKIP_NATS=1` before running the task.
 
+## Container Images
+
+Build API, worker, and web images locally:
+
+```sh
+mise run images
+```
+
+See [Container Images](container-images.md) for image names, build arguments,
+and runtime defaults.
+
 ## NATS
 
 Start local NATS JetStream:

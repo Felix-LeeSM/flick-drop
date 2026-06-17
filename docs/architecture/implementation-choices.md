@@ -67,15 +67,22 @@ Rationale:
 
 ## Containers
 
-Initial preference:
+Current definitions:
 
 ```text
-api/worker: small Linux image, Alpine acceptable during early debugging
-web: static server image for SvelteKit build output
+api: Dockerfile.api, static Go binary on Alpine
+worker: Dockerfile.worker, static Go binary on Alpine
+web: web/Dockerfile, SvelteKit static output served by nginx
 ```
 
-The final runtime image can move toward distroless after the service shape and
-debugging needs settle.
+The Go images keep `CGO_ENABLED=0`, install only CA certificates and timezone
+data, run as a non-root `flick` user, and use `/data` for SQLite files. The web
+image builds with pinned pnpm through Corepack and serves the static adapter
+output on port 8080 as the unprivileged `nginx` user.
+
+The web image defaults `PUBLIC_FLICK_API_BASE_URL=/`, so Kubernetes can route
+API traffic through the same public origin. Deployments may override that build
+argument when a separate API origin is intentional.
 
 ## IDs
 

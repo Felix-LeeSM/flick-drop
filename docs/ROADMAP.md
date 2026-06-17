@@ -20,6 +20,7 @@ In scope:
 - Larger encrypted file storage in OCI Object Storage.
 - Worker cleanup for consumed and expired secrets.
 - `/healthz`, `/readyz`, `/metrics`.
+- Container image definitions for web, API, and worker.
 - Generic Kubernetes manifests.
 - Local NATS compose smoke test.
 
@@ -87,6 +88,7 @@ Out of scope:
 
 ### 6. Kubernetes Deployment
 
+- Web, API, and worker container images.
 - Generic manifests for web, API, worker, NATS, PVCs, Secret, ConfigMap, and
   Ingress.
 - k3d smoke test.

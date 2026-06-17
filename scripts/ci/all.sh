@@ -7,3 +7,4 @@ scripts/ci/env-contract.sh
 scripts/ci/contracts.sh
 scripts/ci/go.sh
 scripts/ci/web.sh
+scripts/ci/images.sh

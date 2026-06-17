@@ -12,6 +12,7 @@ PR checks
   contracts
   Go checks
   web checks
+  container image builds
   NATS compose smoke
 
 manual/nightly checks
@@ -23,12 +24,14 @@ manual/nightly checks
 
 ```sh
 mise run check
+mise run images
 mise run smoke-nats
 mise run smoke-k3d
 ```
 
-The scripts are scaffold-aware. Missing Go or web components produce an explicit
-skip message until those parts are initialized.
+The `check` task includes shell, repo-structure, env-contract, contract, Go, web,
+and local container image checks. The image check skips only when Docker is not
+available locally; CI treats a missing Docker daemon as a failure.
 
 ## GitHub Repository Policy
 

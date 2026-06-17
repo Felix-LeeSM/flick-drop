@@ -38,6 +38,10 @@ run = "mise current && mise env --redacted"
 description = "Run local CI checks"
 run = "scripts/ci/all.sh"
 
+[tasks.images]
+description = "Build local container images"
+run = "scripts/ci/images.sh"
+
 [tasks.dev]
 description = "Start local NATS, API, worker, and web dev servers"
 run = "scripts/dev/up.sh"

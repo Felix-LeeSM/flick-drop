@@ -133,6 +133,12 @@ Run the NATS smoke test:
 mise run smoke-nats
 ```
 
+Build the local container images:
+
+```sh
+mise run images
+```
+
 The scripts are scaffold-aware: Go and SvelteKit checks skip until their
 respective code is initialized.
 
@@ -148,4 +154,6 @@ respective code is initialized.
 - [Environment contract](docs/architecture/env-contract.md)
 - [CI and testing](docs/architecture/ci-testing.md)
 - [Agent workflow](docs/architecture/agent-workflow.md)
+- [Container images](docs/runbook/container-images.md)
+- [Local development](docs/runbook/local-dev.md)
 - [Roadmap](docs/ROADMAP.md)

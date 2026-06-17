@@ -14,6 +14,7 @@ require_file() {
 
 for guide in \
   AGENTS.md \
+  .dockerignore \
   .agents/AGENTS.md \
   .agents/skills/pr-review/SKILL.md \
   .github/AGENTS.md \
@@ -26,11 +27,18 @@ for guide in \
   contracts/AGENTS.md \
   deploy/AGENTS.md \
   docs/AGENTS.md \
+  docs/runbook/container-images.md \
+  Dockerfile.api \
+  Dockerfile.worker \
   internal/AGENTS.md \
   scripts/ci/review-gate.sh \
+  scripts/ci/images.sh \
   scripts/AGENTS.md \
   tests/AGENTS.md \
-  web/AGENTS.md; do
+  web/.dockerignore \
+  web/AGENTS.md \
+  web/Dockerfile \
+  web/nginx.conf; do
   require_file "$guide"
 done
 
