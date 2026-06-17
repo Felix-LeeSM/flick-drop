@@ -37,6 +37,10 @@ run = "mise current && mise env --redacted"
 description = "Run local CI checks"
 run = "scripts/ci/all.sh"
 
+[tasks.dev]
+description = "Start local NATS, API, worker, and web dev servers"
+run = "scripts/dev/up.sh"
+
 [tasks.smoke-nats]
 description = "Run the local NATS JetStream smoke test"
 run = "scripts/ci/compose-nats-smoke.sh"

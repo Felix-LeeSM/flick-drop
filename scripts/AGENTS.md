@@ -3,10 +3,13 @@
 Scripts are the shared local and CI entrypoints.
 
 - `scripts/ci/*`: deterministic checks used by GitHub Actions and `mise run`.
+- `scripts/dev/*`: local multi-process development entrypoints.
 - `scripts/smoke/*`: scenario checks against running services.
 
-Scripts should be safe to run before the app is fully scaffolded. If a component
-does not exist yet, print a clear skip message and exit successfully.
+CI and smoke scripts should be safe to run before the app is fully scaffolded.
+If a component does not exist yet, print a clear skip message and exit
+successfully. Dev scripts may fail fast when required local tools or runtime
+ports are unavailable.
 
 `scripts/ci/repo-structure.sh` owns static enforcement for directory rules that
 can be checked without running the application.

@@ -11,6 +11,25 @@ cp .env.example .env.local
 Edit `.env.local` for local-only secrets such as `BURNLINK_INTERNAL_TOKEN` and
 OCI development bucket settings.
 
+## Full Stack
+
+Start NATS, API, worker, and the SvelteKit dev server together:
+
+```sh
+mise run dev
+```
+
+The web UI is available at `http://localhost:5173`, the API at
+`http://localhost:8080`, and the NATS monitor at `http://localhost:8222`.
+
+The dev task reuses an already-running local NATS monitor when
+`http://127.0.0.1:8222/varz` is reachable. Otherwise it starts NATS with Docker
+Compose and stops that Compose project when the task exits. Press `Ctrl-C` to
+stop API, worker, web, and any NATS instance started by the task.
+
+If you want to use a separately managed NATS instance, set
+`BURNLINK_DEV_SKIP_NATS=1` before running the task.
+
 ## NATS
 
 Start local NATS JetStream:

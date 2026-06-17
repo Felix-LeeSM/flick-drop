@@ -110,6 +110,12 @@ direnv allow
 Local environment values live in `.env.local`, loaded by `.envrc`. Do not commit
 real credentials. Use `.env.example` as the public contract.
 
+Start the full local development stack:
+
+```sh
+mise run dev
+```
+
 ## Checks
 
 Run the local CI entrypoint:
