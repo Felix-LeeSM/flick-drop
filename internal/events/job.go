@@ -70,6 +70,10 @@ func (e JobEvent) JSON() ([]byte, error) {
 	return payload, nil
 }
 
+func DecodeJobEvent(raw []byte) (JobEvent, error) {
+	return decodeJobEvent(string(raw))
+}
+
 func validReason(reason string) bool {
 	switch reason {
 	case ReasonConsumed, ReasonExpired, ReasonOrphan, ReasonManual, ReasonRetry:
