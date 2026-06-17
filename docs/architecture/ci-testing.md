@@ -68,7 +68,7 @@ comments, and label-after-review ordering.
 Expected coverage:
 
 - `internal/config`: env parsing and validation.
-- `internal/secrets`: secret lifecycle and consume invariants.
+- `internal/secrets`: secret lifecycle and verified open invariants.
 - `internal/storage`: SQLite BLOB threshold and OCI routing behavior.
 - `internal/events`: NATS payload validation and outbox publish behavior.
 - `internal/worker`: idempotent job execution and retry decisions.
@@ -82,8 +82,8 @@ Expected coverage:
 
 - passphrase input and KDF parameter handling.
 - Web Crypto encrypt/decrypt helpers.
-- upload and consume UI state.
-- API client behavior with ciphertext-only payloads.
+- upload and verified open UI state.
+- API client behavior with metadata lookup and proof-gated payload return.
 
 Browser tests should prove:
 

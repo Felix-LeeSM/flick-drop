@@ -1,4 +1,4 @@
-import type { EncryptedTextPayload } from '$lib/crypto/text';
+import type { AccessVerifierPayload, EncryptedTextPayload, KdfParams } from '$lib/crypto/text';
 
 export const DEFAULT_API_BASE_URL =
 	import.meta.env.PUBLIC_BURNLINK_API_BASE_URL || 'http://localhost:8080';
@@ -16,15 +16,24 @@ export type GetSecretResponse = EncryptedTextPayload & {
 	expires_at: string;
 };
 
-export type ConsumeSecretResponse = {
+export type GetSecretMetadataResponse = {
 	id: string;
-	consumed: boolean;
+	kind: 'text';
+	access: {
+		kdf: KdfParams;
+	};
+	size_bytes: number;
+	expires_at: string;
 };
 
 export type SecretAPIClient = {
-	createTextSecret(payload: EncryptedTextPayload, ttlSeconds: TTLSeconds): Promise<CreateSecretResponse>;
-	getSecret(id: string): Promise<GetSecretResponse>;
-	consumeSecret(id: string): Promise<ConsumeSecretResponse>;
+	createTextSecret(
+		payload: EncryptedTextPayload,
+		ttlSeconds: TTLSeconds,
+		access: AccessVerifierPayload
+	): Promise<CreateSecretResponse>;
+	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
+	openSecret(id: string, accessProof: string): Promise<GetSecretResponse>;
 };
 
 type ClientOptions = {
@@ -37,7 +46,7 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 	const fetcher = options.fetcher ?? fetch;
 
 	return {
-		async createTextSecret(payload, ttlSeconds) {
+		async createTextSecret(payload, ttlSeconds, access) {
 			const body = {
 				kind: 'text',
 				ciphertext: payload.ciphertext,
@@ -45,7 +54,8 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 				kdf: payload.kdf,
 				size_bytes: payload.size_bytes,
 				ttl_seconds: ttlSeconds,
-				max_views: 1
+				max_views: 1,
+				access
 			};
 
 			return requestJSON<CreateSecretResponse>(fetcher, `${baseURL}/api/secrets`, {
@@ -55,14 +65,23 @@ export function createSecretAPIClient(options: ClientOptions = {}): SecretAPICli
 			});
 		},
 
-		getSecret(id) {
-			return requestJSON<GetSecretResponse>(fetcher, `${baseURL}/api/secrets/${encodeURIComponent(id)}`);
+		getSecretMetadata(id) {
+			return requestJSON<GetSecretMetadataResponse>(
+				fetcher,
+				`${baseURL}/api/secrets/${encodeURIComponent(id)}`
+			);
 		},
 
-		consumeSecret(id) {
-			return requestJSON<ConsumeSecretResponse>(fetcher, `${baseURL}/api/secrets/${encodeURIComponent(id)}/consume`, {
-				method: 'POST'
-			});
+		openSecret(id, accessProof) {
+			return requestJSON<GetSecretResponse>(
+				fetcher,
+				`${baseURL}/api/secrets/${encodeURIComponent(id)}/open`,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ access_proof: accessProof })
+				}
+			);
 		}
 	};
 }

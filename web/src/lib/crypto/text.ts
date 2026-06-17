@@ -3,6 +3,7 @@ export const KDF_ITERATIONS = 600_000;
 export const KEY_LENGTH_BITS = 256;
 export const SALT_BYTES = 16;
 export const NONCE_BYTES = 12;
+export const ACCESS_VERIFIER_PURPOSE = 'BurnLink access verifier v1';
 
 export type KdfParams = {
 	algorithm: typeof KDF_ALGORITHM;
@@ -22,6 +23,16 @@ type EncryptOptions = {
 	salt?: Uint8Array;
 	nonce?: Uint8Array;
 	iterations?: number;
+};
+
+type AccessVerifierOptions = {
+	salt?: Uint8Array;
+	iterations?: number;
+};
+
+export type AccessVerifierPayload = {
+	kdf: KdfParams;
+	proof: string;
 };
 
 export async function encryptText(
@@ -69,6 +80,37 @@ export async function decryptText(payload: EncryptedTextPayload, passphrase: str
 	return new TextDecoder().decode(plaintext);
 }
 
+export async function createAccessVerifier(
+	passphrase: string,
+	options: AccessVerifierOptions = {}
+): Promise<AccessVerifierPayload> {
+	const salt = options.salt ?? randomBytes(SALT_BYTES);
+	const iterations = options.iterations ?? KDF_ITERATIONS;
+
+	return {
+		kdf: {
+			algorithm: KDF_ALGORITHM,
+			salt: bytesToBase64(salt),
+			iterations,
+			key_length_bits: KEY_LENGTH_BITS
+		},
+		proof: await deriveAccessProof(passphrase, {
+			algorithm: KDF_ALGORITHM,
+			salt: bytesToBase64(salt),
+			iterations,
+			key_length_bits: KEY_LENGTH_BITS
+		})
+	};
+}
+
+export async function deriveAccessProof(passphrase: string, kdf: KdfParams): Promise<string> {
+	assertKdf(kdf);
+
+	const salt = base64ToBytes(kdf.salt);
+	const proof = await derivePBKDF2Bits(accessVerifierMaterial(passphrase), salt, kdf.iterations);
+	return bytesToBase64(proof);
+}
+
 export function assertKdf(kdf: KdfParams): void {
 	if (
 		kdf.algorithm !== KDF_ALGORITHM ||
@@ -92,13 +134,7 @@ async function deriveAesGcmKey(
 		throw new Error('PBKDF2 iterations are below the minimum');
 	}
 
-	const passphraseKey = await crypto.subtle.importKey(
-		'raw',
-		arrayBufferFrom(new TextEncoder().encode(passphrase)),
-		'PBKDF2',
-		false,
-		['deriveKey']
-	);
+	const passphraseKey = await importPBKDF2Material(new TextEncoder().encode(passphrase));
 
 	return crypto.subtle.deriveKey(
 		{
@@ -112,6 +148,46 @@ async function deriveAesGcmKey(
 		false,
 		['encrypt', 'decrypt']
 	);
+}
+
+async function derivePBKDF2Bits(
+	material: Uint8Array,
+	salt: Uint8Array,
+	iterations: number
+): Promise<Uint8Array> {
+	if (material.byteLength === 0) {
+		throw new Error('Passphrase is required');
+	}
+	if (iterations < KDF_ITERATIONS) {
+		throw new Error('PBKDF2 iterations are below the minimum');
+	}
+
+	const passphraseKey = await importPBKDF2Material(material);
+	const bits = await crypto.subtle.deriveBits(
+		{
+			name: 'PBKDF2',
+			hash: 'SHA-256',
+			salt: arrayBufferFrom(salt),
+			iterations
+		},
+		passphraseKey,
+		KEY_LENGTH_BITS
+	);
+	return new Uint8Array(bits);
+}
+
+async function importPBKDF2Material(material: Uint8Array): Promise<CryptoKey> {
+	return crypto.subtle.importKey('raw', arrayBufferFrom(material), 'PBKDF2', false, [
+		'deriveBits',
+		'deriveKey'
+	]);
+}
+
+function accessVerifierMaterial(passphrase: string): Uint8Array {
+	if (passphrase.length === 0) {
+		throw new Error('Passphrase is required');
+	}
+	return new TextEncoder().encode(`${ACCESS_VERIFIER_PURPOSE}\0${passphrase}`);
 }
 
 function arrayBufferFrom(bytes: Uint8Array): ArrayBuffer {

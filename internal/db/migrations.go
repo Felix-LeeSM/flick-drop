@@ -17,6 +17,8 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			kdf_algorithm text not null,
 			kdf_salt text not null,
 			kdf_params_json text not null,
+			access_kdf_params_json text,
+			access_proof_hash text,
 			encrypted_filename text,
 			content_type text,
 			size_bytes integer not null check (size_bytes >= 0),
@@ -56,6 +58,43 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply api migration: %w", err)
 		}
+	}
+	if err := ensureColumn(ctx, conn, "secrets", "access_kdf_params_json", "text"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, conn, "secrets", "access_proof_hash", "text"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureColumn(ctx context.Context, conn *sql.DB, table, column, definition string) error {
+	rows, err := conn.QueryContext(ctx, "pragma table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan %s column info: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s column info: %w", table, err)
+	}
+
+	if _, err := conn.ExecContext(ctx, "alter table "+table+" add column "+column+" "+definition); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }

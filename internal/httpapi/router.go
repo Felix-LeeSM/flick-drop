@@ -56,8 +56,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/readyz", server.readyz)
 	r.Get("/metrics", server.metrics)
 	r.Post("/api/secrets", server.createSecret)
-	r.Get("/api/secrets/{id}", server.getSecret)
-	r.Post("/api/secrets/{id}/consume", server.consumeSecret)
+	r.Get("/api/secrets/{id}", server.getSecretMetadata)
+	r.Post("/api/secrets/{id}/open", server.openSecret)
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
 		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)

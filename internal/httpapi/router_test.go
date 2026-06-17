@@ -37,6 +37,15 @@ func TestSecretHTTPFlow(t *testing.T) {
 			"iterations":      600000,
 			"key_length_bits": 256,
 		},
+		"access": map[string]any{
+			"kdf": map[string]any{
+				"algorithm":       secrets.KDFPBKDF2SHA256,
+				"salt":            "access-salt",
+				"iterations":      600000,
+				"key_length_bits": 256,
+			},
+			"proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+		},
 		"size_bytes":  10,
 		"ttl_seconds": 600,
 	}
@@ -53,17 +62,35 @@ func TestSecretHTTPFlow(t *testing.T) {
 
 	getResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
 	if getResp.Code != http.StatusOK {
-		t.Fatalf("get status = %d, body = %s", getResp.Code, getResp.Body.String())
+		t.Fatalf("metadata status = %d, body = %s", getResp.Code, getResp.Body.String())
 	}
-	var got getSecretResponse
+	metadataBody := getResp.Body.String()
+	if strings.Contains(metadataBody, "ciphertext") {
+		t.Fatalf("metadata response contains ciphertext: %s", metadataBody)
+	}
+	var got getSecretMetadataResponse
 	decodeBody(t, getResp, &got)
-	if got.Ciphertext != createBody["ciphertext"] {
-		t.Fatalf("ciphertext = %q, want %q", got.Ciphertext, createBody["ciphertext"])
+	if got.Access.KDF.Salt != "access-salt" {
+		t.Fatalf("access salt = %q, want access-salt", got.Access.KDF.Salt)
 	}
 
-	consumeResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/consume", nil)
-	if consumeResp.Code != http.StatusAccepted {
-		t.Fatalf("consume status = %d, body = %s", consumeResp.Code, consumeResp.Body.String())
+	wrongOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("wrong-proof")),
+	})
+	if wrongOpenResp.Code != http.StatusForbidden {
+		t.Fatalf("wrong open status = %d, body = %s", wrongOpenResp.Code, wrongOpenResp.Body.String())
+	}
+
+	openResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if openResp.Code != http.StatusOK {
+		t.Fatalf("open status = %d, body = %s", openResp.Code, openResp.Body.String())
+	}
+	var opened openSecretResponse
+	decodeBody(t, openResp, &opened)
+	if opened.Ciphertext != createBody["ciphertext"] {
+		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
 	}
 	due, err := fixture.outbox.ListDue(context.Background(), time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
 	if err != nil {
@@ -94,16 +121,18 @@ func TestSecretHTTPFlow(t *testing.T) {
 
 	secondGetResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
 	if secondGetResp.Code != http.StatusGone {
-		t.Fatalf("second get status = %d, body = %s", secondGetResp.Code, secondGetResp.Body.String())
+		t.Fatalf("second metadata status = %d, body = %s", secondGetResp.Code, secondGetResp.Body.String())
 	}
 
-	secondConsumeResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/consume", nil)
-	if secondConsumeResp.Code != http.StatusConflict {
-		t.Fatalf("second consume status = %d, body = %s", secondConsumeResp.Code, secondConsumeResp.Body.String())
+	secondOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if secondOpenResp.Code != http.StatusGone {
+		t.Fatalf("second open status = %d, body = %s", secondOpenResp.Code, secondOpenResp.Body.String())
 	}
 }
 
-func TestConsumeRollsBackWhenOutboxEnqueueFails(t *testing.T) {
+func TestOpenRollsBackWhenOutboxEnqueueFails(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	fixture := newTestRouterFixture(t, Options{
@@ -128,14 +157,16 @@ func TestConsumeRollsBackWhenOutboxEnqueueFails(t *testing.T) {
 	var created createSecretResponse
 	decodeBody(t, createResp, &created)
 
-	consumeResp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+created.ID+"/consume", nil)
-	if consumeResp.Code != http.StatusInternalServerError {
-		t.Fatalf("consume with duplicate outbox id status = %d, body = %s", consumeResp.Code, consumeResp.Body.String())
+	openResp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if openResp.Code != http.StatusInternalServerError {
+		t.Fatalf("open with duplicate outbox id status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
 
 	getResp := performJSON(t, fixture.router, http.MethodGet, "/api/secrets/"+created.ID, nil)
 	if getResp.Code != http.StatusOK {
-		t.Fatalf("get after failed outbox enqueue status = %d, body = %s", getResp.Code, getResp.Body.String())
+		t.Fatalf("metadata after failed outbox enqueue status = %d, body = %s", getResp.Code, getResp.Body.String())
 	}
 
 	due, err := fixture.outbox.ListDue(ctx, now, 10)
@@ -147,7 +178,7 @@ func TestConsumeRollsBackWhenOutboxEnqueueFails(t *testing.T) {
 	}
 }
 
-func TestConsumeRequiresOutbox(t *testing.T) {
+func TestOpenRequiresOutbox(t *testing.T) {
 	ctx := context.Background()
 	conn := openHTTPTestDB(t, ctx)
 	store, err := secrets.NewStore(conn, secrets.StoreOptions{
@@ -169,14 +200,16 @@ func TestConsumeRequiresOutbox(t *testing.T) {
 	var created createSecretResponse
 	decodeBody(t, createResp, &created)
 
-	consumeResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/consume", nil)
-	if consumeResp.Code != http.StatusInternalServerError {
-		t.Fatalf("consume without outbox status = %d, body = %s", consumeResp.Code, consumeResp.Body.String())
+	openResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
+		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
+	})
+	if openResp.Code != http.StatusInternalServerError {
+		t.Fatalf("open without outbox status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
 
 	getResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
 	if getResp.Code != http.StatusOK {
-		t.Fatalf("get after failed consume status = %d, body = %s", getResp.Code, getResp.Body.String())
+		t.Fatalf("metadata after failed open status = %d, body = %s", getResp.Code, getResp.Body.String())
 	}
 }
 
@@ -460,6 +493,15 @@ func validCreateSecretBody() map[string]any {
 			"salt":            "salt",
 			"iterations":      600000,
 			"key_length_bits": 256,
+		},
+		"access": map[string]any{
+			"kdf": map[string]any{
+				"algorithm":       secrets.KDFPBKDF2SHA256,
+				"salt":            "access-salt",
+				"iterations":      600000,
+				"key_length_bits": 256,
+			},
+			"proof": base64.StdEncoding.EncodeToString([]byte("proof")),
 		},
 		"size_bytes":  10,
 		"ttl_seconds": 600,

@@ -111,3 +111,7 @@ supply-chain review.
 
 The server must not receive the passphrase or a value that can directly decrypt
 the secret.
+
+The browser also derives a separate access proof with its own KDF salt. The API
+stores a hash of that proof and returns ciphertext only from an atomic verified
+open operation that marks the secret consumed.

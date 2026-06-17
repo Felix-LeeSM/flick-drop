@@ -20,8 +20,8 @@ SvelteKit adapter.
 
 ### `burnlink-api`
 
-Public HTTP/JSON API for secret creation, lookup, and consume operations. It is
-the only service that mutates `api.db` directly.
+Public HTTP/JSON API for secret creation, metadata lookup, and verified one-time
+open operations. It is the only service that mutates `api.db` directly.
 
 The API also publishes async jobs through an outbox table and NATS JetStream.
 

@@ -12,6 +12,10 @@ The browser derives an encryption key from a user-entered passphrase and
 encrypts payloads before upload. The API, worker, NATS, SQLite, OCI Object
 Storage, logs, and metrics handle ciphertext and safe metadata only.
 
+The browser also derives a separate access proof from the same user input with
+separate KDF parameters. The API stores only a hash of that proof. The proof
+cannot decrypt the payload; it only gates the one-time open operation.
+
 ## Assets
 
 Protected assets:
@@ -34,7 +38,7 @@ burnlink-web
   serves UI and public client config only
 
 burnlink-api
-  stores ciphertext and metadata
+  stores ciphertext, metadata, and access proof hashes
   owns api.db
   publishes outbox-backed jobs
 
@@ -54,6 +58,8 @@ OCI Object Storage
 
 - Share links contain only secret IDs, not encryption keys.
 - Passphrases and derived keys must never be sent to the API.
+- Ciphertext payloads are returned only by a verified open operation that marks
+  the secret consumed in the same transaction.
 - NATS messages must never contain plaintext, passphrases, derived keys, or
   ciphertext bodies.
 - Logs and metrics must not include plaintext, passphrases, derived keys, or
@@ -76,6 +82,11 @@ Initial encryption and KDF target:
 
 The API stores nonce, KDF salt, and KDF parameters because they are required for
 browser-side decrypt. These values are not secret.
+
+Access proof KDF parameters are stored separately from encryption KDF
+parameters. They allow the browser to reproduce the proof before the API returns
+the ciphertext payload. The API compares proof hashes and never receives the
+encryption key.
 
 Argon2id is the preferred memory-hard direction for a later release, but it
 requires a browser WASM dependency and supply-chain review.

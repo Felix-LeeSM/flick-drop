@@ -27,6 +27,8 @@ create table secrets (
   kdf_algorithm text not null,
   kdf_salt text not null,
   kdf_params_json text not null,
+  access_kdf_params_json text,
+  access_proof_hash text,
   encrypted_filename text,
   content_type text,
   size_bytes integer not null check (size_bytes >= 0),
@@ -81,6 +83,11 @@ create index idx_outbox_events_state_next_attempt
 `kdf_algorithm`, `kdf_salt`, and `kdf_params_json` are not secret values. They
 store the browser-side derivation parameters required to reproduce the same
 derived key from the user-entered passphrase.
+
+`access_kdf_params_json` stores separate browser-side derivation parameters for
+the one-time open proof. `access_proof_hash` stores a server-side hash of that
+proof. The proof is not an encryption key and cannot directly decrypt the
+payload.
 
 ## `worker.db`
 

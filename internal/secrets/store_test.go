@@ -27,9 +27,16 @@ func TestStoreCreateGetConsume(t *testing.T) {
 			Iterations:    600000,
 			KeyLengthBits: 256,
 		},
-		SizeBytes:  10,
-		TTLSeconds: 600,
-		MaxViews:   1,
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
 	})
 	if err != nil {
 		t.Fatalf("create secret: %v", err)
@@ -85,9 +92,16 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 			Iterations:    600000,
 			KeyLengthBits: 256,
 		},
-		SizeBytes:  10,
-		TTLSeconds: 600,
-		MaxViews:   1,
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
 	})
 	if err != nil {
 		t.Fatalf("create secret: %v", err)
@@ -147,9 +161,16 @@ func TestStoreMarkConsumedTxLeavesPayloadForCleanup(t *testing.T) {
 			Iterations:    600000,
 			KeyLengthBits: 256,
 		},
-		SizeBytes:  10,
-		TTLSeconds: 600,
-		MaxViews:   1,
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
 	})
 	if err != nil {
 		t.Fatalf("create secret: %v", err)
@@ -187,6 +208,84 @@ func TestStoreMarkConsumedTxLeavesPayloadForCleanup(t *testing.T) {
 	}
 }
 
+func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	created, err := store.Create(ctx, CreateInput{
+		Kind:       KindText,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		KDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
+	})
+	if err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin wrong proof tx: %v", err)
+	}
+	if _, err := store.OpenTx(ctx, tx, created.ID, "wrong-proof-hash"); !errors.Is(err, ErrInvalidAccess) {
+		t.Fatalf("wrong proof open error = %v, want ErrInvalidAccess", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback wrong proof tx: %v", err)
+	}
+
+	metadata, err := store.Metadata(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("metadata after wrong proof: %v", err)
+	}
+	if metadata.AccessKDF.Salt != "access-salt" {
+		t.Fatalf("metadata access salt = %q, want access-salt", metadata.AccessKDF.Salt)
+	}
+
+	tx, err = conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin correct proof tx: %v", err)
+	}
+	opened, err := store.OpenTx(ctx, tx, created.ID, "proof-hash")
+	if err != nil {
+		t.Fatalf("open with proof: %v", err)
+	}
+	if string(opened.Ciphertext) != "ciphertext" {
+		t.Fatalf("opened ciphertext = %q, want ciphertext", string(opened.Ciphertext))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit open tx: %v", err)
+	}
+
+	tx, err = conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin second open tx: %v", err)
+	}
+	if _, err := store.OpenTx(ctx, tx, created.ID, "proof-hash"); !errors.Is(err, ErrConsumed) {
+		t.Fatalf("second open error = %v, want ErrConsumed", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback second open tx: %v", err)
+	}
+}
+
 func TestStoreRejectsInvalidKDF(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, openTestDB(t, ctx))
@@ -201,9 +300,16 @@ func TestStoreRejectsInvalidKDF(t *testing.T) {
 			Iterations:    10,
 			KeyLengthBits: 256,
 		},
-		SizeBytes:  10,
-		TTLSeconds: 600,
-		MaxViews:   1,
+		AccessKDF: KDFParams{
+			Algorithm:     KDFPBKDF2SHA256,
+			Salt:          "access-salt",
+			Iterations:    600000,
+			KeyLengthBits: 256,
+		},
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("create error = %v, want ErrInvalidInput", err)
