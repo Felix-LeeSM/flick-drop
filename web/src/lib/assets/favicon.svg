@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">BurnLink</title>
+  <rect width="128" height="128" rx="24" fill="#18211f"/>
+  <path d="M39 59V45c0-14 11-25 25-25s25 11 25 25v14h-12V45c0-7-6-13-13-13s-13 6-13 13v14H39Z" fill="#f7f8f5"/>
+  <rect x="30" y="54" width="68" height="54" rx="8" fill="#1f6b57"/>
+  <path d="M64 69a10 10 0 0 0-5 19v8h10v-8a10 10 0 0 0-5-19Z" fill="#f7f8f5"/>
+  <path d="M90 24 104 10l8 8-14 14 14 14-8 8-14-14-14 14-8-8 14-14-14-14 8-8 14 14Z" fill="#c7902e"/>
+</svg>
