@@ -6,7 +6,16 @@
 		SecretAPIError,
 		type TTLSeconds
 	} from '$lib/api/secrets';
+	import CredentialForm from '$lib/components/CredentialForm.svelte';
 	import { createAccessVerifier, encryptFile, encryptText } from '$lib/crypto/text';
+	import {
+		buildEnvelope,
+		CREDENTIAL_TEMPLATES,
+		CREDENTIAL_TYPES,
+		serializeCredential,
+		type CredentialEnvelope,
+		type CredentialType
+	} from '$lib/credentials';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -15,14 +24,18 @@
 	import {
 		CheckIcon,
 		CopyIcon,
+		CreditCardIcon,
 		ExternalLinkIcon,
 		FileUpIcon,
+		IdCardIcon,
+		KeyRoundIcon,
+		ListPlusIcon,
 		LockKeyholeIcon,
 		TypeIcon
 	} from '@lucide/svelte';
 
 	type StatusKind = 'idle' | 'success' | 'error';
-	type CreateMode = 'text' | 'file';
+	type CreateMode = 'text' | 'file' | CredentialType;
 
 	const ttlOptions: Array<{ label: string; value: TTLSeconds }> = [
 		{ label: '10 min', value: 600 },
@@ -39,9 +52,20 @@
 			? configuredLocalFileMaxBytes
 			: defaultLocalFileMaxBytes;
 	const api = createSecretAPIClient();
+	const baseModeOptions = [
+		{ type: 'text', label: 'Text', icon: TypeIcon },
+		{ type: 'file', label: 'File', icon: FileUpIcon }
+	] as const;
+	const credentialIconComponents = {
+		'key-round': KeyRoundIcon,
+		'credit-card': CreditCardIcon,
+		'id-card': IdCardIcon,
+		'list-plus': ListPlusIcon
+	};
 
 	let mode = $state<CreateMode>('text');
 	let plaintext = $state('');
+	let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
 	let passphrase = $state('');
 	let ttlSeconds = $state<TTLSeconds>(600);
 	let selectedFiles = $state<FileList>();
@@ -57,8 +81,17 @@
 	const selectedFileTooLarge = $derived(
 		selectedFile !== null && selectedFile.size > localFileMaxBytes
 	);
+	const hasCredentialPayload = $derived(
+		(credentialEnvelope.title ?? '').trim().length > 0 ||
+			(credentialEnvelope.notes ?? '').trim().length > 0 ||
+			credentialEnvelope.fields.some((field) => field.value.trim().length > 0)
+	);
 	const hasCreatePayload = $derived(
-		mode === 'text' ? plaintext.trim().length > 0 : selectedFile !== null && !selectedFileTooLarge
+		mode === 'text'
+			? plaintext.trim().length > 0
+			: mode === 'file'
+				? selectedFile !== null && !selectedFileTooLarge
+				: hasCredentialPayload
 	);
 	const canCreate = $derived(hasCreatePayload && passphrase.length > 0 && !isCreating);
 	const hasResult = $derived(shareURL.length > 0);
@@ -78,21 +111,17 @@
 
 		try {
 			const access = await createAccessVerifier(passphrase);
-			const created =
-				mode === 'text'
-					? await api.createTextSecret(await encryptText(plaintext, passphrase), ttlSeconds, access)
-					: await api.createFileSecret(
-							await encryptFile(requireSelectedFile(), passphrase),
-							ttlSeconds,
-							access
-						);
+			const created = await createSelectedSecret(access);
 
 			shareURL = createShareURL(window.location.origin, created.id);
 			expiresAt = created.expires_at;
 			plaintext = '';
 			passphrase = '';
 			clearSelectedFile();
-			status = mode === 'text' ? 'Text secret created' : 'File secret created';
+			if (isCredentialMode(mode)) {
+				credentialEnvelope = buildEnvelope(mode);
+			}
+			status = `${modeLabel(mode)} secret created`;
 			statusKind = 'success';
 		} catch (error) {
 			status = error instanceof SecretAPIError ? error.message : 'Could not create link. Try again.';
@@ -100,6 +129,28 @@
 		} finally {
 			isCreating = false;
 		}
+	}
+
+	async function createSelectedSecret(
+		access: Awaited<ReturnType<typeof createAccessVerifier>>
+	): Promise<{ id: string; expires_at: string }> {
+		if (mode === 'text') {
+			return api.createTextSecret(await encryptText(plaintext, passphrase), ttlSeconds, access);
+		}
+
+		if (mode === 'file') {
+			return api.createFileSecret(
+				await encryptFile(requireSelectedFile(), passphrase),
+				ttlSeconds,
+				access
+			);
+		}
+
+		return api.createTextSecret(
+			await encryptText(serializeCredential(credentialEnvelope), passphrase),
+			ttlSeconds,
+			access
+		);
 	}
 
 	async function copyShareURL(): Promise<void> {
@@ -123,8 +174,14 @@
 		statusKind = 'idle';
 		if (nextMode === 'text') {
 			clearSelectedFile();
+		} else if (nextMode === 'file') {
+			plaintext = '';
 		} else {
 			plaintext = '';
+			clearSelectedFile();
+			if (credentialEnvelope.type !== nextMode) {
+				credentialEnvelope = buildEnvelope(nextMode);
+			}
 		}
 	}
 
@@ -162,6 +219,21 @@
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
 		return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 	}
+
+	function isCredentialMode(value: CreateMode): value is CredentialType {
+		const credentialTypes: readonly string[] = CREDENTIAL_TYPES;
+		return credentialTypes.includes(value);
+	}
+
+	function modeLabel(value: CreateMode): string {
+		if (value === 'text') return 'Text';
+		if (value === 'file') return 'File';
+		return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
+	}
+
+	function credentialIcon(icon: string): typeof ListPlusIcon {
+		return credentialIconComponents[icon as keyof typeof credentialIconComponents] ?? ListPlusIcon;
+	}
 </script>
 
 <svelte:head>
@@ -192,33 +264,39 @@
 					<form class="grid gap-4" autocomplete="off" onsubmit={submitCreate}>
 						<div class="grid gap-2">
 							<Label>Type</Label>
-							<div class="grid grid-cols-2 gap-2" role="group" aria-label="Secret type">
-								<Button
-									type="button"
-									variant={mode === 'text' ? 'default' : 'outline'}
-									class="h-10"
-									aria-pressed={mode === 'text'}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode('text');
-									}}
-								>
-									<TypeIcon class="size-4" />
-									Text
-								</Button>
-								<Button
-									type="button"
-									variant={mode === 'file' ? 'default' : 'outline'}
-									class="h-10"
-									aria-pressed={mode === 'file'}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode('file');
-									}}
-								>
-									<FileUpIcon class="size-4" />
-									File
-								</Button>
+							<div class="flex flex-wrap gap-1.5" role="group" aria-label="Secret type">
+								{#each baseModeOptions as option (option.type)}
+									{@const Icon = option.icon}
+									<Button
+										type="button"
+										variant={mode === option.type ? 'default' : 'outline'}
+										class="h-9 flex-1 basis-[5.5rem] px-2"
+										aria-pressed={mode === option.type}
+										disabled={isCreating}
+										onclick={() => {
+											switchMode(option.type);
+										}}
+									>
+										<Icon class="size-4" />
+										{option.label}
+									</Button>
+								{/each}
+								{#each CREDENTIAL_TEMPLATES as template (template.type)}
+									{@const Icon = credentialIcon(template.icon)}
+									<Button
+										type="button"
+										variant={mode === template.type ? 'default' : 'outline'}
+										class="h-9 flex-1 basis-[5.5rem] px-2"
+										aria-pressed={mode === template.type}
+										disabled={isCreating}
+										onclick={() => {
+											switchMode(template.type);
+										}}
+									>
+										<Icon class="size-4" />
+										{template.label}
+									</Button>
+								{/each}
 							</div>
 						</div>
 
@@ -234,7 +312,7 @@
 									required
 								/>
 							</div>
-						{:else}
+						{:else if mode === 'file'}
 							<div class="grid gap-2">
 								<Label for="secret-file">File</Label>
 								<Input
@@ -261,6 +339,8 @@
 									</p>
 								{/if}
 							</div>
+						{:else}
+							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
 						{/if}
 
 						<div class="grid gap-2">
