@@ -36,7 +36,7 @@ kustomize build deploy/base | kubectl apply --dry-run=client --validate=false -f
 These checks do not prove that images exist, that a cluster can pull them, or
 that ingress and storage classes are correct for a specific cluster.
 
-The k3d smoke test uses a separate `deploy/k3d/` overlay. The generic base is
+The k3d smoke test uses the separate `deploy/k3d/` overlay. The generic base is
 not used directly for smoke tests because it intentionally contains placeholder
 image names.
 

@@ -36,8 +36,10 @@ for guide in \
   deploy/base/secret.yaml \
   deploy/base/web.yaml \
   deploy/base/worker.yaml \
+  deploy/k3d/kustomization.yaml \
   docs/AGENTS.md \
   docs/runbook/container-images.md \
+  docs/runbook/k3d-smoke.md \
   docs/runbook/k3s-base.md \
   Dockerfile.api \
   Dockerfile.worker \

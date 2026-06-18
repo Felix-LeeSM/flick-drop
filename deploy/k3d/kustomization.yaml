@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: flick
+
+resources:
+  - ../base
+
+images:
+  - name: docker.io/example/flick-api
+    newName: flick-local/flick-api
+    newTag: ci
+  - name: docker.io/example/flick-worker
+    newName: flick-local/flick-worker
+    newTag: ci
+  - name: docker.io/example/flick-web
+    newName: flick-local/flick-web
+    newTag: ci
+
+patches:
+  - target:
+      kind: Secret
+      name: flick-secrets
+    patch: |-
+      - op: replace
+        path: /stringData/FLICK_INTERNAL_TOKEN
+        value: k3d-smoke-internal-token

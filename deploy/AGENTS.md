@@ -15,6 +15,13 @@ Initial runtime resources:
 - `Secret/flick-secrets`
 - `Ingress/flick`
 
+Subdirectories:
+
+- `base/`: public-safe generic k3s manifests with placeholder images and
+  placeholder secrets.
+- `k3d/`: local smoke-test overlay that must stay disposable and must not carry
+  production values.
+
 Do not commit real secrets, kubeconfig, production bucket names, production
 domains, private overlays, or generated PVC/database dumps.
 

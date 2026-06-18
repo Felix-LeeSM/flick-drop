@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base="deploy/base"
-kustomization="$base/kustomization.yaml"
-
-if [ ! -f "$kustomization" ]; then
-  echo "k8s-manifests: $kustomization not initialized yet; skipped"
-  exit 0
-fi
-
 if command -v kustomize >/dev/null 2>&1; then
-  build_cmd=(kustomize build "$base")
+  build_tool="kustomize"
 elif command -v kubectl >/dev/null 2>&1; then
-  build_cmd=(kubectl kustomize "$base")
+  build_tool="kubectl"
 else
   if [ "${CI:-}" = "true" ]; then
     echo "k8s-manifests: kustomize or kubectl is required in CI" >&2
@@ -25,7 +17,25 @@ fi
 rendered="$(mktemp)"
 trap 'rm -f "$rendered"' EXIT
 
-"${build_cmd[@]}" >"$rendered"
+rendered_any=0
+for manifest_dir in deploy/base deploy/k3d; do
+  if [ ! -f "$manifest_dir/kustomization.yaml" ]; then
+    continue
+  fi
+
+  if [ "$build_tool" = "kustomize" ]; then
+    kustomize build "$manifest_dir"
+  else
+    kubectl kustomize "$manifest_dir"
+  fi
+  echo "---"
+  rendered_any=1
+done >"$rendered"
+
+if [ "$rendered_any" -eq 0 ]; then
+  echo "k8s-manifests: no kustomization files initialized yet; skipped"
+  exit 0
+fi
 
 if command -v kubectl >/dev/null 2>&1 && kubectl cluster-info >/dev/null 2>&1; then
   kubectl apply --dry-run=client --validate=false -f "$rendered" >/dev/null

@@ -145,6 +145,12 @@ Validate Kubernetes manifests:
 mise run manifests
 ```
 
+Run the optional local k3d deployment smoke:
+
+```sh
+mise run smoke-k3d
+```
+
 The scripts are scaffold-aware: Go and SvelteKit checks skip until their
 respective code is initialized.
 
@@ -162,5 +168,6 @@ respective code is initialized.
 - [Agent workflow](docs/architecture/agent-workflow.md)
 - [Container images](docs/runbook/container-images.md)
 - [k3s base manifests](docs/runbook/k3s-base.md)
+- [k3d smoke](docs/runbook/k3d-smoke.md)
 - [Local development](docs/runbook/local-dev.md)
 - [Roadmap](docs/ROADMAP.md)

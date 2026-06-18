@@ -61,9 +61,9 @@ Merge strategy:
 - Delete head branches after merge.
 
 `k3d smoke` and OCI smoke checks are not required PR checks because they are
-scheduled or manually triggered infrastructure checks. The k3d smoke entrypoint
-waits for a dedicated `deploy/k3d/` overlay so the generic public base does not
-try to pull placeholder images.
+slower infrastructure checks and require Docker plus k3d on the runner. The k3d
+smoke entrypoint uses the dedicated `deploy/k3d/` overlay so the generic public
+base does not try to pull placeholder images.
 
 `Review gate` is a metadata-only `pull_request_target` workflow. It must not
 execute PR head code. It publishes the required `Review gate` commit status to

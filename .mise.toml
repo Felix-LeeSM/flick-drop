@@ -6,6 +6,7 @@ direnv = "2.37.1"
 sqlite = "3.53.2"
 kubectl = "1.36.2"
 kustomize = "5.8.1"
+k3d = "5.9.0"
 
 [env]
 FLICK_ENV = "development"
