@@ -8,6 +8,7 @@ Flick separates fast PR checks from slower infrastructure smoke tests.
 PR checks
   shell
   repo structure
+  Kubernetes manifest structure
   env contract
   contracts
   Go checks
@@ -24,14 +25,16 @@ manual/nightly checks
 
 ```sh
 mise run check
+mise run manifests
 mise run images
 mise run smoke-nats
 mise run smoke-k3d
 ```
 
-The `check` task includes shell, repo-structure, env-contract, contract, Go, web,
-and local container image checks. The image check skips only when Docker is not
-available locally; CI treats a missing Docker daemon as a failure.
+The `check` task includes shell, repo-structure, Kubernetes manifest structure,
+env-contract, contract, Go, web, and local container image checks. The image
+check skips only when Docker is not available locally; CI treats a missing
+Docker daemon as a failure.
 
 ## GitHub Repository Policy
 
@@ -58,7 +61,9 @@ Merge strategy:
 - Delete head branches after merge.
 
 `k3d smoke` and OCI smoke checks are not required PR checks because they are
-scheduled or manually triggered infrastructure checks.
+scheduled or manually triggered infrastructure checks. The k3d smoke entrypoint
+waits for a dedicated `deploy/k3d/` overlay so the generic public base does not
+try to pull placeholder images.
 
 `Review gate` is a metadata-only `pull_request_target` workflow. It must not
 execute PR head code. It publishes the required `Review gate` commit status to

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flick-config
+data:
+  FLICK_ENV: "production"
+  FLICK_LOG_LEVEL: "info"
+  FLICK_PUBLIC_BASE_URL: "http://flick.localhost"
+  FLICK_API_BASE_URL: "http://flick.localhost"
+  FLICK_INTERNAL_API_BASE_URL: "http://flick-api:8080"
+  FLICK_API_ADDR: ":8080"
+  FLICK_API_DB_PATH: "/data/api.db"
+  FLICK_WORKER_DB_PATH: "/data/worker.db"
+  FLICK_NATS_URL: "nats://nats:4222"
+  FLICK_NATS_STREAM: "FLICK_JOBS"
+  FLICK_NATS_JOB_SUBJECT: "flick.jobs"
+  FLICK_PAYLOAD_INLINE_MAX_BYTES: "1048576"
+  FLICK_MAX_FILE_BYTES: "26214400"
+  FLICK_DEFAULT_TTL_SECONDS: "3600"
+  FLICK_ALLOWED_TTL_SECONDS: "600,3600,86400"
+  FLICK_STORAGE_LARGE_BACKEND: "disabled"
+  FLICK_WORKER_CONCURRENCY: "2"
