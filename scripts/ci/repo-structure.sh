@@ -26,11 +26,23 @@ for guide in \
   cmd/AGENTS.md \
   contracts/AGENTS.md \
   deploy/AGENTS.md \
+  deploy/base/api.yaml \
+  deploy/base/configmap.yaml \
+  deploy/base/ingress.yaml \
+  deploy/base/kustomization.yaml \
+  deploy/base/namespace.yaml \
+  deploy/base/nats.yaml \
+  deploy/base/pvc.yaml \
+  deploy/base/secret.yaml \
+  deploy/base/web.yaml \
+  deploy/base/worker.yaml \
   docs/AGENTS.md \
   docs/runbook/container-images.md \
+  docs/runbook/k3s-base.md \
   Dockerfile.api \
   Dockerfile.worker \
   internal/AGENTS.md \
+  scripts/ci/k8s-manifests.sh \
   scripts/ci/review-gate.sh \
   scripts/ci/images.sh \
   scripts/AGENTS.md \

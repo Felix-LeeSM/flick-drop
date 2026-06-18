@@ -139,6 +139,12 @@ Build the local container images:
 mise run images
 ```
 
+Validate Kubernetes manifests:
+
+```sh
+mise run manifests
+```
+
 The scripts are scaffold-aware: Go and SvelteKit checks skip until their
 respective code is initialized.
 
@@ -155,5 +161,6 @@ respective code is initialized.
 - [CI and testing](docs/architecture/ci-testing.md)
 - [Agent workflow](docs/architecture/agent-workflow.md)
 - [Container images](docs/runbook/container-images.md)
+- [k3s base manifests](docs/runbook/k3s-base.md)
 - [Local development](docs/runbook/local-dev.md)
 - [Roadmap](docs/ROADMAP.md)

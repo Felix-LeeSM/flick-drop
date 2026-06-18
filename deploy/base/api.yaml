@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flick-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flick-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flick-api
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 100
+        runAsGroup: 100
+        runAsNonRoot: true
+        runAsUser: 100
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: docker.io/example/flick-api:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: flick-config
+            - secretRef:
+                name: flick-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: api-data
+              mountPath: /data
+      volumes:
+        - name: api-data
+          persistentVolumeClaim:
+            claimName: flick-api-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flick-api
+spec:
+  selector:
+    app.kubernetes.io/name: flick-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

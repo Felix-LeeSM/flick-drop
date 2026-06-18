@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: flick
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: flick
+    includeSelectors: true
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - pvc.yaml
+  - nats.yaml
+  - api.yaml
+  - worker.yaml
+  - web.yaml
+  - ingress.yaml

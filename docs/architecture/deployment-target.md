@@ -34,7 +34,8 @@ Service/flick-web
 Service/flick-api
 Service/nats
 StatefulSet/nats
-PersistentVolumeClaim/flick-data
+PersistentVolumeClaim/flick-api-data
+PersistentVolumeClaim/flick-worker-data
 PersistentVolumeClaim/nats-data
 ConfigMap/flick-config
 Secret/flick-secrets

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ ! -f deploy/base/kustomization.yaml ]; then
-  echo "k3d-smoke: deploy/base/kustomization.yaml not initialized yet; skipped"
+if [ ! -f deploy/k3d/kustomization.yaml ]; then
+  echo "k3d-smoke: deploy/k3d/kustomization.yaml not initialized yet; skipped"
   exit 0
 fi
 
@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 
 k3d cluster create "$cluster" --agents 1 --wait
-kubectl apply -k deploy/base
+kubectl apply -k deploy/k3d
 kubectl -n flick rollout status deploy/flick-api --timeout=120s
 kubectl -n flick rollout status deploy/flick-worker --timeout=120s
 kubectl -n flick rollout status deploy/flick-web --timeout=120s
