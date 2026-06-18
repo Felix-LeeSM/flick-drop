@@ -19,6 +19,9 @@ PR checks
 manual/nightly checks
   k3d deploy smoke
   OCI dev bucket smoke when credentials are configured
+
+release checks
+  Docker Hub image publish on manual dispatch or version tag push
 ```
 
 ## Local Entry Points
@@ -119,3 +122,30 @@ with fake clients in PR checks.
 
 Real OCI dev bucket smoke tests are manual or scheduled and run only when the
 required secrets are present.
+
+## Image Publish
+
+`.github/workflows/publish-images.yml` publishes `flick-api`, `flick-worker`,
+and `flick-web` images to Docker Hub. It is not a PR check and must not deploy
+to OCI directly.
+
+The workflow requires:
+
+```text
+DOCKERHUB_USERNAME
+DOCKERHUB_NAMESPACE
+DOCKERHUB_TOKEN
+```
+
+Production overlays should consume immutable `sha-*` tags or explicit `v*`
+release tags, not `latest`.
+
+The publish workflow validates the source and image tags before logging in to
+Docker Hub:
+
+- manual publishes must run from the repository default branch
+- tag publishes must use a `v*` tag whose commit is already reachable from the
+  repository default branch
+- `DOCKERHUB_NAMESPACE` must be one lowercase Docker Hub namespace component
+- manual custom tags must match `v<release>`, or `sha-<12-hex>` only when it is
+  the checked-out commit SHA tag

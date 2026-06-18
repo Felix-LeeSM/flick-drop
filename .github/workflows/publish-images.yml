@@ -1,0 +1,205 @@
+name: Publish Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Optional image tag. Defaults to sha-<short-sha>.
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: docker.io
+  PUBLIC_FLICK_API_BASE_URL: /
+  PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES: "1048560"
+
+jobs:
+  publish:
+    name: Publish Docker Hub images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate trusted publish source
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$REF_TYPE" != "branch" ] || [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "manual image publish must run from $DEFAULT_BRANCH" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+            case "$REF_NAME" in
+              v*) ;;
+              *)
+                echo "tag image publish requires a v* tag" >&2
+                exit 1
+                ;;
+            esac
+
+            git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+            if ! git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"; then
+              echo "tag image publish requires a commit already reachable from $DEFAULT_BRANCH" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          echo "unsupported image publish event: $EVENT_NAME on $REF_TYPE $REF_NAME" >&2
+          exit 1
+
+      - name: Resolve image tags
+        id: image
+        shell: bash
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          namespace="$DOCKERHUB_NAMESPACE"
+          if [ -z "$namespace" ]; then
+            echo "DOCKERHUB_NAMESPACE repository variable is required" >&2
+            exit 1
+          fi
+          if [[ ! "$namespace" =~ ^([a-z0-9]|[a-z0-9][a-z0-9._-]{0,253}[a-z0-9])$ ]]; then
+            echo "DOCKERHUB_NAMESPACE must be one lowercase Docker Hub namespace component" >&2
+            exit 1
+          fi
+
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          sha_tag="sha-$short_sha"
+          image_tag="$sha_tag"
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            image_tag="$GITHUB_REF_NAME"
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_IMAGE_TAG" ]; then
+            image_tag="$INPUT_IMAGE_TAG"
+          fi
+
+          case "$image_tag" in
+            *[!A-Za-z0-9_.-]* | "" | .* | -*)
+              echo "invalid image tag: $image_tag" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "${#image_tag}" -gt 128 ]; then
+            echo "image tag is longer than 128 characters: $image_tag" >&2
+            exit 1
+          fi
+
+          if [[ ! "$image_tag" =~ ^(sha-[0-9a-f]{12}|v[0-9][A-Za-z0-9_.-]*)$ ]]; then
+            echo "image tag must be sha-<12-hex> or v<release>: $image_tag" >&2
+            exit 1
+          fi
+          if [[ "$image_tag" == sha-* && "$image_tag" != "$sha_tag" ]]; then
+            echo "sha-* image tag must match the checked-out commit: $sha_tag" >&2
+            exit 1
+          fi
+
+          write_tags() {
+            local output_name="$1"
+            local image_name="$2"
+
+            {
+              echo "$output_name<<EOF"
+              echo "$REGISTRY/$namespace/$image_name:$image_tag"
+              if [ "$image_tag" != "$sha_tag" ]; then
+                echo "$REGISTRY/$namespace/$image_name:$sha_tag"
+              fi
+              echo "EOF"
+            } >>"$GITHUB_OUTPUT"
+          }
+
+          {
+            echo "namespace=$namespace"
+            echo "image_tag=$image_tag"
+            echo "sha_tag=$sha_tag"
+          } >>"$GITHUB_OUTPUT"
+          write_tags api_tags flick-api
+          write_tags worker_tags flick-worker
+          write_tags web_tags flick-web
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: ${{ steps.image.outputs.api_tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=flick-api
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: true
+          tags: ${{ steps.image.outputs.worker_tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=flick-worker
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: true
+          build-args: |
+            PUBLIC_FLICK_API_BASE_URL=${{ env.PUBLIC_FLICK_API_BASE_URL }}
+            PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES=${{ env.PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES }}
+          tags: ${{ steps.image.outputs.web_tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=flick-web
+
+      - name: Publish summary
+        run: |
+          cat <<EOF >>"$GITHUB_STEP_SUMMARY"
+          ## Published Images
+
+          Namespace: \`${{ steps.image.outputs.namespace }}\`
+          Primary tag: \`${{ steps.image.outputs.image_tag }}\`
+          Immutable tag: \`${{ steps.image.outputs.sha_tag }}\`
+
+          \`\`\`text
+          ${{ steps.image.outputs.api_tags }}
+          ${{ steps.image.outputs.worker_tags }}
+          ${{ steps.image.outputs.web_tags }}
+          \`\`\`
+          EOF

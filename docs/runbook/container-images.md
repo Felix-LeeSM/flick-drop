@@ -10,6 +10,9 @@ Flick builds three runtime images:
 
 Local CI uses `flick-local` as the image prefix and `ci` as the tag.
 
+GitHub Actions publishes public Docker Hub images with
+`.github/workflows/publish-images.yml`.
+
 ## Build
 
 Build all images:
@@ -90,3 +93,42 @@ The web image serves static assets with Nginx on port `8080` and exposes
 These image definitions do not push to a registry and do not contain real
 domains, OCI credentials, kubeconfig, bucket names, internal tokens, database
 files, or private deployment overlays.
+
+## Publish
+
+The publish workflow uses repository variables and secrets:
+
+```text
+DOCKERHUB_USERNAME
+DOCKERHUB_NAMESPACE
+DOCKERHUB_TOKEN
+```
+
+For the initial deployment, `DOCKERHUB_NAMESPACE` is `haradwaith`.
+
+Run manually from GitHub Actions or push a version tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Manual publishes must run from the repository default branch. Tag publishes must
+use a `v*` tag whose commit is already reachable from the default branch. Custom
+manual tags are limited to `v<release>` or the checked-out commit's exact
+`sha-<12-hex>` tag; `latest` and other mutable aliases are rejected. The Docker
+Hub namespace must be one lowercase namespace component.
+
+The workflow publishes:
+
+```text
+docker.io/haradwaith/flick-api:<tag>
+docker.io/haradwaith/flick-worker:<tag>
+docker.io/haradwaith/flick-web:<tag>
+docker.io/haradwaith/flick-api:sha-<short-sha>
+docker.io/haradwaith/flick-worker:sha-<short-sha>
+docker.io/haradwaith/flick-web:sha-<short-sha>
+```
+
+Use the immutable `sha-*` tag in production overlays unless deliberately
+rolling out a named release tag.
