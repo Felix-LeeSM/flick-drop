@@ -45,6 +45,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.MaxTTLSeconds != 604800 {
 		t.Fatalf("MaxTTLSeconds = %d, want 604800", cfg.MaxTTLSeconds)
 	}
+	if cfg.OpenRatePerMinute != 10 {
+		t.Fatalf("OpenRatePerMinute = %d, want 10", cfg.OpenRatePerMinute)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies = %v, want empty by default", cfg.TrustedProxies)
+	}
 }
 
 func TestLoadRejectsDefaultTTLBelowRange(t *testing.T) {
@@ -84,6 +90,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_DEFAULT_TTL_SECONDS",
 		"FLICK_MIN_TTL_SECONDS",
 		"FLICK_MAX_TTL_SECONDS",
+		"FLICK_OPEN_RATE_PER_MIN",
+		"FLICK_TRUSTED_PROXIES",
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")

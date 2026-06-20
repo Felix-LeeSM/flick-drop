@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -21,6 +23,8 @@ type Config struct {
 	DefaultTTLSeconds     int
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
+	OpenRatePerMinute     int
+	TrustedProxies        []*net.IPNet
 }
 
 func Load() (Config, error) {
@@ -39,8 +43,9 @@ func Load() (Config, error) {
 		DefaultTTLSeconds:     3600,
 		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
 		// offer an editable "custom" lifetime, not just fixed presets.
-		MinTTLSeconds: 300,
-		MaxTTLSeconds: 604800,
+		MinTTLSeconds:     300,
+		MaxTTLSeconds:     604800,
+		OpenRatePerMinute: 10,
 	}
 
 	var err error
@@ -68,6 +73,18 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if raw := os.Getenv("FLICK_OPEN_RATE_PER_MIN"); raw != "" {
+		cfg.OpenRatePerMinute, err = parsePositiveInt("FLICK_OPEN_RATE_PER_MIN", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if raw := os.Getenv("FLICK_TRUSTED_PROXIES"); raw != "" {
+		cfg.TrustedProxies, err = parseTrustedProxies(raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 
 	if cfg.MinTTLSeconds <= 0 {
 		return Config{}, fmt.Errorf("FLICK_MIN_TTL_SECONDS must be a positive integer")
@@ -77,6 +94,9 @@ func Load() (Config, error) {
 	}
 	if cfg.DefaultTTLSeconds < cfg.MinTTLSeconds || cfg.DefaultTTLSeconds > cfg.MaxTTLSeconds {
 		return Config{}, fmt.Errorf("FLICK_DEFAULT_TTL_SECONDS must be within FLICK_MIN_TTL_SECONDS..FLICK_MAX_TTL_SECONDS")
+	}
+	if cfg.OpenRatePerMinute <= 0 {
+		return Config{}, fmt.Errorf("FLICK_OPEN_RATE_PER_MIN must be a positive integer")
 	}
 
 	return cfg, nil
@@ -103,4 +123,43 @@ func parsePositiveInt64(name, raw string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return value, nil
+}
+
+// parseTrustedProxies parses a comma-separated list of CIDRs (e.g.
+// "10.0.0.0/8,127.0.0.1/32") whose direct peer may supply a client IP via
+// X-Forwarded-For. A bare IP gets an implicit /32 (v4) or /128 (v6).
+func parseTrustedProxies(raw string) ([]*net.IPNet, error) {
+	parts := strings.Split(raw, ",")
+	cidrs := make([]*net.IPNet, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			return nil, fmt.Errorf("FLICK_TRUSTED_PROXIES must not contain empty entries")
+		}
+		cidr, err := parseCIDR(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("FLICK_TRUSTED_PROXIES: %w", err)
+		}
+		cidrs = append(cidrs, cidr)
+	}
+	return cidrs, nil
+}
+
+func parseCIDR(raw string) (*net.IPNet, error) {
+	if !strings.Contains(raw, "/") {
+		ip := net.ParseIP(raw)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid IP %q", raw)
+		}
+		if ip.To4() != nil {
+			raw += "/32"
+		} else {
+			raw += "/128"
+		}
+	}
+	_, cidr, err := net.ParseCIDR(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR %q: %w", raw, err)
+	}
+	return cidr, nil
 }

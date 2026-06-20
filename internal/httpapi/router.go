@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"net"
 	"net/http"
 	"strings"
 
@@ -21,12 +22,15 @@ type Server struct {
 	payloadInlineMaxBytes int64
 	allowedOrigin         string
 	internalToken         string
+	openLimiter           *rateLimiter
 }
 
 type Options struct {
 	PayloadInlineMaxBytes int64
 	AllowedOrigin         string
 	InternalToken         string
+	OpenRatePerMinute     int
+	TrustedProxies        []*net.IPNet
 	OutboxStore           *events.OutboxStore
 	NewJobID              func() (string, error)
 }
@@ -45,6 +49,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		payloadInlineMaxBytes: payloadInlineMaxBytes,
 		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:         opts.InternalToken,
+		openLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -57,7 +62,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/metrics", server.metrics)
 	r.Post("/api/secrets", server.createSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
-	r.Post("/api/secrets/{id}/open", server.openSecret)
+	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
 		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)

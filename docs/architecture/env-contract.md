@@ -34,6 +34,8 @@ Local development:
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `oci`. |
+| `FLICK_OPEN_RATE_PER_MIN` | Max `/open` requests per client IP + path per minute. |
+| `FLICK_TRUSTED_PROXIES` | Comma-separated CIDRs whose peer may set X-Forwarded-For. Empty = direct peer IP only. |
 
 ## NATS
 
