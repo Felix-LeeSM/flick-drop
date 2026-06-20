@@ -324,7 +324,6 @@ components:
         - kind
         - ciphertext
         - nonce
-        - kdf
         - size_bytes
         - expires_at
       properties:
@@ -341,6 +340,7 @@ components:
           description: Base64-encoded AES-GCM nonce.
         kdf:
           $ref: "#/components/schemas/KdfParams"
+          description: Present only for Model A secrets. Omitted for Model B; the browser decrypts with the URL fragment key.
         encrypted_filename:
           type: string
           description: Browser-encrypted JSON envelope containing filename metadata.
