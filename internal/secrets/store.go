@@ -67,12 +67,14 @@ type Store struct {
 	db                    *sql.DB
 	now                   func() time.Time
 	payloadInlineMaxBytes int64
-	allowedTTLs           map[int]struct{}
+	minTTL                int
+	maxTTL                int
 }
 
 type StoreOptions struct {
 	PayloadInlineMaxBytes int64
-	AllowedTTLSeconds     []int
+	MinTTLSeconds         int
+	MaxTTLSeconds         int
 }
 
 func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
@@ -82,23 +84,19 @@ func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
 	if opts.PayloadInlineMaxBytes <= 0 {
 		return nil, fmt.Errorf("payload inline max bytes must be positive")
 	}
-	if len(opts.AllowedTTLSeconds) == 0 {
-		return nil, fmt.Errorf("allowed ttl seconds is required")
+	if opts.MinTTLSeconds <= 0 {
+		return nil, fmt.Errorf("min ttl seconds must be positive")
 	}
-
-	allowed := make(map[int]struct{}, len(opts.AllowedTTLSeconds))
-	for _, ttl := range opts.AllowedTTLSeconds {
-		if ttl <= 0 {
-			return nil, fmt.Errorf("allowed ttl seconds must be positive")
-		}
-		allowed[ttl] = struct{}{}
+	if opts.MaxTTLSeconds < opts.MinTTLSeconds {
+		return nil, fmt.Errorf("max ttl seconds must be >= min ttl seconds")
 	}
 
 	return &Store{
 		db:                    db,
 		now:                   func() time.Time { return time.Now().UTC() },
 		payloadInlineMaxBytes: opts.PayloadInlineMaxBytes,
-		allowedTTLs:           allowed,
+		minTTL:                opts.MinTTLSeconds,
+		maxTTL:                opts.MaxTTLSeconds,
 	}, nil
 }
 
@@ -121,13 +119,28 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 
 	now := s.now().UTC()
 	expiresAt := now.Add(time.Duration(input.TTLSeconds) * time.Second)
-	kdfJSON, err := json.Marshal(input.KDF)
-	if err != nil {
-		return Secret{}, fmt.Errorf("marshal kdf params: %w", err)
-	}
-	accessKDFJSON, err := json.Marshal(input.AccessKDF)
-	if err != nil {
-		return Secret{}, fmt.Errorf("marshal access kdf params: %w", err)
+
+	// Model A secrets store encryption + access KDF and an access proof hash.
+	// Model B secrets (passphrase optional) carry none of these: the decryption
+	// key travels in the URL fragment, so the columns stay NULL.
+	var (
+		kdfAlgorithm, kdfSalt, kdfParamsJSON any
+		accessKDFParamsJSON, accessProofHash any
+	)
+	if input.AccessProofHash != "" {
+		kdfJSON, err := json.Marshal(input.KDF)
+		if err != nil {
+			return Secret{}, fmt.Errorf("marshal kdf params: %w", err)
+		}
+		accessKDFJSON, err := json.Marshal(input.AccessKDF)
+		if err != nil {
+			return Secret{}, fmt.Errorf("marshal access kdf params: %w", err)
+		}
+		kdfAlgorithm = input.KDF.Algorithm
+		kdfSalt = input.KDF.Salt
+		kdfParamsJSON = string(kdfJSON)
+		accessKDFParamsJSON = string(accessKDFJSON)
+		accessProofHash = input.AccessProofHash
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -147,11 +160,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 		StorageSQLite,
 		id,
 		input.Nonce,
-		input.KDF.Algorithm,
-		input.KDF.Salt,
-		string(kdfJSON),
-		string(accessKDFJSON),
-		input.AccessProofHash,
+		kdfAlgorithm,
+		kdfSalt,
+		kdfParamsJSON,
+		accessKDFParamsJSON,
+		accessProofHash,
 		input.EncryptedFilename,
 		input.ContentType,
 		input.SizeBytes,
@@ -235,11 +248,14 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 	if consumedAt.Valid {
 		return Metadata{}, ErrConsumed
 	}
-	if !accessKDFJSON.Valid {
-		return Metadata{}, ErrInvalidInput
-	}
-	if err := json.Unmarshal([]byte(accessKDFJSON.String), &metadata.AccessKDF); err != nil {
-		return Metadata{}, fmt.Errorf("decode access kdf params: %w", err)
+	// Model A secrets expose access KDF so the browser can derive the proof.
+	// Model B secrets carry no access proof, so the column is NULL and
+	// metadata.AccessKDF stays zero — the caller treats an absent access block
+	// as passphrase-optional.
+	if accessKDFJSON.Valid {
+		if err := json.Unmarshal([]byte(accessKDFJSON.String), &metadata.AccessKDF); err != nil {
+			return Metadata{}, fmt.Errorf("decode access kdf params: %w", err)
+		}
 	}
 	expiresAt, err := parseTime(expiresRaw)
 	if err != nil {
@@ -316,9 +332,6 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if tx == nil {
 		return Secret{}, fmt.Errorf("transaction is required")
 	}
-	if accessProofHash == "" {
-		return Secret{}, ErrInvalidAccess
-	}
 
 	now := s.now().UTC()
 	secret, consumedAt, err := s.load(ctx, tx, id)
@@ -331,11 +344,18 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if !now.Before(secret.ExpiresAt) {
 		return Secret{}, ErrExpired
 	}
-	if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
-		if err := s.recordFailedAccessTx(ctx, tx, id, now); err != nil {
-			return Secret{}, err
+
+	// Model A secrets carry an access proof hash and must be authorized by a
+	// matching proof. Model B secrets (passphrase optional) carry none: the link
+	// is the capability, so no proof is verified. Because max_views stays 1, a
+	// captured fragment key can authorize at most a single open.
+	if secret.accessProofHash != "" {
+		if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
+			if err := s.recordFailedAccessTx(ctx, tx, id, now); err != nil {
+				return Secret{}, err
+			}
+			return Secret{}, ErrInvalidAccess
 		}
-		return Secret{}, ErrInvalidAccess
 	}
 
 	result, err := tx.ExecContext(ctx, `update secrets
@@ -440,7 +460,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	}
 
 	var secret Secret
-	var kdfJSON string
+	var kdfJSON sql.NullString
 	var accessKDFJSON sql.NullString
 	var accessProofHash sql.NullString
 	var encryptedFilename sql.NullString
@@ -483,16 +503,23 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 		return Secret{}, sql.NullString{}, ErrNotFound
 	}
 
-	if err := json.Unmarshal([]byte(kdfJSON), &secret.KDF); err != nil {
-		return Secret{}, sql.NullString{}, fmt.Errorf("decode kdf params: %w", err)
+	// kdf_params_json is present for Model A (passphrase-derived key) and NULL
+	// for Model B (random fragment key). Access KDF and proof hash must be both
+	// present (Model A) or both absent (Model B); anything else is corruption.
+	if kdfJSON.Valid {
+		if err := json.Unmarshal([]byte(kdfJSON.String), &secret.KDF); err != nil {
+			return Secret{}, sql.NullString{}, fmt.Errorf("decode kdf params: %w", err)
+		}
 	}
-	if !accessKDFJSON.Valid || !accessProofHash.Valid {
+	if accessKDFJSON.Valid != accessProofHash.Valid {
 		return Secret{}, sql.NullString{}, ErrInvalidInput
 	}
-	if err := json.Unmarshal([]byte(accessKDFJSON.String), &secret.AccessKDF); err != nil {
-		return Secret{}, sql.NullString{}, fmt.Errorf("decode access kdf params: %w", err)
+	if accessKDFJSON.Valid {
+		if err := json.Unmarshal([]byte(accessKDFJSON.String), &secret.AccessKDF); err != nil {
+			return Secret{}, sql.NullString{}, fmt.Errorf("decode access kdf params: %w", err)
+		}
+		secret.accessProofHash = accessProofHash.String
 	}
-	secret.accessProofHash = accessProofHash.String
 	expiresAt, err := parseTime(expiresRaw)
 	if err != nil {
 		return Secret{}, sql.NullString{}, fmt.Errorf("parse expires_at: %w", err)
@@ -522,20 +549,30 @@ func (s *Store) validateCreate(input CreateInput) error {
 	if input.SizeBytes < 0 {
 		return ErrInvalidInput
 	}
-	if _, ok := s.allowedTTLs[input.TTLSeconds]; !ok {
+	if input.TTLSeconds < s.minTTL || input.TTLSeconds > s.maxTTL {
 		return ErrInvalidInput
 	}
 	if input.MaxViews != 1 {
 		return ErrUnsupportedViews
 	}
-	if input.KDF.Algorithm != KDFPBKDF2SHA256 || input.KDF.Salt == "" || input.KDF.Iterations < 600000 || input.KDF.KeyLengthBits != 256 {
+
+	// A secret is either Model A or Model B, never a mix.
+	// Model A (passphrase): encryption KDF + access KDF + access proof hash all present.
+	// Model B (passphrase optional): all three absent — the random key travels in
+	// the URL fragment and the server stores no KDF or proof.
+	hasProof := input.AccessProofHash != ""
+	hasKDF := input.KDF.Algorithm != ""
+	hasAccessKDF := input.AccessKDF.Algorithm != ""
+	if hasProof != hasKDF || hasProof != hasAccessKDF {
 		return ErrInvalidInput
 	}
-	if input.AccessKDF.Algorithm != KDFPBKDF2SHA256 || input.AccessKDF.Salt == "" || input.AccessKDF.Iterations < 600000 || input.AccessKDF.KeyLengthBits != 256 {
-		return ErrInvalidInput
-	}
-	if input.AccessProofHash == "" {
-		return ErrInvalidInput
+	if hasProof {
+		if input.KDF.Algorithm != KDFPBKDF2SHA256 || input.KDF.Salt == "" || input.KDF.Iterations < 600000 || input.KDF.KeyLengthBits != 256 {
+			return ErrInvalidInput
+		}
+		if input.AccessKDF.Algorithm != KDFPBKDF2SHA256 || input.AccessKDF.Salt == "" || input.AccessKDF.Iterations < 600000 || input.AccessKDF.KeyLengthBits != 256 {
+			return ErrInvalidInput
+		}
 	}
 	if input.Kind == KindFile {
 		if input.EncryptedFilename == nil || *input.EncryptedFilename == "" {

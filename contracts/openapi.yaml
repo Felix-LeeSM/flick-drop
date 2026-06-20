@@ -206,12 +206,16 @@ components:
     CreateSecretRequest:
       type: object
       additionalProperties: false
+      description: |
+        Model A: send `kdf` and `access` together; the browser derives the
+        encryption key and access proof from a user-supplied value. Model B:
+        omit `kdf` and `access`; the browser encrypts with a random key carried
+        in the share URL fragment. Mixing the two (one without the other) is
+        rejected.
       required:
         - kind
         - ciphertext
         - nonce
-        - kdf
-        - access
         - size_bytes
         - ttl_seconds
       properties:
@@ -240,7 +244,9 @@ components:
           description: Plain payload byte length before browser encryption.
         ttl_seconds:
           type: integer
-          enum: [600, 3600, 86400]
+          minimum: 300
+          maximum: 604800
+          description: Lifetime in seconds, anywhere from 5 minutes to 7 days.
         max_views:
           type: integer
           minimum: 1
@@ -258,13 +264,14 @@ components:
     AccessVerifier:
       type: object
       additionalProperties: false
+      description: Model A only. When present on a create request, both fields are required.
       required: [kdf, proof]
       properties:
         kdf:
           $ref: "#/components/schemas/KdfParams"
         proof:
           type: string
-          description: Base64-encoded client-derived access proof.
+          description: Base64-encoded client-derived access proof (Model A only).
     AccessMetadata:
       type: object
       additionalProperties: false
@@ -275,10 +282,13 @@ components:
     GetSecretMetadataResponse:
       type: object
       additionalProperties: false
+      description: |
+        The `access` block is present only for Model A secrets, so the browser
+        can derive the access proof. Model B secrets omit it; the browser opens
+        using the URL fragment key without a proof.
       required:
         - id
         - kind
-        - access
         - size_bytes
         - expires_at
       properties:
@@ -298,11 +308,14 @@ components:
     OpenSecretRequest:
       type: object
       additionalProperties: false
-      required: [access_proof]
+      description: |
+        Model A requires `access_proof` (derived from user input and metadata
+        access KDF). Model B omits it; the link is the capability.
+      required: []
       properties:
         access_proof:
           type: string
-          description: Base64-encoded proof derived from local user input and metadata access KDF.
+          description: Base64-encoded proof derived from local user input and metadata access KDF. Required for Model A, omitted for Model B.
     OpenSecretResponse:
       type: object
       additionalProperties: false

@@ -37,7 +37,8 @@ func main() {
 
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
-		AllowedTTLSeconds:     cfg.AllowedTTLSeconds,
+		MinTTLSeconds:         cfg.MinTTLSeconds,
+		MaxTTLSeconds:         cfg.MaxTTLSeconds,
 	})
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)

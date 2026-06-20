@@ -253,6 +253,105 @@ export async function deriveAccessProof(passphrase: string, kdf: KdfParams): Pro
 	return bytesToBase64(proof);
 }
 
+export const RAW_KEY_BYTES = 32;
+
+export type GeneratedKey = {
+	key: CryptoKey;
+	raw: Uint8Array;
+};
+
+// Model B (passphrase optional) derives no key from a passphrase. The browser
+// generates a random 256-bit key, encrypts directly with it, and carries the
+// raw key in the URL fragment. The server never receives this key; only the
+// link holder can decrypt.
+export async function generateSecretKey(): Promise<GeneratedKey> {
+	const raw = randomBytes(RAW_KEY_BYTES);
+	return { key: await importAesGcmKey(raw), raw };
+}
+
+export function importAesGcmKey(raw: Uint8Array): Promise<CryptoKey> {
+	return crypto.subtle.importKey(
+		'raw',
+		arrayBufferFrom(raw),
+		{ name: 'AES-GCM', length: KEY_LENGTH_BITS },
+		false,
+		['encrypt', 'decrypt']
+	);
+}
+
+export function encryptTextWithKey(
+	plaintext: string,
+	key: CryptoKey,
+	options: EncryptOptions = {}
+): Promise<EncryptedTextPayload> {
+	const plaintextBytes = new TextEncoder().encode(plaintext);
+	return encryptBytesWithContext(
+		plaintextBytes,
+		keyEncryptionContext(key),
+		options.nonce ?? randomBytes(NONCE_BYTES)
+	);
+}
+
+export async function decryptTextWithKey(
+	payload: EncryptedTextPayload,
+	key: CryptoKey
+): Promise<string> {
+	const plaintext = await decryptBytesWithKey(payload, key);
+	return new TextDecoder().decode(plaintext);
+}
+
+export async function encryptFileWithKey(
+	file: File,
+	key: CryptoKey,
+	options: EncryptFileOptions = {}
+): Promise<EncryptedFilePayload> {
+	const fileBytes = new Uint8Array(await file.arrayBuffer());
+	const encryptedPayload = await encryptBytesWithContext(
+		fileBytes,
+		keyEncryptionContext(key),
+		options.nonce ?? randomBytes(NONCE_BYTES)
+	);
+	const encryptedFilename = await encryptMetadata(
+		file.name || 'flick-file',
+		key,
+		options.filenameNonce ?? randomBytes(NONCE_BYTES)
+	);
+
+	return {
+		...encryptedPayload,
+		encrypted_filename: JSON.stringify(encryptedFilename),
+		content_type: file.type || 'application/octet-stream'
+	};
+}
+
+export async function decryptFileWithKey(
+	payload: EncryptedFilePayload,
+	key: CryptoKey
+): Promise<{ bytes: Uint8Array; filename: string; contentType: string }> {
+	const bytes = await decryptBytesWithKey(payload, key);
+	const filename = await decryptMetadata(payload.encrypted_filename, key);
+	return {
+		bytes,
+		filename,
+		contentType: payload.content_type || 'application/octet-stream'
+	};
+}
+
+// Model B carries no KDF: the browser decrypts with the fragment key directly.
+// This placeholder kdf block is never serialized to the API for Model B
+// requests (the API client omits kdf/access), so its zeroed values are inert.
+function keyEncryptionContext(key: CryptoKey): EncryptionContext {
+	return {
+		key,
+		kdf: {
+			algorithm: KDF_ALGORITHM,
+			salt: '',
+			iterations: 0,
+			key_length_bits: KEY_LENGTH_BITS
+		}
+	};
+}
+
 export function assertKdf(kdf: KdfParams): void {
 	if (
 		kdf.algorithm !== KDF_ALGORITHM ||

@@ -34,15 +34,30 @@ import {
 	type CredentialType,
 	serializeCredential
 } from '$lib/credentials';
-import { createAccessVerifier, encryptFile, encryptText } from '$lib/crypto/text';
+import {
+	createAccessVerifier,
+	encryptFile,
+	encryptFileWithKey,
+	encryptText,
+	encryptTextWithKey,
+	generateSecretKey
+} from '$lib/crypto/text';
 
 type StatusKind = 'idle' | 'success' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
 
-const ttlOptions: Array<{ label: string; value: TtlSeconds }> = [
+const MIN_TTL_SECONDS = 300;
+const MAX_TTL_SECONDS = 604_800;
+const ttlUnitFactor: Record<'minutes' | 'hours' | 'days', number> = {
+	minutes: 60,
+	hours: 3600,
+	days: 86_400
+};
+const ttlPresets: Array<{ label: string; value: number }> = [
 	{ label: '10 min', value: 600 },
 	{ label: '1 hour', value: 3600 },
-	{ label: '24 hours', value: 86_400 }
+	{ label: '24 hours', value: 86_400 },
+	{ label: '7 days', value: 604_800 }
 ];
 
 const defaultLocalFileMaxBytes = 1024 * 1024 - 16;
@@ -69,7 +84,14 @@ let mode = $state<CreateMode>('text');
 let plaintext = $state('');
 let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
 let passphrase = $state('');
-let ttlSeconds = $state<TtlSeconds>(600);
+// Model A (true) derives key + access proof from a passphrase; Model B (false)
+// generates a random key carried in the URL fragment. See security-model.md.
+let usePassphrase = $state(true);
+let presetSeconds = $state(600);
+let customActive = $state(false);
+let customValue = $state(2);
+let customUnit = $state<'minutes' | 'hours' | 'days'>('days');
+const ttlSeconds = $derived(customActive ? customValue * ttlUnitFactor[customUnit] : presetSeconds);
 let selectedFiles = $state<FileList>();
 let selectedFile = $state<File | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
@@ -95,7 +117,13 @@ const hasCreatePayload = $derived(
 			? selectedFile !== null && !selectedFileTooLarge
 			: hasCredentialPayload
 );
-const canCreate = $derived(hasCreatePayload && passphrase.length > 0 && !isCreating);
+const canCreate = $derived(
+	hasCreatePayload &&
+		(!usePassphrase || passphrase.length > 0) &&
+		ttlSeconds >= MIN_TTL_SECONDS &&
+		ttlSeconds <= MAX_TTL_SECONDS &&
+		!isCreating
+);
 const hasResult = $derived(shareUrl.length > 0);
 
 function submitCreate(event: SubmitEvent): void {
@@ -114,10 +142,9 @@ async function createSecret(): Promise<void> {
 	copyState = 'idle';
 
 	try {
-		const access = await createAccessVerifier(passphrase);
-		const created = await createSelectedSecret(access);
+		const { created, key } = await createSelectedSecret();
 
-		shareUrl = createShareUrl(window.location.origin, created.id);
+		shareUrl = createShareUrl(window.location.origin, created.id, key);
 		expiresAt = created.expires_at;
 		plaintext = '';
 		passphrase = '';
@@ -135,26 +162,66 @@ async function createSecret(): Promise<void> {
 	}
 }
 
-async function createSelectedSecret(
-	access: Awaited<ReturnType<typeof createAccessVerifier>>
-): Promise<CreateSecretResponse> {
+type CreateResult = {
+	created: CreateSecretResponse;
+	// raw key for Model B; omitted for Model A (passphrase is the key source).
+	key?: Uint8Array;
+};
+
+async function createSelectedSecret(): Promise<CreateResult> {
+	if (usePassphrase) {
+		const access = await createAccessVerifier(passphrase);
+		if (mode === 'text') {
+			return {
+				created: await api.createTextSecret(
+					await encryptText(plaintext, passphrase),
+					ttlSeconds,
+					access
+				)
+			};
+		}
+		if (mode === 'file') {
+			return {
+				created: await api.createFileSecret(
+					await encryptFile(requireSelectedFile(), passphrase),
+					ttlSeconds,
+					access
+				)
+			};
+		}
+		return {
+			created: await api.createTextSecret(
+				await encryptText(serializeCredential(credentialEnvelope), passphrase),
+				ttlSeconds,
+				access
+			)
+		};
+	}
+
+	// Model B: random key, no passphrase. The key travels in the URL fragment.
+	const { key, raw } = await generateSecretKey();
 	if (mode === 'text') {
-		return api.createTextSecret(await encryptText(plaintext, passphrase), ttlSeconds, access);
+		return {
+			created: await api.createTextSecret(await encryptTextWithKey(plaintext, key), ttlSeconds),
+			key: raw
+		};
 	}
-
 	if (mode === 'file') {
-		return api.createFileSecret(
-			await encryptFile(requireSelectedFile(), passphrase),
-			ttlSeconds,
-			access
-		);
+		return {
+			created: await api.createFileSecret(
+				await encryptFileWithKey(requireSelectedFile(), key),
+				ttlSeconds
+			),
+			key: raw
+		};
 	}
-
-	return api.createTextSecret(
-		await encryptText(serializeCredential(credentialEnvelope), passphrase),
-		ttlSeconds,
-		access
-	);
+	return {
+		created: await api.createTextSecret(
+			await encryptTextWithKey(serializeCredential(credentialEnvelope), key),
+			ttlSeconds
+		),
+		key: raw
+	};
 }
 
 async function copyShareUrl(): Promise<void> {
@@ -361,44 +428,101 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						{/if}
 
 						<div class="grid gap-2">
-							<Label for="secret-passphrase">Passphrase</Label>
-							<Input
-								id="secret-passphrase"
-								name="flick-passphrase"
-								type="password"
-								autocomplete="off"
-								autocapitalize="none"
-								spellcheck="false"
-								data-1p-ignore="true"
-								data-bwignore="true"
-								data-lpignore="true"
-								placeholder="Required"
-								bind:value={passphrase}
-								disabled={isCreating}
-								required
-							/>
+							<label class="flex items-center gap-2 text-sm font-medium">
+								<input
+									type="checkbox"
+									class="size-4 rounded border-border"
+									bind:checked={usePassphrase}
+									disabled={isCreating}
+								/>
+								Protect with passphrase
+							</label>
+							{#if usePassphrase}
+								<Input
+									id="secret-passphrase"
+									name="flick-passphrase"
+									type="password"
+									autocomplete="off"
+									autocapitalize="none"
+									spellcheck="false"
+									data-1p-ignore="true"
+									data-bwignore="true"
+									data-lpignore="true"
+									placeholder="Required"
+									bind:value={passphrase}
+									disabled={isCreating}
+									required
+								/>
+							{:else}
+								<p class="text-sm text-muted-foreground">
+									Anyone with the link can open this once. The decryption key is embedded in the URL fragment.
+								</p>
+							{/if}
 						</div>
 
 						<div class="grid gap-2">
 							<Label>Expires</Label>
 							<div
-								class="grid grid-cols-3 gap-1 rounded-md border border-border bg-muted/30 p-1"
+								class="flex flex-wrap items-center gap-2"
 								role="group"
 								aria-label="Secret lifetime"
 							>
-								{#each ttlOptions as option (option.value)}
+								{#each ttlPresets as option (option.value)}
 									<Button
 										type="button"
-										variant={ttlSeconds === option.value ? 'default' : 'ghost'}
-										class="h-10 px-1 text-xs sm:text-sm"
-										aria-pressed={ttlSeconds === option.value}
+										variant={!customActive && ttlSeconds === option.value
+											? 'default'
+											: 'outline'}
+										class="h-9 rounded-full px-3 text-xs sm:text-sm"
+										aria-pressed={!customActive && ttlSeconds === option.value}
 										disabled={isCreating}
 										onclick={() => {
-											ttlSeconds = option.value;
-										}}
-									>{option.label}</Button>
+											presetSeconds = option.value;
+											customActive = false;
+										}}>{option.label}</Button>
 								{/each}
+								<div
+									class="inline-flex h-9 items-center gap-1 rounded-full border px-2 transition-colors {customActive
+										? ''
+										: 'hover:border-ring hover:bg-accent hover:text-accent-foreground'}"
+									class:bg-primary={customActive}
+									class:text-primary-foreground={customActive}
+									class:border-primary={customActive}
+								>
+									<input
+										type="text"
+										inputmode="numeric"
+										placeholder="2"
+										value={customValue > 0 ? customValue : ''}
+										class="w-7 border-0 bg-transparent p-0 text-center text-xs font-medium leading-none outline-none sm:text-sm {customActive
+											? 'text-primary-foreground'
+											: ''}"
+										disabled={isCreating}
+										onfocus={() => (customActive = true)}
+										oninput={(e) => {
+											customActive = true;
+											const digits = e.currentTarget.value.replace(/\D/g, ''); e.currentTarget.value = digits;
+											customValue = digits === '' ? 0 : Number(digits);
+										}}
+									/>
+									<select
+										bind:value={customUnit}
+										class="cursor-pointer appearance-none border-0 bg-transparent p-0 text-xs font-medium leading-none outline-none sm:text-sm {customActive
+											? 'text-primary-foreground'
+											: 'text-muted-foreground'}"
+										onchange={() => (customActive = true)}
+									>
+										<option value="minutes">min</option>
+										<option value="hours">hours</option>
+										<option value="days">days</option>
+									</select>
+								</div>
 							</div>
+							{#if ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS}
+								<p class="text-xs text-destructive">
+									Choose a lifetime between 5 minutes and 7 days.
+								</p>
+							{/if}
 						</div>
 
 						<div class="grid gap-3">

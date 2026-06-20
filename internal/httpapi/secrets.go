@@ -48,11 +48,11 @@ type accessMetadataResponse struct {
 }
 
 type getSecretMetadataResponse struct {
-	ID        string                 `json:"id"`
-	Kind      string                 `json:"kind"`
-	Access    accessMetadataResponse `json:"access"`
-	SizeBytes int64                  `json:"size_bytes"`
-	ExpiresAt string                 `json:"expires_at"`
+	ID        string                  `json:"id"`
+	Kind      string                  `json:"kind"`
+	Access    *accessMetadataResponse `json:"access,omitempty"`
+	SizeBytes int64                   `json:"size_bytes"`
+	ExpiresAt string                  `json:"expires_at"`
 }
 
 type openSecretRequest struct {
@@ -112,10 +112,15 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_ciphertext", "ciphertext must be base64 encoded")
 		return
 	}
-	accessProofHash, err := hashAccessProof(req.Access.Proof)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
-		return
+	// Model A secrets carry an access proof; Model B secrets omit it and the
+	// store leaves the proof/KDF columns NULL.
+	var accessProofHash string
+	if req.Access.Proof != "" {
+		accessProofHash, err = hashAccessProof(req.Access.Proof)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
+			return
+		}
 	}
 
 	created, err := s.secrets.Create(r.Context(), secrets.CreateInput{
@@ -150,15 +155,18 @@ func (s Server) getSecretMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, getSecretMetadataResponse{
-		ID:   metadata.ID,
-		Kind: metadata.Kind,
-		Access: accessMetadataResponse{
-			KDF: metadata.AccessKDF,
-		},
+	resp := getSecretMetadataResponse{
+		ID:        metadata.ID,
+		Kind:      metadata.Kind,
 		SizeBytes: metadata.SizeBytes,
 		ExpiresAt: metadata.ExpiresAt.Format(timeFormat),
-	})
+	}
+	// Model A exposes access KDF so the browser can derive the proof; Model B
+	// omits the access block so the browser opens with the fragment key instead.
+	if metadata.AccessKDF.Algorithm != "" {
+		resp.Access = &accessMetadataResponse{KDF: metadata.AccessKDF}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
@@ -187,10 +195,15 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessProofHash, err := hashAccessProof(req.AccessProof)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
-		return
+	// Model A opens require a proof; Model B opens omit it (the link is the
+	// capability). The store decides per-secret whether to verify.
+	var accessProofHash string
+	if req.AccessProof != "" {
+		accessProofHash, err = hashAccessProof(req.AccessProof)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
+			return
+		}
 	}
 
 	secret, err := s.openAndEnqueueCleanup(r.Context(), id, accessProofHash)
