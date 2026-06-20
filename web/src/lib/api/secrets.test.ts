@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-
+import { encodeKeyFragment } from '$lib/crypto/fragment';
 import {
 	type AccessVerifierPayload,
 	type EncryptedFilePayload,
@@ -172,6 +172,21 @@ describe('secret API client', () => {
 		expect(url).not.toContain('ciphertext');
 		expect(url).not.toContain('nonce');
 		expect(url).not.toContain('salt');
+	});
+
+	it('embeds a Model B key only in the fragment, never in path or query', () => {
+		// 32-byte AES-256 key with edge-case bytes (base64url + / and padding).
+		const key = new Uint8Array([
+			1, 2, 3, 250, 255, 0, 127, 191, 254, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130,
+			140, 150, 160, 170, 180, 190, 200, 210, 220, 230
+		]);
+		const url = createShareUrl('https://drop.example.com/app?x=1', 'sec_abc', key);
+
+		// The decryption key must travel in the fragment only — the core Model B
+		// invariant. A regression swapping url.hash for url.search would fail here.
+		expect(url).toContain('#key=');
+		const keyB64 = encodeKeyFragment(key).slice('#key='.length);
+		expect(url.split('#')[0]).not.toContain(keyB64);
 	});
 
 	it('maps API errors to client-safe messages', async () => {
