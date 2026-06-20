@@ -39,15 +39,30 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.PayloadInlineMaxBytes != 1048576 {
 		t.Fatalf("PayloadInlineMaxBytes = %d, want 1048576", cfg.PayloadInlineMaxBytes)
 	}
+	if cfg.MinTTLSeconds != 300 {
+		t.Fatalf("MinTTLSeconds = %d, want 300", cfg.MinTTLSeconds)
+	}
+	if cfg.MaxTTLSeconds != 604800 {
+		t.Fatalf("MaxTTLSeconds = %d, want 604800", cfg.MaxTTLSeconds)
+	}
 }
 
-func TestLoadRejectsDefaultTTLOutsideAllowedSet(t *testing.T) {
+func TestLoadRejectsDefaultTTLBelowRange(t *testing.T) {
 	clearFlickEnv(t)
-	t.Setenv("FLICK_DEFAULT_TTL_SECONDS", "60")
-	t.Setenv("FLICK_ALLOWED_TTL_SECONDS", "600,3600,86400")
+	t.Setenv("FLICK_DEFAULT_TTL_SECONDS", "60") // below the 300s floor
 
 	if _, err := Load(); err == nil {
-		t.Fatal("expected config load error")
+		t.Fatal("expected config load error for default below min ttl")
+	}
+}
+
+func TestLoadRejectsDefaultTTLAboveRange(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_DEFAULT_TTL_SECONDS", "999999") // above the 604800s ceiling
+	t.Setenv("FLICK_MAX_TTL_SECONDS", "604800")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected config load error for default above max ttl")
 	}
 }
 
@@ -67,7 +82,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_NATS_JOB_SUBJECT",
 		"FLICK_PAYLOAD_INLINE_MAX_BYTES",
 		"FLICK_DEFAULT_TTL_SECONDS",
-		"FLICK_ALLOWED_TTL_SECONDS",
+		"FLICK_MIN_TTL_SECONDS",
+		"FLICK_MAX_TTL_SECONDS",
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 )
 
 type Config struct {
@@ -20,7 +19,8 @@ type Config struct {
 	NATSJobSubject        string
 	PayloadInlineMaxBytes int64
 	DefaultTTLSeconds     int
-	AllowedTTLSeconds     []int
+	MinTTLSeconds         int
+	MaxTTLSeconds         int
 }
 
 func Load() (Config, error) {
@@ -37,7 +37,10 @@ func Load() (Config, error) {
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
 		PayloadInlineMaxBytes: 1048576,
 		DefaultTTLSeconds:     3600,
-		AllowedTTLSeconds:     []int{600, 3600, 86400},
+		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
+		// offer an editable "custom" lifetime, not just fixed presets.
+		MinTTLSeconds: 300,
+		MaxTTLSeconds: 604800,
 	}
 
 	var err error
@@ -53,15 +56,27 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
-	if raw := os.Getenv("FLICK_ALLOWED_TTL_SECONDS"); raw != "" {
-		cfg.AllowedTTLSeconds, err = parseAllowedTTLs(raw)
+	if raw := os.Getenv("FLICK_MIN_TTL_SECONDS"); raw != "" {
+		cfg.MinTTLSeconds, err = parsePositiveInt("FLICK_MIN_TTL_SECONDS", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if raw := os.Getenv("FLICK_MAX_TTL_SECONDS"); raw != "" {
+		cfg.MaxTTLSeconds, err = parsePositiveInt("FLICK_MAX_TTL_SECONDS", raw)
 		if err != nil {
 			return Config{}, err
 		}
 	}
 
-	if !containsInt(cfg.AllowedTTLSeconds, cfg.DefaultTTLSeconds) {
-		return Config{}, fmt.Errorf("FLICK_DEFAULT_TTL_SECONDS must be present in FLICK_ALLOWED_TTL_SECONDS")
+	if cfg.MinTTLSeconds <= 0 {
+		return Config{}, fmt.Errorf("FLICK_MIN_TTL_SECONDS must be a positive integer")
+	}
+	if cfg.MaxTTLSeconds < cfg.MinTTLSeconds {
+		return Config{}, fmt.Errorf("FLICK_MAX_TTL_SECONDS must be >= FLICK_MIN_TTL_SECONDS")
+	}
+	if cfg.DefaultTTLSeconds < cfg.MinTTLSeconds || cfg.DefaultTTLSeconds > cfg.MaxTTLSeconds {
+		return Config{}, fmt.Errorf("FLICK_DEFAULT_TTL_SECONDS must be within FLICK_MIN_TTL_SECONDS..FLICK_MAX_TTL_SECONDS")
 	}
 
 	return cfg, nil
@@ -88,37 +103,4 @@ func parsePositiveInt64(name, raw string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return value, nil
-}
-
-func parseAllowedTTLs(raw string) ([]int, error) {
-	parts := strings.Split(raw, ",")
-	values := make([]int, 0, len(parts))
-	seen := make(map[int]struct{}, len(parts))
-
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			return nil, fmt.Errorf("FLICK_ALLOWED_TTL_SECONDS must not contain empty entries")
-		}
-		value, err := parsePositiveInt("FLICK_ALLOWED_TTL_SECONDS", trimmed)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := seen[value]; ok {
-			return nil, fmt.Errorf("FLICK_ALLOWED_TTL_SECONDS contains duplicate value %d", value)
-		}
-		seen[value] = struct{}{}
-		values = append(values, value)
-	}
-
-	return values, nil
-}
-
-func containsInt(values []int, needle int) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
 }

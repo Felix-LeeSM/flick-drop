@@ -1,3 +1,4 @@
+import { encodeKeyFragment } from '$lib/crypto/fragment';
 import type {
 	AccessVerifierPayload,
 	EncryptedFilePayload,
@@ -8,7 +9,7 @@ import type {
 export const DEFAULT_API_BASE_URL =
 	import.meta.env.PUBLIC_FLICK_API_BASE_URL || 'http://localhost:8080';
 
-export type TtlSeconds = 600 | 3600 | 86400;
+export type TtlSeconds = number;
 
 export type CreateSecretResponse = {
 	id: string;
@@ -34,7 +35,9 @@ export type GetSecretResponse = GetTextSecretResponse | GetFileSecretResponse;
 export type GetSecretMetadataResponse = {
 	id: string;
 	kind: SecretKind;
-	access: {
+	// access is present for Model A (browser derives the proof from it) and
+	// absent for Model B (browser opens with the URL fragment key instead).
+	access?: {
 		kdf: KdfParams;
 	};
 	size_bytes: number;
@@ -45,15 +48,15 @@ export type SecretApiClient = {
 	createTextSecret(
 		payload: EncryptedTextPayload,
 		ttlSeconds: TtlSeconds,
-		access: AccessVerifierPayload
+		access?: AccessVerifierPayload
 	): Promise<CreateSecretResponse>;
 	createFileSecret(
 		payload: EncryptedFilePayload,
 		ttlSeconds: TtlSeconds,
-		access: AccessVerifierPayload
+		access?: AccessVerifierPayload
 	): Promise<CreateSecretResponse>;
 	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
-	openSecret(id: string, accessProof: string): Promise<GetSecretResponse>;
+	openSecret(id: string, accessProof?: string): Promise<GetSecretResponse>;
 };
 
 export class SecretApiError extends Error {
@@ -79,16 +82,19 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 
 	return {
 		createTextSecret(payload, ttlSeconds, access) {
-			const body = {
+			// Model A sends kdf + access (passphrase-derived); Model B omits both.
+			const body: Record<string, unknown> = {
 				kind: 'text',
 				ciphertext: payload.ciphertext,
 				nonce: payload.nonce,
-				kdf: payload.kdf,
 				size_bytes: payload.size_bytes,
 				ttl_seconds: ttlSeconds,
-				max_views: 1,
-				access
+				max_views: 1
 			};
+			if (access) {
+				body.kdf = payload.kdf;
+				body.access = access;
+			}
 
 			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 				method: 'POST',
@@ -98,18 +104,20 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 		},
 
 		createFileSecret(payload, ttlSeconds, access) {
-			const body = {
+			const body: Record<string, unknown> = {
 				kind: 'file',
 				ciphertext: payload.ciphertext,
 				nonce: payload.nonce,
-				kdf: payload.kdf,
 				encrypted_filename: payload.encrypted_filename,
 				content_type: payload.content_type,
 				size_bytes: payload.size_bytes,
 				ttl_seconds: ttlSeconds,
-				max_views: 1,
-				access
+				max_views: 1
 			};
+			if (access) {
+				body.kdf = payload.kdf;
+				body.access = access;
+			}
 
 			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 				method: 'POST',
@@ -126,24 +134,29 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 		},
 
 		openSecret(id, accessProof) {
+			// Model A sends an access proof; Model B omits it (link is the
+			// capability). An empty body still satisfies the required request body.
+			const body = accessProof ? { access_proof: accessProof } : {};
 			return requestJson<GetSecretResponse>(
 				fetcher,
 				`${baseUrl}/api/secrets/${encodeURIComponent(id)}/open`,
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ access_proof: accessProof })
+					body: JSON.stringify(body)
 				}
 			);
 		}
 	};
 }
 
-export function createShareUrl(origin: string, id: string): string {
+export function createShareUrl(origin: string, id: string, key?: Uint8Array): string {
 	const url = new URL(origin);
 	url.pathname = `/s/${encodeURIComponent(id)}`;
 	url.search = '';
-	url.hash = '';
+	// Model B carries the decryption key in the fragment, which the browser
+	// never sends to the server. See web/src/lib/crypto/fragment.ts.
+	url.hash = key ? encodeKeyFragment(key).slice(1) : '';
 	return url.toString();
 }
 

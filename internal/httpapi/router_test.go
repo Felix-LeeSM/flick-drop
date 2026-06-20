@@ -303,7 +303,8 @@ func TestOpenRequiresOutbox(t *testing.T) {
 	conn := openHTTPTestDB(t, ctx)
 	store, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: 1024,
-		AllowedTTLSeconds:     []int{600, 3600, 86400},
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -511,7 +512,8 @@ func newTestRouterFixture(t *testing.T, opts Options) testRouterFixture {
 	conn := openHTTPTestDB(t, ctx)
 	store, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: 1024,
-		AllowedTTLSeconds:     []int{600, 3600, 86400},
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -539,7 +541,8 @@ func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	conn := openHTTPTestDB(t, context.Background())
 	store, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: 1024,
-		AllowedTTLSeconds:     []int{600, 3600, 86400},
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -633,5 +636,57 @@ func decodeBody(t *testing.T, resp *httptest.ResponseRecorder, out any) {
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		t.Fatalf("decode body: %v", err)
+	}
+}
+
+func TestSecretHTTPFlowModelB(t *testing.T) {
+	fixture := newTestRouterFixture(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		NewJobID: func() (string, error) {
+			return "job-consume-b", nil
+		},
+	})
+	router := fixture.router
+
+	// Model B create: no kdf, no access. The decryption key travels in the URL
+	// fragment, which the API never receives.
+	createBody := map[string]any{
+		"kind":        "text",
+		"ciphertext":  base64.StdEncoding.EncodeToString([]byte("ciphertext")),
+		"nonce":       "nonce",
+		"size_bytes":  10,
+		"ttl_seconds": 600,
+	}
+
+	createResp := performJSON(t, router, http.MethodPost, "/api/secrets", createBody)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", createResp.Code, createResp.Body.String())
+	}
+	var created createSecretResponse
+	decodeBody(t, createResp, &created)
+
+	getResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("metadata status = %d, body = %s", getResp.Code, getResp.Body.String())
+	}
+	if strings.Contains(getResp.Body.String(), "access") {
+		t.Fatalf("model B metadata should omit access: %s", getResp.Body.String())
+	}
+
+	// Model B opens without a proof; the link is the capability.
+	openResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
+	if openResp.Code != http.StatusOK {
+		t.Fatalf("open status = %d, body = %s", openResp.Code, openResp.Body.String())
+	}
+	var opened openSecretResponse
+	decodeBody(t, openResp, &opened)
+	if opened.Ciphertext != createBody["ciphertext"] {
+		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
+	}
+
+	// One-time open still applies.
+	secondOpen := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
+	if secondOpen.Code != http.StatusGone {
+		t.Fatalf("second open status = %d, body = %s", secondOpen.Code, secondOpen.Body.String())
 	}
 }

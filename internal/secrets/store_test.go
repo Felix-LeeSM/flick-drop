@@ -487,10 +487,127 @@ func newTestStore(t *testing.T, conn *sql.DB) *Store {
 
 	store, err := NewStore(conn, StoreOptions{
 		PayloadInlineMaxBytes: 1024,
-		AllowedTTLSeconds:     []int{600, 3600, 86400},
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
 	return store
+}
+
+func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	// Model B: no KDF, no access KDF, no access proof hash. The link is the
+	// capability; the decryption key travels in the URL fragment.
+	created, err := store.Create(ctx, CreateInput{
+		Kind:       KindText,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		SizeBytes:  10,
+		TTLSeconds: 600,
+		MaxViews:   1,
+	})
+	if err != nil {
+		t.Fatalf("create model B secret: %v", err)
+	}
+
+	// Model B metadata exposes no access block.
+	metadata, err := store.Metadata(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("metadata model B: %v", err)
+	}
+	if metadata.AccessKDF.Algorithm != "" {
+		t.Fatalf("model B metadata access algorithm = %q, want empty", metadata.AccessKDF.Algorithm)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin model B open tx: %v", err)
+	}
+	opened, err := store.OpenTx(ctx, tx, created.ID, "")
+	if err != nil {
+		t.Fatalf("open model B without proof: %v", err)
+	}
+	if string(opened.Ciphertext) != "ciphertext" {
+		t.Fatalf("opened ciphertext = %q, want ciphertext", string(opened.Ciphertext))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit model B open tx: %v", err)
+	}
+
+	// Model B is still one-time: a second open is consumed.
+	tx, err = conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin second open tx: %v", err)
+	}
+	if _, err := store.OpenTx(ctx, tx, created.ID, ""); !errors.Is(err, ErrConsumed) {
+		t.Fatalf("second model B open error = %v, want ErrConsumed", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback second open tx: %v", err)
+	}
+}
+
+func TestStoreRejectsMixedAccessModel(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, openTestDB(t, ctx))
+
+	validKDF := KDFParams{
+		Algorithm:     KDFPBKDF2SHA256,
+		Salt:          "salt",
+		Iterations:    600000,
+		KeyLengthBits: 256,
+	}
+
+	// Access proof without KDF must be rejected (not silently treated as Model B).
+	if _, err := store.Create(ctx, CreateInput{
+		Kind:            KindText,
+		Ciphertext:      []byte("ciphertext"),
+		Nonce:           "nonce",
+		AccessProofHash: "proof-hash",
+		SizeBytes:       10,
+		TTLSeconds:      600,
+		MaxViews:        1,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("proof without kdf error = %v, want ErrInvalidInput", err)
+	}
+
+	// KDF without access proof must be rejected.
+	if _, err := store.Create(ctx, CreateInput{
+		Kind:       KindText,
+		Ciphertext: []byte("ciphertext"),
+		Nonce:      "nonce",
+		KDF:        validKDF,
+		AccessKDF:  validKDF,
+		SizeBytes:  10,
+		TTLSeconds: 600,
+		MaxViews:   1,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("kdf without proof error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestStoreRejectsTTLOutsideRange(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, openTestDB(t, ctx))
+
+	for _, ttl := range []int{60, 999999} { // below the 300s floor, above the 604800s ceiling
+		_, err := store.Create(ctx, CreateInput{
+			Kind:       KindText,
+			Ciphertext: []byte("ciphertext"),
+			Nonce:      "nonce",
+			SizeBytes:  10,
+			TTLSeconds: ttl,
+			MaxViews:   1,
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("ttl %d: err = %v, want ErrInvalidInput", ttl, err)
+		}
+	}
 }

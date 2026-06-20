@@ -31,7 +31,8 @@ Local development:
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max payload size stored as SQLite BLOB. |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
-| `FLICK_ALLOWED_TTL_SECONDS` | Comma-separated allowed TTLs. |
+| `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
+| `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `oci`. |
 
 ## NATS

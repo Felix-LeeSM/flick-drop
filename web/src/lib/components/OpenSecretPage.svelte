@@ -8,7 +8,7 @@ import {
 	LockKeyholeIcon,
 	LockKeyholeOpenIcon
 } from '@lucide/svelte';
-import { onDestroy } from 'svelte';
+import { onDestroy, onMount } from 'svelte';
 import { resolve } from '$app/paths';
 import { createSecretApiClient, SecretApiError, type SecretKind } from '$lib/api/secrets';
 import CredentialView from '$lib/components/CredentialView.svelte';
@@ -19,12 +19,16 @@ import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
 import { Textarea } from '$lib/components/ui/textarea';
 import { type CredentialEnvelope, parseCredential } from '$lib/credentials';
+import { decodeKeyFragment } from '$lib/crypto/fragment';
 import {
 	decryptFile,
+	decryptFileWithKey,
 	decryptText,
+	decryptTextWithKey,
 	deriveAccessProof,
 	type EncryptedFilePayload,
-	type EncryptedTextPayload
+	type EncryptedTextPayload,
+	importAesGcmKey
 } from '$lib/crypto/text';
 
 type Props = {
@@ -50,8 +54,37 @@ let statusKind = $state<StatusKind>('idle');
 let isOpening = $state(false);
 let hasOpened = $state(false);
 let copyState = $state<'idle' | 'copied'>('idle');
+// Model A (passphrase) vs Model B (link-bearer). Determined by prefetching
+// metadata on mount: Model A secrets expose an access block, Model B do not.
+let accessModel = $state<'a' | 'b' | 'unknown'>('unknown');
+let linkKey = $state<CryptoKey | null>(null);
 
-const canOpen = $derived(passphrase.length > 0 && !isOpening && !hasOpened);
+onMount(() => {
+	void loadModel();
+});
+
+async function loadModel(): Promise<void> {
+	try {
+		const metadata = await api.getSecretMetadata(secretId);
+		accessModel = metadata.access ? 'a' : 'b';
+		if (accessModel === 'b') {
+			const raw = decodeKeyFragment(window.location.hash);
+			if (!raw) {
+				status = 'This link is incomplete — the decryption key is missing from the URL.';
+				statusKind = 'error';
+				return;
+			}
+			linkKey = await importAesGcmKey(raw);
+		}
+	} catch (error) {
+		status = error instanceof SecretApiError ? error.message : 'Could not load this secret.';
+		statusKind = 'error';
+	}
+}
+
+const canOpen = $derived(
+	!isOpening && !hasOpened && (accessModel === 'b' ? linkKey !== null : passphrase.length > 0)
+);
 
 onDestroy(() => {
 	revokeDownloadUrl();
@@ -81,27 +114,11 @@ async function openSecret(): Promise<void> {
 	revokeDownloadUrl();
 
 	try {
-		const metadata = await api.getSecretMetadata(secretId);
-		const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
-		const payload = await api.openSecret(secretId, accessProof);
-
-		if (payload.kind === 'file') {
-			const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
-			const fileBuffer = file.bytes.buffer.slice(
-				file.bytes.byteOffset,
-				file.bytes.byteOffset + file.bytes.byteLength
-			) as ArrayBuffer;
-			const blob = new Blob([fileBuffer], { type: file.contentType });
-			downloadUrl = URL.createObjectURL(blob);
-			downloadFilename = file.filename;
-			downloadSize = file.bytes.byteLength;
-			openedKind = 'file';
+		if (accessModel === 'b') {
+			await openLinkBearerSecret();
 		} else {
-			decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
-			credential = parseCredential(decryptedText);
-			openedKind = 'text';
+			await openPassphraseSecret();
 		}
-
 		passphrase = '';
 		hasOpened = true;
 		status = 'Opened';
@@ -112,6 +129,54 @@ async function openSecret(): Promise<void> {
 	} finally {
 		isOpening = false;
 	}
+}
+
+// Model B: the link is the capability. Open without a proof and decrypt with
+// the fragment key.
+async function openLinkBearerSecret(): Promise<void> {
+	const key = linkKey;
+	if (!key) {
+		throw new Error('missing decryption key');
+	}
+	const payload = await api.openSecret(secretId);
+	if (payload.kind === 'file') {
+		const file = await decryptFileWithKey(payload as EncryptedFilePayload, key);
+		renderFile(file.bytes, file.filename, file.contentType);
+	} else {
+		decryptedText = await decryptTextWithKey(payload as EncryptedTextPayload, key);
+		credential = parseCredential(decryptedText);
+		openedKind = 'text';
+	}
+}
+
+// Model A: derive an access proof from the passphrase and decrypt with it.
+async function openPassphraseSecret(): Promise<void> {
+	const metadata = await api.getSecretMetadata(secretId);
+	if (!metadata.access) {
+		throw new Error('expected access metadata for Model A secret');
+	}
+	const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
+	const payload = await api.openSecret(secretId, accessProof);
+	if (payload.kind === 'file') {
+		const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
+		renderFile(file.bytes, file.filename, file.contentType);
+	} else {
+		decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
+		credential = parseCredential(decryptedText);
+		openedKind = 'text';
+	}
+}
+
+function renderFile(bytes: Uint8Array, filename: string, contentType: string): void {
+	const fileBuffer = bytes.buffer.slice(
+		bytes.byteOffset,
+		bytes.byteOffset + bytes.byteLength
+	) as ArrayBuffer;
+	const blob = new Blob([fileBuffer], { type: contentType });
+	downloadUrl = URL.createObjectURL(blob);
+	downloadFilename = filename;
+	downloadSize = bytes.byteLength;
+	openedKind = 'file';
 }
 
 async function copySecret(): Promise<void> {
@@ -179,24 +244,30 @@ function formatBytes(bytes: number): string {
 				</Card.Header>
 				<Card.Content class="px-4 py-4 sm:px-5">
 					<form class="grid gap-4" autocomplete="off" onsubmit={submitOpen}>
-						<div class="grid gap-2">
-							<Label for="open-passphrase">Passphrase</Label>
-							<Input
-								id="open-passphrase"
-								name="flick-open-passphrase"
-								type="password"
-								autocomplete="off"
-								autocapitalize="none"
-								spellcheck="false"
-								data-1p-ignore="true"
-								data-bwignore="true"
-								data-lpignore="true"
-								placeholder={hasOpened ? 'Already opened' : 'Required'}
-								bind:value={passphrase}
-								disabled={isOpening || hasOpened}
-								required
-							/>
-						</div>
+						{#if accessModel === 'b'}
+							<p class="text-sm text-muted-foreground">
+								This link opens without a passphrase. Anyone with the full URL can open it once.
+							</p>
+						{:else}
+							<div class="grid gap-2">
+								<Label for="open-passphrase">Passphrase</Label>
+								<Input
+									id="open-passphrase"
+									name="flick-open-passphrase"
+									type="password"
+									autocomplete="off"
+									autocapitalize="none"
+									spellcheck="false"
+									data-1p-ignore="true"
+									data-bwignore="true"
+									data-lpignore="true"
+									placeholder={hasOpened ? 'Already opened' : 'Required'}
+									bind:value={passphrase}
+									disabled={isOpening || hasOpened}
+									required
+								/>
+							</div>
+						{/if}
 
 						<Button type="submit" class="h-10 w-full" disabled={!canOpen}>
 							{#if hasOpened}
