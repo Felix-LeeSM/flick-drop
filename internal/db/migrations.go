@@ -11,7 +11,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		`create table if not exists secrets (
 			id text primary key,
 			kind text not null check (kind in ('text', 'file')),
-			storage_backend text not null check (storage_backend in ('sqlite_blob', 'oci_object')),
+			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
 			storage_key text not null,
 			nonce text not null,
 			-- Model A secrets store KDF parameters so the browser can re-derive the
@@ -28,6 +28,9 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			max_views integer not null default 1 check (max_views > 0),
 			view_count integer not null default 0 check (view_count >= 0),
 			failed_access_count integer not null default 0 check (failed_access_count >= 0),
+			-- M3 large uploads land in S3 first; a secret starts as pending_upload
+			-- and flips to active once /finalize confirms the object exists.
+			state text not null default 'active' check (state in ('active', 'pending_upload')),
 			expires_at datetime not null,
 			consumed_at datetime,
 			created_at datetime not null,
@@ -72,31 +75,47 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	if err := ensureColumn(ctx, conn, "secrets", "failed_access_count", "integer not null default 0 check (failed_access_count >= 0)"); err != nil {
 		return err
 	}
-	// Older deployments created `secrets` with NOT NULL kdf columns. SQLite
-	// cannot drop a NOT NULL constraint via ALTER, so such tables must be
-	// rebuilt to accept Model B secrets (which carry no KDF). No-op when the
-	// columns are already nullable.
-	if err := relaxSecretsKDFConstraints(ctx, conn); err != nil {
+	// Older deployments created `secrets` with NOT NULL kdf columns, without
+	// the M3 `state` column, or with the legacy `oci_object` backend enum.
+	// SQLite cannot drop a NOT NULL constraint or alter a CHECK via ALTER, so
+	// such tables must be rebuilt to the current shape. No-op when the schema
+	// is already normalized.
+	if err := normalizeSecretsSchema(ctx, conn); err != nil {
 		return err
 	}
 	return nil
 }
 
-// relaxSecretsKDFConstraints rebuilds the secrets table when the kdf_* columns
-// are still NOT NULL (pre-Model-B schema), preserving all rows. It is a no-op
-// on databases that already use the nullable schema. SQLite lacks ALTER COLUMN
-// to drop NOT NULL, so the safe path is the table-rebuild described at
-// https://sqlite.org/lang_altertable.html#otheralter.
-func relaxSecretsKDFConstraints(ctx context.Context, conn *sql.DB) error {
-	strict, err := columnIsNotNull(ctx, conn, "secrets", "kdf_algorithm")
+// normalizeSecretsSchema rebuilds the secrets table to the current shape when an
+// older database is detected: NOT NULL kdf columns (pre-Model-B), a missing
+// `state` column (pre-M3), or the legacy `oci_object` backend enum. All rows
+// are preserved. It is a no-op on databases already at the current schema.
+// SQLite cannot drop NOT NULL or alter a CHECK in place, so the safe path is
+// the table-rebuild described at https://sqlite.org/lang_altertable.html#otheralter.
+func normalizeSecretsSchema(ctx context.Context, conn *sql.DB) error {
+	// The `state` column is the M3 marker: a database that has it AND nullable
+	// kdf columns is already normalized. Anything older (strict kdf, or no state
+	// column) needs the rebuild.
+	strictKDF, err := columnIsNotNull(ctx, conn, "secrets", "kdf_algorithm")
 	if err != nil {
 		return err
 	}
-	if !strict {
+	hasState, err := columnExists(ctx, conn, "secrets", "state")
+	if err != nil {
+		return err
+	}
+	if !strictKDF && hasState {
 		return nil
 	}
 
-	// Column list must match the secrets table definition above.
+	// Rename the legacy backend enum before rebuild so copied rows satisfy the
+	// new CHECK. Idempotent: a no-op when no `oci_object` rows exist.
+	if _, err := conn.ExecContext(ctx, `update secrets set storage_backend='s3_object' where storage_backend='oci_object'`); err != nil {
+		return fmt.Errorf("migrate storage_backend enum: %w", err)
+	}
+
+	// Column list must match the secrets table definition above (state excluded;
+	// rebuilt rows take the 'active' default).
 	const secretsColumns = `
 			id, kind, storage_backend, storage_key, nonce, kdf_algorithm, kdf_salt,
 			kdf_params_json, access_kdf_params_json, access_proof_hash,
@@ -124,7 +143,7 @@ func relaxSecretsKDFConstraints(ctx context.Context, conn *sql.DB) error {
 		`create table secrets_new (
 				id text primary key,
 				kind text not null check (kind in ('text', 'file')),
-				storage_backend text not null check (storage_backend in ('sqlite_blob', 'oci_object')),
+				storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
 				storage_key text not null,
 				nonce text not null,
 				kdf_algorithm text,
@@ -138,6 +157,7 @@ func relaxSecretsKDFConstraints(ctx context.Context, conn *sql.DB) error {
 				max_views integer not null default 1 check (max_views > 0),
 				view_count integer not null default 0 check (view_count >= 0),
 				failed_access_count integer not null default 0 check (failed_access_count >= 0),
+				state text not null default 'active' check (state in ('active', 'pending_upload')),
 				expires_at datetime not null,
 				consumed_at datetime,
 				created_at datetime not null,
@@ -159,6 +179,34 @@ func relaxSecretsKDFConstraints(ctx context.Context, conn *sql.DB) error {
 		return fmt.Errorf("commit secrets rebuild: %w", err)
 	}
 	return nil
+}
+
+// columnExists reports whether table has a column named column.
+func columnExists(ctx context.Context, conn *sql.DB, table, column string) (bool, error) {
+	rows, err := conn.QueryContext(ctx, "pragma table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan %s column info: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate %s column info: %w", table, err)
+	}
+	return false, nil
 }
 
 func columnIsNotNull(ctx context.Context, conn *sql.DB, table, column string) (bool, error) {

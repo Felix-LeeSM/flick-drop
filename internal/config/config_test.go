@@ -39,6 +39,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.PayloadInlineMaxBytes != 1048576 {
 		t.Fatalf("PayloadInlineMaxBytes = %d, want 1048576", cfg.PayloadInlineMaxBytes)
 	}
+	if cfg.MaxFileBytes != 26214400 {
+		t.Fatalf("MaxFileBytes = %d, want 26214400", cfg.MaxFileBytes)
+	}
 	if cfg.MinTTLSeconds != 300 {
 		t.Fatalf("MinTTLSeconds = %d, want 300", cfg.MinTTLSeconds)
 	}
@@ -47,6 +50,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 	if cfg.OpenRatePerMinute != 10 {
 		t.Fatalf("OpenRatePerMinute = %d, want 10", cfg.OpenRatePerMinute)
+	}
+	if cfg.CreateRatePerMinute != 5 {
+		t.Fatalf("CreateRatePerMinute = %d, want 5", cfg.CreateRatePerMinute)
+	}
+	if cfg.S3.Enabled {
+		t.Fatalf("S3.Enabled = true, want false by default")
 	}
 	if len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("TrustedProxies = %v, want empty by default", cfg.TrustedProxies)
@@ -87,11 +96,20 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_NATS_STREAM",
 		"FLICK_NATS_JOB_SUBJECT",
 		"FLICK_PAYLOAD_INLINE_MAX_BYTES",
+		"FLICK_MAX_FILE_BYTES",
 		"FLICK_DEFAULT_TTL_SECONDS",
 		"FLICK_MIN_TTL_SECONDS",
 		"FLICK_MAX_TTL_SECONDS",
 		"FLICK_OPEN_RATE_PER_MIN",
+		"FLICK_CREATE_RATE_PER_MIN",
 		"FLICK_TRUSTED_PROXIES",
+		"FLICK_STORAGE_LARGE_BACKEND",
+		"FLICK_S3_ENDPOINT",
+		"FLICK_S3_REGION",
+		"FLICK_S3_BUCKET",
+		"FLICK_S3_ACCESS_KEY_ID",
+		"FLICK_S3_SECRET_ACCESS_KEY",
+		"FLICK_S3_PATH_STYLE",
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")

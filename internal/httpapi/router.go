@@ -23,6 +23,7 @@ type Server struct {
 	allowedOrigin         string
 	internalToken         string
 	openLimiter           *rateLimiter
+	createLimiter         *rateLimiter
 }
 
 type Options struct {
@@ -30,6 +31,7 @@ type Options struct {
 	AllowedOrigin         string
 	InternalToken         string
 	OpenRatePerMinute     int
+	CreateRatePerMinute   int
 	TrustedProxies        []*net.IPNet
 	OutboxStore           *events.OutboxStore
 	NewJobID              func() (string, error)
@@ -50,6 +52,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:         opts.InternalToken,
 		openLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		createLimiter:         newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -60,7 +63,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
 	r.Get("/metrics", server.metrics)
-	r.Post("/api/secrets", server.createSecret)
+	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
+	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Group(func(r chi.Router) {

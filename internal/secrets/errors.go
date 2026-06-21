@@ -11,4 +11,6 @@ var (
 	ErrPayloadTooLarge  = errors.New("payload too large")
 	ErrUnsupportedKind  = errors.New("unsupported secret kind")
 	ErrUnsupportedViews = errors.New("unsupported max views")
+	ErrNotPending       = errors.New("secret is not pending upload")
+	ErrObjectMissing    = errors.New("uploaded object is missing or oversized")
 )

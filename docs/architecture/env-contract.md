@@ -33,8 +33,9 @@ Local development:
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
-| `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `oci`. |
+| `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
 | `FLICK_OPEN_RATE_PER_MIN` | Max `/open` requests per client IP + path per minute. |
+| `FLICK_CREATE_RATE_PER_MIN` | Max `/api/secrets` (presigned POST issuance) requests per client IP + path per minute. |
 | `FLICK_TRUSTED_PROXIES` | Comma-separated CIDRs whose peer may set X-Forwarded-For. Empty = direct peer IP only. |
 
 ## NATS
@@ -54,16 +55,18 @@ Local development:
 | `FLICK_WORKER_CONCURRENCY` | Parallel job execution limit. |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
 
-## OCI
+## S3
 
-Used only when `FLICK_STORAGE_LARGE_BACKEND=oci`.
+Used only when `FLICK_STORAGE_LARGE_BACKEND=s3`. The server speaks the S3 API
+directly via the AWS SDK, so any S3-compatible provider works (MinIO dev, OCI
+S3-compat prod, AWS S3, R2). Auth is always a static key pair — OCI Customer
+Secret Key in prod — because the AWS SDK cannot speak OCI instance principal.
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_OCI_AUTH_MODE` | `config_file`, `api_key`, or `instance_principal`. |
-| `FLICK_OCI_CONFIG_FILE` | Local OCI config path for development. |
-| `FLICK_OCI_PROFILE` | OCI config profile. |
-| `FLICK_OCI_REGION` | OCI region. |
-| `FLICK_OCI_NAMESPACE` | Object Storage namespace. |
-| `FLICK_OCI_BUCKET` | Development or production bucket name. |
-| `FLICK_OCI_COMPARTMENT_OCID` | Compartment OCID for bucket operations. |
+| `FLICK_S3_ENDPOINT` | S3-compatible endpoint. Empty = AWS default host. MinIO `http://localhost:9000`; OCI `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`. |
+| `FLICK_S3_REGION` | Region (`us-east-1` for MinIO; real region for OCI/AWS). |
+| `FLICK_S3_BUCKET` | Bucket name. |
+| `FLICK_S3_ACCESS_KEY_ID` | Static access key ID (MinIO `minioadmin`; OCI Customer Secret Key). |
+| `FLICK_S3_SECRET_ACCESS_KEY` | Static secret access key. |
+| `FLICK_S3_PATH_STYLE` | `true` (default) for MinIO/OCI path-style; `false` for virtual-host. |

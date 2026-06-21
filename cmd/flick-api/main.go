@@ -14,6 +14,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/httpapi"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 func main() {
@@ -35,10 +36,32 @@ func main() {
 		log.Fatalf("migrate api database: %v", err)
 	}
 
+	var objectStore storage.ObjectStore
+	if cfg.S3.Enabled {
+		objClient, err := storage.New(storage.Config{
+			Enabled:         true,
+			Endpoint:        cfg.S3.Endpoint,
+			Region:          cfg.S3.Region,
+			Bucket:          cfg.S3.Bucket,
+			AccessKeyID:     cfg.S3.AccessKeyID,
+			SecretAccessKey: cfg.S3.SecretAccessKey,
+			PathStyle:       cfg.S3.PathStyle,
+		})
+		if err != nil {
+			log.Fatalf("create object store: %v", err)
+		}
+		objectStore = objClient
+		log.Printf("flick-api large-object storage enabled: bucket %s region %s", cfg.S3.Bucket, cfg.S3.Region)
+	}
+	// The ciphertext cap is the plaintext cap plus the AES-GCM tag and a safety
+	// margin; finalize HEAD re-verifies against this.
+	maxObjectBytes := cfg.MaxFileBytes + 4096
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
+		MaxObjectBytes:        maxObjectBytes,
 		MinTTLSeconds:         cfg.MinTTLSeconds,
 		MaxTTLSeconds:         cfg.MaxTTLSeconds,
+		Objects:               objectStore,
 	})
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
@@ -72,6 +95,7 @@ func main() {
 			AllowedOrigin:         cfg.PublicBaseURL,
 			InternalToken:         cfg.InternalToken,
 			OpenRatePerMinute:     cfg.OpenRatePerMinute,
+			CreateRatePerMinute:   cfg.CreateRatePerMinute,
 			TrustedProxies:        cfg.TrustedProxies,
 			OutboxStore:           outboxStore,
 		}),

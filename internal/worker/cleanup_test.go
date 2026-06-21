@@ -163,7 +163,7 @@ func TestCleanupClientRequiresConfiguration(t *testing.T) {
 
 func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -188,15 +188,14 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedJobKind(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
 	err = handler.HandleJob(context.Background(), events.JobEvent{
-		JobID:       "job_oci",
-		Kind:        events.KindDeleteOCIObject,
-		ObjectKey:   "object-key",
+		JobID:       "job_unknown",
+		Kind:        "totally_unknown_kind",
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	})
 	if !errors.Is(err, ErrInvalidJob) {
@@ -207,9 +206,47 @@ func TestCleanupHandlerRejectsUnsupportedJobKind(t *testing.T) {
 	}
 }
 
+type fakeObjectDeleter struct {
+	deleted []string
+	err     error
+}
+
+func (f *fakeObjectDeleter) Delete(_ context.Context, key string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.deleted = append(f.deleted, key)
+	return nil
+}
+
+func TestCleanupHandlerDeletesObject(t *testing.T) {
+	api := &fakeCleanupAPI{}
+	obj := &fakeObjectDeleter{}
+	handler, err := NewCleanupHandler(api, obj)
+	if err != nil {
+		t.Fatalf("new cleanup handler: %v", err)
+	}
+
+	err = handler.HandleJob(context.Background(), events.JobEvent{
+		JobID:       "job_oci",
+		Kind:        events.KindDeleteOCIObject,
+		ObjectKey:   "obj-1",
+		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("handle object delete: %v", err)
+	}
+	if len(api.calls) != 0 {
+		t.Fatalf("api calls = %d, want 0 (object delete bypasses the internal API)", len(api.calls))
+	}
+	if len(obj.deleted) != 1 || obj.deleted[0] != "obj-1" {
+		t.Fatalf("deleted = %v, want [obj-1]", obj.deleted)
+	}
+}
+
 func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -226,7 +263,7 @@ func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 func TestCleanupHandlerPropagatesClientError(t *testing.T) {
 	apiErr := errors.New("api unavailable")
 	api := &fakeCleanupAPI{err: apiErr}
-	handler, err := NewCleanupHandler(api)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -241,7 +278,7 @@ func TestProcessorRunsCleanupHandler(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
