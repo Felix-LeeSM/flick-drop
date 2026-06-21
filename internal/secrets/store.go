@@ -694,6 +694,25 @@ func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
 	return affected > 0, nil
 }
 
+// ReclaimTx hard-deletes a secret and its inline payload within the caller's
+// transaction. It is the reaper's row-cleanup path: orphan (pending_upload) and
+// expired secrets are removed here outright, unlike the payload-only Cleanup
+// path which preserves consumed metadata. Guarded by reclaim_enqueued_at IS
+// NOT NULL so only rows the reaper has claimed can be reaped. Idempotent: a
+// missing row is not an error.
+func (s *Store) ReclaimTx(ctx context.Context, tx *sql.Tx, id string) error {
+	if id == "" {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+		return fmt.Errorf("delete secret payload on reclaim: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `delete from secrets where id = ? and reclaim_enqueued_at is not null`, id); err != nil {
+		return fmt.Errorf("delete secret on reclaim: %w", err)
+	}
+	return nil
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }

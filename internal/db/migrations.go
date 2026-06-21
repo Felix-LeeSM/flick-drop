@@ -83,6 +83,20 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	if err := normalizeSecretsSchema(ctx, conn); err != nil {
 		return err
 	}
+	// M4 reaper marks a row reclaimable (enqueued for hard-delete) the moment it
+	// claims it, so concurrent reaper ticks/instances cannot double-enqueue.
+	// Added after normalizeSecretsSchema: the rebuild path's column list omits
+	// this column, so it must be (re)added once the table is at the current shape.
+	if err := ensureColumn(ctx, conn, "secrets", "reclaim_enqueued_at", "datetime"); err != nil {
+		return err
+	}
+	// Covers both reaper conditions (active expiry + pending_upload orphan) in a
+	// single partial index over the rows still awaiting reclaim.
+	if _, err := conn.ExecContext(ctx, `create index if not exists idx_secrets_reclaim_pending
+			on secrets(state, expires_at, created_at)
+			where reclaim_enqueued_at is null and consumed_at is null`); err != nil {
+		return fmt.Errorf("create reclaim-pending index: %w", err)
+	}
 	return nil
 }
 
