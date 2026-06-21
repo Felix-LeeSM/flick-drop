@@ -558,7 +558,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	// captured fragment key can authorize at most a single open.
 	if secret.accessProofHash != "" {
 		if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
-			if err := s.recordFailedAccessTx(ctx, tx, id, now); err != nil {
+			if err := s.recordFailedAccessTx(ctx, tx, id, secret.StorageBackend, secret.StorageKey, now); err != nil {
 				return Secret{}, err
 			}
 			return Secret{}, ErrInvalidAccess
@@ -611,7 +611,7 @@ func (s *Store) fillCiphertext(ctx context.Context, secret *Secret) error {
 	return nil
 }
 
-func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string, storageBackend, storageKey string, now time.Time) error {
 	result, err := tx.ExecContext(ctx, `update secrets
 		set failed_access_count = failed_access_count + 1,
 			consumed_at = case
@@ -642,7 +642,14 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		return fmt.Errorf("load failed secret access count: %w", err)
 	}
 	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
-		if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+		// Lock reached: purge the payload so it can never be read. S3-backed
+		// secrets have no inline row, so delete the object instead (a stray
+		// object is still reclaimed by the bucket lifecycle policy).
+		if storageBackend == StorageS3 && s.objects != nil {
+			if err := s.objects.Delete(ctx, storageKey); err != nil {
+				return fmt.Errorf("delete locked object: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
 			return fmt.Errorf("delete locked secret payload: %w", err)
 		}
 	}
