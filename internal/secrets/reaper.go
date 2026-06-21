@@ -20,6 +20,16 @@ const (
 // multi-tick safe: only one claimer can flip the timestamp per row. Consumed
 // secrets are excluded because /open already enqueued their cleanup. Reason is
 // derived from state: active → expired, pending_upload → orphan.
+//
+// Ordering is by a unified "reclaimable-since" timestamp so the two classes
+// compete fairly for a batch slot: an expired-active row is reclaimable since
+// its expires_at, while a pending_upload orphan is reclaimable since
+// created_at + PendingTTL. Without this, a future expires_at on orphans would
+// always sort them behind an active-expiry backlog and starve orphan reclaim.
+// Both branches are wrapped in datetime() so they compare as the same
+// 'YYYY-MM-DD HH:MM:SS' shape — expires_at is stored RFC3339Nano (a 'T'/​'Z'
+// lexical suffix would otherwise outrank the space-delimited datetime() output
+// and mis-order the two classes).
 const claimReclaimableSQL = `with candidates as (
 	select id, state, storage_backend, storage_key
 	from secrets
@@ -29,7 +39,10 @@ const claimReclaimableSQL = `with candidates as (
 			(state = 'active' and expires_at < ?)
 			or (state = 'pending_upload' and created_at < ?)
 		)
-	order by expires_at, created_at
+	order by case state
+			when 'active' then datetime(expires_at)
+			else datetime(created_at, ?)
+		end
 	limit ?
 )
 update secrets
@@ -105,6 +118,9 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 	now := r.now().UTC()
 	orphanCutoff := now.Add(-r.pendingTTL)
+	// datetime(created_at, '+N seconds') = the moment the orphan became
+	// reclaimable; used by the CASE in claimReclaimableSQL for fair ordering.
+	orphanTTLModifier := fmt.Sprintf("+%d seconds", int(r.pendingTTL.Seconds()))
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -113,7 +129,7 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 	defer rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, claimReclaimableSQL,
-		formatTime(now), formatTime(orphanCutoff), r.batchSize,
+		formatTime(now), formatTime(orphanCutoff), orphanTTLModifier, r.batchSize,
 		formatTime(now), formatTime(now),
 	)
 	if err != nil {

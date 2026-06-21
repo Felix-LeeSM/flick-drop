@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -518,4 +519,125 @@ func (f *fakeClaimRunner) ClaimOnce(context.Context) (int, error) {
 		f.cancel()
 	}
 	return claimed, nil
+}
+
+func remainingIDs(t *testing.T, ctx context.Context, conn *sql.DB) []string {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, `select id from secrets order by id`)
+	if err != nil {
+		t.Fatalf("query remaining secrets: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan remaining secret: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate remaining secrets: %v", err)
+	}
+	return ids
+}
+
+// TestReaperOrphanCompetesWithActiveBacklog guards the unified reclaimable-since
+// ordering: with a small batch, orphans that became reclaimable earlier must be
+// reaped before newer expired-active rows. Under the old order-by-expires_at the
+// orphans' future expires_at would always sort them behind an active backlog.
+func TestReaperOrphanCompetesWithActiveBacklog(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	outbox := newTestOutbox(t, conn)
+	reaper := newTestReaper(t, conn, store, outbox, 2)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+	reaper.SetNowForTest(func() time.Time { return now })
+
+	// Two orphans created 30m ago — reclaimable since now-15m (PendingTTL default).
+	// Their expires_at is in the future, which the old ordering sorted last.
+	for _, id := range []string{"sec_orphan_a", "sec_orphan_b"} {
+		insertSecret(t, ctx, conn, secretFixture{
+			id:        id,
+			state:     "pending_upload",
+			expiresAt: now.Add(1 * time.Hour),
+			createdAt: now.Add(-30 * time.Minute),
+			updatedAt: now.Add(-30 * time.Minute),
+		})
+	}
+	// Two expired-active rows — reclaimable since now-1m (newer than the orphans).
+	for _, id := range []string{"sec_active_a", "sec_active_b"} {
+		insertSecret(t, ctx, conn, secretFixture{
+			id:        id,
+			expiresAt: now.Add(-1 * time.Minute),
+			createdAt: now.Add(-10 * time.Minute),
+			updatedAt: now.Add(-10 * time.Minute),
+		})
+	}
+
+	first, err := reaper.ClaimOnce(ctx)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if first != 2 {
+		t.Fatalf("first claim = %d, want 2", first)
+	}
+	if got, want := remainingIDs(t, ctx, conn), []string{"sec_active_a", "sec_active_b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after first tick = %v, want %v (orphans reaped first)", got, want)
+	}
+
+	second, err := reaper.ClaimOnce(ctx)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if second != 2 {
+		t.Fatalf("second claim = %d, want 2", second)
+	}
+	if got := countSecrets(t, ctx, conn); got != 0 {
+		t.Fatalf("secrets after second tick = %d, want 0", got)
+	}
+}
+
+// TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan confirms the ordering is
+// by reclaimable-since in both directions: an expired-active row that has been
+// reclaimable longer than an orphan wins the batch slot, so neither class is
+// unconditionally prioritized.
+func TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	outbox := newTestOutbox(t, conn)
+	reaper := newTestReaper(t, conn, store, outbox, 1)
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+	reaper.SetNowForTest(func() time.Time { return now })
+
+	// Active expired 2h ago — reclaimable since now-2h.
+	insertSecret(t, ctx, conn, secretFixture{
+		id:        "sec_old_active",
+		expiresAt: now.Add(-2 * time.Hour),
+		createdAt: now.Add(-3 * time.Hour),
+		updatedAt: now.Add(-3 * time.Hour),
+	})
+	// Orphan created 20m ago — reclaimable since now-5m (newer).
+	insertSecret(t, ctx, conn, secretFixture{
+		id:        "sec_young_orphan",
+		state:     "pending_upload",
+		expiresAt: now.Add(1 * time.Hour),
+		createdAt: now.Add(-20 * time.Minute),
+		updatedAt: now.Add(-20 * time.Minute),
+	})
+
+	claimed, err := reaper.ClaimOnce(ctx)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("claim = %d, want 1", claimed)
+	}
+	if got, want := remainingIDs(t, ctx, conn), []string{"sec_young_orphan"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after tick = %v, want %v (older reclaimable active reaped first)", got, want)
+	}
 }
