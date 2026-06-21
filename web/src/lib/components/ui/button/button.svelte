@@ -16,7 +16,11 @@ export const buttonVariants = tv({
 				'hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted aria-expanded:text-foreground',
 			destructive:
 				'bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30',
-			link: 'text-primary underline-offset-4 hover:underline'
+			link: 'text-primary underline-offset-4 hover:underline',
+			toggle:
+				'border-border bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30',
+			toggleActive:
+				'bg-foreground text-background border-foreground hover:bg-foreground hover:text-background'
 		},
 		size: {
 			default:
@@ -29,7 +33,9 @@ export const buttonVariants = tv({
 				"size-6 rounded-[min(var(--radius-md),8px)] in-data-[slot=button-group]:rounded-md [&_svg:not([class*='size-'])]:size-3",
 			'icon-sm':
 				'size-8 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-md',
-			'icon-lg': 'size-10'
+			'icon-lg': 'size-10',
+			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
+			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs'
 		}
 	},
 	defaultVariants: {
