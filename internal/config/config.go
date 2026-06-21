@@ -40,6 +40,8 @@ type Config struct {
 	MaxTTLSeconds         int
 	OpenRatePerMinute     int
 	CreateRatePerMinute   int
+	ReaperIntervalSeconds int
+	ReaperBatchSize       int
 	TrustedProxies        []*net.IPNet
 	S3                    S3Config
 }
@@ -67,6 +69,11 @@ func Load() (Config, error) {
 		// /api/secrets (presigned POST issuance) becomes a DoS amplifier once
 		// large uploads bypass the server, so cap issuance per client IP + path.
 		CreateRatePerMinute: 5,
+		// The expiration reaper sweeps expired/orphan secrets out of api.db. A
+		// minute is frequent enough that rows never linger; the partial index
+		// keeps the claim cheap even at high volume.
+		ReaperIntervalSeconds: 60,
+		ReaperBatchSize:       50,
 		S3: S3Config{
 			Enabled:         getenv("FLICK_STORAGE_LARGE_BACKEND", "disabled") == "s3",
 			Endpoint:        getenv("FLICK_S3_ENDPOINT", ""),
@@ -122,6 +129,18 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if raw := os.Getenv("FLICK_REAPER_INTERVAL_SECONDS"); raw != "" {
+		cfg.ReaperIntervalSeconds, err = parsePositiveInt("FLICK_REAPER_INTERVAL_SECONDS", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if raw := os.Getenv("FLICK_REAPER_BATCH_SIZE"); raw != "" {
+		cfg.ReaperBatchSize, err = parsePositiveInt("FLICK_REAPER_BATCH_SIZE", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if raw := os.Getenv("FLICK_TRUSTED_PROXIES"); raw != "" {
 		cfg.TrustedProxies, err = parseTrustedProxies(raw)
 		if err != nil {
@@ -143,6 +162,12 @@ func Load() (Config, error) {
 	}
 	if cfg.CreateRatePerMinute <= 0 {
 		return Config{}, fmt.Errorf("FLICK_CREATE_RATE_PER_MIN must be a positive integer")
+	}
+	if cfg.ReaperIntervalSeconds <= 0 {
+		return Config{}, fmt.Errorf("FLICK_REAPER_INTERVAL_SECONDS must be a positive integer")
+	}
+	if cfg.ReaperBatchSize <= 0 {
+		return Config{}, fmt.Errorf("FLICK_REAPER_BATCH_SIZE must be a positive integer")
 	}
 	if cfg.S3.Enabled {
 		if cfg.S3.Bucket == "" || cfg.S3.Region == "" {

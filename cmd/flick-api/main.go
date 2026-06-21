@@ -101,11 +101,27 @@ func main() {
 		}),
 	}
 
+	reaper, err := secrets.NewReaper(conn, secretStore, outboxStore, secrets.ReaperOptions{
+		BatchSize: cfg.ReaperBatchSize,
+	})
+	if err != nil {
+		log.Fatalf("create reaper: %v", err)
+	}
+
 	publisherErr := make(chan error, 1)
 	go func() {
 		log.Printf("flick-api publishing outbox subject %s to stream %s", cfg.NATSJobSubject, cfg.NATSStream)
 		publisherErr <- events.RunOutboxPublisher(ctx, outboxPublisher, events.OutboxPublisherLoopOptions{
 			Logf: log.Printf,
+		})
+	}()
+
+	reaperErr := make(chan error, 1)
+	go func() {
+		log.Printf("flick-api expiration reaper started (interval=%ds batch=%d)", cfg.ReaperIntervalSeconds, cfg.ReaperBatchSize)
+		reaperErr <- secrets.RunReaper(ctx, reaper, secrets.ReaperLoopOptions{
+			Interval: time.Duration(cfg.ReaperIntervalSeconds) * time.Second,
+			Logf:     log.Printf,
 		})
 	}()
 
@@ -117,6 +133,7 @@ func main() {
 
 	serverDone := false
 	publisherDone := false
+	reaperDone := false
 	select {
 	case err := <-serverErr:
 		serverDone = true
@@ -128,6 +145,12 @@ func main() {
 		publisherDone = true
 		if err != nil {
 			log.Fatalf("run outbox publisher: %v", err)
+		}
+		stop()
+	case err := <-reaperErr:
+		reaperDone = true
+		if err != nil {
+			log.Fatalf("run reaper: %v", err)
 		}
 		stop()
 	case <-ctx.Done():
@@ -147,6 +170,11 @@ func main() {
 	if !publisherDone {
 		if err := <-publisherErr; err != nil {
 			log.Fatalf("run outbox publisher: %v", err)
+		}
+	}
+	if !reaperDone {
+		if err := <-reaperErr; err != nil {
+			log.Fatalf("run reaper: %v", err)
 		}
 	}
 
