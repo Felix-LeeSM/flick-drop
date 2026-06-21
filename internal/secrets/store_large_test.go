@@ -192,3 +192,58 @@ func TestFinalizeOversized(t *testing.T) {
 		t.Fatalf("finalize error = %v, want ErrObjectMissing", err)
 	}
 }
+
+// TestActivateSecretTxReturnsNotFoundWhenRowGone covers the reaper hard-delete
+// race: if a pending_upload row is removed between Finalize's SELECT and its
+// UPDATE, the UPDATE matches 0 rows and the guard must surface ErrNotFound
+// rather than a silent success. The race can't be reproduced through SQLite
+// concurrency (a read txn blocks a concurrent write with SQLITE_BUSY_SNAPSHOT),
+// so the guard is exercised directly on a transaction with no matching row.
+func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer rollback(tx)
+
+	if err := store.activateSecretTx(ctx, tx, "sec_reaped", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("activate err = %v, want ErrNotFound (row reaped mid-finalize)", err)
+	}
+}
+
+func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+
+	insertSecret(t, ctx, conn, secretFixture{
+		id:             "sec_pending",
+		kind:           "file",
+		storageBackend: "s3_object",
+		storageKey:     "obj_pending",
+		state:          "pending_upload",
+		expiresAt:      now.Add(1 * time.Hour),
+		createdAt:      now.Add(-1 * time.Minute),
+		updatedAt:      now.Add(-1 * time.Minute),
+	})
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := store.activateSecretTx(ctx, tx, "sec_pending", now); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := secretState(t, ctx, conn, "sec_pending"); got != "active" {
+		t.Fatalf("state = %q, want active", got)
+	}
+}

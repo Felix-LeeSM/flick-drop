@@ -395,11 +395,33 @@ func (s *Store) Finalize(ctx context.Context, id string) error {
 	}
 
 	now := s.now().UTC()
-	if _, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=? where id=? and state='pending_upload'`, formatTime(now), id); err != nil {
-		return fmt.Errorf("activate secret: %w", err)
+	if err := s.activateSecretTx(ctx, tx, id, now); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize: %w", err)
+	}
+	return nil
+}
+
+// activateSecretTx flips a pending_upload secret to active, guarding the
+// affected-row count: 0 rows means the row vanished between Finalize's SELECT
+// and this UPDATE — the expiration reaper hard-deletes pending_upload orphans
+// older than PendingTTL, and any concurrent hard-delete has the same effect.
+// Surfacing ErrNotFound (instead of a silent success) lets the client learn the
+// upload was reaped rather than believe it finalized. Extracted from Finalize so
+// the race guard is unit-testable in isolation.
+func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=? where id=? and state='pending_upload'`, formatTime(now), id)
+	if err != nil {
+		return fmt.Errorf("activate secret: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read activate row count: %w", err)
+	}
+	if affected != 1 {
+		return ErrNotFound
 	}
 	return nil
 }
