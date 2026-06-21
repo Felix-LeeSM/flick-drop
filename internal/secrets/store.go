@@ -300,6 +300,13 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (Create
 		accessProofHash = input.AccessProofHash
 	}
 
+	// Presign first (pure signing, no DB). A failure returns before any row is
+	// inserted, so no orphan pending_upload row is left for a reaper to clean.
+	upload, err := s.objects.PresignPOST(ctx, id, s.maxObjectBytes, s.presignTTL)
+	if err != nil {
+		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("begin create large secret: %w", err)
@@ -335,11 +342,6 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (Create
 	}
 	if err := tx.Commit(); err != nil {
 		return CreateLargeResult{}, fmt.Errorf("commit create large secret: %w", err)
-	}
-
-	upload, err := s.objects.PresignPOST(ctx, id, s.maxObjectBytes, s.presignTTL)
-	if err != nil {
-		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
 	}
 
 	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload}, nil
@@ -475,6 +477,10 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 	return metadata, nil
 }
 
+// Consume marks a secret consumed and deletes its inline payload. It does not
+// touch S3 objects; production callers use OpenTx (via /open), which enqueues
+// delete_oci_object for s3_object secrets. Retained for tests; no production
+// caller.
 func (s *Store) Consume(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -643,12 +649,12 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 	}
 	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
 		// Lock reached: purge the payload so it can never be read. S3-backed
-		// secrets have no inline row, so delete the object instead (a stray
-		// object is still reclaimed by the bucket lifecycle policy).
+		// secrets have no inline row, so delete the object instead — best-effort:
+		// a failed delete must not roll back the lockout count (that would gift
+		// the attacker another attempt). An orphaned object is reclaimed by the
+		// expiration reaper (issue #76).
 		if storageBackend == StorageS3 && s.objects != nil {
-			if err := s.objects.Delete(ctx, storageKey); err != nil {
-				return fmt.Errorf("delete locked object: %w", err)
-			}
+			_ = s.objects.Delete(ctx, storageKey)
 		} else if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
 			return fmt.Errorf("delete locked secret payload: %w", err)
 		}
