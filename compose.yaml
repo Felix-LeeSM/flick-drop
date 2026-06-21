@@ -11,5 +11,31 @@ services:
     volumes:
       - nats-data:/data
 
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+
+  # One-shot bucket provisioner: waits for MinIO, then creates the dev bucket.
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set flick http://minio:9000 minioadmin minioadmin; do echo waiting for minio; sleep 1; done;
+      /usr/bin/mc mb --ignore-existing flick/flick-dev;
+      echo bucket ready;
+      exit 0;
+      "
+
 volumes:
   nats-data:
+  minio-data:

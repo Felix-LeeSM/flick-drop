@@ -8,6 +8,20 @@ import (
 	"strings"
 )
 
+// S3Config configures the S3-compatible large-object store (MinIO dev, OCI
+// S3-compat prod). Enabled is driven by FLICK_STORAGE_LARGE_BACKEND=s3; auth is
+// always a static key pair because the AWS SDK cannot speak OCI instance
+// principal directly.
+type S3Config struct {
+	Enabled         bool
+	Endpoint        string
+	Region          string
+	Bucket          string
+	AccessKeyID     string
+	SecretAccessKey string
+	PathStyle       bool
+}
+
 type Config struct {
 	Env                   string
 	PublicBaseURL         string
@@ -20,11 +34,14 @@ type Config struct {
 	NATSStream            string
 	NATSJobSubject        string
 	PayloadInlineMaxBytes int64
+	MaxFileBytes          int64
 	DefaultTTLSeconds     int
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
 	OpenRatePerMinute     int
+	CreateRatePerMinute   int
 	TrustedProxies        []*net.IPNet
+	S3                    S3Config
 }
 
 func Load() (Config, error) {
@@ -40,17 +57,37 @@ func Load() (Config, error) {
 		NATSStream:            getenv("FLICK_NATS_STREAM", "FLICK_JOBS"),
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
 		PayloadInlineMaxBytes: 1048576,
+		MaxFileBytes:          26214400,
 		DefaultTTLSeconds:     3600,
 		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
 		// offer an editable "custom" lifetime, not just fixed presets.
 		MinTTLSeconds:     300,
 		MaxTTLSeconds:     604800,
 		OpenRatePerMinute: 10,
+		// /api/secrets (presigned POST issuance) becomes a DoS amplifier once
+		// large uploads bypass the server, so cap issuance per client IP + path.
+		CreateRatePerMinute: 5,
+		S3: S3Config{
+			Enabled:         getenv("FLICK_STORAGE_LARGE_BACKEND", "disabled") == "s3",
+			Endpoint:        getenv("FLICK_S3_ENDPOINT", ""),
+			Region:          getenv("FLICK_S3_REGION", "us-east-1"),
+			Bucket:          getenv("FLICK_S3_BUCKET", ""),
+			AccessKeyID:     getenv("FLICK_S3_ACCESS_KEY_ID", ""),
+			SecretAccessKey: getenv("FLICK_S3_SECRET_ACCESS_KEY", ""),
+			// MinIO and OCI S3-compat both use path-style addressing.
+			PathStyle: getenv("FLICK_S3_PATH_STYLE", "true") != "false",
+		},
 	}
 
 	var err error
 	if raw := os.Getenv("FLICK_PAYLOAD_INLINE_MAX_BYTES"); raw != "" {
 		cfg.PayloadInlineMaxBytes, err = parsePositiveInt64("FLICK_PAYLOAD_INLINE_MAX_BYTES", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if raw := os.Getenv("FLICK_MAX_FILE_BYTES"); raw != "" {
+		cfg.MaxFileBytes, err = parsePositiveInt64("FLICK_MAX_FILE_BYTES", raw)
 		if err != nil {
 			return Config{}, err
 		}
@@ -79,6 +116,12 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if raw := os.Getenv("FLICK_CREATE_RATE_PER_MIN"); raw != "" {
+		cfg.CreateRatePerMinute, err = parsePositiveInt("FLICK_CREATE_RATE_PER_MIN", raw)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if raw := os.Getenv("FLICK_TRUSTED_PROXIES"); raw != "" {
 		cfg.TrustedProxies, err = parseTrustedProxies(raw)
 		if err != nil {
@@ -97,6 +140,17 @@ func Load() (Config, error) {
 	}
 	if cfg.OpenRatePerMinute <= 0 {
 		return Config{}, fmt.Errorf("FLICK_OPEN_RATE_PER_MIN must be a positive integer")
+	}
+	if cfg.CreateRatePerMinute <= 0 {
+		return Config{}, fmt.Errorf("FLICK_CREATE_RATE_PER_MIN must be a positive integer")
+	}
+	if cfg.S3.Enabled {
+		if cfg.S3.Bucket == "" || cfg.S3.Region == "" {
+			return Config{}, fmt.Errorf("FLICK_S3_BUCKET and FLICK_S3_REGION are required when FLICK_STORAGE_LARGE_BACKEND=s3")
+		}
+		if cfg.S3.AccessKeyID == "" || cfg.S3.SecretAccessKey == "" {
+			return Config{}, fmt.Errorf("FLICK_S3_ACCESS_KEY_ID and FLICK_S3_SECRET_ACCESS_KEY are required when FLICK_STORAGE_LARGE_BACKEND=s3")
+		}
 	}
 
 	return cfg, nil

@@ -38,6 +38,22 @@ type createSecretResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+// presignedPOSTResponse hands the client a presigned POST form so it uploads
+// the ciphertext straight to the bucket; the server never sees the bytes.
+type presignedPOSTResponse struct {
+	URL       string            `json:"url"`
+	Method    string            `json:"method"`
+	ExpiresAt string            `json:"expires_at"`
+	Fields    map[string]string `json:"fields"`
+	FileField string            `json:"file_field"`
+}
+
+type createSecretLargeResponse struct {
+	ID        string                `json:"id"`
+	ExpiresAt string                `json:"expires_at"`
+	Upload    presignedPOSTResponse `json:"upload"`
+}
+
 type accessRequest struct {
 	KDF   secrets.KDFParams `json:"kdf"`
 	Proof string            `json:"proof"`
@@ -107,6 +123,14 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Large payloads omit ciphertext: the client uploads it straight to the
+	// bucket via a presigned POST, then calls /finalize. Small payloads take
+	// the inline path below.
+	if req.Ciphertext == "" {
+		s.createLargeSecret(w, r, req)
+		return
+	}
+
 	ciphertext, err := base64.StdEncoding.DecodeString(req.Ciphertext)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_ciphertext", "ciphertext must be base64 encoded")
@@ -145,6 +169,64 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		ID:        created.ID,
 		ExpiresAt: created.ExpiresAt.Format(timeFormat),
 	})
+}
+
+// createLargeSecret stages a pending_upload secret and returns a presigned POST
+// form so the client uploads the ciphertext directly to the bucket.
+func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req createSecretRequest) {
+	var accessProofHash string
+	if req.Access.Proof != "" {
+		hashed, err := hashAccessProof(req.Access.Proof)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_access_proof", "access proof must be base64 encoded")
+			return
+		}
+		accessProofHash = hashed
+	}
+
+	res, err := s.secrets.CreateLarge(r.Context(), secrets.CreateLargeInput{
+		Kind:              req.Kind,
+		Nonce:             req.Nonce,
+		KDF:               req.KDF,
+		AccessKDF:         req.Access.KDF,
+		AccessProofHash:   accessProofHash,
+		EncryptedFilename: req.EncryptedFilename,
+		ContentType:       req.ContentType,
+		SizeBytes:         req.SizeBytes,
+		TTLSeconds:        req.TTLSeconds,
+		MaxViews:          normalizeMaxViews(req.MaxViews),
+	})
+	if err != nil {
+		s.writeSecretError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, createSecretLargeResponse{
+		ID:        res.ID,
+		ExpiresAt: res.ExpiresAt.Format(timeFormat),
+		Upload: presignedPOSTResponse{
+			URL:       res.Upload.URL,
+			Method:    res.Upload.Method,
+			ExpiresAt: res.Upload.ExpiresAt.Format(timeFormat),
+			Fields:    res.Upload.Fields,
+			FileField: res.Upload.FileField,
+		},
+	})
+}
+
+// finalizeSecret confirms a pending_upload large secret after the client has
+// uploaded the object. The server HEADs the bucket to verify the object exists
+// and is within the ciphertext cap, then flips the row to active.
+func (s Server) finalizeSecret(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
+	_ = r.Body.Close()
+
+	if err := s.secrets.Finalize(r.Context(), id); err != nil {
+		s.writeSecretError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "finalized": true})
 }
 
 func (s Server) getSecretMetadata(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +347,24 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	}); err != nil {
 		return secrets.Secret{}, fmt.Errorf("enqueue consumed cleanup job: %w", err)
 	}
+	// M3: S3-backed secrets also need their bucket object deleted. Enqueued as a
+	// separate job so DB cleanup and object deletion can fail and retry on
+	// their own schedules.
+	if secret.StorageBackend == secrets.StorageS3 {
+		objectJobID, err := s.newJobID()
+		if err != nil {
+			return secrets.Secret{}, err
+		}
+		if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
+			JobID:       objectJobID,
+			Kind:        events.KindDeleteOCIObject,
+			ObjectKey:   secret.StorageKey,
+			Reason:      events.ReasonConsumed,
+			RequestedAt: time.Now().UTC(),
+		}); err != nil {
+			return secrets.Secret{}, fmt.Errorf("enqueue object cleanup job: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return secrets.Secret{}, fmt.Errorf("commit open cleanup transaction: %w", err)
 	}
@@ -347,6 +447,10 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "unsupported_kind", "only text and file secrets are supported")
 	case errors.Is(err, secrets.ErrUnsupportedViews):
 		writeError(w, http.StatusBadRequest, "unsupported_max_views", "only one-time secrets are supported")
+	case errors.Is(err, secrets.ErrNotPending):
+		writeError(w, http.StatusConflict, "not_pending", "secret is not pending upload")
+	case errors.Is(err, secrets.ErrObjectMissing):
+		writeError(w, http.StatusUnprocessableEntity, "object_missing", "uploaded object is missing or oversized")
 	case errors.Is(err, secrets.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "invalid_secret", "secret metadata is invalid")
 	default:

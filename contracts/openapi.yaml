@@ -96,6 +96,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/secrets/{id}/finalize:
+    post:
+      operationId: finalizeSecret
+      summary: Confirm a large secret upload by HEAD-checking the object and activating it.
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Secret finalized and now openable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeSecretResponse"
+        "404":
+          description: Secret missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Secret is not pending upload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Uploaded object missing or oversized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/secrets/{id}/open:
     post:
       operationId: openSecret
@@ -214,7 +245,6 @@ components:
         rejected.
       required:
         - kind
-        - ciphertext
         - nonce
         - size_bytes
         - ttl_seconds
@@ -261,6 +291,39 @@ components:
         expires_at:
           type: string
           format: date-time
+        upload:
+          allOf:
+            - $ref: "#/components/schemas/PresignedPOST"
+          description: Present only for large secrets (request omitted ciphertext). The client POSTs the ciphertext multipart to `url` with `fields`, then calls /finalize.
+    PresignedPOST:
+      type: object
+      additionalProperties: false
+      description: A presigned POST form for uploading ciphertext directly to the object store. The bucket rejects uploads outside the signed content-length-range with 413.
+      required: [url, method, expires_at, fields, file_field]
+      properties:
+        url:
+          type: string
+        method:
+          type: string
+          enum: [POST]
+        expires_at:
+          type: string
+          format: date-time
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+        file_field:
+          type: string
+    FinalizeSecretResponse:
+      type: object
+      additionalProperties: false
+      required: [id, finalized]
+      properties:
+        id:
+          type: string
+        finalized:
+          type: boolean
     AccessVerifier:
       type: object
       additionalProperties: false

@@ -21,7 +21,7 @@ API-owned mutations.
 create table secrets (
   id text primary key,
   kind text not null check (kind in ('text', 'file')),
-  storage_backend text not null check (storage_backend in ('sqlite_blob', 'oci_object')),
+  storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
   storage_key text not null,
   nonce text not null,
   kdf_algorithm text not null,
@@ -35,6 +35,7 @@ create table secrets (
   max_views integer not null default 1 check (max_views > 0),
   view_count integer not null default 0 check (view_count >= 0),
   failed_access_count integer not null default 0 check (failed_access_count >= 0),
+  state text not null default 'active' check (state in ('active', 'pending_upload')),
   expires_at datetime not null,
   consumed_at datetime,
   created_at datetime not null,

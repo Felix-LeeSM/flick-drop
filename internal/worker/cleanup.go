@@ -116,18 +116,27 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil
 }
 
-type CleanupHandler struct {
-	api CleanupAPI
+// ObjectDeleter deletes a stored object. storage.ObjectStore implements it.
+type ObjectDeleter interface {
+	Delete(ctx context.Context, key string) error
 }
 
-func NewCleanupHandler(api CleanupAPI) (*CleanupHandler, error) {
+type CleanupHandler struct {
+	api     CleanupAPI
+	objects ObjectDeleter
+}
+
+func NewCleanupHandler(api CleanupAPI, objects ObjectDeleter) (*CleanupHandler, error) {
 	if api == nil {
 		return nil, fmt.Errorf("cleanup api is required")
 	}
-	return &CleanupHandler{api: api}, nil
+	return &CleanupHandler{api: api, objects: objects}, nil
 }
 
 func (h *CleanupHandler) HandleJob(ctx context.Context, event events.JobEvent) error {
+	if event.Kind == events.KindDeleteOCIObject {
+		return h.handleObjectDelete(ctx, event)
+	}
 	reason, err := cleanupReason(event)
 	if err != nil {
 		return err
@@ -146,6 +155,23 @@ func (h *CleanupHandler) HandleJob(ctx context.Context, event events.JobEvent) e
 	})
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+// handleObjectDelete deletes a stored object directly rather than via the
+// internal API, which owns only DB state. Object deletion is independent of DB
+// cleanup so either can retry without blocking the other. Idempotent.
+func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.JobEvent) error {
+	if strings.TrimSpace(event.ObjectKey) == "" {
+		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
+	}
+	if h.objects == nil {
+		// Object storage is disabled — a stray delete event has no target.
+		return nil
+	}
+	if err := h.objects.Delete(ctx, event.ObjectKey); err != nil {
+		return fmt.Errorf("delete object %q: %w", event.ObjectKey, err)
 	}
 	return nil
 }

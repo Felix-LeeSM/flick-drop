@@ -26,6 +26,16 @@ export FLICK_OPEN_RATE_PER_MIN="${FLICK_OPEN_RATE_PER_MIN:-10}"
 export FLICK_TRUSTED_PROXIES="${FLICK_TRUSTED_PROXIES:-}"
 export FLICK_WORKER_ID="${FLICK_WORKER_ID:-local-worker-1}"
 export FLICK_WORKER_CONCURRENCY="${FLICK_WORKER_CONCURRENCY:-2}"
+export FLICK_CREATE_RATE_PER_MIN="${FLICK_CREATE_RATE_PER_MIN:-5}"
+# M3: dev turns on S3-compatible storage against local MinIO. Set
+# FLICK_DEV_SKIP_MINIO=1 to keep storage disabled (CI/test without docker).
+export FLICK_STORAGE_LARGE_BACKEND="${FLICK_STORAGE_LARGE_BACKEND:-s3}"
+export FLICK_S3_ENDPOINT="${FLICK_S3_ENDPOINT:-http://localhost:9000}"
+export FLICK_S3_REGION="${FLICK_S3_REGION:-us-east-1}"
+export FLICK_S3_BUCKET="${FLICK_S3_BUCKET:-flick-dev}"
+export FLICK_S3_ACCESS_KEY_ID="${FLICK_S3_ACCESS_KEY_ID:-minioadmin}"
+export FLICK_S3_SECRET_ACCESS_KEY="${FLICK_S3_SECRET_ACCESS_KEY:-minioadmin}"
+export FLICK_S3_PATH_STYLE="${FLICK_S3_PATH_STYLE:-true}"
 
 compose_project="${FLICK_DEV_COMPOSE_PROJECT:-flick-dev}"
 nats_monitor_url="${FLICK_DEV_NATS_MONITOR_URL:-http://127.0.0.1:8222/varz}"
@@ -109,6 +119,40 @@ ensure_nats() {
 	wait_for_http "nats" "$nats_monitor_url"
 }
 
+ensure_minio() {
+	if [ "${FLICK_DEV_SKIP_MINIO:-}" = "1" ]; then
+		echo "dev: skipping MinIO startup because FLICK_DEV_SKIP_MINIO=1"
+		export FLICK_STORAGE_LARGE_BACKEND=disabled
+		return
+	fi
+
+	if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+		echo "dev: using existing MinIO at http://127.0.0.1:9000"
+		return
+	fi
+
+	if ! command -v docker >/dev/null 2>&1; then
+		echo "dev: docker is required to start local MinIO" >&2
+		exit 1
+	fi
+	if ! docker info >/dev/null 2>&1; then
+		echo "dev: docker daemon is not available" >&2
+		exit 1
+	fi
+
+	echo "dev: starting MinIO"
+	docker compose -p "$compose_project" up -d minio createbuckets >/dev/null 2>&1 || true
+	for _ in $(seq 1 60); do
+		if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+			echo "dev: minio ready at http://127.0.0.1:9000"
+			return 0
+		fi
+		sleep 1
+	done
+	echo "dev: minio did not become ready at http://127.0.0.1:9000" >&2
+	return 1
+}
+
 start_process() {
 	local name="$1"
 	shift
@@ -149,6 +193,7 @@ monitor_processes() {
 }
 
 ensure_nats
+ensure_minio
 install_web_deps
 
 start_process "api" go run ./cmd/flick-api
