@@ -576,6 +576,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								<input
 									type="text"
 									inputmode="numeric"
+									aria-label="Custom lifetime value"
 									placeholder="2"
 									value={customValue > 0 ? customValue : ''}
 									class="w-7 border-0 bg-transparent p-0 text-center font-mono text-xs leading-none outline-none sm:text-sm"
@@ -590,6 +591,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								/>
 								<select
 									bind:value={customUnit}
+									aria-label="Custom lifetime unit"
 									class="cursor-pointer appearance-none border-0 bg-transparent p-0 font-mono text-xs leading-none outline-none sm:text-sm"
 									onchange={() => (customActive = true)}
 								>

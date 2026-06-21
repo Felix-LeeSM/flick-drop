@@ -325,7 +325,16 @@ function formatBytes(bytes: number): string {
 				{/if}
 
 				{#if status.length > 0}
-					<p class="text-sm text-success">{status}</p>
+					<p
+						class="text-sm"
+						class:text-muted-foreground={statusKind === 'idle'}
+						class:text-success={statusKind === 'success'}
+						class:text-destructive={statusKind === 'error'}
+						role={statusKind === 'error' ? 'alert' : 'status'}
+						aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
+					>
+						{status}
+					</p>
 				{/if}
 			</section>
 		{:else}
