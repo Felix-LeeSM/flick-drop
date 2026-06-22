@@ -2,6 +2,11 @@
 
 This package owns logs, metrics, and tracing helpers.
 
+**Status: not yet implemented.** The directory currently holds only this guide;
+the API and worker processes use the standard `log` package
+(e.g. `cmd/flick-api/main.go:54`). Implementation is tracked in #94
+(`log/slog` + `/metrics`). The rules below describe the target behavior.
+
 Directory structure:
 
 - Keep logging, metrics, and tracing concerns easy to distinguish by file.
