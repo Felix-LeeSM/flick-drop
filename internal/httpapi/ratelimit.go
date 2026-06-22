@@ -103,7 +103,8 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 // an attacker rotating a client-supplied XFF would get a fresh bucket per
 // request and bypass the limiter). When honored, the right-most non-trusted
 // entry is taken — the trusted hop appends itself, so the first non-trusted
-// value walking right-to-left is the original client.
+// value walking right-to-left is the original client. If XFF holds no valid
+// non-trusted IP, the peer is used.
 func (rl *rateLimiter) clientIP(r *http.Request) string {
 	peer, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -111,7 +112,9 @@ func (rl *rateLimiter) clientIP(r *http.Request) string {
 	}
 	if isTrustedIP(peer, rl.trustedProxies) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return rightmostUntrusted(xff, rl.trustedProxies)
+			if ip := rightmostUntrusted(xff, rl.trustedProxies); ip != "" {
+				return ip
+			}
 		}
 	}
 	return peer
@@ -131,15 +134,21 @@ func isTrustedIP(ip string, trusted []*net.IPNet) bool {
 }
 
 // rightmostUntrusted walks the X-Forwarded-For chain right-to-left and returns
-// the first entry that is not a trusted proxy. If every entry is trusted it
-// falls back to the left-most (first) entry.
+// the first entry that is a valid, non-trusted IP. Entries that are empty or
+// not a valid IP are skipped, so a spoofed XFF cannot mint arbitrary bucket
+// keys (which would let an attacker rotate a fresh limiter bucket per request
+// and bypass the rate limit). If no valid non-trusted entry exists, it
+// returns "" and the caller falls back to the direct peer.
 func rightmostUntrusted(xff string, trusted []*net.IPNet) string {
 	parts := strings.Split(xff, ",")
 	for i := len(parts) - 1; i >= 0; i-- {
 		candidate := strings.TrimSpace(parts[i])
+		if candidate == "" || net.ParseIP(candidate) == nil {
+			continue
+		}
 		if !isTrustedIP(candidate, trusted) {
 			return candidate
 		}
 	}
-	return strings.TrimSpace(parts[0])
+	return ""
 }
