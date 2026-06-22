@@ -48,7 +48,6 @@ import {
 	encryptTextWithKey,
 	generateSecretKey
 } from '$lib/crypto/text';
-import { cn } from '$lib/utils.js';
 
 type StatusKind = 'idle' | 'encrypting' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
@@ -583,13 +582,10 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								</Button>
 							{/each}
 							<div
-								class={cn(
-									buttonVariants({
-										variant: customActive ? 'toggleActive' : 'toggle',
-										size: 'pill'
-									}),
-									'px-1.5'
-								)}
+								class={`${buttonVariants({
+									variant: customActive ? 'toggleActive' : 'toggle',
+									size: 'pill'
+								})} px-1.5`}
 							>
 								<input
 									type="text"
