@@ -185,7 +185,7 @@ describe('secret API client', () => {
 		// The decryption key must travel in the fragment only — the core Model B
 		// invariant. A regression swapping url.hash for url.search would fail here.
 		expect(url).toContain('#key=');
-		const keyB64 = encodeKeyFragment(key).slice('#key='.length);
+		const keyB64 = encodeKeyFragment(key).slice('key='.length);
 		expect(url.split('#')[0]).not.toContain(keyB64);
 	});
 

@@ -156,7 +156,7 @@ export function createShareUrl(origin: string, id: string, key?: Uint8Array): st
 	url.search = '';
 	// Model B carries the decryption key in the fragment, which the browser
 	// never sends to the server. See web/src/lib/crypto/fragment.ts.
-	url.hash = key ? encodeKeyFragment(key).slice(1) : '';
+	url.hash = key ? encodeKeyFragment(key) : '';
 	return url.toString();
 }
 
