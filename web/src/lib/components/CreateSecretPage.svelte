@@ -22,6 +22,7 @@ import {
 	SecretApiError,
 	type TtlSeconds
 } from '$lib/api/secrets';
+import { remainingSecondsFrom } from '$lib/lifetime.js';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
 import SuccessCheck from '$lib/components/SuccessCheck.svelte';
@@ -149,11 +150,7 @@ const canCreate = $derived(
 		!isCreating
 );
 const hasResult = $derived(shareUrl.length > 0);
-const remainingSeconds = $derived(
-	expiresAt.length > 0
-		? Math.max(0, Math.round((new Date(expiresAt).getTime() - nowTick) / 1000))
-		: 0
-);
+const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 
 function submitCreate(event: SubmitEvent): void {
 	event.preventDefault();
