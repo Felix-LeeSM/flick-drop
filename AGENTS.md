@@ -87,3 +87,19 @@ contract, open decision log, or multi-step verification record.
   when they reduce real duplication or stabilize a real contract.
 - Update docs, contracts, and env examples with behavior changes. Do not let
   implementation drift away from the documented service boundaries.
+- Every `AGENTS.md` statement must be explicit and self-contained. Name the
+  exact file, symbol, env var, command, or value with its path (e.g.
+  `internal/config/config.go:144`, `FLICK_TRUSTED_PROXIES`, `RAW_KEY_BYTES`).
+  No implied context, no "as mentioned above" or "the above", no bare pronouns
+  ("this", "it", "that" referring to another section), and no asserted facts
+  without a code or doc reference. A reader landing in any directory must
+  understand a statement without reading another file.
+- Every interactive element exposes an accessible name. Icon-only buttons and
+  links (content is only an icon, e.g. a `<...Icon>` child) carry `aria-label`
+  — see `web/src/lib/components/ThemeToggle.svelte`,
+  `web/src/lib/components/UrlField.svelte`. Text inputs, selects, and textareas
+  use a `<Label for="…">` association or an `aria-label` — see
+  `web/src/lib/components/CreateSecretPage.svelte:461`. An element that already
+  shows visible text has its name from that text; do not add a redundant
+  `aria-label` that duplicates it. Decorative icons paired with visible text get
+  `aria-hidden="true"` so they are not announced twice.

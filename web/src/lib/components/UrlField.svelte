@@ -55,6 +55,6 @@ async function copy(): Promise<void> {
 			void copy();
 		}}
 	>
-		<CopyIcon class="size-4" />
+		<CopyIcon class="size-4" aria-hidden="true" />
 	</Button>
 </div>

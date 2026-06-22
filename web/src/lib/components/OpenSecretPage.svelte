@@ -237,7 +237,7 @@ function formatBytes(bytes: number): string {
 		<header class="flex items-center justify-between gap-3">
 			<a class="flex items-center gap-2.5" href={resolve('/')}>
 				<span class="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-					<LockKeyholeIcon class="size-4" />
+					<LockKeyholeIcon class="size-4" aria-hidden="true" />
 				</span>
 				<span class="font-serif text-lg leading-none">Flick</span>
 			</a>
@@ -251,7 +251,7 @@ function formatBytes(bytes: number): string {
 			<section class="grid gap-6">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-success">
-						<CheckIcon class="size-3.5" />
+						<CheckIcon class="size-3.5" aria-hidden="true" />
 						decrypted · burns after read
 					</p>
 					<h1
@@ -276,10 +276,10 @@ function formatBytes(bytes: number): string {
 							}}
 						>
 							{#if copyState === 'copied'}
-								<CheckIcon class="size-4" />
+								<CheckIcon class="size-4" aria-hidden="true" />
 								Copied
 							{:else}
-								<CopyIcon class="size-4" />
+								<CopyIcon class="size-4" aria-hidden="true" />
 								Copy all
 							{/if}
 						</Button>
@@ -302,10 +302,10 @@ function formatBytes(bytes: number): string {
 							}}
 						>
 							{#if copyState === 'copied'}
-								<CheckIcon class="size-4" />
+								<CheckIcon class="size-4" aria-hidden="true" />
 								Copied
 							{:else}
-								<CopyIcon class="size-4" />
+								<CopyIcon class="size-4" aria-hidden="true" />
 								Copy
 							{/if}
 						</Button>
@@ -317,7 +317,7 @@ function formatBytes(bytes: number): string {
 								<span
 									class="grid size-12 place-items-center rounded-lg bg-background text-foreground shadow-xs"
 								>
-									<FileIcon class="size-6" />
+									<FileIcon class="size-6" aria-hidden="true" />
 								</span>
 								<div class="grid gap-1">
 									<p class="break-all text-sm font-medium">{downloadFilename}</p>
@@ -331,7 +331,7 @@ function formatBytes(bytes: number): string {
 									download={downloadFilename}
 									rel="external"
 								>
-									<DownloadIcon class="size-4" />
+									<DownloadIcon class="size-4" aria-hidden="true" />
 									Download
 								</a>
 							</div>
@@ -356,7 +356,7 @@ function formatBytes(bytes: number): string {
 			<section class="grid gap-7">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-burn">
-						<FlameIcon class="size-3.5" />
+						<FlameIcon class="size-3.5" aria-hidden="true" />
 						one-time link
 					</p>
 					<h1 class="font-serif text-3xl sm:text-4xl">Open a secret</h1>
@@ -401,9 +401,9 @@ function formatBytes(bytes: number): string {
 									}}
 								>
 									{#if revealPassphrase}
-										<EyeOffIcon class="size-4" />
+										<EyeOffIcon class="size-4" aria-hidden="true" />
 									{:else}
-										<EyeIcon class="size-4" />
+										<EyeIcon class="size-4" aria-hidden="true" />
 									{/if}
 								</Button>
 							</div>
@@ -412,10 +412,10 @@ function formatBytes(bytes: number): string {
 
 					<Button type="submit" class="h-11 w-full" disabled={!canOpen}>
 						{#if hasOpened}
-							<CheckIcon class="size-4" />
+							<CheckIcon class="size-4" aria-hidden="true" />
 							Opened
 						{:else}
-							<LockKeyholeOpenIcon class="size-4" />
+							<LockKeyholeOpenIcon class="size-4" aria-hidden="true" />
 							{isOpening ? 'Opening' : 'Open'}
 						{/if}
 					</Button>

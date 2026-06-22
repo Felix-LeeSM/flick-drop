@@ -22,6 +22,6 @@ let {
 	{...restProps}
 >
 	{#if checked}
-		<CheckIcon class="size-3.5" strokeWidth={3} />
+		<CheckIcon class="size-3.5" strokeWidth={3} aria-hidden="true" />
 	{/if}
 </CheckboxPrimitive.Root>

@@ -342,7 +342,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 		<header class="flex items-center justify-between gap-3">
 			<a class="flex items-center gap-2.5" href={resolve('/')}>
 				<span class="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-					<LockKeyholeIcon class="size-4" />
+					<LockKeyholeIcon class="size-4" aria-hidden="true" />
 				</span>
 				<span class="font-serif text-lg leading-none">Flick</span>
 			</a>
@@ -364,7 +364,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 					<SuccessCheck />
 					<div class="grid gap-2">
 						<p class="micro flex items-center justify-center gap-1.5 text-burn">
-							<FlameIcon class="size-3.5" />
+							<FlameIcon class="size-3.5" aria-hidden="true" />
 							one-time link
 						</p>
 						<h1
@@ -377,7 +377,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						<p class="text-sm text-muted-foreground">Opens once, then burns. Forward it fast.</p>
 					</div>
 					<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
-						<ClockIcon class="size-4" />
+						<ClockIcon class="size-4" aria-hidden="true" />
 						<span>EXPIRES IN</span>
 						<span class="tabular-nums text-foreground">{formatRemaining(remainingSeconds)}</span>
 					</div>
@@ -393,7 +393,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							qrOpen = true;
 						}}
 					>
-						<QrCodeIcon class="size-4" />
+						<QrCodeIcon class="size-4" aria-hidden="true" />
 						Show QR
 					</Button>
 					<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
@@ -405,7 +405,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 			<section class="grid gap-7">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-muted-foreground">
-						<ShieldCheckIcon class="size-3.5" />
+						<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
 						end-to-end encrypted · burns after read
 					</p>
 					<h1 class="font-serif text-3xl sm:text-4xl">Create a secret</h1>
@@ -543,9 +543,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									}}
 								>
 									{#if revealPassphrase}
-										<EyeOffIcon class="size-4" />
+										<EyeOffIcon class="size-4" aria-hidden="true" />
 									{:else}
-										<EyeIcon class="size-4" />
+										<EyeIcon class="size-4" aria-hidden="true" />
 									{/if}
 								</Button>
 							</div>
@@ -573,7 +573,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									}}
 								>
 									{#if !customActive && ttlSeconds === option.value}
-										<ClockIcon class="size-3.5" />
+										<ClockIcon class="size-3.5" aria-hidden="true" />
 									{/if}
 									{option.label}
 								</Button>
@@ -625,7 +625,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							class="h-11 w-full shadow-lg shadow-primary/25"
 							disabled={!canCreate}
 						>
-							<LockKeyholeIcon class="size-4" />
+							<LockKeyholeIcon class="size-4" aria-hidden="true" />
 							{isCreating ? 'Creating' : 'Create link'}
 						</Button>
 						{#if status.length > 0}
@@ -641,7 +641,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							class="micro flex items-center justify-center gap-1.5"
 							style="color: color-mix(in oklch, var(--burn) 70%, var(--muted-foreground))"
 						>
-							<FlameIcon class="size-3.5" />
+							<FlameIcon class="size-3.5" aria-hidden="true" />
 							burns after a single open
 						</p>
 					</div>

@@ -10,7 +10,7 @@ let { class: className = '' }: Props = $props();
 </script>
 
 <span class={cn('check-circle', className)}>
-	<CheckIcon class="size-7" strokeWidth={2.2} />
+	<CheckIcon class="size-7" strokeWidth={2.2} aria-hidden="true" />
 </span>
 
 <style>

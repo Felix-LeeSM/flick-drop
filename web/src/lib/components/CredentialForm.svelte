@@ -221,9 +221,9 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 									}}
 								>
 									{#if revealedFields[field.id]}
-										<EyeOffIcon class="size-4" />
+										<EyeOffIcon class="size-4" aria-hidden="true" />
 									{:else}
-										<EyeIcon class="size-4" />
+										<EyeIcon class="size-4" aria-hidden="true" />
 									{/if}
 								</Button>
 							{/if}
@@ -257,7 +257,7 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 			disabled={disabled}
 			onclick={addField}
 		>
-			<PlusIcon class="size-4" />
+			<PlusIcon class="size-4" aria-hidden="true" />
 			Add field
 		</Button>
 	{/if}
