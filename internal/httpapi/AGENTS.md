@@ -9,8 +9,11 @@ Directory structure:
   error responses can be separate files.
 - If routes split into stable subdomains, add a local `AGENTS.md` before adding
   nested directories.
-- Do not place SQL, migrations, NATS stream setup, or object storage SDK logic
-  directly in handlers.
+- Handlers must not execute SQL directly, run migrations, set up NATS streams,
+  or call object-storage SDK logic. The router may carry `*sql.DB`
+  (`internal/httpapi/router.go:18`) only to inject into `internal/secrets.Store`
+  (including transaction boundaries delegated to Store methods) — never to run
+  queries itself.
 
 Rules:
 
