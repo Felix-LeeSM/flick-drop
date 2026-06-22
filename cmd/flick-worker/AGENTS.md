@@ -11,7 +11,8 @@ Directory structure:
 
 Keep job execution, idempotency, retry policy, NATS contracts, worker SQLite
 state, internal API calls, and telemetry implementation in named `internal/*`
-packages.
+packages. (Telemetry is not yet implemented — see #94; the process currently
+uses the standard `log` package.)
 
 Startup wiring should stay easy to read:
 
