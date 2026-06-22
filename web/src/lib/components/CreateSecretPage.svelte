@@ -22,7 +22,6 @@ import {
 	SecretApiError,
 	type TtlSeconds
 } from '$lib/api/secrets';
-import { remainingSecondsFrom } from '$lib/lifetime.js';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
 import SuccessCheck from '$lib/components/SuccessCheck.svelte';
@@ -49,6 +48,7 @@ import {
 	encryptTextWithKey,
 	generateSecretKey
 } from '$lib/crypto/text';
+import { remainingSecondsFrom } from '$lib/lifetime.js';
 
 type StatusKind = 'idle' | 'encrypting' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
