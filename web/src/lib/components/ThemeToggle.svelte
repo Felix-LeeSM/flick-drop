@@ -28,8 +28,8 @@ onMount(() => {
 	onclick={toggleResolvedTheme}
 >
 	{#if isMounted && isDark}
-		<SunIcon class="size-4" />
+		<SunIcon class="size-4" aria-hidden="true" />
 	{:else}
-		<MoonIcon class="size-4" />
+		<MoonIcon class="size-4" aria-hidden="true" />
 	{/if}
 </Button>

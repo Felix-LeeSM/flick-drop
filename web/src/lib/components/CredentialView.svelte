@@ -81,9 +81,9 @@ function displayValue(field: CredentialField): string {
 							}}
 						>
 							{#if revealedFields[field.id]}
-								<EyeOffIcon class="size-4" />
+								<EyeOffIcon class="size-4" aria-hidden="true" />
 							{:else}
-								<EyeIcon class="size-4" />
+								<EyeIcon class="size-4" aria-hidden="true" />
 							{/if}
 						</Button>
 					{/if}
@@ -99,9 +99,9 @@ function displayValue(field: CredentialField): string {
 						}}
 					>
 						{#if copiedFieldId === field.id}
-							<CheckIcon class="size-4" />
+							<CheckIcon class="size-4" aria-hidden="true" />
 						{:else}
-							<CopyIcon class="size-4" />
+							<CopyIcon class="size-4" aria-hidden="true" />
 						{/if}
 					</Button>
 				</div>

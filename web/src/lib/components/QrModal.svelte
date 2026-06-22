@@ -27,7 +27,7 @@ let { open = $bindable(false), url }: Props = $props();
 					class="absolute -right-2 -top-2 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 					aria-label="Close"
 				>
-					<XIcon class="size-4" />
+					<XIcon class="size-4" aria-hidden="true" />
 				</Dialog.Close>
 				<Dialog.Title class="mt-0.5 font-serif text-xl">Scan or copy</Dialog.Title>
 			</div>
