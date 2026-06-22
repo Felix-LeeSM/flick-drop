@@ -8,7 +8,9 @@ Expected files:
 - `credential-payload.schema.json`: browser-only structured credential JSON
   after the `FLCR1:` prefix and before text-secret encryption.
 - `events/*.schema.json`: NATS job/event payload contracts.
-- `internal-api.md` or generated specs for worker to API internal endpoints.
+- Worker→API internal endpoint contract: not yet materialized as a file. The
+  internal endpoints live in `internal/httpapi/router.go` (`/internal/...`); add
+  `internal-api.md` or an OpenAPI extension when the contract stabilizes.
 
 Contracts must not contain real IDs, credentials, production domains, plaintext
 secrets, derived keys, or private bucket names.
