@@ -14,7 +14,8 @@ Local development:
 | Variable | Purpose |
 | --- | --- |
 | `FLICK_ENV` | `development`, `test`, or `production`. |
-| `FLICK_LOG_LEVEL` | Log verbosity. |
+| `FLICK_LOG_LEVEL` | Log verbosity (`debug`/`info`/`warn`/`error`; default `info`). |
+| `FLICK_LOG_FORMAT` | Log output format (`json` default, `text` for local dev). |
 | `FLICK_PUBLIC_BASE_URL` | Public web origin. |
 | `PUBLIC_FLICK_API_BASE_URL` | Browser-safe API base URL embedded in the web build. |
 | `PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES` | Browser-safe local file size limit for SQLite-backed file secrets. |

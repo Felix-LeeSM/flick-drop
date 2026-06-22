@@ -15,9 +15,13 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/httpapi"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 func main() {
+	logger := telemetry.NewLogger()
+	telemetry.SetStandardLogger(logger)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

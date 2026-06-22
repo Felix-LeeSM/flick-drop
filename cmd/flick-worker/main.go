@@ -11,10 +11,14 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"github.com/Felix-LeeSM/flick-drop/internal/worker"
 )
 
 func main() {
+	logger := telemetry.NewLogger()
+	telemetry.SetStandardLogger(logger)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
