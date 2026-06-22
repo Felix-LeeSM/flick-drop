@@ -97,3 +97,34 @@ func TestClientIPHonorsXFFOnlyFromTrustedPeer(t *testing.T) {
 		t.Fatalf("no trusted proxies: got %q, want 198.51.100.9", got)
 	}
 }
+
+func TestClientIPSkipsNonIPXFFEntries(t *testing.T) {
+	trusted := []*net.IPNet{mustCIDR(t, "127.0.0.1/32")}
+	rl := newRateLimiter(10, trusted)
+
+	// A spoofed non-IP XFF must never become the bucket key: with no valid
+	// non-trusted entry, the limiter falls back to the trusted peer instead of
+	// minting a fresh bucket per arbitrary string (memory-DoS vector).
+	r := httptest.NewRequest(http.MethodPost, "/api/secrets/x/open", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "not-an-ip, !!!, garbage-string")
+	if got := rl.clientIP(r); got != "127.0.0.1" {
+		t.Fatalf("non-IP XFF should fall back to peer: got %q, want 127.0.0.1", got)
+	}
+
+	// A valid non-trusted IP still wins even when non-IP junk precedes it.
+	r2 := httptest.NewRequest(http.MethodPost, "/api/secrets/x/open", nil)
+	r2.RemoteAddr = "127.0.0.1:1234"
+	r2.Header.Set("X-Forwarded-For", "203.0.113.5, garbage, 127.0.0.1")
+	if got := rl.clientIP(r2); got != "203.0.113.5" {
+		t.Fatalf("valid IP should win over non-IP junk: got %q, want 203.0.113.5", got)
+	}
+
+	// Empty entries between commas are skipped, not treated as a bucket key.
+	r3 := httptest.NewRequest(http.MethodPost, "/api/secrets/x/open", nil)
+	r3.RemoteAddr = "127.0.0.1:1234"
+	r3.Header.Set("X-Forwarded-For", "  ,  ,  ")
+	if got := rl.clientIP(r3); got != "127.0.0.1" {
+		t.Fatalf("empty XFF entries should fall back to peer: got %q, want 127.0.0.1", got)
+	}
+}
