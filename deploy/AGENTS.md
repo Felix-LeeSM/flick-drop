@@ -33,7 +33,8 @@ Operations principles:
 - Keep the baseline deployable without a managed database.
 - SQLite and NATS JetStream need persistent volumes; object payload retention
   must match the documented cleanup model.
-- OCI Object Storage behavior should be verified with a real development bucket,
-  not treated as equivalent to an S3-compatible local simulator.
+- S3-compatible object storage behavior (OCI Object Storage in
+  S3-compatibility mode in prod) should be verified with a real development
+  bucket, not treated as equivalent to the local MinIO simulator.
 - Public manifests should be useful to other operators without leaking one
   deployment's tenancy, domain, bucket, or network assumptions.

@@ -17,7 +17,7 @@ In scope:
 - File secret creation and one-time download.
 - TTL options: 10 minutes, 1 hour, 24 hours.
 - Small payload storage in SQLite BLOBs.
-- Larger encrypted file storage in OCI Object Storage.
+- Larger encrypted file storage in S3-compatible object storage.
 - Worker cleanup for consumed and expired secrets.
 - `/healthz`, `/readyz`, `/metrics`.
 - Container image definitions for web, API, and worker.
@@ -79,9 +79,10 @@ Out of scope:
 - `secret` field flags are UI masking hints, not server-enforced access
   controls.
 
-### 5. OCI Object Storage
+### 5. S3-Compatible Object Storage
 
-- OCI adapter for larger ciphertext payloads.
+- S3-compatible adapter (AWS SDK for Go v2) for larger ciphertext payloads.
+- MinIO integration test as the interop double.
 - Real dev bucket smoke test.
 - Object delete cleanup job.
 - Runbook for bucket, credentials, and lifecycle checks.

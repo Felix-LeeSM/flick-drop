@@ -43,7 +43,7 @@ Initial milestone shape:
 - `M0: Repository Foundation`
 - `M1: Local Secret MVP`
 - `M2: Worker and Cleanup`
-- `M3: OCI Object Storage`
+- `M3: S3-Compatible Object Storage`
 - `M4: k3s Deployment`
 
 Each milestone should have:

@@ -10,8 +10,8 @@ The server should never know the plaintext secret, passphrase, or derived key.
 
 The browser derives an encryption key — from a user-entered passphrase in
 Model A, or from a random key in Model B — and encrypts payloads before
-upload. The API, worker, NATS, SQLite, OCI Object Storage, logs, and metrics
-handle ciphertext and safe metadata only.
+upload. The API, worker, NATS, SQLite, S3-compatible object storage, logs, and
+metrics handle ciphertext and safe metadata only.
 
 The browser also derives a separate access proof from the same user input with
 separate KDF parameters. The API stores only a hash of that proof. The proof
@@ -51,7 +51,7 @@ flick-worker
 NATS JetStream
   stores job IDs and small metadata only
 
-OCI Object Storage
+S3-compatible object storage
   stores larger ciphertext only
 ```
 

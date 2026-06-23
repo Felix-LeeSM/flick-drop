@@ -38,7 +38,7 @@ https://drop.example.com/f/xyz789
 
 The URL contains only the secret ID. The recipient must enter the passphrase in
 the browser to decrypt the payload. The API, ingress logs, NATS messages,
-SQLite files, and OCI Object Storage must never receive the passphrase or the
+SQLite files, and S3-compatible object storage must never receive the passphrase or the
 derived key.
 
 ## Security Model
@@ -132,7 +132,7 @@ Initial storage policy:
 ```text
 text secret: api.db BLOB
 file <= 1 MiB: api.db BLOB
-file > 1 MiB: OCI Object Storage when enabled
+file > 1 MiB: S3-compatible object storage when enabled
 max file size: 25 MiB
 TTL options: 10 minutes, 1 hour, 24 hours
 default max views: 1
@@ -156,9 +156,10 @@ worker.db:
 Filesystem storage is not a persistent backend. It is only for temporary files,
 local scratch, or test fixtures.
 
-OCI Object Storage is tested with a real development bucket. MinIO is
-S3-compatible but is not an OCI simulator, so it is not the default development
-stand-in for OCI behavior.
+S3-compatible object storage is tested with a real development bucket via the
+MinIO integration test, then verified against the real OCI bucket in
+S3-compatibility mode. MinIO is S3-compatible but is not an OCI simulator, so
+it is not the default development stand-in for OCI behavior.
 
 See [storage model](docs/architecture/storage-model.md).
 
@@ -170,7 +171,7 @@ The intended small deployment uses:
 
 - small compute nodes
 - Kubernetes persistent volume for SQLite and NATS data
-- OCI Object Storage for larger encrypted files
+- OCI Object Storage (S3-compatibility mode) for larger encrypted files
 - Kubernetes Secret/ConfigMap for runtime configuration
 - Ingress with HTTPS termination
 
@@ -225,7 +226,7 @@ MVP includes:
 - one-time consume flow
 - TTL expiration
 - SQLite BLOB storage for small payloads
-- OCI Object Storage adapter for larger payloads
+- S3-compatible object storage adapter for larger payloads
 - NATS JetStream job delivery
 - worker cleanup loop
 - `/healthz`, `/readyz`, `/metrics`
