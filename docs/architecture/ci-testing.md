@@ -80,7 +80,7 @@ Expected coverage:
 
 - `internal/config`: env parsing and validation.
 - `internal/secrets`: secret lifecycle and verified open invariants.
-- `internal/storage`: SQLite BLOB threshold and OCI routing behavior.
+- `internal/storage`: SQLite BLOB threshold and large-payload S3 routing behavior.
 - `internal/events`: NATS payload validation and outbox publish behavior.
 - `internal/worker`: idempotent job execution and retry decisions.
 
@@ -115,13 +115,13 @@ Shared contracts live in `contracts/`.
 NATS payloads must contain IDs and small metadata only. They must not contain
 ciphertext bodies, plaintext secrets, passphrases, or derived keys.
 
-## OCI
+## Object Storage
 
-PR CI must not require OCI credentials. OCI adapter behavior should be tested
-with fake clients in PR checks.
+PR CI must not require object storage credentials. S3 adapter behavior should be
+tested with the MinIO integration test and fake clients in PR checks.
 
-Real OCI dev bucket smoke tests are manual or scheduled and run only when the
-required secrets are present.
+Real OCI dev bucket smoke tests (S3-compatibility mode) are manual or scheduled
+and run only when the required secrets are present.
 
 ## Image Publish
 

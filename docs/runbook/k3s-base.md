@@ -85,11 +85,11 @@ API traffic on the same public origin and routes `/api/*` to `flick-api`.
 `Secret/flick-secrets` contains placeholders only:
 
 - `FLICK_INTERNAL_TOKEN`
-- OCI Object Storage settings
+- S3-compatible object storage settings (endpoint, region, bucket, credentials)
 
 Replace every placeholder before production use. Public manifests must not
-contain real tokens, kubeconfig, OCI credentials, bucket names, tenancy details,
-or production domains.
+contain real tokens, kubeconfig, object storage credentials, bucket names,
+tenancy details, or production domains.
 
 ## Persistence
 
@@ -101,8 +101,9 @@ flick-worker-data   /data/worker.db
 nats-data           /data/jetstream
 ```
 
-Storage classes are left to the cluster default. OCI Object Storage support for
-larger encrypted payloads is configured separately and remains disabled in the
+Storage classes are left to the cluster default. S3-compatible object storage
+support for larger encrypted payloads (for example, OCI Object Storage in
+S3-compatibility mode) is configured separately and remains disabled in the
 generic base.
 
 ## Apply

@@ -28,7 +28,7 @@ The API also publishes async jobs through an outbox table and NATS JetStream.
 ### `flick-worker`
 
 Long-running worker Deployment. It consumes NATS JetStream jobs and performs
-cleanup, OCI object deletion, retry bookkeeping, and future backup/restore
+cleanup, S3 object deletion, retry bookkeeping, and future backup/restore
 verification work.
 
 The worker owns `worker.db`. For changes that belong to `api.db`, it calls
@@ -45,7 +45,8 @@ bodies.
 - Browser to web/API: HTTP.
 - API to worker: NATS JetStream jobs.
 - Worker to API: internal HTTP endpoints protected by `FLICK_INTERNAL_TOKEN`.
-- API/worker to OCI: OCI Object Storage SDK when enabled.
+- API/worker to object storage: AWS SDK for Go v2 over S3-compatible endpoints
+  (MinIO dev, OCI S3-compatibility prod) when enabled.
 
 Do not add gRPC in the initial version. It is a future option if internal HTTP
 contracts become too wide or streaming RPC becomes useful.

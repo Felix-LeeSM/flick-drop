@@ -65,17 +65,23 @@ the default same-origin ingress path, use `/`:
 FLICK_WEB_PUBLIC_API_BASE_URL=/ scripts/ci/images.sh
 ```
 
-## OCI Object Storage
+## Object Storage
 
-Flick treats OCI Object Storage as a real deployment dependency for larger
-encrypted files. Do not use MinIO as the OCI verification target. MinIO is
-S3-compatible, but it is not an OCI simulator.
+Flick writes larger encrypted files through the S3 API via the AWS SDK for Go
+v2, so any S3-compatible provider works. On OCI, use Object Storage in
+S3-compatibility mode. Do not use MinIO as the OCI verification target. MinIO
+is the local/integration-test double, not an OCI simulator.
+
+Auth is always a static key pair: OCI Customer Secret Keys (an access/secret
+key pair issued against your OCI user), because the AWS SDK cannot speak OCI
+instance principal. Generate them under the OCI console
+(Identity → Users → Customer Secret Keys) before first deploy.
 
 Use a real development bucket before production. The bucket receives
 browser-encrypted ciphertext only. It must not receive plaintext secrets,
 passphrases, derived keys, or plaintext filenames.
 
-Preflight checks:
+Preflight checks against the S3-compatible endpoint:
 
 ```sh
 oci os ns get
@@ -92,8 +98,8 @@ Recommended bucket boundary:
 - do not use pre-authenticated requests for normal secret delivery
 - align bucket lifecycle cleanup with Flick TTL, cleanup lag, and backup policy
 
-Set `FLICK_STORAGE_LARGE_BACKEND=oci` only after the bucket and credentials are
-ready. Leave it `disabled` for SQLite-only deployments.
+Set `FLICK_STORAGE_LARGE_BACKEND=s3` only after the bucket and Customer Secret
+Key credentials are ready. Leave it `disabled` for SQLite-only deployments.
 
 ## Private Overlay
 
@@ -147,7 +153,7 @@ Patch `ConfigMap/flick-config` for deployment-specific non-secret values:
 FLICK_PUBLIC_BASE_URL=https://<domain>
 FLICK_API_BASE_URL=https://<domain>
 FLICK_INTERNAL_API_BASE_URL=http://flick-api:8080
-FLICK_STORAGE_LARGE_BACKEND=oci
+FLICK_STORAGE_LARGE_BACKEND=s3
 FLICK_PAYLOAD_INLINE_MAX_BYTES=1048576
 FLICK_MAX_FILE_BYTES=26214400
 FLICK_DEFAULT_TTL_SECONDS=3600
@@ -160,16 +166,17 @@ Patch `Secret/flick-secrets` for sensitive values:
 
 ```text
 FLICK_INTERNAL_TOKEN=<private-random-token>
-FLICK_OCI_AUTH_MODE=instance_principal
-FLICK_OCI_REGION=<oci-region>
-FLICK_OCI_NAMESPACE=<object-storage-namespace>
-FLICK_OCI_BUCKET=<bucket-name>
-FLICK_OCI_COMPARTMENT_OCID=<compartment-ocid>
+FLICK_S3_ENDPOINT=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
+FLICK_S3_REGION=<oci-region>
+FLICK_S3_BUCKET=<bucket-name>
+FLICK_S3_ACCESS_KEY_ID=<oci-customer-secret-key-id>
+FLICK_S3_SECRET_ACCESS_KEY=<oci-customer-secret-key-secret>
+FLICK_S3_PATH_STYLE=true
 ```
 
-If the cluster cannot use instance principals, use a private secret mechanism
-for OCI API key configuration. Do not commit API keys, config files, private
-key material, or base64-encoded versions of those values.
+The access/secret pair is an OCI Customer Secret Key issued against your OCI
+user. Do not commit Customer Secret Key values, API signing keys, config files,
+private key material, or base64-encoded versions of those values.
 
 ## PVC And Resource Budget
 
@@ -310,10 +317,10 @@ Use the application UI to create and open:
 
 - a short text secret
 - a small file below `FLICK_PAYLOAD_INLINE_MAX_BYTES`
-- a file above `FLICK_PAYLOAD_INLINE_MAX_BYTES` when OCI storage is enabled
+- a file above `FLICK_PAYLOAD_INLINE_MAX_BYTES` when S3 storage is enabled
 
-The large-file test must use the real development or production OCI bucket.
-Success against a local S3-compatible service does not prove OCI behavior.
+The large-file test must use the real development or production OCI bucket in
+S3-compatibility mode. Success against a local MinIO does not prove OCI behavior.
 
 Verify that consumed secrets cannot be opened again and that five invalid
 passphrase attempts consume and remove the secret.
@@ -357,8 +364,8 @@ Known residual risks:
   decryption.
 - A compromised cluster can delete data early, deny service, or serve malicious
   assets.
-- Optional k3d smoke does not prove OCI Object Storage, ingress TLS, DNS, or
-  production storage classes.
+- Optional k3d smoke does not prove OCI Object Storage in S3-compatibility mode,
+  ingress TLS, DNS, or production storage classes.
 
 Document backup retention, bucket lifecycle rules, and incident rollback steps
 in the private ops repository for each real deployment.

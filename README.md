@@ -18,7 +18,7 @@ and removed.
 - Derives encryption keys in the browser from a user-entered passphrase.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.
 - Supports local SQLite storage for small encrypted payloads.
-- Plans OCI Object Storage support for larger encrypted files.
+- Plans S3-compatible object storage support for larger encrypted files.
 
 Example links:
 
@@ -61,7 +61,8 @@ The intended production shape is:
 - `nats`: NATS JetStream broker.
 - SQLite files on persistent volume for metadata, small ciphertext payloads,
   and worker state.
-- OCI Object Storage bucket for larger encrypted files.
+- S3-compatible object storage bucket (MinIO dev, OCI S3-compatibility prod)
+  for larger encrypted files.
 
 The service avoids a managed database requirement. That keeps the baseline small
 enough for an OCI Free Tier-style deployment, using compute, block volume/PVC,

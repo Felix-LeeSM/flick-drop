@@ -18,7 +18,7 @@ Persistent data:
 api.db
 worker.db
 NATS JetStream filestore
-OCI Object Storage bucket for larger ciphertext
+S3-compatible object storage bucket for larger ciphertext
 ```
 
 ## Kubernetes Resources
@@ -70,8 +70,9 @@ with `kubectl top`, pod restarts, and real upload/download smoke tests.
 ## Free Tier Notes
 
 The service avoids a managed database dependency. SQLite and NATS data can live
-on Kubernetes persistent volumes, and larger encrypted files can live in OCI
-Object Storage.
+on Kubernetes persistent volumes, and larger encrypted files can live in
+S3-compatible object storage (for example, OCI Object Storage in
+S3-compatibility mode).
 
 Operators must verify current OCI tenancy limits, Object Storage quota, request
 limits, and available block volume capacity before production use.
