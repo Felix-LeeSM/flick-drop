@@ -348,13 +348,6 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 			</a>
 			<nav class="flex items-center gap-2">
 				<ThemeToggle />
-				<a
-					class={`${buttonVariants({ variant: 'toggleActive', size: 'seg' })} pointer-events-none`}
-					href={resolve('/')}
-					aria-current="page"
-				>
-					Create
-				</a>
 			</nav>
 		</header>
 
@@ -505,9 +498,6 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 					<div class="grid gap-2.5">
 						<div class="flex items-center justify-between">
 							<span class="micro text-muted-foreground">passphrase</span>
-							<span class="micro text-muted-foreground/70">
-								{usePassphrase ? 'model A' : 'model B'}
-							</span>
 						</div>
 						<div class="flex min-h-9 items-center gap-2">
 							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
@@ -587,6 +577,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								<input
 									type="text"
 									inputmode="numeric"
+									size={Math.max(2, String(customValue).length)}
 									aria-label="Custom lifetime value"
 									placeholder="2"
 									value={customValue > 0 ? customValue : ''}

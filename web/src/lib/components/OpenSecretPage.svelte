@@ -56,6 +56,10 @@ let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isOpening = $state(false);
 let hasOpened = $state(false);
+// True when the link itself is unusable (incomplete / failed to load) so the only
+// sensible next step is to create a new secret. Stays false for passphrase typos,
+// which are retryable via the open form.
+let linkUnusable = $state(false);
 let copyState = $state<'idle' | 'copied'>('idle');
 // Model A (passphrase) vs Model B (link-bearer). Determined by prefetching
 // metadata on mount: Model A secrets expose an access block, Model B do not.
@@ -75,6 +79,7 @@ async function loadModel(): Promise<void> {
 			if (!raw) {
 				status = 'This link is incomplete — the decryption key is missing from the URL.';
 				statusKind = 'error';
+				linkUnusable = true;
 				return;
 			}
 			linkKey = await importAesGcmKey(raw);
@@ -82,6 +87,9 @@ async function loadModel(): Promise<void> {
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : 'Could not load this secret.';
 		statusKind = 'error';
+		// Link is unusable only when the server confirmed it (not-found / burned).
+		// status 0 is a transient network failure the user can retry, so we don't push them to create.
+		linkUnusable = error instanceof SecretApiError && error.status !== 0;
 	}
 }
 
@@ -137,6 +145,7 @@ async function openSecret(): Promise<void> {
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
 		statusKind = 'error';
+		linkUnusable = false;
 	} finally {
 		isOpening = false;
 	}
@@ -351,6 +360,14 @@ function formatBytes(bytes: number): string {
 						{status}
 					</p>
 				{/if}
+
+				<a
+					class={buttonVariants({ variant: 'ghost' }) + ' h-9 w-full text-sm'}
+					href={resolve('/')}
+					aria-label="Create your own secret"
+				>
+					Create your own
+				</a>
 			</section>
 		{:else}
 			<section class="grid gap-7">
@@ -433,6 +450,16 @@ function formatBytes(bytes: number): string {
 						</p>
 					{/if}
 				</form>
+
+				{#if linkUnusable && statusKind === 'error'}
+					<a
+						class={buttonVariants({ variant: 'ghost' }) + ' h-9 w-full text-sm'}
+						href={resolve('/')}
+						aria-label="Create a new secret instead"
+					>
+						Create one instead
+					</a>
+				{/if}
 			</section>
 		{/if}
 	</div>
