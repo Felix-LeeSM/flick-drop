@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 const DefaultMaxAttempts = 3
@@ -97,6 +98,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (ProcessRes
 		return result, err
 	}
 	result.Succeeded = true
+	telemetry.JobsProcessed.WithLabelValues(event.Kind, "succeeded").Inc()
 	return result, nil
 }
 
@@ -125,11 +127,13 @@ func (p *Processor) finishFailed(
 	result.Failed = true
 
 	if attempt.Attempt < p.maxAttempts {
+		telemetry.JobsProcessed.WithLabelValues(event.Kind, "failed").Inc()
 		return result, jobErr
 	}
 	if err := p.store.DeadLetter(ctx, event.JobID, event.Kind, payloadJSON, jobErr); err != nil {
 		return result, err
 	}
 	result.DeadLettered = true
+	telemetry.JobsProcessed.WithLabelValues(event.Kind, "dead").Inc()
 	return result, nil
 }

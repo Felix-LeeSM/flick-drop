@@ -11,14 +11,16 @@ Directory structure:
 
 Keep handlers, middleware, request/response mapping, domain behavior, SQL,
 migrations, storage adapters, NATS publishing, and telemetry implementation in
-named `internal/*` packages. (Telemetry is not yet implemented — see #94; the
-process currently uses the standard `log` package.)
+named `internal/*` packages. (Structured logging and Prometheus metrics on
+`/metrics` are implemented in `internal/telemetry`; tracing is planned — see
+#94 phase 3.)
 
 Startup wiring should stay easy to read:
 
 1. load config
 2. open API-owned SQLite
-3. wire storage, secrets, and events (telemetry wiring is planned, see #94)
+3. wire storage, secrets, and events (metrics are wired via process-global
+   instruments in `internal/telemetry`; tracing is planned, see #94)
 4. build HTTP router
 5. start server and graceful shutdown
 

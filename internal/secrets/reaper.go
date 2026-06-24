@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 const (
@@ -162,6 +163,21 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
+	}
+	// Record the reclaim after the commit so a rolled-back tick does not bump
+	// counters for rows that were not actually reaped. reason is derived from
+	// state, mirroring the job reason in reclaimRow.
+	for _, c := range batch {
+		reason := "expired"
+		if c.state == "pending_upload" {
+			reason = "orphan"
+		}
+		telemetry.SecretReaped.WithLabelValues(reason).Inc()
+		// Orphans are pending_upload secrets that never reached /finalize, so
+		// their ActiveUploads Inc (from CreateLarge) is now balanced here.
+		if c.state == "pending_upload" {
+			telemetry.ActiveUploads.Dec()
+		}
 	}
 	return len(batch), nil
 }

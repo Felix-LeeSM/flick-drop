@@ -16,6 +16,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 const createBodyOverheadLimit = int64(64 * 1024)
@@ -368,6 +369,7 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	if err := tx.Commit(); err != nil {
 		return secrets.Secret{}, fmt.Errorf("commit open cleanup transaction: %w", err)
 	}
+	telemetry.SecretOpened.Inc()
 	return secret, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 const (
@@ -241,6 +242,8 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 		return Secret{}, fmt.Errorf("commit create secret: %w", err)
 	}
 
+	telemetry.SecretCreated.WithLabelValues(input.Kind, StorageSQLite).Inc()
+
 	return Secret{
 		ID:                id,
 		Kind:              input.Kind,
@@ -344,6 +347,9 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (Create
 		return CreateLargeResult{}, fmt.Errorf("commit create large secret: %w", err)
 	}
 
+	telemetry.SecretCreated.WithLabelValues(input.Kind, StorageS3).Inc()
+	telemetry.ActiveUploads.Inc()
+
 	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload}, nil
 }
 
@@ -401,6 +407,10 @@ func (s *Store) Finalize(ctx context.Context, id string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize: %w", err)
 	}
+	// A pending_upload just became active: the client completed the upload, so
+	// the in-flight gauge drops. (The no-op "already active" early return above
+	// never reaches here, so we do not double-decrement.)
+	telemetry.ActiveUploads.Dec()
 	return nil
 }
 

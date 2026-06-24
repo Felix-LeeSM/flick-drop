@@ -12,6 +12,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 type Server struct {
@@ -129,8 +130,6 @@ func (s Server) readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s Server) metrics(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("# HELP flick_api_info Flick API process info\n# TYPE flick_api_info gauge\nflick_api_info 1\n"))
+func (s Server) metrics(w http.ResponseWriter, r *http.Request) {
+	telemetry.MetricsHandler().ServeHTTP(w, r)
 }
