@@ -133,7 +133,7 @@ Initial storage policy:
 text secret: api.db BLOB
 file <= 1 MiB: api.db BLOB
 file > 1 MiB: S3-compatible object storage when enabled
-max file size: 25 MiB
+max file size: 50 MiB
 TTL options: 10 minutes, 1 hour, 24 hours
 default max views: 1
 ```

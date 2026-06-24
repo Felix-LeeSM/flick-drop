@@ -28,7 +28,7 @@ Initial thresholds:
 text secret: api.db BLOB
 file <= 1 MiB: api.db BLOB
 file > 1 MiB: S3-compatible object storage when enabled
-max file size: 25 MiB
+max file size: 50 MiB
 ```
 
 The local web flow accepts files only up to the SQLite inline threshold while

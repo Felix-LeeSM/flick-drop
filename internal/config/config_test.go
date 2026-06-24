@@ -39,8 +39,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.PayloadInlineMaxBytes != 1048576 {
 		t.Fatalf("PayloadInlineMaxBytes = %d, want 1048576", cfg.PayloadInlineMaxBytes)
 	}
-	if cfg.MaxFileBytes != 26214400 {
-		t.Fatalf("MaxFileBytes = %d, want 26214400", cfg.MaxFileBytes)
+	if cfg.MaxFileBytes != 52428800 {
+		t.Fatalf("MaxFileBytes = %d, want 52428800", cfg.MaxFileBytes)
 	}
 	if cfg.MinTTLSeconds != 300 {
 		t.Fatalf("MinTTLSeconds = %d, want 300", cfg.MinTTLSeconds)
