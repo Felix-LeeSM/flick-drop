@@ -42,6 +42,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.MaxFileBytes != 52428800 {
 		t.Fatalf("MaxFileBytes = %d, want 52428800", cfg.MaxFileBytes)
 	}
+	if cfg.DefaultTTLSeconds != 3600 {
+		t.Fatalf("DefaultTTLSeconds = %d, want 3600", cfg.DefaultTTLSeconds)
+	}
 	if cfg.MinTTLSeconds != 300 {
 		t.Fatalf("MinTTLSeconds = %d, want 300", cfg.MinTTLSeconds)
 	}
