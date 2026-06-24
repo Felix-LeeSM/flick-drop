@@ -33,6 +33,12 @@ import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
 import { Textarea } from '$lib/components/ui/textarea';
 import {
+	DEFAULT_TTL_SECONDS,
+	formatTtlRange,
+	MAX_TTL_SECONDS,
+	MIN_TTL_SECONDS
+} from '$lib/config/ttl';
+import {
 	buildEnvelope,
 	CREDENTIAL_TEMPLATES,
 	CREDENTIAL_TYPES,
@@ -53,8 +59,6 @@ import { remainingSecondsFrom } from '$lib/lifetime.js';
 type StatusKind = 'idle' | 'encrypting' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
 
-const MIN_TTL_SECONDS = 300;
-const MAX_TTL_SECONDS = 604_800;
 const ttlUnitFactor: Record<'minutes' | 'hours' | 'days', number> = {
 	minutes: 60,
 	hours: 3600,
@@ -95,7 +99,7 @@ let passphrase = $state('');
 // generates a random key carried in the URL fragment. See security-model.md.
 let usePassphrase = $state(true);
 let revealPassphrase = $state(false);
-let presetSeconds = $state(600);
+let presetSeconds = $state(DEFAULT_TTL_SECONDS);
 let customActive = $state(false);
 let customValue = $state(2);
 let customUnit = $state<'minutes' | 'hours' | 'days'>('days');
@@ -605,7 +609,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						</div>
 						{#if ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS}
 							<p class="text-sm text-destructive">
-								Choose a lifetime between 5 minutes and 7 days.
+								{formatTtlRange(MIN_TTL_SECONDS, MAX_TTL_SECONDS)}
 							</p>
 						{/if}
 					</div>
