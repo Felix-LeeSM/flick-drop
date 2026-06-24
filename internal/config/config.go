@@ -59,7 +59,7 @@ func Load() (Config, error) {
 		NATSStream:            getenv("FLICK_NATS_STREAM", "FLICK_JOBS"),
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
 		PayloadInlineMaxBytes: 1048576,
-		MaxFileBytes:          26214400,
+		MaxFileBytes:          52428800,
 		DefaultTTLSeconds:     3600,
 		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
 		// offer an editable "custom" lifetime, not just fixed presets.
