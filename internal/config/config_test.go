@@ -115,3 +115,86 @@ func clearFlickEnv(t *testing.T) {
 		t.Setenv(key, "")
 	}
 }
+
+func TestLoadS3PathStyle(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", true},
+		{"true", true},
+		{"True", true},
+		{"TRUE", true},
+		{"  true ", true},
+		{"false", false},
+		{"False", false},
+		{"FALSE", false},
+		{"  false ", false},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			clearFlickEnv(t)
+			if c.in != "" {
+				t.Setenv("FLICK_S3_PATH_STYLE", c.in)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("FLICK_S3_PATH_STYLE=%q: %v", c.in, err)
+			}
+			if cfg.S3.PathStyle != c.want {
+				t.Fatalf("FLICK_S3_PATH_STYLE=%q: PathStyle=%v, want %v", c.in, cfg.S3.PathStyle, c.want)
+			}
+		})
+	}
+}
+
+func TestLoadS3PathStyleRejectsGarbage(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_S3_PATH_STYLE", "flase")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected config load error for malformed FLICK_S3_PATH_STYLE")
+	}
+}
+
+// TestLoadEnvOverrides pins each int/int64 env var to a distinct in-range value
+// and asserts it lands in the right field. A copy-paste env-name typo in Load
+// (or a missing mapping) makes at least one assertion flip.
+func TestLoadEnvOverrides(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", "2048")
+	t.Setenv("FLICK_MAX_FILE_BYTES", "4096")
+	// TTLs satisfy cross-validation: min <= default <= max.
+	t.Setenv("FLICK_MIN_TTL_SECONDS", "60")
+	t.Setenv("FLICK_DEFAULT_TTL_SECONDS", "120")
+	t.Setenv("FLICK_MAX_TTL_SECONDS", "600")
+	t.Setenv("FLICK_OPEN_RATE_PER_MIN", "7")
+	t.Setenv("FLICK_CREATE_RATE_PER_MIN", "3")
+	t.Setenv("FLICK_REAPER_INTERVAL_SECONDS", "30")
+	t.Setenv("FLICK_REAPER_BATCH_SIZE", "11")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"PayloadInlineMaxBytes", cfg.PayloadInlineMaxBytes, int64(2048)},
+		{"MaxFileBytes", cfg.MaxFileBytes, int64(4096)},
+		{"MinTTLSeconds", cfg.MinTTLSeconds, 60},
+		{"DefaultTTLSeconds", cfg.DefaultTTLSeconds, 120},
+		{"MaxTTLSeconds", cfg.MaxTTLSeconds, 600},
+		{"OpenRatePerMinute", cfg.OpenRatePerMinute, 7},
+		{"CreateRatePerMinute", cfg.CreateRatePerMinute, 3},
+		{"ReaperIntervalSeconds", cfg.ReaperIntervalSeconds, 30},
+		{"ReaperBatchSize", cfg.ReaperBatchSize, 11},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
