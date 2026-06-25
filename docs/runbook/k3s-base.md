@@ -85,6 +85,7 @@ API traffic on the same public origin and routes `/api/*` to `flick-api`.
 `Secret/flick-secrets` contains placeholders only:
 
 - `FLICK_INTERNAL_TOKEN`
+- `FLICK_METRICS_TOKEN`
 - S3-compatible object storage settings (endpoint, region, bucket, credentials)
 
 Replace every placeholder before production use. Public manifests must not
