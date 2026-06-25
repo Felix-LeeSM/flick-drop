@@ -26,6 +26,7 @@ type Config struct {
 	Env                   string
 	PublicBaseURL         string
 	InternalToken         string
+	MetricsToken          string
 	InternalAPIBaseURL    string
 	APIAddr               string
 	APIDBPath             string
@@ -51,6 +52,7 @@ func Load() (Config, error) {
 		Env:                   getenv("FLICK_ENV", "development"),
 		PublicBaseURL:         getenv("FLICK_PUBLIC_BASE_URL", "http://localhost:5173"),
 		InternalToken:         getenv("FLICK_INTERNAL_TOKEN", ""),
+		MetricsToken:          getenv("FLICK_METRICS_TOKEN", ""),
 		InternalAPIBaseURL:    getenv("FLICK_INTERNAL_API_BASE_URL", "http://localhost:8080"),
 		APIAddr:               getenv("FLICK_API_ADDR", ":8080"),
 		APIDBPath:             getenv("FLICK_API_DB_PATH", "./var/api.db"),

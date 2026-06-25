@@ -9,7 +9,7 @@ These packages are code boundaries, not service boundaries.
 - `storage`: S3-compatible object storage for large payloads (SQLite BLOB lives in `internal/secrets`).
 - `events`: NATS JetStream publishing and consuming contracts.
 - `worker`: worker job execution and retry/idempotency logic.
-- `telemetry`: structured logging (`log/slog`) and Prometheus metrics (counters/gauges served on `/metrics`) are implemented; tracing is planned (#94 phase 3).
+- `telemetry`: structured logging (`log/slog`) and Prometheus metrics (counters/gauges served on `/metrics`, guarded by `FLICK_METRICS_TOKEN` bearer auth) are implemented; tracing is planned (#94 phase 3).
 
 Service ownership rules:
 

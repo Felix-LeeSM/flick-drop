@@ -31,6 +31,7 @@ Local development:
 | Variable | Purpose |
 | --- | --- |
 | `FLICK_API_ADDR` | API listen address. |
+| `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` (Prometheus scrape). Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/metrics` fails closed (401). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max payload size stored as SQLite BLOB. |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit. |

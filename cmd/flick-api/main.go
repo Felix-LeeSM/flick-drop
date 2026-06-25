@@ -98,6 +98,7 @@ func main() {
 			PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 			AllowedOrigin:         cfg.PublicBaseURL,
 			InternalToken:         cfg.InternalToken,
+			MetricsToken:          cfg.MetricsToken,
 			OpenRatePerMinute:     cfg.OpenRatePerMinute,
 			CreateRatePerMinute:   cfg.CreateRatePerMinute,
 			TrustedProxies:        cfg.TrustedProxies,

@@ -74,6 +74,7 @@ S3-compatible object storage
 - Filenames stored server-side must be encrypted or opaque.
 - File names are encrypted in the browser as metadata before upload.
 - Internal worker to API calls require `FLICK_INTERNAL_TOKEN`.
+- The `/metrics` endpoint requires a separate bearer token (`FLICK_METRICS_TOKEN`); it never serves secret content, and an unset token fails closed (401).
 - Public repository files must not contain real credentials or production
   configuration.
 - A secret is either Model A or Model B, never a mix. Model A secrets carry an

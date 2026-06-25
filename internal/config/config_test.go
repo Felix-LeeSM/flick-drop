@@ -18,6 +18,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.InternalToken != "" {
 		t.Fatalf("InternalToken = %q, want empty default", cfg.InternalToken)
 	}
+	if cfg.MetricsToken != "" {
+		t.Fatalf("MetricsToken = %q, want empty default", cfg.MetricsToken)
+	}
 	if cfg.InternalAPIBaseURL != "http://localhost:8080" {
 		t.Fatalf("InternalAPIBaseURL = %q, want http://localhost:8080", cfg.InternalAPIBaseURL)
 	}

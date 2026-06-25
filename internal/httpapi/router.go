@@ -23,6 +23,7 @@ type Server struct {
 	payloadInlineMaxBytes int64
 	allowedOrigin         string
 	internalToken         string
+	metricsToken          string
 	openLimiter           *rateLimiter
 	createLimiter         *rateLimiter
 }
@@ -31,6 +32,7 @@ type Options struct {
 	PayloadInlineMaxBytes int64
 	AllowedOrigin         string
 	InternalToken         string
+	MetricsToken          string
 	OpenRatePerMinute     int
 	CreateRatePerMinute   int
 	TrustedProxies        []*net.IPNet
@@ -52,6 +54,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		payloadInlineMaxBytes: payloadInlineMaxBytes,
 		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:         opts.InternalToken,
+		metricsToken:          opts.MetricsToken,
 		openLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		createLimiter:         newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 	}
@@ -63,7 +66,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Use(server.cors)
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
-	r.Get("/metrics", server.metrics)
+	r.With(server.metricsAuth).Get("/metrics", server.metrics)
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
@@ -112,6 +115,31 @@ func secureTokenEqual(got, want string) bool {
 	gotHash := sha256.Sum256([]byte(got))
 	wantHash := sha256.Sum256([]byte(want))
 	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+// metricsAuth guards /metrics behind a bearer token separate from the internal
+// token, so a Prometheus scraper credential cannot reach /internal/*. The token
+// is a static pre-shared key (FLICK_METRICS_TOKEN); an empty configured token
+// fails closed (401) so a misconfigured deploy never exposes metrics.
+func (s Server) metricsAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkBearer(r.Header.Get("Authorization")) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "metrics token is missing or invalid")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// checkBearer reports whether header is "Bearer <token>" matching the configured
+// metrics token. The scheme match is case-insensitive per RFC 6750; the token
+// tail is compared in constant time.
+func (s Server) checkBearer(header string) bool {
+	const prefix = "bearer "
+	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	return secureTokenEqual(header[len(prefix):], s.metricsToken)
 }
 
 func (s Server) healthz(w http.ResponseWriter, _ *http.Request) {

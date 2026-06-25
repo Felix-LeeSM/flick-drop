@@ -386,6 +386,51 @@ func TestCreateRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestMetricsRequiresToken(t *testing.T) {
+	router := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		MetricsToken:          "metrics-token",
+	})
+
+	for _, tc := range []struct {
+		name string
+		auth string
+	}{
+		{"missing", ""},
+		{"wrong scheme", "metrics-token"},
+		{"wrong token", "Bearer wrong-token"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		if tc.auth != "" {
+			req.Header.Set("Authorization", tc.auth)
+		}
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: metrics status = %d, want 401, body = %s", tc.name, resp.Code, resp.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer metrics-token")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("correct token metrics status = %d, want 200, body = %s", resp.Code, resp.Body.String())
+	}
+
+	// A misconfigured deploy (no token) fails closed: /metrics stays 401 even
+	// with a bearer header, so it can never be exposed unauthenticated.
+	disabledRouter := newTestRouter(t)
+	disabledReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	disabledReq.Header.Set("Authorization", "Bearer anything")
+	disabledResp := httptest.NewRecorder()
+	disabledRouter.ServeHTTP(disabledResp, disabledReq)
+	if disabledResp.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled metrics status = %d, want 401", disabledResp.Code)
+	}
+}
+
 func TestCleanupSecretRequiresInternalToken(t *testing.T) {
 	router := newTestRouterWithOptions(t, Options{
 		PayloadInlineMaxBytes: 1024,

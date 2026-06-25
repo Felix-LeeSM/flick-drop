@@ -14,8 +14,10 @@ import (
 )
 
 // DefaultRegistry is the single Prometheus registry a process serves on
-// /metrics. The API and worker each have their own process, so each serves
-// only the instruments it increments.
+// /metrics. Today only the API process mounts /metrics; the worker process
+// does not yet run an HTTP server, so worker-side counters (e.g.
+// flick_jobs_processed_total) are not currently observable until the worker
+// exposes its own /metrics.
 var DefaultRegistry = prometheus.NewRegistry()
 
 // metricLabels bounds the label cardinality the gate will ever see. Adding a
@@ -98,7 +100,8 @@ func init() {
 }
 
 // MetricsHandler serves the Prometheus text exposition format for
-// DefaultRegistry. Mounted on /metrics by the API and worker.
+// DefaultRegistry. Mounted on /metrics by the API process (see
+// internal/httpapi); the worker does not yet expose /metrics.
 func MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{})
 }
