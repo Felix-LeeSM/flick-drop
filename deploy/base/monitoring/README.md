@@ -10,7 +10,8 @@ readiness are visible without `kubectl` polling (and without a metrics-server,
 which the base does not install).
 
 Scoped to the pods collector only (`--resources=pods`), so RBAC is read-only on a
-single object kind and the footprint stays small (~16Mi request, 64Mi limit).
+single object kind and the footprint stays small (~42Mi RSS measured; 32Mi
+request, 96Mi limit).
 
 ### Apply
 
