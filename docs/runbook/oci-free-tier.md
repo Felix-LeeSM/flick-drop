@@ -35,6 +35,7 @@ Private values:
 - OCI API keys, config files, or workload identity details
 - registry credentials when the images are private
 - `FLICK_INTERNAL_TOKEN`
+- `FLICK_METRICS_TOKEN`
 - production domains, TLS issuer names, and certificate references
 - production kustomize overlays
 - SQLite databases, PVC dumps, bucket exports, and backup archives
@@ -166,6 +167,7 @@ Patch `Secret/flick-secrets` for sensitive values:
 
 ```text
 FLICK_INTERNAL_TOKEN=<private-random-token>
+FLICK_METRICS_TOKEN=<private-random-token>
 FLICK_S3_ENDPOINT=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
 FLICK_S3_REGION=<oci-region>
 FLICK_S3_BUCKET=<bucket-name>
