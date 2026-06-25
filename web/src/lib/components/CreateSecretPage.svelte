@@ -14,11 +14,14 @@ import {
 	ShieldCheckIcon,
 	TypeIcon
 } from '@lucide/svelte';
+import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
+import { type ClientLimits, defaultLimits, getConfig } from '$lib/api/config';
 import {
 	type CreateSecretResponse,
 	createSecretApiClient,
 	createShareUrl,
+	DEFAULT_API_BASE_URL,
 	SecretApiError,
 	type TtlSeconds
 } from '$lib/api/secrets';
@@ -71,15 +74,17 @@ const ttlPresets: Array<{ label: string; value: number }> = [
 	{ label: '7 days', value: 604_800 }
 ];
 
-const defaultLocalFileMaxBytes = 1024 * 1024 - 16;
-const configuredLocalFileMaxBytes = Number(
-	import.meta.env.PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES ?? defaultLocalFileMaxBytes
-);
-const localFileMaxBytes =
-	Number.isFinite(configuredLocalFileMaxBytes) && configuredLocalFileMaxBytes > 0
-		? configuredLocalFileMaxBytes
-		: defaultLocalFileMaxBytes;
-const api = createSecretApiClient();
+// File size limits come from the server at boot (GET /api/config). They start at
+// the built-in defaults so the create flow is usable immediately, then settle
+// once the fetch resolves. The server re-enforces both limits, so a stale
+// default cannot let an oversized file through.
+let limits = $state<ClientLimits>(defaultLimits());
+onMount(() => {
+	void getConfig(DEFAULT_API_BASE_URL).then((resolved) => {
+		limits = resolved;
+	});
+});
+const api = $derived(createSecretApiClient({ limits }));
 const baseModeOptions = [
 	{ type: 'text', label: 'Text', icon: TypeIcon },
 	{ type: 'file', label: 'File', icon: FileUpIcon }
@@ -132,7 +137,7 @@ $effect(() => {
 });
 
 const selectedFileTooLarge = $derived(
-	selectedFile !== null && selectedFile.size > localFileMaxBytes
+	selectedFile !== null && selectedFile.size > limits.maxFileBytes
 );
 const hasCredentialPayload = $derived(
 	(credentialEnvelope.title ?? '').trim().length > 0 ||
@@ -488,7 +493,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							</div>
 							{#if selectedFileTooLarge}
 								<p class="text-sm text-destructive">
-									Choose a file up to {formatBytes(localFileMaxBytes)}.
+									Choose a file up to {formatBytes(limits.maxFileBytes)}.
 								</p>
 							{/if}
 						</div>

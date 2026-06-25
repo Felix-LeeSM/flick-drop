@@ -1,9 +1,11 @@
 // TTL lifetime bounds, mirrored at build time from the server config
 // (`internal/config/defaults.go`). The web client is adapter-static, so these
 // reach the browser via `PUBLIC_FLICK_*` env at build (see web/Dockerfile and
-// .github/workflows/publish-images.yml); there is no runtime config endpoint.
-// The defaults below must equal the Go constants — `scripts/ci/ttl-drift.sh`
-// fails the build if they drift.
+// .github/workflows/publish-images.yml). TTL is a near-static constraint, so it
+// stays build-time; file size limits, by contrast, are fetched at runtime from
+// GET /api/config (see web/src/lib/api/config.ts) because they must drive live
+// routing between the inline and S3 upload paths. The defaults below must equal
+// the Go constants — `scripts/ci/ttl-drift.sh` fails the build if they drift.
 
 const DEFAULT_MIN_TTL_SECONDS = 300;
 const DEFAULT_MAX_TTL_SECONDS = 604_800;

@@ -5,15 +5,33 @@ import type {
 	EncryptedTextPayload,
 	KdfParams
 } from '$lib/crypto/text';
+import { type ClientLimits, defaultLimits } from './config';
 
 export const DEFAULT_API_BASE_URL =
 	import.meta.env.PUBLIC_FLICK_API_BASE_URL || 'http://localhost:8080';
 
 export type TtlSeconds = number;
 
+// PresignedPost mirrors the server's presignedPOSTResponse: a form the browser
+// POSTs to upload ciphertext straight to the object store. The server never
+// sees the bytes. The bucket rejects uploads outside the signed
+// content-length-range with 413.
+export type PresignedPost = {
+	url: string;
+	method: string;
+	expires_at: string;
+	fields: Record<string, string>;
+	file_field: string;
+};
+
 export type CreateSecretResponse = {
 	id: string;
 	expires_at: string;
+	// Present only for large secrets (request omitted ciphertext). The client
+	// uploads the ciphertext multipart to `url` with `fields`, then calls
+	// /finalize. Defined here so the large path can read it, but callers see a
+	// plain { id, expires_at } — the S3 upload + finalize are completed inside.
+	upload?: PresignedPost;
 };
 
 export type SecretKind = 'text' | 'file';
@@ -74,11 +92,16 @@ export class SecretApiError extends Error {
 type ClientOptions = {
 	baseUrl?: string;
 	fetcher?: typeof fetch;
+	// Client-facing size limits (fetched from /api/config). Drive file routing:
+	// inline path at or below payloadInlineMaxBytes, S3 path above it, rejected
+	// above maxFileBytes. Defaults to the built-in limits when unset.
+	limits?: ClientLimits;
 };
 
 export function createSecretApiClient(options: ClientOptions = {}): SecretApiClient {
 	const baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_API_BASE_URL);
 	const fetcher = options.fetcher ?? fetch;
+	const limits = options.limits ?? defaultLimits();
 
 	return {
 		createTextSecret(payload, ttlSeconds, access) {
@@ -104,26 +127,16 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 		},
 
 		createFileSecret(payload, ttlSeconds, access) {
-			const body: Record<string, unknown> = {
-				kind: 'file',
-				ciphertext: payload.ciphertext,
-				nonce: payload.nonce,
-				encrypted_filename: payload.encrypted_filename,
-				content_type: payload.content_type,
-				size_bytes: payload.size_bytes,
-				ttl_seconds: ttlSeconds,
-				max_views: 1
-			};
-			if (access) {
-				body.kdf = payload.kdf;
-				body.access = access;
+			if (payload.size_bytes > limits.maxFileBytes) {
+				// Reject before any network call — the server would refuse it too.
+				return Promise.reject(
+					new SecretApiError('This file is too large.', 'payload_too_large', 0)
+				);
 			}
-
-			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
+			if (payload.size_bytes <= limits.payloadInlineMaxBytes) {
+				return createInlineFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
+			}
+			return createLargeFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
 		},
 
 		getSecretMetadata(id) {
@@ -148,6 +161,124 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			);
 		}
 	};
+}
+
+// createInlineFileSecret sends the ciphertext in the request body — the SQLite
+// BLOB path. Files at or below payloadInlineMaxBytes take this route.
+function createInlineFileSecret(
+	fetcher: typeof fetch,
+	baseUrl: string,
+	payload: EncryptedFilePayload,
+	ttlSeconds: TtlSeconds,
+	access?: AccessVerifierPayload
+): Promise<CreateSecretResponse> {
+	const body: Record<string, unknown> = {
+		kind: 'file',
+		ciphertext: payload.ciphertext,
+		nonce: payload.nonce,
+		encrypted_filename: payload.encrypted_filename,
+		content_type: payload.content_type,
+		size_bytes: payload.size_bytes,
+		ttl_seconds: ttlSeconds,
+		max_views: 1
+	};
+	if (access) {
+		body.kdf = payload.kdf;
+		body.access = access;
+	}
+
+	return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+// createLargeFileSecret uploads the ciphertext straight to the object store:
+//   1. POST /api/secrets WITHOUT ciphertext → server returns a presigned POST.
+//   2. POST the ciphertext multipart to the object store using the signed form.
+//   3. POST /api/secrets/{id}/finalize so the server HEAD-checks the object and
+//      activates the secret.
+// Resolves to a plain { id, expires_at } so callers are unaware of the routing.
+async function createLargeFileSecret(
+	fetcher: typeof fetch,
+	baseUrl: string,
+	payload: EncryptedFilePayload,
+	ttlSeconds: TtlSeconds,
+	access?: AccessVerifierPayload
+): Promise<CreateSecretResponse> {
+	const body: Record<string, unknown> = {
+		kind: 'file',
+		// ciphertext intentionally omitted — that's what selects the large path.
+		nonce: payload.nonce,
+		encrypted_filename: payload.encrypted_filename,
+		content_type: payload.content_type,
+		size_bytes: payload.size_bytes,
+		ttl_seconds: ttlSeconds,
+		max_views: 1
+	};
+	if (access) {
+		body.kdf = payload.kdf;
+		body.access = access;
+	}
+
+	const staged = await requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!staged.upload) {
+		// The server only returns upload when ciphertext was omitted; reaching
+		// here without it means a contract mismatch (or S3 not enabled).
+		throw new SecretApiError('Could not start the large upload. Try again.', 'upload_failed', 0);
+	}
+
+	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext);
+
+	await requestJson<{ id: string; finalized: boolean }>(
+		fetcher,
+		`${baseUrl}/api/secrets/${encodeURIComponent(staged.id)}/finalize`,
+		{
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: '{}'
+		}
+	);
+
+	return { id: staged.id, expires_at: staged.expires_at };
+}
+
+// uploadToObjectStore POSTs the signed form fields and the ciphertext as the
+// file_field. The file field must be appended last for the object store to
+// validate the signature. The ciphertext is base64; it must be decoded to raw
+// bytes so the upload length matches the signed content-length-range.
+async function uploadToObjectStore(
+	fetcher: typeof fetch,
+	upload: PresignedPost,
+	ciphertextBase64: string
+): Promise<void> {
+	const bytes = decodeBase64(ciphertextBase64);
+	const formData = new FormData();
+	for (const [key, value] of Object.entries(upload.fields)) {
+		formData.append(key, value);
+	}
+	// bytes is a fresh Uint8Array over an ArrayBuffer (offset 0), so its backing
+	// buffer carries the exact ciphertext length the signed range expects.
+	formData.append(upload.file_field, new Blob([bytes.buffer as ArrayBuffer]));
+
+	let response: Response;
+	try {
+		response = await fetcher(upload.url, { method: upload.method, body: formData });
+	} catch {
+		throw new SecretApiError(
+			'Could not reach the upload endpoint. Check your connection and try again.',
+			'network_error',
+			0
+		);
+	}
+	if (!response.ok) {
+		throw new SecretApiError('Upload failed. Try again.', 'upload_failed', response.status);
+	}
 }
 
 export function createShareUrl(origin: string, id: string, key?: Uint8Array): string {
@@ -210,6 +341,8 @@ function clientErrorMessage(code: string, status: number): string {
 			return 'This secret is no longer available.';
 		case 'payload_too_large':
 			return 'This file is too large.';
+		case 'upload_failed':
+			return 'Upload failed. Try again.';
 		case 'unauthorized':
 		case 'not_ready':
 			return 'Flick is not ready. Try again shortly.';
@@ -219,6 +352,18 @@ function clientErrorMessage(code: string, status: number): string {
 			}
 			return 'Could not complete the request. Check the input and try again.';
 	}
+}
+
+// decodeBase64 converts a base64 ciphertext string to raw bytes for the object
+// store upload. The standard atob path is wrapped because crypto payloads use
+// base64 (no URL-safe variant) and the length must match the signed range.
+function decodeBase64(value: string): Uint8Array {
+	const binary = atob(value);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return bytes;
 }
 
 function normalizeBaseUrl(value: string): string {

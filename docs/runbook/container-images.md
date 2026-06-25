@@ -48,13 +48,13 @@ docker build -f web/Dockerfile -t flick-local/flick-web:dev web
 ## Web Build Arguments
 
 The web image is static. Browser-visible `PUBLIC_` values are embedded at build
-time.
+time; file size limits are not among them — the client fetches those at runtime
+from `GET /api/config` (see `web/src/lib/api/config.ts`).
 
 ```sh
 docker build \
   -f web/Dockerfile \
   --build-arg PUBLIC_FLICK_API_BASE_URL=/ \
-  --build-arg PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES=1048560 \
   -t flick-local/flick-web:dev \
   web
 ```

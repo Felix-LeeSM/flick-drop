@@ -255,3 +255,146 @@ describe('secret API client', () => {
 		await expect(client.getSecretMetadata('secret-id')).rejects.not.toThrow('Failed to fetch');
 	});
 });
+
+// 'AAECAw==' decodes to bytes [0,1,2,3] — a real base64 payload so the S3 path
+// can decode the ciphertext into a Blob for the multipart upload.
+const largeFilePayload: EncryptedFilePayload = {
+	...encryptedFilePayload,
+	ciphertext: 'AAECAw==',
+	size_bytes: 1000
+};
+
+describe('file secret routing', () => {
+	it('takes the inline path at or below the inline threshold', async () => {
+		expect.assertions(2);
+
+		const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+			new Response(JSON.stringify({ id: 'inline-id', expires_at: '2026-06-17T01:00:00Z' }), {
+				status: 201,
+				headers: { 'Content-Type': 'application/json' }
+			})
+		);
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 1000, maxFileBytes: 100_000 }
+		});
+
+		await client.createFileSecret(largeFilePayload, 3600, accessVerifier);
+
+		const [, init] = fetcher.mock.calls[0];
+		const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+		expect(body).toHaveProperty('ciphertext', 'AAECAw==');
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+
+	it('takes the S3 path above the inline threshold', async () => {
+		expect.assertions(7);
+
+		const fetcher = vi
+			.fn<typeof fetch>()
+			// 1. stage the pending secret — no upload bytes yet.
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						id: 'large-id',
+						expires_at: '2026-06-17T01:00:00Z',
+						upload: {
+							url: 'https://object-store.local/bucket',
+							method: 'POST',
+							expires_at: '2026-06-17T00:10:00Z',
+							fields: { key: 'large-id', policy: 'signed-policy' },
+							file_field: 'file'
+						}
+					}),
+					{ status: 201, headers: { 'Content-Type': 'application/json' } }
+				)
+			)
+			// 2. upload the ciphertext to the object store.
+			.mockResolvedValueOnce(new Response(null, { status: 204 }))
+			// 3. finalize.
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ id: 'large-id', finalized: true }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' }
+				})
+			);
+
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 999, maxFileBytes: 100_000 }
+		});
+
+		await expect(client.createFileSecret(largeFilePayload, 3600, accessVerifier)).resolves.toEqual({
+			id: 'large-id',
+			expires_at: '2026-06-17T01:00:00Z'
+		});
+
+		// Stage call: ciphertext omitted.
+		const stageInit = fetcher.mock.calls[0][1];
+		const stageBody = JSON.parse(stageInit?.body as string) as Record<string, unknown>;
+		expect(stageBody).not.toHaveProperty('ciphertext');
+
+		// Upload call: multipart to the object store with signed fields + file.
+		const [uploadUrl, uploadInit] = fetcher.mock.calls[1];
+		expect(uploadUrl).toBe('https://object-store.local/bucket');
+		expect(uploadInit?.method).toBe('POST');
+		expect(uploadInit?.body).toBeInstanceOf(FormData);
+		expect((uploadInit?.body as FormData).get('file')).toBeInstanceOf(Blob);
+
+		// Finalize call.
+		expect(fetcher.mock.calls[2][0]).toBe('http://api.local/api/secrets/large-id/finalize');
+	});
+
+	it('rejects files above the absolute bound without a network call', async () => {
+		expect.assertions(2);
+
+		const fetcher = vi.fn<typeof fetch>();
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 1000, maxFileBytes: 500 }
+		});
+
+		await expect(client.createFileSecret(largeFilePayload, 3600)).rejects.toMatchObject({
+			code: 'payload_too_large'
+		});
+		expect(fetcher).not.toHaveBeenCalled();
+	});
+
+	it('surfaces an upload failure from the object store', async () => {
+		expect.assertions(1);
+
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						id: 'large-id',
+						expires_at: '2026-06-17T01:00:00Z',
+						upload: {
+							url: 'https://object-store.local/bucket',
+							method: 'POST',
+							expires_at: '2026-06-17T00:10:00Z',
+							fields: { key: 'large-id' },
+							file_field: 'file'
+						}
+					}),
+					{ status: 201, headers: { 'Content-Type': 'application/json' } }
+				)
+			)
+			// Object store rejects (e.g. content-length-range exceeded).
+			.mockResolvedValueOnce(new Response('<Error>EntityTooLarge</Error>', { status: 413 }));
+
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 999, maxFileBytes: 100_000 }
+		});
+
+		await expect(client.createFileSecret(largeFilePayload, 3600)).rejects.toMatchObject({
+			code: 'upload_failed'
+		});
+	});
+});

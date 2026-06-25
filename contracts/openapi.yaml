@@ -42,6 +42,26 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/config:
+    get:
+      operationId: getConfig
+      summary: Public client-facing size limits.
+      description: >
+        Lets the browser size-gate file uploads and route large files to the S3
+        path. Values are advisory — the server re-enforces both limits, so a
+        tampered client value cannot bypass them. TTL bounds are not exposed
+        here (they travel to the client at build time).
+      responses:
+        "200":
+          description: Client-facing limits.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
   /api/secrets:
     post:
       operationId: createSecret
@@ -220,6 +240,26 @@ components:
         status:
           type: string
           enum: [ok]
+    ConfigResponse:
+      type: object
+      description: >
+        Public client-facing size limits. payload_inline_max_bytes is the inline
+        (SQLite BLOB) path threshold — files above it take the S3 path;
+        max_file_bytes is the absolute bound the server rejects above. Flat so
+        future fields can be added non-destructively.
+      additionalProperties: true
+      required: [payload_inline_max_bytes, max_file_bytes]
+      properties:
+        payload_inline_max_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Files at or below this size take the inline path.
+        max_file_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Absolute upper bound; files above this are rejected by client and server.
     ErrorResponse:
       type: object
       additionalProperties: false

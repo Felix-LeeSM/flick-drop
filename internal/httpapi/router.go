@@ -21,6 +21,7 @@ type Server struct {
 	outbox                *events.OutboxStore
 	newJobID              func() (string, error)
 	payloadInlineMaxBytes int64
+	maxFileBytes          int64
 	allowedOrigin         string
 	internalToken         string
 	metricsToken          string
@@ -30,6 +31,7 @@ type Server struct {
 
 type Options struct {
 	PayloadInlineMaxBytes int64
+	MaxFileBytes          int64
 	AllowedOrigin         string
 	InternalToken         string
 	MetricsToken          string
@@ -45,6 +47,10 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	if payloadInlineMaxBytes <= 0 {
 		payloadInlineMaxBytes = 1048576
 	}
+	maxFileBytes := opts.MaxFileBytes
+	if maxFileBytes <= 0 {
+		maxFileBytes = 52428800
+	}
 
 	server := Server{
 		db:                    db,
@@ -52,6 +58,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		outbox:                opts.OutboxStore,
 		newJobID:              events.NewJobID,
 		payloadInlineMaxBytes: payloadInlineMaxBytes,
+		maxFileBytes:          maxFileBytes,
 		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:         opts.InternalToken,
 		metricsToken:          opts.MetricsToken,
@@ -67,6 +74,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
 	r.With(server.metricsAuth).Get("/metrics", server.metrics)
+	r.Get("/api/config", server.getConfig)
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)

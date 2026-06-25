@@ -18,7 +18,6 @@ Local development:
 | `FLICK_LOG_FORMAT` | Log output format (`json` default, `text` for local dev). |
 | `FLICK_PUBLIC_BASE_URL` | Public web origin. |
 | `PUBLIC_FLICK_API_BASE_URL` | Browser-safe API base URL embedded in the web build. |
-| `PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES` | Browser-safe local file size limit for SQLite-backed file secrets. |
 | `PUBLIC_FLICK_MIN_TTL_SECONDS` | Browser-safe mirror of `FLICK_MIN_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `PUBLIC_FLICK_MAX_TTL_SECONDS` | Browser-safe mirror of `FLICK_MAX_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `PUBLIC_FLICK_DEFAULT_TTL_SECONDS` | Browser-safe mirror of `FLICK_DEFAULT_TTL_SECONDS` (initial lifetime preset). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
