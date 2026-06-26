@@ -38,12 +38,17 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20
+            # On a loaded 1-vCPU node the default 1s timeout expires before the
+            # handler responds; the kubelet then SIGTERMs a healthy pod into a
+            # crashloop (observed in prod). 5s tolerates transient CPU steal.
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 25m

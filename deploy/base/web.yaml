@@ -33,12 +33,16 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 20
+            # Match api: the default 1s probe timeout crashloops healthy pods on
+            # a loaded 1-vCPU node. See deploy/base/api.yaml.
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 2
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 10m
