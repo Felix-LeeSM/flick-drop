@@ -55,8 +55,33 @@ spec:
         kubernetes.io/hostname: <worker-node>
 ```
 
-### Metrics token
+## node-exporter — node/instance metrics
 
-kube-state-metrics serves cluster object metadata, not flick secret content, so
-its `/metrics` endpoint is unauthenticated. This is separate from the flick API
-`/metrics` endpoint, which stays guarded by `FLICK_METRICS_TOKEN`.
+A DaemonSet (one pod per node, control-plane included via a blanket toleration)
+exposing host CPU, memory, filesystem, disk, and network metrics on `:9100`. It
+runs in the host network and PID namespaces with read-only host `/proc`, `/sys`,
+and `/` mounts so the series reflect the node, not the pod sandbox. No API
+access, so no RBAC. Footprint ~16Mi request, 48Mi limit per node.
+
+### Inspect
+
+The Service is headless, so target a pod directly:
+
+```sh
+kubectl -n flick port-forward ds/node-exporter 19100:9100
+curl -fsS http://127.0.0.1:19100/metrics | grep -E '^node_(cpu_seconds_total|memory_MemAvailable_bytes|filesystem_avail_bytes)'
+```
+
+Useful series:
+
+- `node_cpu_seconds_total` — per-CPU time by mode (rate for utilization)
+- `node_memory_MemAvailable_bytes` / `node_memory_MemTotal_bytes`
+- `node_filesystem_avail_bytes` — free space per mount
+- `node_load1` — 1-minute load average
+
+## Metrics auth
+
+Neither kube-state-metrics nor node-exporter serves flick secret content (only
+cluster object metadata and host stats), so their `/metrics` endpoints are
+unauthenticated. This is separate from the flick API `/metrics` endpoint, which
+stays guarded by `FLICK_METRICS_TOKEN`.

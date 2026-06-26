@@ -1,0 +1,112 @@
+# node-exporter exposes host-level metrics (CPU, memory, filesystem, disk,
+# network) on :9100/metrics for every node, so instance health is visible
+# alongside the pod-status metrics from kube-state-metrics.
+#
+# The series reflect the node, not the pod sandbox, because it reads the
+# read-only host /proc, /sys, and / mounts (--path.* below) — including
+# /host/proc/net/dev for host interface stats. It reads only world-readable
+# host files and never touches the API server, so it needs no RBAC.
+#
+# Deliberately NOT hostNetwork: this cluster's nodes block port 9100 between
+# node IPs (OCI security list), so a host-network pod is unreachable cross-node.
+# On the pod (flannel overlay) network the scrape target is the pod IP, which is
+# reachable from any node. Opt-in: applied with the rest of deploy/base/monitoring.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-exporter
+    spec:
+      automountServiceAccountToken: false
+      # Run on every node, including tainted control-plane nodes.
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: node-exporter
+          # Pinned for reproducible rollouts; bump deliberately.
+          image: quay.io/prometheus/node-exporter:v1.8.2
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+          ports:
+            - name: metrics
+              containerPort: 9100
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 48Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              mountPropagation: HostToContainer
+              readOnly: true
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /
+---
+# Headless so each node-exporter instance is individually addressable (the
+# future VictoriaMetrics scrape targets every endpoint, not one load-balanced
+# pick). With hostNetwork the endpoint addresses are the node IPs.
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: node-exporter
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
