@@ -97,8 +97,8 @@ Out of scope:
 
 ### 7. Operational Hardening
 
-- backup/restore runbook
-- SQLite checkpoint/vacuum runbook
+- backup/restore runbook ([runbook](runbook/backup-restore.md))
+- SQLite checkpoint/vacuum runbook ([runbook](runbook/sqlite-maintenance.md))
 - rate limiting
 - audit event viewer or export
 - CSP and security header tightening

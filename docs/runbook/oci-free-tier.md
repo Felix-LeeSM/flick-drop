@@ -311,7 +311,8 @@ kubectl -n flick exec statefulset/nats -- df -h /data
 
 SQLite maintenance requires care because deleted ciphertext can remain in WAL
 or freelist pages until checkpoint or vacuum. Do not run manual maintenance
-commands without a backup and a maintenance window.
+commands without a backup and a maintenance window. See
+[SQLite maintenance](sqlite-maintenance.md) and [backup and restore](backup-restore.md).
 
 ## Smoke Test
 
