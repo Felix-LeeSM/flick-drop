@@ -81,9 +81,64 @@ Useful series:
 - `node_filesystem_avail_bytes` — free space per mount
 - `node_load1` — 1-minute load average
 
+## VictoriaMetrics single — storage and queries
+
+`kube-state-metrics` and `node-exporter` only *expose* metrics; nothing stored
+or queried them until this. VictoriaMetrics single-node (`vmsingle`) scrapes all
+three targets, stores the series on a PVC, and serves the query API + `vmui` on
+`:8428`. Full Prometheus is too heavy for a ~1GB node; vmsingle is the
+low-footprint substitute (128Mi request, 384Mi limit, `--memory.allowedPercent=70`,
+14-day retention).
+
+It uses static / `dns_sd` scraping instead of Kubernetes service discovery, so it
+needs **no API access and no RBAC**:
+
+- `flick-api:8080/metrics` — bearer-guarded; the token is mounted from
+  `flick-secrets` (`FLICK_METRICS_TOKEN`).
+- `kube-state-metrics:8080` — stable Service DNS.
+- `node-exporter` — the headless Service's A record returns every pod IP, so each
+  node is scraped on the overlay network (the FQDN
+  `node-exporter.flick.svc.cluster.local` assumes the `flick` namespace).
+
+### Token setup
+
+The `flick-api` scrape sends `Authorization: Bearer <flick-secrets/FLICK_METRICS_TOKEN>`.
+With the base placeholder (`replace-me-before-use`) the API returns **401** and the
+`flick-api` target stays down; set the real `FLICK_METRICS_TOKEN` in the private
+overlay (the same value the API runs with). The other two targets are
+unauthenticated.
+
+### Apply and inspect
+
+```sh
+kubectl apply -k deploy/base/monitoring
+kubectl -n flick rollout status deploy/vmsingle
+
+kubectl -n flick port-forward service/vmsingle 18428:8428
+# vmui dashboard:
+open http://127.0.0.1:18428/vmui
+# scrape target health (every target should be up=1; flick-api needs the token):
+curl -fsS 'http://127.0.0.1:18428/api/v1/query?query=up' | jq '.data.result[] | {job:.metric.job, up:.value[1]}'
+```
+
+### Node placement and PVC pinning
+
+Like the other add-ons, the base is node-agnostic; pin `vmsingle` to a worker from
+a private overlay (`nodeSelector`, as shown for kube-state-metrics above) rather
+than editing the base.
+
+`vmsingle` differs in one way: it owns a **`ReadWriteOnce` PVC** (`vmsingle-data`).
+On the default `local-path` StorageClass the PV binds to the node where the pod
+first schedules and the data lives on that node's disk. So the overlay
+`nodeSelector` and the bound PV must stay on the **same node** — if a later
+reschedule moves the pod to a different node, it mounts an empty volume and loses
+history. Pin the node deliberately and keep it stable, or migrate the PV with it
+(see [backup and restore](../../../docs/runbook/backup-restore.md), PVC drill).
+
 ## Metrics auth
 
-Neither kube-state-metrics nor node-exporter serves flick secret content (only
+`kube-state-metrics` and `node-exporter` serve no flick secret content (only
 cluster object metadata and host stats), so their `/metrics` endpoints are
-unauthenticated. This is separate from the flick API `/metrics` endpoint, which
-stays guarded by `FLICK_METRICS_TOKEN`.
+unauthenticated. The flick API `/metrics` endpoint stays guarded by
+`FLICK_METRICS_TOKEN`; `vmsingle` scrapes it with the mounted token, so the
+guard holds end to end.

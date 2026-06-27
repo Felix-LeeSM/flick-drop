@@ -1,0 +1,177 @@
+# VictoriaMetrics single-node: the storage + query layer for the opt-in
+# monitoring stack. It scrapes the flick API, kube-state-metrics, and
+# node-exporter, stores the series on a PVC, and serves vmui + the query API on
+# :8428. Full Prometheus is avoided on a ~1GB node; vmsingle is the low-footprint
+# substitute.
+#
+# Scrape targets use static DNS / dns_sd rather than Kubernetes service
+# discovery, so vmsingle needs no API access and no RBAC (mirrors node-exporter):
+#   - flick-api / kube-state-metrics: single replicas, scraped by stable Service
+#     DNS (resolv.conf search domain resolves the short name).
+#   - node-exporter: a headless Service, so an A-record dns_sd lookup returns
+#     every pod IP and each node is scraped on the overlay network.
+#
+# Opt-in: applied with the rest of deploy/base/monitoring, NOT the base.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmsingle-scrape
+data:
+  scrape.yml: |
+    global:
+      scrape_interval: 30s
+      external_labels:
+        cluster: flick
+    scrape_configs:
+      # vmsingle self-metrics.
+      - job_name: vmsingle
+        static_configs:
+          - targets: ['127.0.0.1:8428']
+
+      # flick API /metrics is bearer-guarded (FLICK_METRICS_TOKEN); the token is
+      # mounted from the flick-secrets Secret. Fails the scrape (401) if the
+      # mounted token does not match the API's.
+      - job_name: flick-api
+        metrics_path: /metrics
+        bearer_token_file: /etc/vm-secrets/flick-metrics-token
+        static_configs:
+          - targets: ['flick-api:8080']
+
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ['kube-state-metrics:8080']
+
+      # Headless Service: the A record returns all node-exporter pod IPs, so
+      # every node is scraped without hostNetwork (node-IP:9100 is firewalled
+      # cross-node on this cluster). FQDN is required — dns_sd does not append
+      # search domains. Assumes the flick namespace (matches the kustomization).
+      - job_name: node-exporter
+        dns_sd_configs:
+          - names: ['node-exporter.flick.svc.cluster.local']
+            type: A
+            port: 9100
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmsingle-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmsingle
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the PVC is ReadWriteOnce, so a second pod cannot
+  # mount the volume while the old one is terminating.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vmsingle
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vmsingle
+    spec:
+      # vmsingle uses static/dns_sd scraping, so it never calls the API server.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # fsGroup makes the PVC (and the secret token file) group-readable by the
+        # non-root user; the scratch-based VM image creates no user of its own.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vmsingle
+          # Pinned for reproducible rollouts; bump deliberately.
+          image: victoriametrics/victoria-metrics:v1.111.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --storageDataPath=/storage
+            - --retentionPeriod=14d
+            - --promscrape.config=/etc/vm/scrape.yml
+            - --httpListenAddr=:8428
+            # Keep VM's heap inside the container limit on a small node.
+            - --memory.allowedPercent=70
+          ports:
+            - name: http
+              containerPort: 8428
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            # Match the rest of the cluster: the default 1s timeout trips on a GC
+            # pause or in-flight scrape and crash-loops the pod.
+            timeoutSeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            periodSeconds: 10
+          # Sized for the ~1GB edge node; VM trades memory for query speed, so the
+          # limit leaves headroom while --memory.allowedPercent caps actual use.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+            - name: scrape
+              mountPath: /etc/vm
+              readOnly: true
+            - name: token
+              mountPath: /etc/vm-secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: vmsingle-data
+        - name: scrape
+          configMap:
+            name: vmsingle-scrape
+        - name: token
+          secret:
+            secretName: flick-secrets
+            items:
+              - key: FLICK_METRICS_TOKEN
+                path: flick-metrics-token
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmsingle
+spec:
+  selector:
+    app.kubernetes.io/name: vmsingle
+  ports:
+    - name: http
+      port: 8428
+      targetPort: http

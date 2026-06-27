@@ -10,3 +10,4 @@ labels:
 resources:
   - kube-state-metrics.yaml
   - node-exporter.yaml
+  - vmsingle.yaml
