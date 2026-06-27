@@ -75,7 +75,7 @@ kubectl -n flick exec flick-maint -- sh -c \
 kubectl -n flick cp flick-maint:/data/api.db ./api.db.bak
 
 # 4. Validate the local copy BEFORE trusting it as a backup.
-test "$(head -c 16 api.db.bak)" = "SQLite format 3" && echo "magic ok"  # SQLite header
+test "$(head -c 15 api.db.bak)" = "SQLite format 3" && echo "magic ok"  # SQLite header (16th byte is NUL)
 test -s api.db.bak && sha256sum api.db.bak                              # non-empty + checksum
 
 # 5. Tear down and resume.
