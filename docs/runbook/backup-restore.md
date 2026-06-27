@@ -38,10 +38,12 @@ traffic), so cold backups take seconds.
   API.
 - **No `sqlite3` in the app image.** The runtime image is `alpine:3.22` with
   only `ca-certificates` and `tzdata` added (`Dockerfile.api`), running as the
-  non-root `flick` user. There is no `sqlite3` binary to call `.backup`, and the
-  app user cannot `apk add` one. So the supported path is a **cold backup**;
-  online backup needs a separate maintenance pod (see
-  [SQLite maintenance](sqlite-maintenance.md)).
+  non-root `flick` user. There is no `sqlite3` binary and the app user cannot
+  `apk add` one. So the supported path is a **cold backup**: stop the writer,
+  then attach a short-lived root maintenance pod that mounts the same PVC,
+  checkpoints the WAL, integrity-checks the file, and copies it out with
+  `kubectl cp` (binary-safe). The same pod pattern is used by
+  [SQLite maintenance](sqlite-maintenance.md).
 - **Backups retain ciphertext.** A backup of `api.db` or the bucket contains
   browser-encrypted ciphertext, including for secrets that were logically
   deleted but not yet vacuumed. Treat every backup as private data and store it
@@ -49,32 +51,44 @@ traffic), so cold backups take seconds.
 
 ## Cold Backup
 
-Stop the writer so SQLite checkpoints the WAL into the main file on graceful
-shutdown, then copy the quiesced database out.
+Stop the writer, then take an authoritative copy from a maintenance pod. The pod
+checkpoints the WAL itself, so the copy is consistent regardless of how cleanly
+the app terminated, and `kubectl cp` transfers the file over a tar stream (no
+stdout contamination, unlike piping `cat`).
 
 ```sh
 # 1. Quiesce the API writer (single connection, SetMaxOpenConns(1)).
 kubectl -n flick scale deploy/flick-api --replicas=0
 kubectl -n flick rollout status deploy/flick-api --timeout=120s
+kubectl -n flick get pods -l app.kubernetes.io/name=flick-api   # expect: no resources
 
-# 2. Copy the database out of the PVC via a throwaway pod that mounts it.
-#    (The app pod is gone, so attach the PVC to a minimal pod on its node.)
-kubectl -n flick run flick-backup --rm -i --restart=Never \
-  --image=alpine:3.22 \
-  --overrides='{"spec":{"containers":[{"name":"flick-backup","image":"alpine:3.22","command":["sh","-c","cat /data/api.db"],"volumeMounts":[{"name":"d","mountPath":"/data"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"flick-api-data"}}]}}' \
-  > api.db.bak
+# 2. Attach a maintenance pod to the PVC. local-path node-affinity schedules it
+#    on the PV's node; the RWO mount is free because the app is scaled to 0.
+kubectl -n flick run flick-maint --restart=Never --image=alpine:3.22 \
+  --overrides='{"spec":{"containers":[{"name":"flick-maint","image":"alpine:3.22","command":["sleep","3600"],"volumeMounts":[{"name":"d","mountPath":"/data"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"flick-api-data"}}]}}'
+kubectl -n flick wait --for=condition=Ready pod/flick-maint --timeout=120s
 
-# 3. Resume the writer.
+# 3. Checkpoint + integrity-check, then copy out. integrity_check must print "ok".
+kubectl -n flick exec flick-maint -- sh -c \
+  'apk add --no-cache sqlite >/dev/null && \
+   sqlite3 /data/api.db "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;"'
+kubectl -n flick cp flick-maint:/data/api.db ./api.db.bak
+
+# 4. Validate the local copy BEFORE trusting it as a backup.
+test "$(head -c 16 api.db.bak)" = "SQLite format 3" && echo "magic ok"  # SQLite header
+test -s api.db.bak && sha256sum api.db.bak                              # non-empty + checksum
+
+# 5. Tear down and resume.
+kubectl -n flick delete pod flick-maint
 kubectl -n flick scale deploy/flick-api --replicas=1
 kubectl -n flick rollout status deploy/flick-api --timeout=120s
 ```
 
 Repeat for `flick-worker` / `flick-worker-data` / `/data/worker.db`.
 
-After a clean shutdown the `-wal` and `-shm` sidecar files are empty or removed,
-so `api.db` alone is a complete snapshot. If you must back up without stopping
-the writer, do not `cp`; use the online-backup procedure in
-[SQLite maintenance](sqlite-maintenance.md) instead.
+Do not trust a backup until step 4 passes — `rollout status` returning only means
+replicas reached 0, not that the last container flushed cleanly, which is exactly
+why the maintenance pod re-checkpoints before copying.
 
 ## JetStream
 
@@ -109,29 +123,32 @@ objects keep ciphertext past logical deletion.
 
 ## Restore
 
-Restore is the cold backup in reverse. Match the database to a compatible schema
-version before restoring (a restore does not run migrations forward or back).
+Restore is the cold backup in reverse, through the same maintenance pod. Match
+the database to a compatible schema version first — a restore does not run
+migrations forward or back. **Stale WAL/SHM sidecars must be removed**: pairing a
+restored `api.db` with a leftover `api.db-wal` corrupts the database.
 
 ```sh
 kubectl -n flick scale deploy/flick-api --replicas=0
 kubectl -n flick rollout status deploy/flick-api --timeout=120s
 
-# Stream the backup back into the PVC via a throwaway pod.
-kubectl -n flick run flick-restore --rm -i --restart=Never \
-  --image=alpine:3.22 \
-  --overrides='{"spec":{"containers":[{"name":"flick-restore","image":"alpine:3.22","command":["sh","-c","cat > /data/api.db"],"stdin":true,"volumeMounts":[{"name":"d","mountPath":"/data"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"flick-api-data"}}]}}' \
-  < api.db.bak
+kubectl -n flick run flick-maint --restart=Never --image=alpine:3.22 \
+  --overrides='{"spec":{"containers":[{"name":"flick-maint","image":"alpine:3.22","command":["sleep","3600"],"volumeMounts":[{"name":"d","mountPath":"/data"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"flick-api-data"}}]}}'
+kubectl -n flick wait --for=condition=Ready pod/flick-maint --timeout=120s
 
+# Drop any stale WAL/SHM, then copy the backup in.
+kubectl -n flick exec flick-maint -- rm -f /data/api.db-wal /data/api.db-shm
+kubectl -n flick cp ./api.db.bak flick-maint:/data/api.db
+
+# Verify what landed: integrity + checksum match the source.
+kubectl -n flick exec flick-maint -- sh -c \
+  'apk add --no-cache sqlite >/dev/null && sqlite3 /data/api.db "PRAGMA integrity_check;"'
+kubectl -n flick exec flick-maint -- sha256sum /data/api.db
+sha256sum ./api.db.bak    # the two checksums must match
+
+kubectl -n flick delete pod flick-maint
 kubectl -n flick scale deploy/flick-api --replicas=1
 kubectl -n flick rollout status deploy/flick-api --timeout=120s
-```
-
-Verify the restored database before trusting it:
-
-```sh
-# Checksum the backup against what landed in the PVC.
-sha256sum api.db.bak
-kubectl -n flick exec deploy/flick-api -- sha256sum /data/api.db
 ```
 
 Then run the application smoke test: create a text secret, open it once, and
@@ -153,16 +170,19 @@ StorageClass or reclaim policy). Two defaults matter:
 To move state to a specific node or recover after a PV loss:
 
 ```sh
-# 1. Take a cold backup first (see above). Do not skip this.
+# 1. Take a cold backup AND pass its step-4 validation (magic header + non-empty
+#    + checksum). The delete in step 3 is irreversible; never reach it on the
+#    strength of a backup you have not verified.
 # 2. Stop the consumer.
 kubectl -n flick scale deploy/flick-api --replicas=0
 
 # 3. Recreate PVC (and, if pinning to a chosen node, schedule the consumer
 #    there). The first pod to mount it binds the PVC to its node.
-kubectl -n flick delete pvc flick-api-data        # destroys current data
+kubectl -n flick delete pvc flick-api-data        # destroys current data — backup must already be verified
 kubectl -n flick apply -f deploy/base/pvc.yaml     # or the overlay PVC
 
-# 4. Start the consumer on the target node, then restore the backup as above.
+# 4. Start the consumer on the target node, then run the Restore procedure above
+#    (which removes stale WAL/SHM and re-verifies integrity + checksum).
 kubectl -n flick scale deploy/flick-api --replicas=1
 ```
 
