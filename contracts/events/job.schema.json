@@ -14,9 +14,7 @@
       "type": "string",
       "enum": [
         "delete_secret",
-        "delete_oci_object",
-        "expire_secret",
-        "backup_verify"
+        "delete_oci_object"
       ]
     },
     "secret_id": {

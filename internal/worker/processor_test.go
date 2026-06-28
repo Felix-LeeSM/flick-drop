@@ -153,7 +153,7 @@ func TestProcessorRejectsInvalidPayload(t *testing.T) {
 	handler := &fakeJobHandler{}
 	processor := newTestProcessor(t, store, handler, 3)
 
-	_, err := processor.Process(ctx, []byte(`{"job_id":"job_bad","kind":"expire_secret","requested_at":"2026-06-17T12:00:00Z","payload":{"passphrase":"nope"}}`))
+	_, err := processor.Process(ctx, []byte(`{"job_id":"job_bad","kind":"bogus_kind","requested_at":"2026-06-17T12:00:00Z","payload":{"passphrase":"nope"}}`))
 	if !errors.Is(err, events.ErrInvalidEvent) {
 		t.Fatalf("process invalid payload error = %v, want ErrInvalidEvent", err)
 	}

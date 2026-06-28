@@ -59,7 +59,7 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 		_ = sub.Unsubscribe()
 	})
 
-	payload := []byte(`{"job_id":"job_consumer","kind":"expire_secret","secret_id":"sec_consumer","requested_at":"2026-06-17T12:00:00Z"}`)
+	payload := []byte(`{"job_id":"job_consumer","kind":"delete_secret","secret_id":"sec_consumer","requested_at":"2026-06-17T12:00:00Z"}`)
 	if err := publisher.Publish(ctx, subject, payload); err != nil {
 		t.Fatalf("publish: %v", err)
 	}

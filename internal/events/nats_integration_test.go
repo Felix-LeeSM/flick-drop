@@ -42,7 +42,7 @@ func TestNATSJetStreamPublisherIntegration(t *testing.T) {
 		_ = publisher.js.DeleteStream(stream)
 	})
 
-	payload := []byte(`{"job_id":"job_1","kind":"expire_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`)
+	payload := []byte(`{"job_id":"job_1","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`)
 	if err := publisher.Publish(ctx, subject, payload); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
