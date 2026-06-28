@@ -24,7 +24,6 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 		SecretID:    "sec_1",
 		Reason:      ReasonExpired,
 		RequestedAt: now,
-		TraceID:     "trc_1",
 	}
 	record, err := store.Enqueue(ctx, event)
 	if err != nil {

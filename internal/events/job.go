@@ -38,7 +38,11 @@ type JobEvent struct {
 	ObjectKey   string    `json:"object_key,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
-	TraceID     string    `json:"trace_id,omitempty"`
+	// TraceContext carries the W3C trace-context of the span that enqueued this
+	// job, injected by the outbox at enqueue time so the worker can continue the
+	// producer's trace across the async outbox -> NATS hop (#133). Telemetry IDs
+	// only — never secret content. Absent when tracing is disabled.
+	TraceContext map[string]string `json:"trace_context,omitempty"`
 }
 
 func (e JobEvent) Validate() error {

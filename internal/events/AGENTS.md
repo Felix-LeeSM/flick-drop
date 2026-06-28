@@ -17,3 +17,10 @@ Rules:
   credentials, or private bucket names.
 - Publishing from API-owned state should go through the outbox pattern.
 - Consumers must be idempotent and safe to replay after partial success.
+- `JobEvent.TraceContext` carries the W3C trace context of the enqueuing span,
+  injected by `OutboxStore.EnqueueTx` (while that span is still live — the async
+  publisher runs after it ends) and re-established by `ContextWithTrace` so
+  `worker.Process` continues the producer's trace (#133). It is telemetry IDs
+  only (traceparent/baggage) — never secret content — and is absent when tracing
+  is off. Propagation rides the payload, not NATS headers, so no header plumbing
+  or interface change is needed.

@@ -4,8 +4,10 @@ This package owns logs, metrics, and tracing helpers.
 
 **Status: structured logging (`log/slog`, `logging.go`), Prometheus metrics
 (`metrics.go`, #107 phase 2), and OpenTelemetry tracing (`tracing.go`, #133
-phase 3) are implemented. Cross-process trace propagation (api↔worker via the
-outbox + NATS headers) is the remaining #133 PR 2 step.**
+phase 3) are implemented, including cross-process propagation: the outbox
+injects the enqueuing span's W3C trace context into the job payload
+(`events.JobEvent.TraceContext`) and `worker.Process` extracts it, so a trace
+continues across the async api→NATS→worker hop.**
 
 `NewLogger` reads `FLICK_LOG_LEVEL` and `FLICK_LOG_FORMAT`; `SetStandardLogger`
 routes the standard `log` package through slog so existing `log.Printf` calls
@@ -45,8 +47,12 @@ package-level var resolves correctly even though `SetupTracing` runs later.
 named-return error + `defer func() { telemetry.EndSpan(span, err) }()` so every
 error path is captured. Spans live on the HTTP server (`httpapi` middleware), the
 store (`secrets.Create`/`CreateLarge`/`Finalize`/`OpenTx`), the reaper
-(`ClaimOnce`), and worker job processing (`worker.Process`). The propagator is
-W3C trace-context + baggage, ready for the PR 2 NATS-header inject/extract.
+(`ClaimOnce`), and worker job processing (`worker.Process`, a `CONSUMER` span
+that continues the producer's trace). The propagator is W3C trace-context +
+baggage. Cross-process propagation rides the **job payload**, not NATS headers:
+`internal/events` injects the active span's context into `JobEvent.TraceContext`
+at outbox enqueue time (while the span is live; the async publisher runs later)
+and `worker.Process` extracts it — no events-interface or outbox-schema change.
 
 Directory structure:
 

@@ -35,9 +35,10 @@
       "type": "string",
       "format": "date-time"
     },
-    "trace_id": {
-      "type": "string",
-      "minLength": 1
+    "trace_context": {
+      "type": "object",
+      "description": "W3C trace-context (traceparent, optional tracestate) of the enqueuing span, for cross-process trace propagation. Telemetry IDs only.",
+      "additionalProperties": { "type": "string" }
     }
   }
 }

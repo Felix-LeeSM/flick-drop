@@ -69,6 +69,9 @@ func (s *OutboxStore) Enqueue(ctx context.Context, event JobEvent) (OutboxRecord
 }
 
 func (s *OutboxStore) EnqueueTx(ctx context.Context, tx *sql.Tx, event JobEvent) (OutboxRecord, error) {
+	// Capture the enqueuing span's trace context into the payload now, while the
+	// span is still active — the async publisher runs after it has ended (#133).
+	injectTraceContext(ctx, &event)
 	payloadJSON, err := event.JSON()
 	if err != nil {
 		return OutboxRecord{}, err

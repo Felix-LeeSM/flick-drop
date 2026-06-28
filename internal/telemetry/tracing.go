@@ -69,7 +69,7 @@ func SetupTracing(ctx context.Context, opts TracingOptions) (func(context.Contex
 	)
 	otel.SetTracerProvider(provider)
 	// W3C trace-context + baggage so a span can cross the api↔worker boundary;
-	// the inject/extract plumbing through the outbox + NATS headers is #133 PR2.
+	// injected/extracted via the job payload in internal/events/propagation.go.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},

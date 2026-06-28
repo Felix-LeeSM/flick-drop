@@ -212,7 +212,6 @@ func testJobPayload(t *testing.T, jobID string) []byte {
 		SecretID:    "sec_" + jobID,
 		Reason:      events.ReasonExpired,
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
-		TraceID:     "trc_" + jobID,
 	}).JSON()
 	if err != nil {
 		t.Fatalf("build job payload: %v", err)
