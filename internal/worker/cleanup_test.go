@@ -168,8 +168,9 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
-	if err := handler.HandleJob(context.Background(), cleanupEvent(events.KindExpireSecret, "")); err != nil {
-		t.Fatalf("handle expire cleanup: %v", err)
+	// Empty reason falls back to the delete kind's default (consumed).
+	if err := handler.HandleJob(context.Background(), cleanupEvent(events.KindDeleteSecret, "")); err != nil {
+		t.Fatalf("handle default-reason cleanup: %v", err)
 	}
 	if err := handler.HandleJob(context.Background(), cleanupEvent(events.KindDeleteSecret, events.ReasonManual)); err != nil {
 		t.Fatalf("handle delete cleanup: %v", err)
@@ -178,8 +179,8 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 	if len(api.calls) != 2 {
 		t.Fatalf("cleanup calls = %d, want 2", len(api.calls))
 	}
-	if api.calls[0].Reason != events.ReasonExpired {
-		t.Fatalf("expire reason = %q, want expired", api.calls[0].Reason)
+	if api.calls[0].Reason != events.ReasonConsumed {
+		t.Fatalf("default reason = %q, want consumed", api.calls[0].Reason)
 	}
 	if api.calls[1].Reason != events.ReasonManual {
 		t.Fatalf("delete reason = %q, want manual", api.calls[1].Reason)
@@ -251,7 +252,7 @@ func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
-	err = handler.HandleJob(context.Background(), cleanupEvent(events.KindExpireSecret, "passphrase"))
+	err = handler.HandleJob(context.Background(), cleanupEvent(events.KindDeleteSecret, "passphrase"))
 	if !errors.Is(err, ErrInvalidJob) {
 		t.Fatalf("handle unsupported reason error = %v, want ErrInvalidJob", err)
 	}
@@ -268,7 +269,7 @@ func TestCleanupHandlerPropagatesClientError(t *testing.T) {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
-	err = handler.HandleJob(context.Background(), cleanupEvent(events.KindExpireSecret, ""))
+	err = handler.HandleJob(context.Background(), cleanupEvent(events.KindDeleteSecret, ""))
 	if !errors.Is(err, apiErr) {
 		t.Fatalf("handle cleanup error = %v, want api error", err)
 	}

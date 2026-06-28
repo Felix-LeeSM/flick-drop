@@ -15,7 +15,7 @@ func TestReceiptStoreStartSucceedAndDuplicate(t *testing.T) {
 	now := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	started, err := store.Start(ctx, "job_1", "expire_secret")
+	started, err := store.Start(ctx, "job_1", "delete_secret")
 	if err != nil {
 		t.Fatalf("start job: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestReceiptStoreStartSucceedAndDuplicate(t *testing.T) {
 		t.Fatalf("mark succeeded: %v", err)
 	}
 
-	duplicate, err := store.Start(ctx, "job_1", "expire_secret")
+	duplicate, err := store.Start(ctx, "job_1", "delete_secret")
 	if err != nil {
 		t.Fatalf("duplicate start: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestReceiptStoreRejectsDuplicateWhileProcessing(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 
-	started, err := store.Start(ctx, "job_processing", "expire_secret")
+	started, err := store.Start(ctx, "job_processing", "delete_secret")
 	if err != nil {
 		t.Fatalf("start job: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestReceiptStoreRejectsDuplicateWhileProcessing(t *testing.T) {
 		t.Fatalf("attempt = %d, want 1", started.Attempt.Attempt)
 	}
 
-	_, err = store.Start(ctx, "job_processing", "expire_secret")
+	_, err = store.Start(ctx, "job_processing", "delete_secret")
 	if !errors.Is(err, ErrJobProcessing) {
 		t.Fatalf("duplicate processing error = %v, want ErrJobProcessing", err)
 	}
@@ -102,7 +102,7 @@ func TestReceiptStoreFailedAttemptCanRetry(t *testing.T) {
 	now := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	first, err := store.Start(ctx, "job_retry", "expire_secret")
+	first, err := store.Start(ctx, "job_retry", "delete_secret")
 	if err != nil {
 		t.Fatalf("start first attempt: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestReceiptStoreFailedAttemptCanRetry(t *testing.T) {
 	}
 
 	store.SetNowForTest(func() time.Time { return now.Add(time.Minute) })
-	second, err := store.Start(ctx, "job_retry", "expire_secret")
+	second, err := store.Start(ctx, "job_retry", "delete_secret")
 	if err != nil {
 		t.Fatalf("start second attempt: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestReceiptStoreRejectsStaleAttemptFinish(t *testing.T) {
 		job_id, kind, state, attempts, first_seen_at, updated_at
 	) values (?, ?, ?, 2, ?, ?)`,
 		"job_stale",
-		"expire_secret",
+		"delete_secret",
 		StateProcessing,
 		formatTime(now),
 		formatTime(now),
@@ -207,7 +207,7 @@ func TestReceiptStoreRejectsMismatchedKind(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 
-	if _, err := store.Start(ctx, "job_kind", "expire_secret"); err != nil {
+	if _, err := store.Start(ctx, "job_kind", "delete_oci_object"); err != nil {
 		t.Fatalf("start first job: %v", err)
 	}
 
@@ -223,8 +223,8 @@ func TestReceiptStoreDeadLetter(t *testing.T) {
 	now := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	payload := `{"job_id":"job_dead","kind":"expire_secret","secret_id":"sec_1","requested_at":"2026-06-17T12:00:00Z"}`
-	if err := store.DeadLetter(ctx, "job_dead", "expire_secret", payload, errors.New("failed permanently")); err != nil {
+	payload := `{"job_id":"job_dead","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T12:00:00Z"}`
+	if err := store.DeadLetter(ctx, "job_dead", "delete_secret", payload, errors.New("failed permanently")); err != nil {
 		t.Fatalf("dead letter: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestReceiptStoreDeadLetter(t *testing.T) {
 	if receipt.LastError == nil || *receipt.LastError != "failed permanently" {
 		t.Fatalf("last error = %v, want failed permanently", receipt.LastError)
 	}
-	if _, err := store.Start(ctx, "job_dead", "expire_secret"); !errors.Is(err, ErrJobDead) {
+	if _, err := store.Start(ctx, "job_dead", "delete_secret"); !errors.Is(err, ErrJobDead) {
 		t.Fatalf("start dead job error = %v, want ErrJobDead", err)
 	}
 
@@ -258,7 +258,7 @@ func TestReceiptStoreDeadLetterDoesNotOverwriteSucceededJob(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 
-	started, err := store.Start(ctx, "job_succeeded", "expire_secret")
+	started, err := store.Start(ctx, "job_succeeded", "delete_secret")
 	if err != nil {
 		t.Fatalf("start job: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestReceiptStoreDeadLetterDoesNotOverwriteSucceededJob(t *testing.T) {
 		t.Fatalf("mark succeeded: %v", err)
 	}
 
-	err = store.DeadLetter(ctx, "job_succeeded", "expire_secret", `{"job_id":"job_succeeded"}`, errors.New("late failure"))
+	err = store.DeadLetter(ctx, "job_succeeded", "delete_secret", `{"job_id":"job_succeeded"}`, errors.New("late failure"))
 	if !errors.Is(err, ErrInvalidJob) {
 		t.Fatalf("dead letter succeeded job error = %v, want ErrInvalidJob", err)
 	}

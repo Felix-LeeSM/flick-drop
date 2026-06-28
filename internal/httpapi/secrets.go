@@ -415,15 +415,6 @@ func (s Server) cleanupSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s Server) writeConsumeError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, secrets.ErrConsumed):
-		writeError(w, http.StatusConflict, "consumed", "secret has already been consumed")
-	default:
-		s.writeSecretError(w, err)
-	}
-}
-
 func (s Server) writeOpenError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, secrets.ErrInvalidAccess):

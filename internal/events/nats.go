@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -49,7 +50,7 @@ func (p *NATSJetStreamPublisher) EnsureStream(ctx context.Context, stream, subje
 
 	info, err := p.js.StreamInfo(stream, nats.Context(ctx))
 	if err == nil {
-		if streamHasSubject(info.Config.Subjects, subject) {
+		if slices.Contains(info.Config.Subjects, subject) {
 			return nil
 		}
 		config := info.Config
@@ -86,13 +87,4 @@ func (p *NATSJetStreamPublisher) Publish(ctx context.Context, subject string, pa
 		return fmt.Errorf("publish nats message: %w", err)
 	}
 	return nil
-}
-
-func streamHasSubject(subjects []string, subject string) bool {
-	for _, existing := range subjects {
-		if existing == subject {
-			return true
-		}
-	}
-	return false
 }

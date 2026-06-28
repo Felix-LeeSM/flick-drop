@@ -24,7 +24,7 @@ func TestMigrateAPICreatesOutboxEvents(t *testing.T) {
 	) values (?, ?, ?, ?, ?, ?)`,
 		"job_1",
 		"flick.jobs",
-		`{"job_id":"job_1","kind":"expire_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`,
+		`{"job_id":"job_1","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`,
 		"2026-06-17T00:00:00Z",
 		"2026-06-17T00:00:00Z",
 		"2026-06-17T00:00:00Z",
@@ -60,7 +60,7 @@ func TestMigrateWorkerCreatesJobReceipts(t *testing.T) {
 		job_id, kind, state, attempts, first_seen_at, updated_at
 	) values (?, ?, ?, 0, ?, ?)`,
 		"job_1",
-		"expire_secret",
+		"delete_secret",
 		"processing",
 		"2026-06-17T00:00:00Z",
 		"2026-06-17T00:00:00Z",
@@ -84,8 +84,8 @@ func TestMigrateWorkerCreatesJobReceipts(t *testing.T) {
 		job_id, kind, payload_json, error, created_at
 	) values (?, ?, ?, ?, ?)`,
 		"job_1",
-		"expire_secret",
-		`{"job_id":"job_1","kind":"expire_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`,
+		"delete_secret",
+		`{"job_id":"job_1","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`,
 		"failed permanently",
 		"2026-06-17T00:00:00Z",
 	)

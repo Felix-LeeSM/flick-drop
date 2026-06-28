@@ -33,7 +33,7 @@ func TestTraceContextRoundTrip(t *testing.T) {
 
 	event := JobEvent{
 		JobID:       "job_1",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_1",
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	}
@@ -73,7 +73,7 @@ func TestTraceContextOffIsNoop(t *testing.T) {
 
 	event := JobEvent{
 		JobID:       "job_1",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_1",
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	}

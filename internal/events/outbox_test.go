@@ -20,7 +20,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 
 	event := JobEvent{
 		JobID:       "job_1",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_1",
 		Reason:      ReasonExpired,
 		RequestedAt: now,
@@ -93,7 +93,7 @@ func TestOutboxStoreRejectsPayloadJSONWithUnknownFields(t *testing.T) {
 	) values (?, ?, ?, ?, ?, ?)`,
 		"job_unsafe",
 		"flick.jobs",
-		`{"job_id":"job_unsafe","kind":"expire_secret","secret_id":"sec_1","requested_at":"2026-06-17T10:00:00Z","payload":{"passphrase":"do-not-send"}}`,
+		`{"job_id":"job_unsafe","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T10:00:00Z","payload":{"passphrase":"do-not-send"}}`,
 		formatTime(now),
 		formatTime(now),
 		formatTime(now),

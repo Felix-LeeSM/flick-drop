@@ -34,7 +34,7 @@ func TestProcessContinuesProducerTrace(t *testing.T) {
 	const spanID = "0123456789abcdef"
 	payload, err := (events.JobEvent{
 		JobID:        "job_trace",
-		Kind:         events.KindExpireSecret,
+		Kind:         events.KindDeleteSecret,
 		SecretID:     "sec_trace",
 		RequestedAt:  time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 		TraceContext: map[string]string{"traceparent": "00-" + traceID + "-" + spanID + "-01"},

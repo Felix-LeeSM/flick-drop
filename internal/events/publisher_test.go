@@ -16,7 +16,7 @@ func TestOutboxPublisherPublishesDueEvents(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return now })
 	event := JobEvent{
 		JobID:       "job_publish",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_publish",
 		Reason:      ReasonExpired,
 		RequestedAt: now,
@@ -63,7 +63,7 @@ func TestOutboxPublisherMarksFailedEventsForRetry(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return now })
 	event := JobEvent{
 		JobID:       "job_fail",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_fail",
 		Reason:      ReasonExpired,
 		RequestedAt: now,
