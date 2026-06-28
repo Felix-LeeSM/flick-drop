@@ -532,6 +532,32 @@ func TestCleanupSecretRejectsInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestReadyzChecksNATS(t *testing.T) {
+	notReady := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		NATSConnected:         func() bool { return false },
+	})
+	resp := performJSON(t, notReady, http.MethodGet, "/readyz", nil)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with NATS down status = %d, want 503, body = %s", resp.Code, resp.Body.String())
+	}
+
+	ready := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		NATSConnected:         func() bool { return true },
+	})
+	readyResp := performJSON(t, ready, http.MethodGet, "/readyz", nil)
+	if readyResp.Code != http.StatusOK {
+		t.Fatalf("readyz with NATS up status = %d, want 200, body = %s", readyResp.Code, readyResp.Body.String())
+	}
+
+	// No NATSConnected wired: readyz stays DB-only and returns 200.
+	nilResp := performJSON(t, newTestRouter(t), http.MethodGet, "/readyz", nil)
+	if nilResp.Code != http.StatusOK {
+		t.Fatalf("readyz without NATS check status = %d, want 200, body = %s", nilResp.Code, nilResp.Body.String())
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 

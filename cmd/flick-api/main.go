@@ -85,6 +85,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
 	}
+	// Seed the in-memory ActiveUploads gauge from the authoritative DB count so an
+	// API restart does not reset it to 0 while pending_upload rows persist (later
+	// finalize/reap Decs would otherwise drive it negative). Set, not Add: this is
+	// the true value at boot, and the gauge starts at 0.
+	// ponytail: a failed count must not block startup — log and carry on.
+	if n, err := secretStore.CountPendingUploads(ctx); err != nil {
+		log.Printf("seed active uploads gauge: %v", err)
+	} else {
+		telemetry.ActiveUploads.Set(float64(n))
+	}
 	outboxStore, err := events.NewOutboxStore(conn, cfg.NATSJobSubject)
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
@@ -119,6 +129,7 @@ func main() {
 			CreateRatePerMinute:   cfg.CreateRatePerMinute,
 			TrustedProxies:        cfg.TrustedProxies,
 			OutboxStore:           outboxStore,
+			NATSConnected:         natsConn.IsConnected,
 		}),
 	}
 

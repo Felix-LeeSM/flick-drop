@@ -466,6 +466,25 @@ func TestStoreRejectsFileWithoutEncryptedFilename(t *testing.T) {
 	}
 }
 
+func TestCountPendingUploads(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	expires := time.Date(2026, 6, 17, 11, 0, 0, 0, time.UTC)
+
+	insertSecret(t, ctx, conn, secretFixture{id: "pend_1", state: "pending_upload", expiresAt: expires})
+	insertSecret(t, ctx, conn, secretFixture{id: "pend_2", state: "pending_upload", expiresAt: expires})
+	insertSecret(t, ctx, conn, secretFixture{id: "act_1", state: "active", expiresAt: expires})
+
+	n, err := store.CountPendingUploads(ctx)
+	if err != nil {
+		t.Fatalf("count pending uploads: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("pending upload count = %d, want 2", n)
+	}
+}
+
 func openTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 

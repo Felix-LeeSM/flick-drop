@@ -36,6 +36,10 @@ type Server struct {
 	metricsToken          string
 	openLimiter           *rateLimiter
 	createLimiter         *rateLimiter
+	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
+	// *nats.Conn, so the nats package stays out of httpapi's imports.
+	// ponytail: a one-method closure beats dragging the whole driver type in here.
+	natsConnected func() bool
 }
 
 type Options struct {
@@ -49,6 +53,7 @@ type Options struct {
 	TrustedProxies        []*net.IPNet
 	OutboxStore           *events.OutboxStore
 	NewJobID              func() (string, error)
+	NATSConnected         func() bool
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -77,6 +82,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
 	}
+	server.natsConnected = opts.NATSConnected
 
 	r := chi.NewRouter()
 	r.Use(server.cors)
@@ -218,6 +224,13 @@ func (s Server) readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.db.PingContext(r.Context()); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "not_ready", "database is not ready")
+		return
+	}
+	// The outbox publisher depends on NATS; a down broker backs the outbox up
+	// silently, so /readyz must fail closed on it. Nil-safe: callers that do not
+	// wire the check (tests, db-only setups) keep the old DB-only behaviour.
+	if s.natsConnected != nil && !s.natsConnected() {
+		writeError(w, http.StatusServiceUnavailable, "not_ready", "message broker is not ready")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

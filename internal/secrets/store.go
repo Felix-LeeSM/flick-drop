@@ -466,6 +466,19 @@ func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now
 // an orphan sweep reclaims it. Exposed for the sweep caller.
 func (s *Store) PendingTTL() time.Duration { return s.pendingTTL }
 
+// CountPendingUploads returns the number of secrets still awaiting /finalize.
+// main uses it to seed telemetry.ActiveUploads at boot so an API restart does
+// not reset the in-memory gauge to 0 while real pending_upload rows persist
+// (which would let later Dec calls drive it negative). The state literal matches
+// the reaper's claim query.
+func (s *Store) CountPendingUploads(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `select count(*) from secrets where state = 'pending_upload'`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count pending uploads: %w", err)
+	}
+	return n, nil
+}
+
 func (s *Store) Get(ctx context.Context, id string) (Secret, error) {
 	secret, consumedAt, err := s.load(ctx, s.db, id)
 	if err != nil {
