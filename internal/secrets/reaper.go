@@ -8,6 +8,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -116,7 +117,10 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 // and enqueues an object-delete event for any S3-backed row — all in one
 // transaction. A failure rolls the claim back, leaving reclaim_enqueued_at NULL
 // so the next tick retries. Returns the number of secrets reaped.
-func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
+func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
+	ctx, span := tracer.Start(ctx, "secrets.Reaper.ClaimOnce")
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	now := r.now().UTC()
 	orphanCutoff := now.Add(-r.pendingTTL)
 	// datetime(created_at, '+N seconds') = the moment the orphan became
@@ -179,6 +183,7 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 			telemetry.ActiveUploads.Dec()
 		}
 	}
+	span.SetAttributes(attribute.Int("reaper.reclaimed", len(batch)))
 	return len(batch), nil
 }
 

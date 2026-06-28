@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/config"
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
@@ -26,6 +27,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	shutdownTracing, err := telemetry.SetupTracing(ctx, telemetry.TracingOptions{
+		ServiceName: "flick-worker",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		log.Fatalf("setup tracing: %v", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			log.Printf("shutdown tracing: %v", err)
+		}
+	}()
 
 	conn, err := db.OpenSQLite(ctx, cfg.WorkerDBPath)
 	if err != nil {

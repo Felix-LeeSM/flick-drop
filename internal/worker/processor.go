@@ -6,9 +6,16 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const DefaultMaxAttempts = 3
+
+// tracer instruments job processing. With tracing off (no OTLP endpoint) it is
+// OTel's no-op, so tracer.Start costs nothing. The span is a root today; #133
+// PR2 makes it continue the producer's trace via the NATS message headers.
+var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/worker")
 
 type JobHandler interface {
 	HandleJob(context.Context, events.JobEvent) error
@@ -62,11 +69,15 @@ func NewProcessor(store *ReceiptStore, handler JobHandler, opts ProcessorOptions
 	}, nil
 }
 
-func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (ProcessResult, error) {
+func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessResult, err error) {
+	ctx, span := tracer.Start(ctx, "worker.Process")
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	event, err := events.DecodeJobEvent(payloadJSON)
 	if err != nil {
 		return ProcessResult{}, err
 	}
+	span.SetAttributes(attribute.String("job.kind", event.Kind))
 	canonicalPayload, err := event.JSON()
 	if err != nil {
 		return ProcessResult{}, err

@@ -13,7 +13,16 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracer is shared by the store and reaper (same package). When tracing is off
+// (no OTLP endpoint) it resolves to OTel's no-op, so tracer.Start costs nothing.
+// Span attributes carry only safe metadata (kind, storage backend) — never
+// ciphertext, nonce, KDF salt, access proof, or keys.
+var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/secrets")
 
 const (
 	KindText                = "text"
@@ -158,7 +167,13 @@ func (s *Store) SetNowForTest(now func() time.Time) {
 	s.now = now
 }
 
-func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
+func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err error) {
+	ctx, span := tracer.Start(ctx, "secrets.Create", trace.WithAttributes(
+		attribute.String("secret.kind", input.Kind),
+		attribute.String("storage.backend", StorageSQLite),
+	))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	if input.MaxViews == 0 {
 		input.MaxViews = 1
 	}
@@ -264,7 +279,13 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Secret, error) {
 // presigned POST so the client uploads the ciphertext straight to the bucket.
 // The server never sees the ciphertext. /finalize flips the row to active once
 // the object is confirmed.
-func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (CreateLargeResult, error) {
+func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ CreateLargeResult, err error) {
+	ctx, span := tracer.Start(ctx, "secrets.CreateLarge", trace.WithAttributes(
+		attribute.String("secret.kind", input.Kind),
+		attribute.String("storage.backend", StorageS3),
+	))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	if s.objects == nil {
 		return CreateLargeResult{}, ErrPayloadTooLarge
 	}
@@ -358,7 +379,12 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (Create
 // size check uses the object's real byte length (the ciphertext), not the
 // plaintext size_bytes, since AES-GCM adds a tag. Idempotent — finalizing an
 // already-active secret is a no-op success.
-func (s *Store) Finalize(ctx context.Context, id string) error {
+func (s *Store) Finalize(ctx context.Context, id string) (err error) {
+	ctx, span := tracer.Start(ctx, "secrets.Finalize", trace.WithAttributes(
+		attribute.String("storage.backend", StorageS3),
+	))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	if s.objects == nil {
 		return ErrPayloadTooLarge
 	}
@@ -573,7 +599,10 @@ func (s *Store) MarkConsumedTx(ctx context.Context, tx *sql.Tx, id string) error
 	return nil
 }
 
-func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHash string) (Secret, error) {
+func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHash string) (_ Secret, err error) {
+	ctx, span := tracer.Start(ctx, "secrets.OpenTx")
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	if tx == nil {
 		return Secret{}, fmt.Errorf("transaction is required")
 	}
@@ -583,6 +612,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if err != nil {
 		return Secret{}, err
 	}
+	span.SetAttributes(attribute.String("storage.backend", secret.StorageBackend))
 	if consumedAt.Valid {
 		return Secret{}, ErrConsumed
 	}

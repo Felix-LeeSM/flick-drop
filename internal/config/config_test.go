@@ -21,6 +21,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.MetricsToken != "" {
 		t.Fatalf("MetricsToken = %q, want empty default", cfg.MetricsToken)
 	}
+	if cfg.OTLPEndpoint != "" {
+		t.Fatalf("OTLPEndpoint = %q, want empty default (tracing off)", cfg.OTLPEndpoint)
+	}
 	if cfg.InternalAPIBaseURL != "http://localhost:8080" {
 		t.Fatalf("InternalAPIBaseURL = %q, want http://localhost:8080", cfg.InternalAPIBaseURL)
 	}
@@ -94,6 +97,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_ENV",
 		"FLICK_PUBLIC_BASE_URL",
 		"FLICK_INTERNAL_TOKEN",
+		"FLICK_METRICS_TOKEN",
+		"FLICK_OTLP_ENDPOINT",
 		"FLICK_INTERNAL_API_BASE_URL",
 		"FLICK_API_ADDR",
 		"FLICK_API_DB_PATH",

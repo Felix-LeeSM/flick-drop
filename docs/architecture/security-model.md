@@ -69,8 +69,9 @@ S3-compatible object storage
   stored ciphertext payload.
 - NATS messages must never contain plaintext, passphrases, derived keys, or
   ciphertext bodies.
-- Logs and metrics must not include plaintext, passphrases, derived keys, or
-  full ciphertext bodies.
+- Logs, metrics, and trace spans must not include plaintext, passphrases,
+  derived keys, or full ciphertext bodies. Span attributes carry only safe
+  metadata (route, content kind, storage backend, status), never secret content.
 - Filenames stored server-side must be encrypted or opaque.
 - File names are encrypted in the browser as metadata before upload.
 - Internal worker to API calls require `FLICK_INTERNAL_TOKEN`.

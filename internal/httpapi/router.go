@@ -9,11 +9,20 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
+
+// tracer instruments the HTTP server. With tracing off (no OTLP endpoint) it is
+// OTel's no-op, so the middleware adds no measurable cost.
+var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
 
 type Server struct {
 	db                    *sql.DB
@@ -71,6 +80,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 
 	r := chi.NewRouter()
 	r.Use(server.cors)
+	r.Use(server.tracing)
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
 	r.With(server.metricsAuth).Get("/metrics", server.metrics)
@@ -102,6 +112,53 @@ func (s Server) cors(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+// tracing starts a server span per request so a create/open/cleanup flow can be
+// followed end to end (and, once #133 PR2 lands cross-process propagation,
+// across the api↔worker boundary). Probe and scrape endpoints are skipped — they
+// are health/monitoring noise, not request flows worth a span. Only method,
+// matched route, and status are recorded; never secret content.
+func (s Server) tracing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz", "/readyz", "/metrics":
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ctx, span := tracer.Start(r.Context(), r.Method,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(attribute.String("http.request.method", r.Method)),
+		)
+		defer span.End()
+		// Tracing disabled (no OTLP endpoint) or this span unsampled: skip the
+		// response wrapper and route bookkeeping so the off-path stays free.
+		if !span.IsRecording() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r.WithContext(ctx))
+
+		// chi populates RoutePattern only after routing the request; the
+		// RouteContext is the same pointer chi installed upstream, so reading it
+		// here yields the matched template (e.g. "/api/secrets/{id}/open") rather
+		// than the high-cardinality concrete path.
+		if rp := chi.RouteContext(r.Context()).RoutePattern(); rp != "" {
+			span.SetName(r.Method + " " + rp)
+			span.SetAttributes(attribute.String("http.route", rp))
+		}
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		span.SetAttributes(attribute.Int("http.response.status_code", status))
+		if status >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(status))
+		}
 	})
 }
 

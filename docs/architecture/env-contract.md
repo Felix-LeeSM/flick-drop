@@ -16,6 +16,7 @@ Local development:
 | `FLICK_ENV` | `development`, `test`, or `production`. |
 | `FLICK_LOG_LEVEL` | Log verbosity (`debug`/`info`/`warn`/`error`; default `info`). |
 | `FLICK_LOG_FORMAT` | Log output format (`json` default, `text` for local dev). |
+| `FLICK_OTLP_ENDPOINT` | OpenTelemetry OTLP/HTTP collector URL for distributed tracing (full URL incl. scheme, e.g. `http://otel-collector:4318`). Empty (default) disables tracing — no collector dependency, zero overhead. Applies to both api and worker. |
 | `FLICK_PUBLIC_BASE_URL` | Public web origin. |
 | `PUBLIC_FLICK_API_BASE_URL` | Browser-safe API base URL embedded in the web build. |
 | `PUBLIC_FLICK_MIN_TTL_SECONDS` | Browser-safe mirror of `FLICK_MIN_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |

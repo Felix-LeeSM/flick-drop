@@ -30,6 +30,21 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	shutdownTracing, err := telemetry.SetupTracing(ctx, telemetry.TracingOptions{
+		ServiceName: "flick-api",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		log.Fatalf("setup tracing: %v", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			log.Printf("shutdown tracing: %v", err)
+		}
+	}()
+
 	conn, err := db.OpenSQLite(ctx, cfg.APIDBPath)
 	if err != nil {
 		log.Fatalf("open api database: %v", err)
