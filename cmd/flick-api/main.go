@@ -72,6 +72,10 @@ func main() {
 		objectStore = objClient
 		log.Printf("flick-api large-object storage enabled: bucket %s region %s", cfg.S3.Bucket, cfg.S3.Region)
 	}
+	outboxStore, err := events.NewOutboxStore(conn, cfg.NATSJobSubject)
+	if err != nil {
+		log.Fatalf("create outbox store: %v", err)
+	}
 	// The ciphertext cap is the plaintext cap plus the AES-GCM tag and a safety
 	// margin; finalize HEAD re-verifies against this.
 	maxObjectBytes := cfg.MaxFileBytes + 4096
@@ -81,6 +85,7 @@ func main() {
 		MinTTLSeconds:         cfg.MinTTLSeconds,
 		MaxTTLSeconds:         cfg.MaxTTLSeconds,
 		Objects:               objectStore,
+		Outbox:                outboxStore,
 	})
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
@@ -94,10 +99,6 @@ func main() {
 		log.Printf("seed active uploads gauge: %v", err)
 	} else {
 		telemetry.ActiveUploads.Set(float64(n))
-	}
-	outboxStore, err := events.NewOutboxStore(conn, cfg.NATSJobSubject)
-	if err != nil {
-		log.Fatalf("create outbox store: %v", err)
 	}
 	natsConn, err := events.ConnectNATS(cfg.NATSURL)
 	if err != nil {

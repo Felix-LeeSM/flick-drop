@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
@@ -63,6 +64,110 @@ func newLargeTestStore(t *testing.T, conn *sql.DB, objects storage.ObjectStore) 
 		t.Fatalf("new store: %v", err)
 	}
 	return store
+}
+
+// createFinalizedS3Secret makes an active S3-backed Model A secret. The access
+// proof means a wrong proof on open trips the failed-access lockout path, whose
+// payload purge is the object delete this file exercises.
+func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mock *mockObjectStore) string {
+	t.Helper()
+	res, err := store.CreateLarge(ctx, CreateLargeInput{
+		Kind:            KindText,
+		Nonce:           "nonce",
+		KDF:             KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "salt", Iterations: 600000, KeyLengthBits: 256},
+		AccessProofHash: "proof-hash",
+		AccessKDF:       KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "access-salt", Iterations: 600000, KeyLengthBits: 256},
+		SizeBytes:       1000,
+		TTLSeconds:      600,
+	})
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+	mock.objects[res.ID] = []byte("ciphertext-bytes")
+	if err := store.Finalize(ctx, res.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	return res.ID
+}
+
+// driveToLockout runs the wrong-proof opens that trip the lockout on the final
+// attempt, committing each like the real handler does on ErrInvalidAccess.
+func driveToLockout(t *testing.T, ctx context.Context, conn *sql.DB, store *Store, id string) {
+	t.Helper()
+	for attempt := 1; attempt <= maxFailedAccessAttempts; attempt++ {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx %d: %v", attempt, err)
+		}
+		if _, err := store.OpenTx(ctx, tx, id, "wrong-proof-hash"); !errors.Is(err, ErrInvalidAccess) {
+			t.Fatalf("attempt %d err = %v, want ErrInvalidAccess", attempt, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit tx %d: %v", attempt, err)
+		}
+	}
+}
+
+// With an outbox wired, the lockout purge enqueues a KindDeleteOCIObject job in
+// the access tx instead of calling the object store inline — so a transient S3
+// failure can't both pin the single DB connection and silently leak the object.
+func TestStoreOpenTxLockoutEnqueuesObjectDeleteWithOutbox(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	outbox := &fakeOutbox{}
+	store, err := NewStore(conn, StoreOptions{
+		PayloadInlineMaxBytes: 1024,
+		MaxObjectBytes:        4096,
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
+		Objects:               mock,
+		Outbox:                outbox,
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	id := createFinalizedS3Secret(t, ctx, store, mock)
+	driveToLockout(t, ctx, conn, store, id)
+
+	if len(outbox.enqueued) != 1 {
+		t.Fatalf("enqueued jobs = %d, want 1 object-delete", len(outbox.enqueued))
+	}
+	job := outbox.enqueued[0]
+	if job.Kind != events.KindDeleteOCIObject {
+		t.Errorf("job kind = %q, want %q", job.Kind, events.KindDeleteOCIObject)
+	}
+	if job.ObjectKey != id {
+		t.Errorf("job object key = %q, want %q", job.ObjectKey, id)
+	}
+	if job.Reason != events.ReasonConsumed {
+		t.Errorf("job reason = %q, want %q", job.Reason, events.ReasonConsumed)
+	}
+	// The delete is the worker's job; nothing touched the bucket inline.
+	if _, ok := mock.objects[id]; !ok {
+		t.Errorf("object deleted inline, want left for the enqueued worker job")
+	}
+}
+
+// Without an outbox (test-only Store), the lockout falls back to a best-effort
+// inline delete so the locked payload is still purged.
+func TestStoreOpenTxLockoutDeletesObjectInlineWithoutOutbox(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock) // no outbox wired
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+
+	id := createFinalizedS3Secret(t, ctx, store, mock)
+	driveToLockout(t, ctx, conn, store, id)
+
+	if _, ok := mock.objects[id]; ok {
+		t.Errorf("object survived lockout, want best-effort inline delete")
+	}
 }
 
 func secretState(t *testing.T, ctx context.Context, conn *sql.DB, id string) string {
