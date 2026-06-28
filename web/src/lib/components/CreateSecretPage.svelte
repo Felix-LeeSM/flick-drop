@@ -50,7 +50,9 @@ import {
 	serializeCredential
 } from '$lib/credentials';
 import {
+	type AccessVerifierPayload,
 	createAccessVerifier,
+	type EncryptedFilePayload,
 	encryptFile,
 	encryptFileWithKey,
 	encryptText,
@@ -58,8 +60,9 @@ import {
 	generateSecretKey
 } from '$lib/crypto/text';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
+import { formatBytes } from '$lib/utils';
 
-type StatusKind = 'idle' | 'encrypting' | 'error';
+type StatusKind = 'idle' | 'encrypting' | 'uploading' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
 
 const ttlUnitFactor: Record<'minutes' | 'hours' | 'days', number> = {
@@ -117,6 +120,10 @@ let expiresAt = $state('');
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isCreating = $state(false);
+// Aborts the large-file S3 upload while it is in flight (the only long, frozen
+// leg). Null outside a create. ponytail: fetch gives cancel only, not byte
+// progress — a progress bar would require swapping the upload to XMLHttpRequest.
+let abortController = $state<AbortController | null>(null);
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
 
@@ -172,6 +179,7 @@ async function createSecret(): Promise<void> {
 	}
 
 	isCreating = true;
+	abortController = new AbortController();
 	status = 'Encrypting';
 	statusKind = 'encrypting';
 
@@ -190,11 +198,24 @@ async function createSecret(): Promise<void> {
 		status = '';
 		statusKind = 'idle';
 	} catch (error) {
-		status = error instanceof SecretApiError ? error.message : 'Could not create link. Try again.';
-		statusKind = 'error';
+		// A user-cancelled upload returns to the idle form, not a red error — the
+		// user chose to stop, nothing failed.
+		if (error instanceof SecretApiError && error.code === 'upload_cancelled') {
+			status = '';
+			statusKind = 'idle';
+		} else {
+			status =
+				error instanceof SecretApiError ? error.message : 'Could not create link. Try again.';
+			statusKind = 'error';
+		}
 	} finally {
 		isCreating = false;
+		abortController = null;
 	}
+}
+
+function cancelCreate(): void {
+	abortController?.abort();
 }
 
 type CreateResult = {
@@ -217,11 +238,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 		}
 		if (mode === 'file') {
 			return {
-				created: await api.createFileSecret(
-					await encryptFile(requireSelectedFile(), passphrase),
-					ttlSeconds,
-					access
-				)
+				created: await createFile(await encryptFile(requireSelectedFile(), passphrase), access)
 			};
 		}
 		return {
@@ -243,10 +260,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	}
 	if (mode === 'file') {
 		return {
-			created: await api.createFileSecret(
-				await encryptFileWithKey(requireSelectedFile(), key),
-				ttlSeconds
-			),
+			created: await createFile(await encryptFileWithKey(requireSelectedFile(), key)),
 			key: raw
 		};
 	}
@@ -257,6 +271,22 @@ async function createSelectedSecret(): Promise<CreateResult> {
 		),
 		key: raw
 	};
+}
+
+// Routes a file payload through the API. For the S3 path (payload above the
+// inline threshold) it flips the status to 'Uploading' so the user sees the
+// upload leg as distinct from encryption, and passes the abort signal so the
+// Cancel button can stop the in-flight POST. Inline files finish too fast for
+// either to matter.
+function createFile(
+	payload: EncryptedFilePayload,
+	access?: AccessVerifierPayload
+): Promise<CreateSecretResponse> {
+	if (payload.size_bytes > limits.payloadInlineMaxBytes) {
+		status = 'Uploading';
+		statusKind = 'uploading';
+	}
+	return api.createFileSecret(payload, ttlSeconds, access, abortController?.signal);
 }
 
 function switchMode(nextMode: CreateMode): void {
@@ -303,16 +333,6 @@ function createAnother(): void {
 	status = '';
 	statusKind = 'idle';
 	qrOpen = false;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) {
-		return `${bytes} B`;
-	}
-	if (bytes < 1024 * 1024) {
-		return `${(bytes / 1024).toFixed(1)} KiB`;
-	}
-	return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
 
 function formatRemaining(seconds: number): string {
@@ -492,7 +512,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								{/if}
 							</div>
 							{#if selectedFileTooLarge}
-								<p class="text-sm text-destructive">
+								<p class="text-sm text-destructive" role="alert" aria-live="assertive">
 									Choose a file up to {formatBytes(limits.maxFileBytes)}.
 								</p>
 							{/if}
@@ -613,7 +633,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							</div>
 						</div>
 						{#if ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS}
-							<p class="text-sm text-destructive">
+							<p class="text-sm text-destructive" role="alert" aria-live="assertive">
 								{formatTtlRange(MIN_TTL_SECONDS, MAX_TTL_SECONDS)}
 							</p>
 						{/if}
@@ -628,11 +648,23 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							<LockKeyholeIcon class="size-4" aria-hidden="true" />
 							{isCreating ? 'Creating' : 'Create link'}
 						</Button>
+						{#if isCreating}
+							<Button
+								type="button"
+								variant="outline"
+								class="h-11 w-full"
+								onclick={cancelCreate}
+							>
+								Cancel
+							</Button>
+						{/if}
 						{#if status.length > 0}
 							<p
 								class="text-sm"
-								class:text-muted-foreground={statusKind === 'encrypting'}
+								class:text-muted-foreground={statusKind !== 'error'}
 								class:text-destructive={statusKind === 'error'}
+								role={statusKind === 'error' ? 'alert' : 'status'}
+								aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
 							>
 								{status}
 							</p>

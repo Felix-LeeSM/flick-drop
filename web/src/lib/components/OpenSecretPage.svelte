@@ -12,7 +12,12 @@ import {
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import { resolve } from '$app/paths';
-import { createSecretApiClient, SecretApiError, type SecretKind } from '$lib/api/secrets';
+import {
+	createSecretApiClient,
+	type GetSecretMetadataResponse,
+	SecretApiError,
+	type SecretKind
+} from '$lib/api/secrets';
 import CredentialView from '$lib/components/CredentialView.svelte';
 import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 import { Button, buttonVariants } from '$lib/components/ui/button';
@@ -32,6 +37,7 @@ import {
 	type EncryptedTextPayload,
 	importAesGcmKey
 } from '$lib/crypto/text';
+import { formatBytes } from '$lib/utils';
 
 type Props = {
 	secretId: string;
@@ -65,6 +71,9 @@ let copyState = $state<'idle' | 'copied'>('idle');
 // metadata on mount: Model A secrets expose an access block, Model B do not.
 let accessModel = $state<'a' | 'b' | 'unknown'>('unknown');
 let linkKey = $state<CryptoKey | null>(null);
+// Metadata fetched once on mount and reused on open — the Model A KDF lives here,
+// so openPassphraseSecret no longer re-fetches it (one fewer round-trip).
+let metadata = $state<GetSecretMetadataResponse | null>(null);
 
 onMount(() => {
 	void loadModel();
@@ -72,7 +81,7 @@ onMount(() => {
 
 async function loadModel(): Promise<void> {
 	try {
-		const metadata = await api.getSecretMetadata(secretId);
+		metadata = await api.getSecretMetadata(secretId);
 		accessModel = metadata.access ? 'a' : 'b';
 		if (accessModel === 'b') {
 			const raw = decodeKeyFragment(window.location.hash);
@@ -142,6 +151,10 @@ async function openSecret(): Promise<void> {
 		passphrase = '';
 		revealPassphrase = false;
 		hasOpened = true;
+		// The secret is burned server-side; the key is now useless. Drop the
+		// reference. ponytail: JS can't securely zero a CryptoKey/string/Blob, so
+		// this is best-effort reference-dropping for GC, not a memory wipe.
+		linkKey = null;
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
 		statusKind = 'error';
@@ -170,9 +183,9 @@ async function openLinkBearerSecret(): Promise<void> {
 }
 
 // Model A: derive an access proof from the passphrase and decrypt with it.
+// Reuses the metadata fetched on mount instead of a second round-trip.
 async function openPassphraseSecret(): Promise<void> {
-	const metadata = await api.getSecretMetadata(secretId);
-	if (!metadata.access) {
+	if (!metadata?.access) {
 		throw new Error('expected access metadata for Model A secret');
 	}
 	const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
@@ -224,16 +237,6 @@ function revokeDownloadUrl(): void {
 	downloadUrl = '';
 	downloadFilename = '';
 	downloadSize = 0;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) {
-		return `${bytes} B`;
-	}
-	if (bytes < 1024 * 1024) {
-		return `${(bytes / 1024).toFixed(1)} KiB`;
-	}
-	return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
 </script>
 

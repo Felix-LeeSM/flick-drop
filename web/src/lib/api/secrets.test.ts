@@ -363,6 +363,48 @@ describe('file secret routing', () => {
 		expect(fetcher).not.toHaveBeenCalled();
 	});
 
+	it('threads the abort signal to the upload and surfaces a cancel as an error, not a crash', async () => {
+		expect.assertions(3);
+
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						id: 'large-id',
+						expires_at: '2026-06-17T01:00:00Z',
+						upload: {
+							url: 'https://object-store.local/bucket',
+							method: 'POST',
+							expires_at: '2026-06-17T00:10:00Z',
+							fields: { key: 'large-id' },
+							file_field: 'file'
+						}
+					}),
+					{ status: 201, headers: { 'Content-Type': 'application/json' } }
+				)
+			)
+			// The aborted upload leg rejects the way fetch() does on AbortSignal.
+			.mockRejectedValueOnce(new DOMException('The operation was aborted.', 'AbortError'));
+
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 999, maxFileBytes: 100_000 }
+		});
+
+		const controller = new AbortController();
+		// Aborted uploads must resolve to a SecretApiError, never leak the raw
+		// DOMException as an unhandled crash.
+		await expect(
+			client.createFileSecret(largeFilePayload, 3600, undefined, controller.signal)
+		).rejects.toMatchObject({ code: 'upload_cancelled' });
+
+		const uploadInit = fetcher.mock.calls[1][1];
+		expect(uploadInit?.signal).toBeInstanceOf(AbortSignal);
+		expect(uploadInit?.signal).toBe(controller.signal);
+	});
+
 	it('surfaces an upload failure from the object store', async () => {
 		expect.assertions(1);
 
