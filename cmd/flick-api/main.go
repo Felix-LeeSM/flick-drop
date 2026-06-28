@@ -120,6 +120,15 @@ func main() {
 			TrustedProxies:        cfg.TrustedProxies,
 			OutboxStore:           outboxStore,
 		}),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		// WriteTimeout intentionally unset: an S3-backed /open streams up to
+		// MaxFileBytes (50 MiB) of ciphertext back through the API, and a fixed
+		// write deadline would abort legitimate large downloads on slow links.
+		// ReadHeaderTimeout is the Slowloris defense; idle keep-alives are reaped
+		// by IdleTimeout.
 	}
 
 	reaper, err := secrets.NewReaper(conn, secretStore, outboxStore, secrets.ReaperOptions{

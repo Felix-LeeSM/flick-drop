@@ -79,6 +79,9 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	}
 
 	r := chi.NewRouter()
+	// Outermost: turn a handler panic into a logged 500 instead of a dropped
+	// connection (the client otherwise sees a reset with no response or headers).
+	r.Use(middleware.Recoverer)
 	r.Use(server.cors)
 	r.Use(server.tracing)
 	r.Get("/healthz", server.healthz)
@@ -98,6 +101,11 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 
 func (s Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set on every response (including errors and the OPTIONS preflight):
+		// stop browsers MIME-sniffing a JSON body into an executable type.
+		// This is the only middleware that runs unconditionally for /api, which
+		// the ingress routes straight to flick-api (nginx headers cover only /).
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		origin := strings.TrimRight(r.Header.Get("Origin"), "/")
 		if s.allowedOrigin != "" && origin == s.allowedOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
