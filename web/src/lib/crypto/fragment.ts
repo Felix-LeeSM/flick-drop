@@ -10,6 +10,8 @@
 // encode/decode symmetric — both operate on the same `key=...` form, so the
 // sole caller no longer needs a compensating `.slice(1)`.
 
+import { base64ToBytes, bytesToBase64 } from '$lib/crypto/text';
+
 export const FRAGMENT_KEY_PREFIX = 'key=';
 
 // A 256-bit key is 32 bytes -> 43 base64url chars (no padding). Allow headroom
@@ -38,22 +40,12 @@ export function decodeKeyFragment(hash: string): Uint8Array | null {
 	}
 }
 
+// url-safe base64 = standard base64 with `+/` swapped to `-_` and `=` padding
+// stripped. The standard codec lives in crypto/text; fragment owns only this delta.
 function encodeBase64Url(bytes: Uint8Array): string {
-	let binary = '';
-	const chunkSize = 0x80_00;
-	for (let index = 0; index < bytes.length; index += chunkSize) {
-		const chunk = bytes.subarray(index, index + chunkSize);
-		binary += String.fromCharCode(...chunk);
-	}
-	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function decodeBase64Url(value: string): Uint8Array {
-	const padded = value.replace(/-/g, '+').replace(/_/g, '/');
-	const binary = atob(padded);
-	const bytes = new Uint8Array(binary.length);
-	for (let index = 0; index < binary.length; index += 1) {
-		bytes[index] = binary.charCodeAt(index);
-	}
-	return bytes;
+	return base64ToBytes(value.replace(/-/g, '+').replace(/_/g, '/'));
 }

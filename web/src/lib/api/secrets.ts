@@ -5,6 +5,7 @@ import type {
 	EncryptedTextPayload,
 	KdfParams
 } from '$lib/crypto/text';
+import { base64ToBytes } from '$lib/crypto/text';
 import { type ClientLimits, defaultLimits } from './config';
 
 export const DEFAULT_API_BASE_URL =
@@ -71,7 +72,9 @@ export type SecretApiClient = {
 	createFileSecret(
 		payload: EncryptedFilePayload,
 		ttlSeconds: TtlSeconds,
-		access?: AccessVerifierPayload
+		access?: AccessVerifierPayload,
+		// Aborts the large-file S3 upload (the only long, un-cancellable leg).
+		signal?: AbortSignal
 	): Promise<CreateSecretResponse>;
 	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
 	openSecret(id: string, accessProof?: string): Promise<GetSecretResponse>;
@@ -126,7 +129,7 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			});
 		},
 
-		createFileSecret(payload, ttlSeconds, access) {
+		createFileSecret(payload, ttlSeconds, access, signal) {
 			if (payload.size_bytes > limits.maxFileBytes) {
 				// Reject before any network call — the server would refuse it too.
 				return Promise.reject(
@@ -136,7 +139,7 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			if (payload.size_bytes <= limits.payloadInlineMaxBytes) {
 				return createInlineFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
 			}
-			return createLargeFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
+			return createLargeFileSecret(fetcher, baseUrl, payload, ttlSeconds, access, signal);
 		},
 
 		getSecretMetadata(id) {
@@ -205,7 +208,8 @@ async function createLargeFileSecret(
 	baseUrl: string,
 	payload: EncryptedFilePayload,
 	ttlSeconds: TtlSeconds,
-	access?: AccessVerifierPayload
+	access?: AccessVerifierPayload,
+	signal?: AbortSignal
 ): Promise<CreateSecretResponse> {
 	const body: Record<string, unknown> = {
 		kind: 'file',
@@ -233,7 +237,7 @@ async function createLargeFileSecret(
 		throw new SecretApiError('Could not start the large upload. Try again.', 'upload_failed', 0);
 	}
 
-	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext);
+	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext, signal);
 
 	await requestJson<{ id: string; finalized: boolean }>(
 		fetcher,
@@ -255,9 +259,10 @@ async function createLargeFileSecret(
 async function uploadToObjectStore(
 	fetcher: typeof fetch,
 	upload: PresignedPost,
-	ciphertextBase64: string
+	ciphertextBase64: string,
+	signal?: AbortSignal
 ): Promise<void> {
-	const bytes = decodeBase64(ciphertextBase64);
+	const bytes = base64ToBytes(ciphertextBase64);
 	const formData = new FormData();
 	for (const [key, value] of Object.entries(upload.fields)) {
 		formData.append(key, value);
@@ -268,8 +273,15 @@ async function uploadToObjectStore(
 
 	let response: Response;
 	try {
-		response = await fetcher(upload.url, { method: upload.method, body: formData });
-	} catch {
+		// ponytail: fetch can't report upload byte-progress (needs XHR) — signal
+		// gives cancel-only. A progress bar would mean swapping to XMLHttpRequest.
+		response = await fetcher(upload.url, { method: upload.method, body: formData, signal });
+	} catch (error) {
+		// A user-triggered abort is not a failure — surface it distinctly so the
+		// caller routes it to the idle path instead of an "Upload failed" error.
+		if (error instanceof DOMException && error.name === 'AbortError') {
+			throw new SecretApiError('Upload cancelled.', 'upload_cancelled', 0);
+		}
 		throw new SecretApiError(
 			'Could not reach the upload endpoint. Check your connection and try again.',
 			'network_error',
@@ -352,18 +364,6 @@ function clientErrorMessage(code: string, status: number): string {
 			}
 			return 'Could not complete the request. Check the input and try again.';
 	}
-}
-
-// decodeBase64 converts a base64 ciphertext string to raw bytes for the object
-// store upload. The standard atob path is wrapped because crypto payloads use
-// base64 (no URL-safe variant) and the length must match the signed range.
-function decodeBase64(value: string): Uint8Array {
-	const binary = atob(value);
-	const bytes = new Uint8Array(binary.length);
-	for (let i = 0; i < binary.length; i += 1) {
-		bytes[i] = binary.charCodeAt(i);
-	}
-	return bytes;
 }
 
 function normalizeBaseUrl(value: string): string {
