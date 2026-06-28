@@ -186,14 +186,6 @@ func cleanupReason(event events.JobEvent) (string, error) {
 			return event.Reason, nil
 		}
 		return events.ReasonConsumed, nil
-	case events.KindExpireSecret:
-		if event.Reason != "" {
-			if !validCleanupReason(event.Reason) {
-				return "", fmt.Errorf("%w: unsupported cleanup reason %q", ErrInvalidJob, event.Reason)
-			}
-			return event.Reason, nil
-		}
-		return events.ReasonExpired, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported cleanup job kind %q", ErrInvalidJob, event.Kind)
 	}

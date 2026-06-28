@@ -13,8 +13,6 @@ import (
 const (
 	KindDeleteSecret    = "delete_secret"
 	KindDeleteOCIObject = "delete_oci_object"
-	KindExpireSecret    = "expire_secret"
-	KindBackupVerify    = "backup_verify"
 
 	ReasonConsumed = "consumed"
 	ReasonExpired  = "expired"
@@ -54,7 +52,7 @@ func (e JobEvent) Validate() error {
 	}
 
 	switch e.Kind {
-	case KindDeleteSecret, KindExpireSecret:
+	case KindDeleteSecret:
 		if strings.TrimSpace(e.SecretID) == "" {
 			return fmt.Errorf("%w: secret_id is required for %s", ErrInvalidEvent, e.Kind)
 		}
@@ -62,7 +60,6 @@ func (e JobEvent) Validate() error {
 		if strings.TrimSpace(e.ObjectKey) == "" {
 			return fmt.Errorf("%w: object_key is required for %s", ErrInvalidEvent, e.Kind)
 		}
-	case KindBackupVerify:
 	default:
 		return fmt.Errorf("%w: unsupported kind %q", ErrInvalidEvent, e.Kind)
 	}

@@ -20,7 +20,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 
 	event := JobEvent{
 		JobID:       "job_1",
-		Kind:        KindExpireSecret,
+		Kind:        KindDeleteSecret,
 		SecretID:    "sec_1",
 		Reason:      ReasonExpired,
 		RequestedAt: now,

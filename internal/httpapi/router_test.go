@@ -264,7 +264,8 @@ func TestOpenRollsBackWhenOutboxEnqueueFails(t *testing.T) {
 
 	if _, err := fixture.outbox.Enqueue(ctx, events.JobEvent{
 		JobID:       "job-duplicate",
-		Kind:        events.KindBackupVerify,
+		Kind:        events.KindDeleteSecret,
+		SecretID:    "sec-duplicate",
 		RequestedAt: now,
 	}); err != nil {
 		t.Fatalf("seed duplicate outbox event: %v", err)
