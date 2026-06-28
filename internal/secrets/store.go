@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"go.opentelemetry.io/otel"
@@ -112,6 +113,7 @@ type Store struct {
 	minTTL                int
 	maxTTL                int
 	objects               storage.ObjectStore
+	outbox                outboxEnqueuer
 }
 
 type StoreOptions struct {
@@ -122,6 +124,10 @@ type StoreOptions struct {
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
 	Objects               storage.ObjectStore
+	// Outbox, when set, enqueues the lockout object-delete in the access tx
+	// instead of calling the object store inline. Optional: a Store built
+	// without one (e.g. in tests) falls back to a best-effort inline delete.
+	Outbox outboxEnqueuer
 }
 
 func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
@@ -160,6 +166,7 @@ func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
 		minTTL:                opts.MinTTLSeconds,
 		maxTTL:                opts.MaxTTLSeconds,
 		objects:               opts.Objects,
+		outbox:                opts.Outbox,
 	}, nil
 }
 
@@ -724,14 +731,36 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 	}
 	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
 		// Lock reached: purge the payload so it can never be read. S3-backed
-		// secrets have no inline row, so delete the object instead — best-effort:
-		// a failed delete must not roll back the lockout count (that would gift
-		// the attacker another attempt). An orphaned object is reclaimed by the
-		// expiration reaper (issue #76).
-		if storageBackend == StorageS3 && s.objects != nil {
+		// secrets have no inline row, so delete the object instead. Enqueue the
+		// delete in this tx (same pattern as the consumed-open path) rather than
+		// calling the object store inline: a synchronous S3 round-trip would both
+		// pin the single SQLite write connection across network I/O and silently
+		// leak the object on a transient failure. The worker retries the job; an
+		// orphan is also swept by the expiration reaper (issue #76).
+		switch {
+		case storageBackend != StorageS3:
+			if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+				return fmt.Errorf("delete locked secret payload: %w", err)
+			}
+		case s.outbox != nil:
+			jobID, err := events.NewJobID()
+			if err != nil {
+				return fmt.Errorf("generate locked object delete job id: %w", err)
+			}
+			if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
+				JobID:       jobID,
+				Kind:        events.KindDeleteOCIObject,
+				ObjectKey:   storageKey,
+				Reason:      events.ReasonConsumed,
+				RequestedAt: now,
+			}); err != nil {
+				return fmt.Errorf("enqueue locked object delete: %w", err)
+			}
+		case s.objects != nil:
+			// No outbox wired (test-only Store): best-effort inline delete. A
+			// failed delete must not roll back the lockout count — that would
+			// gift the attacker another attempt.
 			_ = s.objects.Delete(ctx, storageKey)
-		} else if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
-			return fmt.Errorf("delete locked secret payload: %w", err)
 		}
 	}
 	return nil

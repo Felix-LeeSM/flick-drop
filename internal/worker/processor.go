@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -96,10 +97,10 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 
 	started, err := p.store.Start(ctx, event.JobID, event.Kind)
 	if err != nil {
-		switch err {
-		case ErrJobProcessing:
+		switch {
+		case errors.Is(err, ErrJobProcessing):
 			return ProcessResult{AlreadyProcessing: true}, nil
-		case ErrJobDead:
+		case errors.Is(err, ErrJobDead):
 			return ProcessResult{AlreadyDead: true, DeadLettered: true}, nil
 		default:
 			return ProcessResult{}, err
