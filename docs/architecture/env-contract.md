@@ -61,6 +61,15 @@ Local development:
 | `FLICK_WORKER_CONCURRENCY` | Parallel job execution limit. |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
 
+## Web
+
+Runtime env for the nginx-served web container (distinct from the build-time
+`PUBLIC_FLICK_*` vars baked into the bundle). Read at container start, not build.
+
+| Variable | Purpose |
+| --- | --- |
+| `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when the large-file S3 backend is disabled. Set to the `FLICK_S3_ENDPOINT` origin (`scheme://host[:port]`) when `FLICK_STORAGE_LARGE_BACKEND=s3`, so the browser's direct presigned upload passes CSP. Rendered into nginx by the envsubst entrypoint. |
+
 ## S3
 
 Used only when `FLICK_STORAGE_LARGE_BACKEND=s3`. The server speaks the S3 API

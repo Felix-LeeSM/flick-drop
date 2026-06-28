@@ -28,9 +28,19 @@ RUN pnpm build
 FROM ${WEB_RUNTIME_IMAGE} AS runtime
 
 COPY nginx.conf /etc/nginx/nginx.conf
+COPY nginx-templates/ /etc/nginx/templates/
 COPY --from=build /app/build /usr/share/nginx/html
 
-RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run /tmp
+# The CSP is templated at start by the base image's envsubst entrypoint; render
+# it into a dedicated snippet dir the non-root nginx user owns (the default
+# /etc/nginx/conf.d is root-owned, so envsubst would skip it). FLICK_CSP_CONNECT_SRC
+# defaults to empty, keeping connect-src 'self' unless a deployment sets its
+# object-store origin.
+ENV NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/snippets \
+	FLICK_CSP_CONNECT_SRC=""
+
+RUN mkdir -p /etc/nginx/snippets \
+	&& chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run /tmp /etc/nginx/snippets
 
 USER nginx
 EXPOSE 8080

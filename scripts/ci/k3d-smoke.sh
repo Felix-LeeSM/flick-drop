@@ -130,6 +130,10 @@ wait_http "http://127.0.0.1:$api_port/healthz"
 wait_http "http://127.0.0.1:$api_port/readyz"
 wait_http "http://127.0.0.1:$web_port/healthz"
 
+# Assert the web security response headers on the real nginx image (the only CI
+# that runs it). The web is up, so the smoke runs rather than skipping.
+FLICK_WEB_BASE_URL="http://127.0.0.1:$web_port" scripts/smoke/web-headers.sh
+
 ciphertext="$(printf 'k3d-ciphertext' | base64)"
 access_proof="$(printf 'k3d-proof' | base64)"
 create_body="$(

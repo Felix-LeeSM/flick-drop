@@ -1,0 +1,16 @@
+# Rendered to /etc/nginx/snippets/csp.conf at container start by the nginx
+# envsubst entrypoint (20-envsubst-on-templates.sh), then included by the server
+# block in nginx.conf.
+#
+# script-src/style-src carry 'unsafe-inline': the SvelteKit hydration bootstrap
+# is an inline <script> whose hash changes every build (so nginx cannot pin it),
+# and Tailwind v4 plus app.html inject inline styles. The high-value control for
+# a browser-crypto app is connect-src, which stays tight: an injected script
+# still cannot exfiltrate plaintext or the passphrase to an arbitrary origin.
+#
+# connect-src carries 'self' plus FLICK_CSP_CONNECT_SRC, which is empty by
+# default (correct when the large-file S3 backend is disabled). A deployment that
+# enables FLICK_STORAGE_LARGE_BACKEND=s3 sets FLICK_CSP_CONNECT_SRC to its
+# object-store origin (the FLICK_S3_ENDPOINT scheme://host[:port]) so the
+# browser's direct presigned upload is allowed.
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${FLICK_CSP_CONNECT_SRC}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;

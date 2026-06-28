@@ -196,11 +196,60 @@ Production deployments require HTTPS at the ingress. Internal cluster traffic
 may start as plain HTTP protected by namespace boundaries and internal tokens,
 but this is not a substitute for public TLS.
 
+## Web Response Headers
+
+The web app is a static SPA served by nginx (`web/nginx.conf`). Because the
+plaintext, passphrase, and derived key live only in the browser, the headers
+that constrain page-context code are part of the trust boundary, not cosmetic
+hardening. They apply to the HTML responses (`location /`); a CSP on the static
+sub-resources would be meaningless, so only `nosniff` is re-asserted there.
+
+| Header | Value | Purpose |
+| --- | --- | --- |
+| `X-Frame-Options` | `DENY` (with CSP `frame-ancestors 'none'`) | Create/open pages are not framable — anti-clickjacking. |
+| `X-Content-Type-Options` | `nosniff` | No MIME sniffing (also on the immutable assets). |
+| `Referrer-Policy` | `no-referrer` | Never leak the `/s/{id}` path on outbound navigation. |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | The app uses none of these. |
+
+CSP directives:
+
+| Directive | Value | Why |
+| --- | --- | --- |
+| `default-src` | `'self'` | Same-origin baseline for anything not named below. |
+| `script-src` | `'self' 'unsafe-inline'` | The SvelteKit hydration bootstrap is inline and its hash changes every build, so nginx cannot pin it; app modules load from `'self'`. See the limitation below. |
+| `style-src` | `'self' 'unsafe-inline'` | Tailwind v4 injects runtime `<style>`; `app.html` uses an inline `style` attribute. |
+| `img-src` | `'self' data:` | A CSS background uses an inline `data:` SVG. |
+| `connect-src` | `'self' ${FLICK_CSP_CONNECT_SRC}` | API is same-origin; the object-store origin for direct large-file uploads is appended at runtime (empty when the S3 backend is disabled). |
+| `frame-ancestors` | `'none'` | Anti-clickjacking. |
+| `base-uri`, `form-action` | `'self'` | No base-tag hijack, no cross-origin form posts. |
+| `object-src` | `'none'` | No plugins. |
+
+`connect-src` is the load-bearing directive: even an injected script (which
+`'unsafe-inline'` does not stop) cannot exfiltrate the plaintext or passphrase to
+an arbitrary origin — it may only reach `'self'` and the configured object store.
+The S3 origin is deployment-specific and unknown at web build time (one shared
+image), so the CSP is rendered by the nginx envsubst entrypoint from
+`FLICK_CSP_CONNECT_SRC` (see [env contract](env-contract.md)); enabling
+`FLICK_STORAGE_LARGE_BACKEND=s3` means setting it to the `FLICK_S3_ENDPOINT`
+origin.
+
+Limitation and upgrade path: `script-src 'unsafe-inline'` is weaker than a
+hash/nonce policy. Hashing is build-time only, but `connect-src` must stay
+runtime, and a `<meta>` CSP and an nginx CSP *intersect* rather than union — so
+the two cannot be combined to both pin scripts and allow a runtime origin. The
+app renders no untrusted HTML and `connect-src` already bounds exfiltration, so
+the inline-script allowance is an accepted trade-off until the bootstrap is
+externalized.
+
+`Strict-Transport-Security` is intentionally not set on the pod (plain `:8080`,
+local `flick.localhost` base ingress); production overlays add HSTS at the
+TLS-terminating ingress (see Transport above).
+
 ## Future Security Features
 
 - Argon2id client-side KDF after WASM dependency review
-- rate limiting
-- stricter Content Security Policy
+- hash/nonce `script-src` to drop the inline-script allowance (see Web Response
+  Headers for why it is deferred)
 - admin audit viewer without sensitive values
 - optional notification without revealing secret contents
 - native/CLI client to defend against an actively malicious server (deferred —
