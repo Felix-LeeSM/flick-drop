@@ -14,8 +14,9 @@ import (
 const DefaultMaxAttempts = 3
 
 // tracer instruments job processing. With tracing off (no OTLP endpoint) it is
-// OTel's no-op, so tracer.Start costs nothing. The span is a root today; #133
-// PR2 makes it continue the producer's trace via the NATS message headers.
+// OTel's no-op, so tracer.Start costs nothing. The worker.Process span continues
+// the producer's trace via the job payload's trace context (see Process and
+// events.ContextWithTrace), so a job is followed end to end across the NATS hop.
 var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/worker")
 
 type JobHandler interface {

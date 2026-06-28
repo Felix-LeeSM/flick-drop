@@ -16,6 +16,7 @@ import (
 // then extracted so a consumer span continues the same trace. Exercised here
 // without a DB or NATS by serializing + decoding in place.
 func TestTraceContextRoundTrip(t *testing.T) {
+	// Mutates global otel state (provider + propagator); do not t.Parallel.
 	prevProp := otel.GetTextMapPropagator()
 	prevTP := otel.GetTracerProvider()
 	otel.SetTextMapPropagator(propagation.TraceContext{})
