@@ -12,7 +12,8 @@ import {
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
-	TypeIcon
+	TypeIcon,
+	XIcon
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
@@ -59,8 +60,9 @@ import {
 	encryptTextWithKey,
 	generateSecretKey
 } from '$lib/crypto/text';
+import { bundleFiles } from '$lib/files/bundle';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
-import { formatBytes } from '$lib/utils';
+import { cn, formatBytes } from '$lib/utils';
 
 type StatusKind = 'idle' | 'encrypting' | 'uploading' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
@@ -112,9 +114,16 @@ let customActive = $state(false);
 let customValue = $state(2);
 let customUnit = $state<'minutes' | 'hours' | 'days'>('days');
 const ttlSeconds = $derived(customActive ? customValue * ttlUnitFactor[customUnit] : presetSeconds);
-let selectedFiles = $state<FileList>();
+// pickedFiles is what the user chose; selectedFile is what actually uploads —
+// the same File when one was picked, or the zipped bundle when several were.
+let pickedFiles = $state<File[]>([]);
 let selectedFile = $state<File | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
+let bundling = $state(false);
+let dragActive = $state(false);
+// Monotonic token: bundling is async and runs can overlap (add, then remove
+// mid-zip), so only the latest applyFiles run may commit its result.
+let bundleToken = 0;
 let shareUrl = $state('');
 let expiresAt = $state('');
 let status = $state('');
@@ -144,7 +153,9 @@ $effect(() => {
 });
 
 const selectedFileTooLarge = $derived(
-	selectedFile !== null && selectedFile.size > limits.maxFileBytes
+	// Judge on the raw byte total, not the zip size: an over-limit batch is
+	// rejected before the slow zip runs. The server re-enforces the exact size.
+	pickedFiles.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes
 );
 const hasCredentialPayload = $derived(
 	(credentialEnvelope.title ?? '').trim().length > 0 ||
@@ -163,7 +174,8 @@ const canCreate = $derived(
 		(!usePassphrase || passphrase.length > 0) &&
 		ttlSeconds >= MIN_TTL_SECONDS &&
 		ttlSeconds <= MAX_TTL_SECONDS &&
-		!isCreating
+		!isCreating &&
+		!bundling
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -306,15 +318,112 @@ function switchMode(nextMode: CreateMode): void {
 	}
 }
 
-function syncSelectedFile(): void {
-	selectedFile = selectedFiles?.item(0) ?? null;
+// Recomputes the single File that uploads from the current batch. One file rides
+// as-is; several are zipped into bundle.zip (async, so the form shows "Zipping").
+async function applyFiles(files: File[]): Promise<void> {
 	status = '';
 	statusKind = 'idle';
+	pickedFiles = files;
+
+	// Claim this run. A later run (or a sync return below) bumps the token, so a
+	// stale zip resolving late is dropped instead of resurrecting a removed file
+	// or clearing `bundling` while a newer run is still going.
+	const token = ++bundleToken;
+
+	// Pre-flight on the raw total before the slow zip: skip building an unusable
+	// bundle when the batch already exceeds the limit (selectedFileTooLarge shows
+	// it). The server re-enforces the exact bundle size.
+	if (files.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes) {
+		selectedFile = null;
+		bundling = false;
+		return;
+	}
+	if (files.length <= 1) {
+		selectedFile = files[0] ?? null;
+		bundling = false;
+		return;
+	}
+	bundling = true;
+	selectedFile = null;
+	try {
+		const bundled = await bundleFiles(files);
+		if (token === bundleToken) {
+			selectedFile = bundled;
+		}
+	} catch {
+		if (token === bundleToken) {
+			selectedFile = null;
+			status = 'Could not zip those files. Try again.';
+			statusKind = 'error';
+		}
+	} finally {
+		if (token === bundleToken) {
+			bundling = false;
+		}
+	}
+}
+
+function fileKey(file: File): string {
+	return `${file.name}|${file.size}|${file.lastModified}`;
+}
+
+// Accumulate: each pick/drop adds to the batch. Same-identity files are skipped so
+// a double-drop doesn't duplicate; order is preserved.
+function addFiles(incoming: File[]): void {
+	const seen = new Set(pickedFiles.map(fileKey));
+	const merged = [...pickedFiles];
+	for (const file of incoming) {
+		if (!seen.has(fileKey(file))) {
+			seen.add(fileKey(file));
+			merged.push(file);
+		}
+	}
+	void applyFiles(merged);
+}
+
+function removeFile(index: number): void {
+	void applyFiles(pickedFiles.filter((_, position) => position !== index));
+}
+
+function onFileInputChange(event: Event): void {
+	const input = event.currentTarget as HTMLInputElement;
+	addFiles(Array.from(input.files ?? []));
+	// Clear so re-picking the same file still fires onchange for the next add.
+	input.value = '';
+}
+
+function onDragOver(event: DragEvent): void {
+	event.preventDefault();
+	if (!isCreating) {
+		dragActive = true;
+	}
+}
+
+function onDragLeave(event: DragEvent): void {
+	event.preventDefault();
+	dragActive = false;
+}
+
+function onDrop(event: DragEvent): void {
+	event.preventDefault();
+	dragActive = false;
+	if (isCreating) {
+		return;
+	}
+	const files = Array.from(event.dataTransfer?.files ?? []);
+	if (files.length > 0) {
+		addFiles(files);
+	}
 }
 
 function clearSelectedFile(): void {
+	// Bump the token so an in-flight zip (e.g. bundling still running when the
+	// user switches mode) can't resolve late and resurrect the cleared bundle.
+	bundleToken += 1;
 	selectedFile = null;
-	selectedFiles = undefined;
+	pickedFiles = [];
+	bundling = false;
+	dragActive = false;
 	if (fileInput) {
 		fileInput.value = '';
 	}
@@ -488,32 +597,89 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						</div>
 					{:else if mode === 'file'}
 						<div class="grid gap-2.5">
-							<Label for="secret-file" class="micro font-normal text-muted-foreground">
-								payload
-							</Label>
-							<Input
-								id="secret-file"
-								type="file"
-								bind:ref={fileInput}
-								bind:files={selectedFiles}
-								disabled={isCreating}
-								onchange={syncSelectedFile}
-							/>
-							<div
-								class="flex min-h-9 items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+							<span class="micro font-normal text-muted-foreground">payload</span>
+							<!-- Label wraps the input, so a click opens the picker natively and a
+							     drop lands files without any wiring; focus-within surfaces the
+							     visually-hidden input's keyboard focus on the zone. -->
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<label
+								class={cn(
+									'grid cursor-pointer place-items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-ring',
+									dragActive
+										? 'border-primary bg-primary/5'
+										: 'border-border bg-muted/20 hover:bg-muted/40',
+									isCreating && 'pointer-events-none opacity-60'
+								)}
+								ondragover={onDragOver}
+								ondragenter={onDragOver}
+								ondragleave={onDragLeave}
+								ondrop={onDrop}
 							>
-								<span class="truncate text-muted-foreground">
-									{selectedFile ? selectedFile.name : 'No file selected'}
-								</span>
-								{#if selectedFile}
-									<span class="shrink-0 font-mono text-xs text-muted-foreground">
-										{formatBytes(selectedFile.size)}
-									</span>
+								<FileUpIcon
+									class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
+									aria-hidden="true"
+								/>
+								<p class="text-sm">
+									<span class="font-medium text-foreground">Drop files</span>
+									<span class="text-muted-foreground"> or click to browse</span>
+								</p>
+								<p class="micro text-muted-foreground">
+									Multiple files are zipped into one · up to {formatBytes(limits.maxFileBytes)}
+								</p>
+								<input
+									bind:this={fileInput}
+									id="secret-file"
+									type="file"
+									multiple
+									class="sr-only"
+									aria-label="Add files to upload"
+									disabled={isCreating}
+									onchange={onFileInputChange}
+								/>
+							</label>
+							{#if pickedFiles.length > 0}
+								<ul class="grid gap-1.5">
+									{#each pickedFiles as file, index (fileKey(file))}
+										<li
+											class="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+										>
+											<span class="truncate text-muted-foreground">{file.name}</span>
+											<span class="flex shrink-0 items-center gap-2">
+												<span class="font-mono text-xs text-muted-foreground">
+													{formatBytes(file.size)}
+												</span>
+												<button
+													type="button"
+													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													aria-label={`Remove ${file.name}`}
+													disabled={isCreating}
+													onclick={() => {
+														removeFile(index);
+													}}
+												>
+													<XIcon class="size-4" aria-hidden="true" />
+												</button>
+											</span>
+										</li>
+									{/each}
+								</ul>
+								{#if bundling}
+									<p
+										class="micro text-right text-muted-foreground"
+										role="status"
+										aria-live="polite"
+									>
+										Zipping {pickedFiles.length} files…
+									</p>
+								{:else if pickedFiles.length > 1 && selectedFile}
+									<p class="micro text-right text-muted-foreground">
+										{pickedFiles.length} files → {selectedFile.name} · {formatBytes(selectedFile.size)}
+									</p>
 								{/if}
-							</div>
+							{/if}
 							{#if selectedFileTooLarge}
 								<p class="text-sm text-destructive" role="alert" aria-live="assertive">
-									Choose a file up to {formatBytes(limits.maxFileBytes)}.
+									Choose files up to {formatBytes(limits.maxFileBytes)} total.
 								</p>
 							{/if}
 						</div>
