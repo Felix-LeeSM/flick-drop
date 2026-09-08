@@ -347,6 +347,32 @@ describe('file secret routing', () => {
 		expect(fetcher.mock.calls[2][0]).toBe('http://api.local/api/secrets/large-id/finalize');
 	});
 
+	// With large-object storage disabled the server clamps max_file_bytes to just
+	// under the inline threshold, so the two limits arrive nearly equal. A payload
+	// sitting exactly on that ceiling must still take the inline path — routing it
+	// to S3 would call a backend that is not there.
+	it('keeps the inline path when the bound has been clamped to the threshold', async () => {
+		expect.assertions(2);
+
+		const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+			new Response(JSON.stringify({ id: 'inline-id', expires_at: '2026-06-17T01:00:00Z' }), {
+				status: 201,
+				headers: { 'Content-Type': 'application/json' }
+			})
+		);
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 1016, maxFileBytes: 1000 }
+		});
+
+		await client.createFileSecret(largeFilePayload, 3600, accessVerifier);
+
+		const [, init] = fetcher.mock.calls[0];
+		expect(JSON.parse(init?.body as string)).toHaveProperty('ciphertext', 'AAECAw==');
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+
 	it('rejects files above the absolute bound without a network call', async () => {
 		expect.assertions(2);
 

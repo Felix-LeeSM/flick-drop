@@ -22,7 +22,6 @@ fi
 image_prefix="${FLICK_IMAGE_PREFIX:-flick-local}"
 image_tag="${FLICK_IMAGE_TAG:-ci}"
 public_api_base_url="${FLICK_WEB_PUBLIC_API_BASE_URL:-/}"
-public_local_file_max_bytes="${PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES:-1048560}"
 
 docker build \
   -f Dockerfile.api \
@@ -37,7 +36,6 @@ docker build \
 docker build \
   -f web/Dockerfile \
   --build-arg "PUBLIC_FLICK_API_BASE_URL=$public_api_base_url" \
-  --build-arg "PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES=$public_local_file_max_bytes" \
   -t "$image_prefix/flick-web:$image_tag" \
   web
 
