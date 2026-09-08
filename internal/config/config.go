@@ -164,13 +164,21 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// EffectiveMaxFileBytes is the largest ciphertext this deployment will actually
+// aeadOverheadBytes is the AES-GCM authentication tag the browser appends to
+// every payload. /api/config limits are compared against plaintext size by the
+// client, while the server validates ciphertext length, so the advertised
+// plaintext ceiling has to leave room for the tag.
+const aeadOverheadBytes = 16
+
+// EffectiveMaxFileBytes is the largest plaintext this deployment will actually
 // accept. With large-object storage disabled the inline SQLite path is the only
 // route, so the ceiling drops to the inline threshold: advertising the full
 // MaxFileBytes there would promise 50 MiB and then answer 413 just past 1 MiB.
+// The S3 path needs no such subtraction — presigning already allows the
+// ciphertext a 4 KiB margin over MaxFileBytes.
 func (c Config) EffectiveMaxFileBytes() int64 {
-	if !c.S3.Enabled && c.MaxFileBytes > c.PayloadInlineMaxBytes {
-		return c.PayloadInlineMaxBytes
+	if !c.S3.Enabled && c.MaxFileBytes > c.PayloadInlineMaxBytes-aeadOverheadBytes {
+		return c.PayloadInlineMaxBytes - aeadOverheadBytes
 	}
 	return c.MaxFileBytes
 }

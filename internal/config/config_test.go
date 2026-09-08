@@ -221,9 +221,12 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 		max     int64
 		want    int64
 	}{
-		{"large storage off clamps to the inline threshold", false, 1048576, 52428800, 1048576},
+		// The clamp leaves room for the AES-GCM tag: a plaintext of exactly the
+		// inline threshold encrypts to threshold+16 and would be refused.
+		{"large storage off clamps below the inline threshold", false, 1048576, 52428800, 1048560},
 		{"large storage on keeps the configured limit", true, 1048576, 52428800, 52428800},
-		{"limit already below the threshold is left alone", false, 1048576, 4096, 4096},
+		{"limit already below the clamp is left alone", false, 1048576, 4096, 4096},
+		{"limit inside the tag margin is clamped", false, 1048576, 1048570, 1048560},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

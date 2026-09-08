@@ -33,6 +33,10 @@ spec:
                 configMapKeyRef:
                   name: flick-config
                   key: FLICK_CSP_CONNECT_SRC
+                  # Optional on purpose: the image already defaults it to "",
+                  # so an overlay that replaces flick-config without this key
+                  # must not put every web pod in CreateContainerConfigError.
+                  optional: true
           ports:
             - name: http
               containerPort: 8080
