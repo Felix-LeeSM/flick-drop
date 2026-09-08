@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+)
 
 func TestLoadUsesDefaults(t *testing.T) {
 	clearFlickEnv(t)
@@ -214,6 +218,10 @@ func TestLoadEnvOverrides(t *testing.T) {
 // actually store: the inline threshold while large-object storage is off, the
 // configured limit once it is on.
 func TestEffectiveMaxFileBytes(t *testing.T) {
+	// Take the tag size from the domain rather than restating it: these cases
+	// encode threshold-minus-tag arithmetic, and a local copy would keep passing
+	// after the real constant moved.
+	const aeadOverhead = int64(secrets.AEADOverheadBytes)
 	cases := []struct {
 		name    string
 		enabled bool
@@ -235,7 +243,7 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 				MaxFileBytes:          c.max,
 				S3:                    S3Config{Enabled: c.enabled},
 			}
-			if got := cfg.EffectiveMaxFileBytes(); got != c.want {
+			if got := cfg.EffectiveMaxFileBytes(aeadOverhead); got != c.want {
 				t.Fatalf("EffectiveMaxFileBytes() = %d, want %d", got, c.want)
 			}
 		})

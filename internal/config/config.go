@@ -72,7 +72,7 @@ func Load() (Config, error) {
 		MinTTLSeconds:     defaultMinTTLSeconds,
 		MaxTTLSeconds:     defaultMaxTTLSeconds,
 		OpenRatePerMinute: defaultOpenRatePerMinute,
-		// /api/secrets (presigned POST issuance) becomes a DoS amplifier once
+		// /api/secrets (presigned upload issuance) becomes a DoS amplifier once
 		// large uploads bypass the server, so cap issuance per client IP + path.
 		CreateRatePerMinute: defaultCreateRatePerMinute,
 		// The expiration reaper sweeps expired/orphan secrets out of api.db. A
@@ -164,28 +164,25 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// aeadOverheadBytes is the AES-GCM authentication tag the browser appends to
-// every payload. /api/config limits are compared against plaintext size by the
-// client, while the server validates ciphertext length, so the advertised
-// plaintext ceiling has to leave room for the tag.
-const aeadOverheadBytes = 16
-
 // EffectivePayloadInlineMaxBytes is the largest plaintext that still fits the
 // inline SQLite path once encrypted. FLICK_PAYLOAD_INLINE_MAX_BYTES bounds the
-// ciphertext, so the plaintext the client may route inline is one tag smaller.
-func (c Config) EffectivePayloadInlineMaxBytes() int64 {
-	return c.PayloadInlineMaxBytes - aeadOverheadBytes
+// ciphertext, so the plaintext the client may route inline is one AEAD tag
+// smaller. aeadOverhead is passed in rather than redeclared here: the domain
+// owns that number (secrets.AEADOverheadBytes), and a second copy could drift
+// from the one the presigned upload length is built from.
+func (c Config) EffectivePayloadInlineMaxBytes(aeadOverhead int64) int64 {
+	return c.PayloadInlineMaxBytes - aeadOverhead
 }
 
 // EffectiveMaxFileBytes is the largest plaintext this deployment will actually
 // accept. With large-object storage disabled the inline path is the only route,
 // so the ceiling drops to the inline threshold: advertising the full
 // MaxFileBytes there would promise 50 MiB and then answer 413 just past 1 MiB.
-// The S3 path needs no such subtraction — presigning already allows the
-// ciphertext a 4 KiB margin over MaxFileBytes.
-func (c Config) EffectiveMaxFileBytes() int64 {
-	if !c.S3.Enabled && c.MaxFileBytes > c.EffectivePayloadInlineMaxBytes() {
-		return c.EffectivePayloadInlineMaxBytes()
+// With it enabled the configured limit stands, because the object cap is
+// derived from MaxFileBytes plus the same tag.
+func (c Config) EffectiveMaxFileBytes(aeadOverhead int64) int64 {
+	if inline := c.EffectivePayloadInlineMaxBytes(aeadOverhead); !c.S3.Enabled && c.MaxFileBytes > inline {
+		return inline
 	}
 	return c.MaxFileBytes
 }

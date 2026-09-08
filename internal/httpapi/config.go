@@ -9,7 +9,7 @@ type configResponse struct {
 
 // getConfig exposes the client-facing size limits so the browser can size-gate
 // file uploads and route large files to the S3 path (ciphertext omitted ->
-// presigned POST -> /finalize). The values are advisory: the server re-enforces
+// presigned PUT -> /finalize). The values are advisory: the server re-enforces
 // both limits, so a tampered client value cannot bypass them. Kept flat so
 // future fields (e.g. TTL bounds) can be added non-destructively.
 func (s Server) getConfig(w http.ResponseWriter, _ *http.Request) {

@@ -76,9 +76,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
 	}
-	// The ciphertext cap is the plaintext cap plus the AES-GCM tag and a safety
-	// margin; finalize HEAD re-verifies against this.
-	maxObjectBytes := cfg.MaxFileBytes + 4096
+	// The ciphertext cap is exactly the plaintext cap plus the AES-GCM tag: the
+	// presigned upload signs that length, and CreateLarge derives it from the
+	// declared plaintext size. Slack here would widen the real ceiling past what
+	// /api/config advertises.
+	maxObjectBytes := cfg.MaxFileBytes + secrets.AEADOverheadBytes
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
@@ -122,8 +124,8 @@ func main() {
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
 			PayloadInlineMaxBytes:    cfg.PayloadInlineMaxBytes,
-			AdvertisedInlineMaxBytes: cfg.EffectivePayloadInlineMaxBytes(),
-			MaxFileBytes:             cfg.EffectiveMaxFileBytes(),
+			AdvertisedInlineMaxBytes: cfg.EffectivePayloadInlineMaxBytes(secrets.AEADOverheadBytes),
+			MaxFileBytes:             cfg.EffectiveMaxFileBytes(secrets.AEADOverheadBytes),
 			AllowedOrigin:            cfg.PublicBaseURL,
 			InternalToken:            cfg.InternalToken,
 			MetricsToken:             cfg.MetricsToken,

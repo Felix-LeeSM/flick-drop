@@ -1,9 +1,12 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,18 +16,21 @@ import (
 
 type mockObjectStore struct {
 	objects map[string][]byte
+	// presignedSize records the length the store asked to be signed, so tests can
+	// assert it matches the declared plaintext plus the AEAD tag.
+	presignedSize int64
 }
 
 func newMockObjectStore() *mockObjectStore {
 	return &mockObjectStore{objects: map[string][]byte{}}
 }
 
-func (m *mockObjectStore) PresignPOST(_ context.Context, _ string, _ int64, _ time.Duration) (storage.POSTForm, error) {
-	return storage.POSTForm{
-		URL:       "http://localhost:9000/flick-dev",
-		Method:    "POST",
-		Fields:    map[string]string{"key": "k"},
-		FileField: "file",
+func (m *mockObjectStore) PresignPUT(_ context.Context, key string, size int64, _ time.Duration) (storage.UploadInstruction, error) {
+	m.presignedSize = size
+	return storage.UploadInstruction{
+		URL:     "http://localhost:9000/flick-dev/" + key,
+		Method:  "PUT",
+		Headers: map[string]string{"Content-Length": strconv.FormatInt(size, 10)},
 	}, nil
 }
 
@@ -83,7 +89,8 @@ func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mo
 	if err != nil {
 		t.Fatalf("create large: %v", err)
 	}
-	mock.objects[res.ID] = []byte("ciphertext-bytes")
+	// Finalize checks the exact staged length: plaintext plus the AEAD tag.
+	mock.objects[res.ID] = make([]byte, 1000+AEADOverheadBytes)
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
@@ -213,8 +220,11 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 		t.Fatalf("large secret should not write an inline payload")
 	}
 
-	// client uploads ciphertext straight to the bucket.
-	mock.objects[res.ID] = []byte("ciphertext-bytes")
+	// client uploads ciphertext straight to the bucket. Finalize verifies the
+	// exact staged length, so the object has to be plaintext + tag long.
+	ciphertext := []byte("ciphertext-bytes")
+	ciphertext = append(ciphertext, make([]byte, 1000+AEADOverheadBytes-len(ciphertext))...)
+	mock.objects[res.ID] = ciphertext
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -227,8 +237,8 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get large secret: %v", err)
 	}
-	if string(got.Ciphertext) != "ciphertext-bytes" {
-		t.Fatalf("ciphertext = %q", string(got.Ciphertext))
+	if !bytes.Equal(got.Ciphertext, ciphertext) {
+		t.Fatalf("ciphertext round trip mismatch (%d bytes)", len(got.Ciphertext))
 	}
 	if got.StorageBackend != StorageS3 {
 		t.Fatalf("backend = %q, want s3_object", got.StorageBackend)
@@ -248,7 +258,7 @@ func TestFinalizeIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.objects[res.ID] = []byte("ct")
+	mock.objects[res.ID] = make([]byte, 10+AEADOverheadBytes)
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -350,5 +360,106 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	}
 	if got := secretState(t, ctx, conn, "sec_pending"); got != "active" {
 		t.Fatalf("state = %q, want active", got)
+	}
+}
+
+// The presigned upload pins Content-Length, so the store must ask for exactly
+// the ciphertext length: the declared plaintext plus the AEAD tag. Signing the
+// plaintext length would make every real upload fail authentication.
+func TestCreateLargeSignsCiphertextLength(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock)
+
+	if _, err := store.CreateLarge(ctx, CreateLargeInput{
+		Kind:       KindText,
+		Nonce:      "nonce",
+		SizeBytes:  1000,
+		TTLSeconds: 600,
+	}); err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+
+	if want := int64(1000 + AEADOverheadBytes); mock.presignedSize != want {
+		t.Fatalf("presigned size = %d, want %d", mock.presignedSize, want)
+	}
+}
+
+// A declared size whose ciphertext would exceed the object cap must be refused
+// before signing — otherwise the client gets a signature for an upload the
+// bucket is meant to never accept.
+func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock) // MaxObjectBytes: 4096
+
+	cases := []struct {
+		name    string
+		size    int64
+		wantErr error
+	}{
+		{"exactly at the cap once the tag is added", 4096 - AEADOverheadBytes, nil},
+		{"one byte past the cap", 4096 - AEADOverheadBytes + 1, ErrPayloadTooLarge},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := store.CreateLarge(ctx, CreateLargeInput{
+				Kind:       KindText,
+				Nonce:      "nonce",
+				SizeBytes:  c.size,
+				TTLSeconds: 600,
+			})
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("err = %v, want %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// SizeBytes is attacker-controlled, so the cap check must not overflow: adding
+// the tag to MaxInt64 wraps negative and would slip past a naive comparison,
+// reaching the presigner and surfacing as a 500 instead of a 413.
+func TestCreateLargeRejectsOverflowingSize(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+
+	for _, size := range []int64{math.MaxInt64, math.MaxInt64 - AEADOverheadBytes + 1} {
+		_, err := store.CreateLarge(ctx, CreateLargeInput{
+			Kind:       KindText,
+			Nonce:      "nonce",
+			SizeBytes:  size,
+			TTLSeconds: 600,
+		})
+		if !errors.Is(err, ErrPayloadTooLarge) {
+			t.Fatalf("size %d: err = %v, want ErrPayloadTooLarge", size, err)
+		}
+	}
+}
+
+// Finalize must not activate an object whose length differs from what was
+// staged, even though the bucket signature should already have refused it.
+func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock)
+
+	res, err := store.CreateLarge(ctx, CreateLargeInput{
+		Kind: KindText, Nonce: "n", SizeBytes: 100, TTLSeconds: 600,
+	})
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+
+	// Within the object cap, but not the length this secret was staged for.
+	mock.objects[res.ID] = make([]byte, 100+AEADOverheadBytes+1)
+	if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
+		t.Fatalf("finalize err = %v, want ErrObjectMissing", err)
+	}
+	if got := secretState(t, ctx, conn, res.ID); got != "pending_upload" {
+		t.Fatalf("state = %q, want pending_upload (not activated)", got)
 	}
 }

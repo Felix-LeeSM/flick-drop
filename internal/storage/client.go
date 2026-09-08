@@ -5,7 +5,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,15 +26,15 @@ type Config struct {
 	PathStyle       bool
 }
 
-// POSTForm is a presigned POST upload instruction returned to the client. The
-// browser posts multipart/form-data with Fields (any order) followed by the
-// file part named FileField, to URL.
-type POSTForm struct {
+// UploadInstruction is a presigned upload returned to the client. The browser
+// sends the raw ciphertext as the request body to URL with Method, echoing
+// Headers verbatim — they are part of the signature, so changing one (notably
+// Content-Length) makes the object store reject the upload.
+type UploadInstruction struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
 	ExpiresAt time.Time         `json:"expires_at"`
-	Fields    map[string]string `json:"fields"`
-	FileField string            `json:"file_field"`
+	Headers   map[string]string `json:"headers"`
 }
 
 // ObjectInfo describes an object. Exists is false for a 404.
@@ -48,7 +47,7 @@ type ObjectInfo struct {
 
 // ObjectStore is the surface the secrets store depends on for large payloads.
 type ObjectStore interface {
-	PresignPOST(ctx context.Context, key string, maxSize int64, ttl time.Duration) (POSTForm, error)
+	PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error)
 	Head(ctx context.Context, key string) (ObjectInfo, error)
 	Get(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
@@ -93,13 +92,5 @@ func New(cfg Config) (*Client, error) {
 
 // SetNowForTest injects a deterministic clock for presigned policy timestamps.
 func (c *Client) SetNowForTest(now func() time.Time) { c.now = now }
-
-// postURL is the POST action target (bucket root).
-func (c *Client) postURL() string {
-	if c.cfg.Endpoint != "" {
-		return strings.TrimRight(c.cfg.Endpoint, "/") + "/" + c.cfg.Bucket
-	}
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/", c.cfg.Bucket, c.cfg.Region)
-}
 
 var _ ObjectStore = (*Client)(nil)

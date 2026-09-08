@@ -2,106 +2,109 @@ package storage
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestDeriveSigningKeyAWSVector(t *testing.T) {
-	// AWS SigV4 reference example: region=us-east-1, service=iam, date=20150830,
-	// secret=wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY. The expected signing key
-	// is published in the AWS SigV4 documentation.
-	got := deriveSigningKey("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830", "us-east-1", "iam")
-	want := "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
-	if hex.EncodeToString(got) != want {
-		t.Fatalf("signing key = %s, want %s", hex.EncodeToString(got), want)
+func testPresignClient(t *testing.T) *Client {
+	t.Helper()
+	c, err := New(Config{
+		Enabled:         true,
+		Endpoint:        "http://localhost:9000",
+		Region:          "us-east-1",
+		Bucket:          "flick-dev",
+		AccessKeyID:     "AKIDTEST",
+		SecretAccessKey: "secrettest",
+		PathStyle:       true,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
 	}
+	c.SetNowForTest(func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) })
+	return c
 }
 
-func TestPresignPOSTShape(t *testing.T) {
-	c := &Client{
-		cfg: Config{
-			Enabled:         true,
-			Endpoint:        "http://localhost:9000",
-			Region:          "us-east-1",
-			Bucket:          "flick-dev",
-			AccessKeyID:     "AKIDTEST",
-			SecretAccessKey: "secrettest",
-			PathStyle:       true,
-		},
-		now: func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
-	}
+func TestPresignPUTShape(t *testing.T) {
+	c := testPresignClient(t)
 
-	form, err := c.PresignPOST(context.Background(), "obj-1", 1024, 5*time.Minute)
+	upload, err := c.PresignPUT(context.Background(), "obj-1", 1024, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("presign: %v", err)
 	}
 
-	if form.Method != "POST" || form.FileField != "file" {
-		t.Fatalf("method/filefield = %q/%q", form.Method, form.FileField)
+	if upload.Method != "PUT" {
+		t.Fatalf("method = %q, want PUT", upload.Method)
 	}
-	if form.URL != "http://localhost:9000/flick-dev" {
-		t.Fatalf("url = %q", form.URL)
+	if upload.Headers["Content-Length"] != "1024" {
+		t.Fatalf("Content-Length header = %q, want 1024", upload.Headers["Content-Length"])
 	}
-	if want := time.Date(2026, 1, 2, 3, 9, 5, 0, time.UTC); !form.ExpiresAt.Equal(want) {
-		t.Fatalf("expires_at = %v, want %v", form.ExpiresAt, want)
-	}
-	if got := form.Fields["x-amz-credential"]; got != "AKIDTEST/20260102/us-east-1/s3/aws4_request" {
-		t.Fatalf("credential = %q", got)
-	}
-	if form.Fields["x-amz-algorithm"] != "AWS4-HMAC-SHA256" {
-		t.Fatalf("algorithm = %q", form.Fields["x-amz-algorithm"])
-	}
-	sig := form.Fields["x-amz-signature"]
-	if len(sig) != 64 {
-		t.Fatalf("signature len = %d, want 64", len(sig))
+	if want := time.Date(2026, 1, 2, 3, 9, 5, 0, time.UTC); !upload.ExpiresAt.Equal(want) {
+		t.Fatalf("expires_at = %v, want %v", upload.ExpiresAt, want)
 	}
 
-	// policy decodes to a document pinning key + content-length-range.
-	var policy postPolicy
-	raw, err := base64.StdEncoding.DecodeString(form.Fields["policy"])
+	u, err := url.Parse(upload.URL)
 	if err != nil {
-		t.Fatalf("decode policy: %v", err)
+		t.Fatalf("parse url: %v", err)
 	}
-	if err := json.Unmarshal(raw, &policy); err != nil {
-		t.Fatalf("unmarshal policy: %v", err)
+	if u.Path != "/flick-dev/obj-1" {
+		t.Fatalf("path = %q, want /flick-dev/obj-1 (path-style, key pinned)", u.Path)
 	}
-	if policy.Expiration != "2026-01-02T03:09:05.000Z" {
-		t.Fatalf("expiration = %q", policy.Expiration)
+	q := u.Query()
+	if q.Get("X-Amz-Algorithm") != "AWS4-HMAC-SHA256" {
+		t.Fatalf("algorithm = %q", q.Get("X-Amz-Algorithm"))
 	}
-	if !policyHasContentLengthRange(policy) {
-		t.Fatalf("policy missing content-length-range: %v", policy.Conditions)
+	if !strings.HasPrefix(q.Get("X-Amz-Credential"), "AKIDTEST/") {
+		t.Fatalf("credential = %q", q.Get("X-Amz-Credential"))
 	}
-
-	// deterministic: same inputs → same signature (regression anchor).
-	form2, err := c.PresignPOST(context.Background(), "obj-1", 1024, 5*time.Minute)
-	if err != nil {
-		t.Fatalf("presign again: %v", err)
+	if q.Get("X-Amz-Expires") != "300" {
+		t.Fatalf("expires = %q, want 300", q.Get("X-Amz-Expires"))
 	}
-	if form2.Fields["x-amz-signature"] != sig {
-		t.Fatalf("signature not deterministic")
+	// The whole point of signing Content-Length: a body of any other size fails
+	// authentication at the bucket instead of landing and being caught later.
+	signed := q.Get("X-Amz-SignedHeaders")
+	if !strings.Contains(signed, "content-length") {
+		t.Fatalf("signed headers = %q, want content-length included", signed)
 	}
-	// different key → different signature.
-	form3, err := c.PresignPOST(context.Background(), "obj-2", 1024, 5*time.Minute)
-	if err != nil {
-		t.Fatalf("presign other: %v", err)
-	}
-	if form3.Fields["x-amz-signature"] == sig {
-		t.Fatalf("signature unchanged for different key")
+	if len(q.Get("X-Amz-Signature")) != 64 {
+		t.Fatalf("signature len = %d, want 64", len(q.Get("X-Amz-Signature")))
 	}
 }
 
-func policyHasContentLengthRange(policy postPolicy) bool {
-	for _, cond := range policy.Conditions {
-		arr, ok := cond.([]any)
-		if !ok || len(arr) != 3 {
-			continue
-		}
-		if name, ok := arr[0].(string); ok && name == "content-length-range" {
-			return true
-		}
+// A different size must produce a different signature — otherwise the length
+// would not actually be bound to it.
+func TestPresignPUTSignatureCoversSize(t *testing.T) {
+	c := testPresignClient(t)
+	ctx := context.Background()
+
+	a, err := c.PresignPUT(ctx, "obj-1", 1024, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("presign a: %v", err)
 	}
-	return false
+	b, err := c.PresignPUT(ctx, "obj-1", 1025, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("presign b: %v", err)
+	}
+
+	sigA, _ := url.Parse(a.URL)
+	sigB, _ := url.Parse(b.URL)
+	if sigA.Query().Get("X-Amz-Signature") == sigB.Query().Get("X-Amz-Signature") {
+		t.Fatal("signature is identical for different sizes; Content-Length is not signed")
+	}
+}
+
+func TestPresignPUTRejectsBadInput(t *testing.T) {
+	c := testPresignClient(t)
+	ctx := context.Background()
+
+	if _, err := c.PresignPUT(ctx, "", 1024, time.Minute); err == nil {
+		t.Fatal("expected an error for an empty key")
+	}
+	if _, err := c.PresignPUT(ctx, "obj-1", 0, time.Minute); err == nil {
+		t.Fatal("expected an error for a zero size")
+	}
+	if _, err := c.PresignPUT(ctx, "obj-1", -1, time.Minute); err == nil {
+		t.Fatal("expected an error for a negative size")
+	}
 }
