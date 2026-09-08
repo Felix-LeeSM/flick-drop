@@ -6,9 +6,10 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 // Human-readable byte size (B / KiB / MiB). Shared by the create + open pages.
-// Rounds down, never up: these numbers are mostly ceilings, and rounding up
-// showed the 1,048,560-byte upload limit as "1024.0 KiB" — a size the server
-// would refuse, and one unit short of reading as 1 MiB.
+// Rounds down, never up. Rounding up overstates both things this formats: a
+// limit fetched from /api/config (1,048,560 bytes rendered as "1024.0 KiB" — a
+// size the server refuses, and one unit short of reading as 1 MiB) and a real
+// file size (anything in [1048524.8, 1048576) shows the same nonsense).
 export function formatBytes(bytes: number): string {
 	if (bytes < 1024) {
 		return `${bytes} B`;
