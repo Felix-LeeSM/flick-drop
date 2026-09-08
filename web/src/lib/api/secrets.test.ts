@@ -300,11 +300,10 @@ describe('file secret routing', () => {
 						id: 'large-id',
 						expires_at: '2026-06-17T01:00:00Z',
 						upload: {
-							url: 'https://object-store.local/bucket',
-							method: 'POST',
+							url: 'https://object-store.local/bucket/large-id?X-Amz-Signature=abc',
+							method: 'PUT',
 							expires_at: '2026-06-17T00:10:00Z',
-							fields: { key: 'large-id', policy: 'signed-policy' },
-							file_field: 'file'
+							headers: { 'Content-Length': '4' }
 						}
 					}),
 					{ status: 201, headers: { 'Content-Type': 'application/json' } }
@@ -336,12 +335,12 @@ describe('file secret routing', () => {
 		const stageBody = JSON.parse(stageInit?.body as string) as Record<string, unknown>;
 		expect(stageBody).not.toHaveProperty('ciphertext');
 
-		// Upload call: multipart to the object store with signed fields + file.
+		// Upload call: the raw ciphertext as the body, at the signed length.
 		const [uploadUrl, uploadInit] = fetcher.mock.calls[1];
-		expect(uploadUrl).toBe('https://object-store.local/bucket');
-		expect(uploadInit?.method).toBe('POST');
-		expect(uploadInit?.body).toBeInstanceOf(FormData);
-		expect((uploadInit?.body as FormData).get('file')).toBeInstanceOf(Blob);
+		expect(uploadUrl).toBe('https://object-store.local/bucket/large-id?X-Amz-Signature=abc');
+		expect(uploadInit?.method).toBe('PUT');
+		expect(uploadInit?.body).toBeInstanceOf(ArrayBuffer);
+		expect((uploadInit?.body as ArrayBuffer).byteLength).toBe(4);
 
 		// Finalize call.
 		expect(fetcher.mock.calls[2][0]).toBe('http://api.local/api/secrets/large-id/finalize');
@@ -373,6 +372,40 @@ describe('file secret routing', () => {
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	});
 
+	// Content-Length is inside the signature, so a body of another length would
+	// come back as a bare 403 from the bucket. Catch the drift locally instead.
+	it('refuses to upload when the signed length does not match the ciphertext', async () => {
+		expect.assertions(2);
+
+		const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					id: 'large-id',
+					expires_at: '2026-06-17T01:00:00Z',
+					upload: {
+						url: 'https://object-store.local/bucket/large-id',
+						method: 'PUT',
+						expires_at: '2026-06-17T00:10:00Z',
+						headers: { 'Content-Length': '999' }
+					}
+				}),
+				{ status: 201, headers: { 'Content-Type': 'application/json' } }
+			)
+		);
+
+		const client = createSecretApiClient({
+			baseUrl: 'http://api.local/',
+			fetcher,
+			limits: { payloadInlineMaxBytes: 999, maxFileBytes: 100_000 }
+		});
+
+		await expect(client.createFileSecret(largeFilePayload, 3600)).rejects.toMatchObject({
+			code: 'upload_failed'
+		});
+		// Staged only — no upload attempt, no finalize.
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+
 	it('rejects files above the absolute bound without a network call', async () => {
 		expect.assertions(2);
 
@@ -400,11 +433,10 @@ describe('file secret routing', () => {
 						id: 'large-id',
 						expires_at: '2026-06-17T01:00:00Z',
 						upload: {
-							url: 'https://object-store.local/bucket',
-							method: 'POST',
+							url: 'https://object-store.local/bucket/large-id?X-Amz-Signature=abc',
+							method: 'PUT',
 							expires_at: '2026-06-17T00:10:00Z',
-							fields: { key: 'large-id' },
-							file_field: 'file'
+							headers: { 'Content-Length': '4' }
 						}
 					}),
 					{ status: 201, headers: { 'Content-Type': 'application/json' } }
@@ -442,11 +474,10 @@ describe('file secret routing', () => {
 						id: 'large-id',
 						expires_at: '2026-06-17T01:00:00Z',
 						upload: {
-							url: 'https://object-store.local/bucket',
-							method: 'POST',
+							url: 'https://object-store.local/bucket/large-id?X-Amz-Signature=abc',
+							method: 'PUT',
 							expires_at: '2026-06-17T00:10:00Z',
-							fields: { key: 'large-id' },
-							file_field: 'file'
+							headers: { 'Content-Length': '4' }
 						}
 					}),
 					{ status: 201, headers: { 'Content-Type': 'application/json' } }
