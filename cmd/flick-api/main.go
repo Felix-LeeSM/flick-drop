@@ -122,7 +122,7 @@ func main() {
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
 			PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
-			MaxFileBytes:          cfg.MaxFileBytes,
+			MaxFileBytes:          cfg.EffectiveMaxFileBytes(),
 			AllowedOrigin:         cfg.PublicBaseURL,
 			InternalToken:         cfg.InternalToken,
 			MetricsToken:          cfg.MetricsToken,

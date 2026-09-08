@@ -209,3 +209,32 @@ func TestLoadEnvOverrides(t *testing.T) {
 		}
 	}
 }
+
+// TestEffectiveMaxFileBytes pins the advertised ceiling to what the server can
+// actually store: the inline threshold while large-object storage is off, the
+// configured limit once it is on.
+func TestEffectiveMaxFileBytes(t *testing.T) {
+	cases := []struct {
+		name    string
+		enabled bool
+		inline  int64
+		max     int64
+		want    int64
+	}{
+		{"large storage off clamps to the inline threshold", false, 1048576, 52428800, 1048576},
+		{"large storage on keeps the configured limit", true, 1048576, 52428800, 52428800},
+		{"limit already below the threshold is left alone", false, 1048576, 4096, 4096},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{
+				PayloadInlineMaxBytes: c.inline,
+				MaxFileBytes:          c.max,
+				S3:                    S3Config{Enabled: c.enabled},
+			}
+			if got := cfg.EffectiveMaxFileBytes(); got != c.want {
+				t.Fatalf("EffectiveMaxFileBytes() = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
