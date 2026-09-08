@@ -624,7 +624,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									<span class="text-muted-foreground"> or click to browse</span>
 								</p>
 								<p class="micro text-muted-foreground">
-									Multiple files are zipped into one · up to {formatBytes(limits.maxFileBytes)}
+									<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
+									Multiple files are zipped into one · up to
+									<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
 								</p>
 								<input
 									bind:this={fileInput}
@@ -672,7 +674,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 										Zipping {pickedFiles.length} files…
 									</p>
 								{:else if pickedFiles.length > 1 && selectedFile}
-									<p class="micro text-right text-muted-foreground">
+									<p class="micro text-right normal-case text-muted-foreground">
 										{pickedFiles.length} files → {selectedFile.name} · {formatBytes(selectedFile.size)}
 									</p>
 								{/if}
