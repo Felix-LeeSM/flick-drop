@@ -289,7 +289,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 }
 
 // CreateLarge stages a pending_upload secret backed by S3 and returns a
-// presigned POST so the client uploads the ciphertext straight to the bucket.
+// presigned PUT so the client uploads the ciphertext straight to the bucket.
 // The server never sees the ciphertext. /finalize flips the row to active once
 // the object is confirmed.
 func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ CreateLargeResult, err error) {
@@ -409,8 +409,9 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	defer rollback(tx)
 
 	var state, storageKey, expiresRaw string
-	err = tx.QueryRowContext(ctx, `select state, storage_key, expires_at from secrets where id = ?`, id).
-		Scan(&state, &storageKey, &expiresRaw)
+	var sizeBytes int64
+	err = tx.QueryRowContext(ctx, `select state, storage_key, expires_at, size_bytes from secrets where id = ?`, id).
+		Scan(&state, &storageKey, &expiresRaw, &sizeBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -435,7 +436,11 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if err != nil {
 		return fmt.Errorf("head uploaded object: %w", err)
 	}
-	if !info.Exists || info.Size > s.maxObjectBytes {
+	// The signed Content-Length should already make any other length impossible,
+	// but that is the bucket's promise, not ours. Check the exact length the row
+	// was staged for so activation never depends on a remote store enforcing the
+	// signature the way we expect.
+	if !info.Exists || info.Size != sizeBytes+AEADOverheadBytes {
 		return ErrObjectMissing
 	}
 
@@ -916,8 +921,10 @@ func (s *Store) validateCreateLarge(input CreateLargeInput) error {
 	}
 	// The presigned signature pins the ciphertext length, so a declared size
 	// past the cap has to be refused here — otherwise the client would receive
-	// a signature for an upload the bucket is meant to never accept.
-	if input.SizeBytes+AEADOverheadBytes > s.maxObjectBytes {
+	// a signature for an upload the bucket is meant to never accept. Subtract
+	// rather than add: SizeBytes is attacker-controlled, and MaxInt64 plus the
+	// tag wraps negative and slips through.
+	if input.SizeBytes > s.maxObjectBytes-AEADOverheadBytes {
 		return ErrPayloadTooLarge
 	}
 	if input.TTLSeconds < s.minTTL || input.TTLSeconds > s.maxTTL {

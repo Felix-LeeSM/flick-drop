@@ -276,12 +276,19 @@ async function uploadToObjectStore(
 	// bytes is a fresh Uint8Array over an ArrayBuffer (offset 0), so its backing
 	// buffer carries exactly the signed ciphertext length.
 	const body = bytes.buffer as ArrayBuffer;
+	// Echo every signed header except Content-Length, which is a forbidden
+	// header name — the browser refuses to let us set it and derives it from the
+	// body instead. Any other header the server signs (a checksum, a content
+	// type) has to travel, or the signature stops matching.
+	const headers = Object.fromEntries(
+		Object.entries(upload.headers).filter(([name]) => name.toLowerCase() !== 'content-length')
+	);
 
 	let response: Response;
 	try {
 		// ponytail: fetch can't report upload byte-progress (needs XHR) — signal
 		// gives cancel-only. A progress bar would mean swapping to XMLHttpRequest.
-		response = await fetcher(upload.url, { method: upload.method, body, signal });
+		response = await fetcher(upload.url, { method: upload.method, headers, body, signal });
 	} catch (error) {
 		// A user-triggered abort is not a failure — surface it distinctly so the
 		// caller routes it to the idle path instead of an "Upload failed" error.

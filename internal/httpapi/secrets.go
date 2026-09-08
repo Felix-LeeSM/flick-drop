@@ -125,7 +125,7 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Large payloads omit ciphertext: the client uploads it straight to the
-	// bucket via a presigned POST, then calls /finalize. Small payloads take
+	// bucket via a presigned PUT, then calls /finalize. Small payloads take
 	// the inline path below.
 	if req.Ciphertext == "" {
 		s.createLargeSecret(w, r, req)
@@ -172,7 +172,7 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createLargeSecret stages a pending_upload secret and returns a presigned POST
+// createLargeSecret stages a pending_upload secret and returns a presigned PUT
 // form so the client uploads the ciphertext directly to the bucket.
 func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req createSecretRequest) {
 	var accessProofHash string

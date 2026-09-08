@@ -257,7 +257,7 @@ describe('secret API client', () => {
 });
 
 // 'AAECAw==' decodes to bytes [0,1,2,3] — a real base64 payload so the S3 path
-// can decode the ciphertext into a Blob for the multipart upload.
+// can decode the ciphertext into the raw bytes the PUT body carries.
 const largeFilePayload: EncryptedFilePayload = {
 	...encryptedFilePayload,
 	ciphertext: 'AAECAw==',
@@ -289,7 +289,7 @@ describe('file secret routing', () => {
 	});
 
 	it('takes the S3 path above the inline threshold', async () => {
-		expect.assertions(7);
+		expect.assertions(8);
 
 		const fetcher = vi
 			.fn<typeof fetch>()
@@ -303,7 +303,9 @@ describe('file secret routing', () => {
 							url: 'https://object-store.local/bucket/large-id?X-Amz-Signature=abc',
 							method: 'PUT',
 							expires_at: '2026-06-17T00:10:00Z',
-							headers: { 'Content-Length': '4' }
+							// Content-Length is dropped (forbidden for scripts to set, and the
+							// browser derives it from the body); any other signed header travels.
+							headers: { 'Content-Length': '4', 'x-amz-meta-probe': 'signed' }
 						}
 					}),
 					{ status: 201, headers: { 'Content-Type': 'application/json' } }
@@ -341,6 +343,7 @@ describe('file secret routing', () => {
 		expect(uploadInit?.method).toBe('PUT');
 		expect(uploadInit?.body).toBeInstanceOf(ArrayBuffer);
 		expect((uploadInit?.body as ArrayBuffer).byteLength).toBe(4);
+		expect(uploadInit?.headers).toEqual({ 'x-amz-meta-probe': 'signed' });
 
 		// Finalize call.
 		expect(fetcher.mock.calls[2][0]).toBe('http://api.local/api/secrets/large-id/finalize');
@@ -483,7 +486,7 @@ describe('file secret routing', () => {
 					{ status: 201, headers: { 'Content-Type': 'application/json' } }
 				)
 			)
-			// Object store rejects (e.g. content-length-range exceeded).
+			// Object store rejects (e.g. the signed length did not match).
 			.mockResolvedValueOnce(new Response('<Error>EntityTooLarge</Error>', { status: 413 }));
 
 		const client = createSecretApiClient({

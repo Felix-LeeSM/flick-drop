@@ -2,7 +2,7 @@
 
 // Integration tests run against a real MinIO brought up by `docker compose up
 // minio createbuckets`. Run with: go test -tags integration ./internal/storage/
-// They verify the manual presigned POST signing actually interoperates with an
+// They verify the presigned PUT actually interoperates with an
 // S3-compatible bucket — the one thing unit tests cannot prove.
 
 package storage

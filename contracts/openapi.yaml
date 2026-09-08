@@ -356,7 +356,10 @@ components:
           format: date-time
         headers:
           type: object
-          description: Signed request headers the client must echo verbatim.
+          description: >
+            Signed request headers. The client echoes each one except
+            Content-Length, which browsers forbid setting and derive from the
+            request body — which is exactly the signed value.
           additionalProperties:
             type: string
     FinalizeSecretResponse:
