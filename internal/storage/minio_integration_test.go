@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"testing"
@@ -47,33 +46,15 @@ func nowSuffix(t *testing.T) string {
 	return time.Now().Format("20060102-150405.000000")
 }
 
-// uploadViaPOST mimics the browser: multipart form with policy fields then the
-// file part last, POSTed to the bucket root.
-func uploadViaPOST(t *testing.T, form POSTForm, payload []byte) *http.Response {
+// uploadViaPUT mimics the browser: the raw ciphertext as the request body,
+// with Content-Length exactly as signed.
+func uploadViaPUT(t *testing.T, upload UploadInstruction, payload []byte) *http.Response {
 	t.Helper()
-	body := &bytes.Buffer{}
-	mw := multipart.NewWriter(body)
-	for k, v := range form.Fields {
-		if err := mw.WriteField(k, v); err != nil {
-			t.Fatalf("write field %s: %v", k, err)
-		}
-	}
-	fw, err := mw.CreateFormFile(form.FileField, "ciphertext")
-	if err != nil {
-		t.Fatalf("create file field: %v", err)
-	}
-	if _, err := fw.Write(payload); err != nil {
-		t.Fatalf("write payload: %v", err)
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatalf("close multipart: %v", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, form.URL, body)
+	req, err := http.NewRequest(upload.Method, upload.URL, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.ContentLength = int64(len(payload))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do upload: %v", err)
@@ -87,12 +68,12 @@ func TestMinIORoundTrip(t *testing.T) {
 	key := "it-roundtrip-" + nowSuffix(t)
 	ciphertext := []byte("integration ciphertext payload")
 
-	form, err := c.PresignPOST(ctx, key, 4096, 5*time.Minute)
+	upload, err := c.PresignPUT(ctx, key, int64(len(ciphertext)), 5*time.Minute)
 	if err != nil {
 		t.Fatalf("presign: %v", err)
 	}
 
-	resp := uploadViaPOST(t, form, ciphertext)
+	resp := uploadViaPUT(t, upload, ciphertext)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		b, _ := io.ReadAll(resp.Body)
@@ -128,13 +109,14 @@ func TestMinIORejectsOversized(t *testing.T) {
 	ctx := context.Background()
 	key := "it-oversized-" + nowSuffix(t)
 
-	// policy caps the object at 8 bytes; the client tries to upload 64.
-	form, err := c.PresignPOST(ctx, key, 8, 5*time.Minute)
+	// The signature pins Content-Length to 8; the client tries to upload 64, so
+	// authentication fails and no object lands.
+	upload, err := c.PresignPUT(ctx, key, 8, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("presign: %v", err)
 	}
 
-	resp := uploadViaPOST(t, form, make([]byte, 64))
+	resp := uploadViaPUT(t, upload, make([]byte, 64))
 	defer resp.Body.Close()
 	if resp.StatusCode < 400 {
 		b, _ := io.ReadAll(resp.Body)
