@@ -15,7 +15,7 @@ type configResponse struct {
 func (s Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSON(w, http.StatusOK, configResponse{
-		PayloadInlineMaxBytes: s.payloadInlineMaxBytes,
+		PayloadInlineMaxBytes: s.advertisedInlineMaxBytes,
 		MaxFileBytes:          s.maxFileBytes,
 	})
 }

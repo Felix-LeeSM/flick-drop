@@ -170,15 +170,22 @@ func Load() (Config, error) {
 // plaintext ceiling has to leave room for the tag.
 const aeadOverheadBytes = 16
 
+// EffectivePayloadInlineMaxBytes is the largest plaintext that still fits the
+// inline SQLite path once encrypted. FLICK_PAYLOAD_INLINE_MAX_BYTES bounds the
+// ciphertext, so the plaintext the client may route inline is one tag smaller.
+func (c Config) EffectivePayloadInlineMaxBytes() int64 {
+	return c.PayloadInlineMaxBytes - aeadOverheadBytes
+}
+
 // EffectiveMaxFileBytes is the largest plaintext this deployment will actually
-// accept. With large-object storage disabled the inline SQLite path is the only
-// route, so the ceiling drops to the inline threshold: advertising the full
+// accept. With large-object storage disabled the inline path is the only route,
+// so the ceiling drops to the inline threshold: advertising the full
 // MaxFileBytes there would promise 50 MiB and then answer 413 just past 1 MiB.
 // The S3 path needs no such subtraction — presigning already allows the
 // ciphertext a 4 KiB margin over MaxFileBytes.
 func (c Config) EffectiveMaxFileBytes() int64 {
-	if !c.S3.Enabled && c.MaxFileBytes > c.PayloadInlineMaxBytes-aeadOverheadBytes {
-		return c.PayloadInlineMaxBytes - aeadOverheadBytes
+	if !c.S3.Enabled && c.MaxFileBytes > c.EffectivePayloadInlineMaxBytes() {
+		return c.EffectivePayloadInlineMaxBytes()
 	}
 	return c.MaxFileBytes
 }
