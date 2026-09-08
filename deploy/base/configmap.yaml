@@ -20,6 +20,11 @@ data:
   FLICK_MIN_TTL_SECONDS: "300"
   FLICK_MAX_TTL_SECONDS: "604800"
   FLICK_STORAGE_LARGE_BACKEND: "disabled"
+  # Extra origins appended to the web CSP connect-src. Empty is correct while
+  # the large-object backend is disabled; a deployment that enables it must set
+  # this to the FLICK_S3_ENDPOINT origin so the browser's direct presigned
+  # upload is not blocked.
+  FLICK_CSP_CONNECT_SRC: ""
   FLICK_OPEN_RATE_PER_MIN: "10"
   FLICK_TRUSTED_PROXIES: ""
   FLICK_WORKER_CONCURRENCY: "2"
