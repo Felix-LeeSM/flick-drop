@@ -39,20 +39,20 @@ type createSecretResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-// presignedPOSTResponse hands the client a presigned POST form so it uploads
-// the ciphertext straight to the bucket; the server never sees the bytes.
-type presignedPOSTResponse struct {
+// presignedUploadResponse hands the client a presigned upload so it sends the
+// ciphertext straight to the bucket; the server never sees the bytes. Headers
+// are part of the signature and must be echoed verbatim.
+type presignedUploadResponse struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
 	ExpiresAt string            `json:"expires_at"`
-	Fields    map[string]string `json:"fields"`
-	FileField string            `json:"file_field"`
+	Headers   map[string]string `json:"headers"`
 }
 
 type createSecretLargeResponse struct {
-	ID        string                `json:"id"`
-	ExpiresAt string                `json:"expires_at"`
-	Upload    presignedPOSTResponse `json:"upload"`
+	ID        string                  `json:"id"`
+	ExpiresAt string                  `json:"expires_at"`
+	Upload    presignedUploadResponse `json:"upload"`
 }
 
 type accessRequest struct {
@@ -205,12 +205,11 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 	writeJSON(w, http.StatusCreated, createSecretLargeResponse{
 		ID:        res.ID,
 		ExpiresAt: res.ExpiresAt.Format(timeFormat),
-		Upload: presignedPOSTResponse{
+		Upload: presignedUploadResponse{
 			URL:       res.Upload.URL,
 			Method:    res.Upload.Method,
 			ExpiresAt: res.Upload.ExpiresAt.Format(timeFormat),
-			Fields:    res.Upload.Fields,
-			FileField: res.Upload.FileField,
+			Headers:   res.Upload.Headers,
 		},
 	})
 }

@@ -333,28 +333,32 @@ components:
           format: date-time
         upload:
           allOf:
-            - $ref: "#/components/schemas/PresignedPOST"
-          description: Present only for large secrets (request omitted ciphertext). The client POSTs the ciphertext multipart to `url` with `fields`, then calls /finalize.
-    PresignedPOST:
+            - $ref: "#/components/schemas/PresignedUpload"
+          description: Present only for large secrets (request omitted ciphertext). The client sends the raw ciphertext as the request body to `url`, echoing `headers`, then calls /finalize.
+    PresignedUpload:
       type: object
       additionalProperties: false
-      description: A presigned POST form for uploading ciphertext directly to the object store. The bucket rejects uploads outside the signed content-length-range with 413.
-      required: [url, method, expires_at, fields, file_field]
+      description: >
+        A presigned upload for sending ciphertext directly to the object store.
+        Content-Length is part of the signature and equals size_bytes plus the
+        16-byte AEAD tag, so a body of any other length fails authentication at
+        the bucket and no object lands. PUT rather than POST because Oracle's S3
+        Compatibility API does not implement POST Object.
+      required: [url, method, expires_at, headers]
       properties:
         url:
           type: string
         method:
           type: string
-          enum: [POST]
+          enum: [PUT]
         expires_at:
           type: string
           format: date-time
-        fields:
+        headers:
           type: object
+          description: Signed request headers the client must echo verbatim.
           additionalProperties:
             type: string
-        file_field:
-          type: string
     FinalizeSecretResponse:
       type: object
       additionalProperties: false

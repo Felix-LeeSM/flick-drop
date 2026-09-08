@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,18 +14,21 @@ import (
 
 type mockObjectStore struct {
 	objects map[string][]byte
+	// presignedSize records the length the store asked to be signed, so tests can
+	// assert it matches the declared plaintext plus the AEAD tag.
+	presignedSize int64
 }
 
 func newMockObjectStore() *mockObjectStore {
 	return &mockObjectStore{objects: map[string][]byte{}}
 }
 
-func (m *mockObjectStore) PresignPOST(_ context.Context, _ string, _ int64, _ time.Duration) (storage.POSTForm, error) {
-	return storage.POSTForm{
-		URL:       "http://localhost:9000/flick-dev",
-		Method:    "POST",
-		Fields:    map[string]string{"key": "k"},
-		FileField: "file",
+func (m *mockObjectStore) PresignPUT(_ context.Context, key string, size int64, _ time.Duration) (storage.UploadInstruction, error) {
+	m.presignedSize = size
+	return storage.UploadInstruction{
+		URL:     "http://localhost:9000/flick-dev/" + key,
+		Method:  "PUT",
+		Headers: map[string]string{"Content-Length": strconv.FormatInt(size, 10)},
 	}, nil
 }
 
@@ -350,5 +354,60 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	}
 	if got := secretState(t, ctx, conn, "sec_pending"); got != "active" {
 		t.Fatalf("state = %q, want active", got)
+	}
+}
+
+// The presigned upload pins Content-Length, so the store must ask for exactly
+// the ciphertext length: the declared plaintext plus the AEAD tag. Signing the
+// plaintext length would make every real upload fail authentication.
+func TestCreateLargeSignsCiphertextLength(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock)
+
+	if _, err := store.CreateLarge(ctx, CreateLargeInput{
+		Kind:       KindText,
+		Nonce:      "nonce",
+		SizeBytes:  1000,
+		TTLSeconds: 600,
+	}); err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+
+	if want := int64(1000 + AEADOverheadBytes); mock.presignedSize != want {
+		t.Fatalf("presigned size = %d, want %d", mock.presignedSize, want)
+	}
+}
+
+// A declared size whose ciphertext would exceed the object cap must be refused
+// before signing — otherwise the client gets a signature for an upload the
+// bucket is meant to never accept.
+func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock) // MaxObjectBytes: 4096
+
+	cases := []struct {
+		name    string
+		size    int64
+		wantErr error
+	}{
+		{"exactly at the cap once the tag is added", 4096 - AEADOverheadBytes, nil},
+		{"one byte past the cap", 4096 - AEADOverheadBytes + 1, ErrPayloadTooLarge},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := store.CreateLarge(ctx, CreateLargeInput{
+				Kind:       KindText,
+				Nonce:      "nonce",
+				SizeBytes:  c.size,
+				TTLSeconds: 600,
+			})
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("err = %v, want %v", err, c.wantErr)
+			}
+		})
 	}
 }

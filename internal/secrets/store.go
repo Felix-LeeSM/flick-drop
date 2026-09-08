@@ -55,11 +55,17 @@ type CreateInput struct {
 	MaxViews          int
 }
 
+// AEADOverheadBytes is the AES-GCM authentication tag the browser appends to
+// every ciphertext. The presigned upload signs an exact Content-Length, so the
+// server reconstructs the ciphertext length from the declared plaintext size.
+const AEADOverheadBytes = 16
+
 // CreateLargeInput carries the encryption metadata for a large payload that the
 // server never sees: the client uploads the ciphertext directly to the bucket
-// via a presigned POST, then /finalize activates the secret. The plaintext
-// SizeBytes is informational; the ciphertext cap is the object store's
-// maxObjectBytes, enforced by the POST policy's content-length-range.
+// via a presigned PUT, then /finalize activates the secret. SizeBytes is the
+// plaintext length; the ciphertext is that plus the AEAD tag, and the presigned
+// signature pins exactly that length, so an upload of any other size is
+// rejected by the bucket.
 type CreateLargeInput struct {
 	Kind              string
 	Nonce             string
@@ -76,7 +82,7 @@ type CreateLargeInput struct {
 type CreateLargeResult struct {
 	ID        string
 	ExpiresAt time.Time
-	Upload    storage.POSTForm
+	Upload    storage.UploadInstruction
 }
 
 type Secret struct {
@@ -333,7 +339,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 
 	// Presign first (pure signing, no DB). A failure returns before any row is
 	// inserted, so no orphan pending_upload row is left for a reaper to clean.
-	upload, err := s.objects.PresignPOST(ctx, id, s.maxObjectBytes, s.presignTTL)
+	upload, err := s.objects.PresignPUT(ctx, id, input.SizeBytes+AEADOverheadBytes, s.presignTTL)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
 	}
@@ -907,6 +913,12 @@ func (s *Store) validateCreateLarge(input CreateLargeInput) error {
 	}
 	if input.SizeBytes < 0 {
 		return ErrInvalidInput
+	}
+	// The presigned signature pins the ciphertext length, so a declared size
+	// past the cap has to be refused here — otherwise the client would receive
+	// a signature for an upload the bucket is meant to never accept.
+	if input.SizeBytes+AEADOverheadBytes > s.maxObjectBytes {
+		return ErrPayloadTooLarge
 	}
 	if input.TTLSeconds < s.minTTL || input.TTLSeconds > s.maxTTL {
 		return ErrInvalidInput
