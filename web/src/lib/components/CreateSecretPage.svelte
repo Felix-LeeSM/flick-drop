@@ -90,16 +90,22 @@ onMount(() => {
 	});
 });
 const api = $derived(createSecretApiClient({ limits }));
-const baseModeOptions = [
-	{ type: 'text', label: 'Text', icon: TypeIcon },
-	{ type: 'file', label: 'File', icon: FileUpIcon }
-] as const;
 const credentialIconComponents = {
 	'key-round': KeyRoundIcon,
 	'credit-card': CreditCardIcon,
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
+// One flat list so the expandable type bar renders as a single row of buttons.
+const modeOptions: Array<{ type: CreateMode; label: string; icon: typeof ListPlusIcon }> = [
+	{ type: 'text', label: 'Text', icon: TypeIcon },
+	{ type: 'file', label: 'File', icon: FileUpIcon },
+	...CREDENTIAL_TEMPLATES.map((template) => ({
+		type: template.type,
+		label: template.label,
+		icon: credentialIcon(template.icon)
+	}))
+];
 
 let mode = $state<CreateMode>('text');
 let plaintext = $state('');
@@ -527,6 +533,25 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						<QrCodeIcon class="size-4" aria-hidden="true" />
 						Show QR
 					</Button>
+					<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
+						<LockKeyholeIcon
+							class="mt-0.5 size-4 shrink-0 text-muted-foreground"
+							aria-hidden="true"
+						/>
+						<div class="grid gap-1">
+							{#if usePassphrase}
+								<strong class="text-sm font-medium">Send the passphrase separately.</strong>
+								<p class="text-sm text-muted-foreground">
+									The recipient needs both the link and the passphrase to open this.
+								</p>
+							{:else}
+								<strong class="text-sm font-medium">Share only with your recipient.</strong>
+								<p class="text-sm text-muted-foreground">
+									Anyone with this full link can open it once.
+								</p>
+							{/if}
+						</div>
+					</aside>
 					<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
 						Create another
 					</Button>
@@ -543,49 +568,41 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
-					<div class="grid gap-2.5">
-						<span class="micro text-muted-foreground">type</span>
-						<div class="flex flex-wrap gap-2" role="group" aria-label="Secret type">
-							{#each baseModeOptions as option (option.type)}
-								{@const Icon = option.icon}
-								<Button
-									type="button"
-									variant={mode === option.type ? 'toggleActive' : 'toggle'}
-									size="seg"
-									aria-pressed={mode === option.type}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode(option.type);
-									}}
-								>
-									<Icon class="size-4" />
-									{option.label}
-								</Button>
-							{/each}
-							{#each CREDENTIAL_TEMPLATES as template (template.type)}
-								{@const Icon = credentialIcon(template.icon)}
-								<Button
-									type="button"
-									variant={mode === template.type ? 'toggleActive' : 'toggle'}
-									size="seg"
-									aria-pressed={mode === template.type}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode(template.type);
-									}}
-								>
-									<Icon class="size-4" />
-									{template.label}
-								</Button>
-							{/each}
-						</div>
+					<!-- Expandable action bar: every type stays visible as an icon, and the
+					     labels expand together on hover or keyboard focus. The button's
+					     aria-label carries the name, so the icon and the visual label are
+					     hidden from assistive tech to avoid a doubled announcement. -->
+					<div
+						class="type-bar flex w-fit max-w-full flex-wrap gap-1 rounded-2xl border border-border bg-card p-1.5 md:flex-nowrap md:rounded-full"
+						role="group"
+						aria-label="Secret type"
+					>
+						{#each modeOptions as option (option.type)}
+							{@const Icon = option.icon}
+							<Button
+								type="button"
+								variant={mode === option.type ? 'toggleActive' : 'ghost'}
+								size="seg"
+								class={cn(
+									'gap-0 rounded-full border-transparent px-2.5',
+									mode !== option.type && 'text-muted-foreground'
+								)}
+								aria-label={option.label}
+								aria-pressed={mode === option.type}
+								disabled={isCreating}
+								onclick={() => {
+									switchMode(option.type);
+								}}
+							>
+								<Icon class="size-4" aria-hidden="true" />
+								<span class="type-label" aria-hidden="true">{option.label}</span>
+							</Button>
+						{/each}
 					</div>
 
 					{#if mode === 'text'}
 						<div class="grid gap-2.5">
-							<Label for="secret-text" class="micro font-normal text-muted-foreground">
-								payload
-							</Label>
+							<Label for="secret-text" class="text-sm font-medium">Message</Label>
 							<Textarea
 								id="secret-text"
 								class="min-h-48 resize-y"
@@ -597,7 +614,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						</div>
 					{:else if mode === 'file'}
 						<div class="grid gap-2.5">
-							<span class="micro font-normal text-muted-foreground">payload</span>
+							<span class="text-sm font-medium">Files</span>
 							<!-- Label wraps the input, so a click opens the picker natively and a
 							     drop lands files without any wiring; focus-within surfaces the
 							     visually-hidden input's keyboard focus on the zone. -->
@@ -687,18 +704,17 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						</div>
 					{:else}
 						<div class="grid gap-2.5">
-							<span class="micro text-muted-foreground">{modeLabel(mode)}</span>
+							<span class="text-sm font-medium">{modeLabel(mode)}</span>
 							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
 						</div>
 					{/if}
 
 					<div class="grid gap-2.5">
-						<div class="flex items-center justify-between">
-							<span class="micro text-muted-foreground">passphrase</span>
-						</div>
 						<div class="flex min-h-9 items-center gap-2">
 							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
-							<Label for="use-passphrase" class="text-sm font-medium">Protect with passphrase</Label>
+							<Label for="use-passphrase" class="text-sm font-medium">
+								Protect with a passphrase
+							</Label>
 						</div>
 						{#if usePassphrase}
 							<div class="relative">
@@ -736,6 +752,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									{/if}
 								</Button>
 							</div>
+							<p class="text-sm text-muted-foreground">
+								Your recipient will need this passphrase. Send it separately from the link.
+							</p>
 						{:else}
 							<p class="text-sm text-muted-foreground">
 								Anyone with the link can open this once. The decryption key is embedded in the URL
@@ -745,7 +764,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 					</div>
 
 					<div class="grid gap-2.5">
-						<span class="micro text-muted-foreground">lifetime</span>
+						<span class="text-sm font-medium">Expires after</span>
 						<div class="flex flex-wrap items-center gap-2" role="group" aria-label="Secret lifetime">
 							{#each ttlPresets as option (option.value)}
 								<Button
@@ -855,3 +874,44 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 </main>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />
+
+<style>
+/* Type bar labels. Touch and narrow viewports keep every label visible, so the
+   collapse only applies where a fine pointer can hover the bar and the row has
+   room to stay on one line. */
+.type-label {
+	margin-left: 0.5rem;
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+	.type-label {
+		display: inline-block;
+		max-width: 0;
+		margin-left: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		opacity: 0;
+		filter: blur(3px);
+		transition:
+			max-width 350ms cubic-bezier(0.22, 1, 0.36, 1),
+			margin-left 350ms cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 180ms ease,
+			filter 240ms ease;
+	}
+
+	/* Hover or focus anywhere in the bar expands all labels at once. */
+	.type-bar:hover .type-label,
+	.type-bar:focus-within .type-label {
+		max-width: 5rem;
+		margin-left: 0.5rem;
+		opacity: 1;
+		filter: blur(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.type-label {
+		transition: none;
+	}
+}
+</style>
