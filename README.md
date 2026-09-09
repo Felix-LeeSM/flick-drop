@@ -3,6 +3,8 @@
 Flick is a self-hosted, open-source service for sharing short-lived secrets
 and files through one-time links.
 
+**Live demo:** https://flick.dev-felix.work/
+
 It is designed for people who want a small deployable alternative to sending
 passwords, API keys, private notes, or temporary files through chat, email, or
 long-lived cloud drives. A Flick secret is meant to be created, opened once,
@@ -75,16 +77,41 @@ should verify current limits in their own tenancy before production use.
 as the browser does — the passphrase, the derived key, and the plaintext never
 leave the machine it runs on.
 
+### Install
+
+Prebuilt binaries for macOS, Linux, and Windows are attached to every `cli/v*`
+release, next to a `SHA256SUMS` file. A downloaded binary is something you are
+about to run, so verify it before you do.
+
+```bash
+version=v0.2.0
+platform=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64, windows_amd64
+base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
+
+curl -fsSLO "$base/flick_${version}_${platform}.tar.gz"
+curl -fsSLO "$base/SHA256SUMS"
+shasum -a 256 --ignore-missing -c SHA256SUMS   # sha256sum -c on Linux
+
+tar -xzf "flick_${version}_${platform}.tar.gz"
+sudo install -m 0755 flick /usr/local/bin/flick
+flick version
+```
+
+Or build it from source with Go 1.25 or newer:
+
 ```bash
 go install github.com/Felix-LeeSM/flick-drop/cmd/flick@latest
 ```
 
-Prebuilt binaries for macOS, Linux, and Windows are attached to each `cli/v*`
-release, with a `SHA256SUMS` file to verify a download against.
+A `cli/v*` tag is not a Go module version, so `go install` cannot be pinned to
+one by name; pin it to the release commit instead, which each release names.
+
+### Use
 
 ```bash
-# Point the client at a deployment (or pass -url per command).
-export FLICK_URL=https://flick.example.com
+# Point the client at a deployment (or pass -url per command). The public
+# instance below is the demo; a self-hosted deployment names its own origin.
+export FLICK_URL=https://flick.dev-felix.work
 
 # The key travels in the link fragment; anyone holding the link can open it once.
 flick send "sk-live-example"
@@ -100,8 +127,8 @@ flick send
 
 # Opening consumes the secret. Text goes to stdout, files are saved by their
 # decrypted name; a passphrase is prompted for only when the secret needs one.
-flick open 'https://flick.example.com/s/abc123#key=...'
-flick open https://flick.example.com/s/abc123 > recovered.txt
+flick open 'https://flick.dev-felix.work/s/abc123#key=...'
+flick open https://flick.dev-felix.work/s/abc123 > recovered.txt
 ```
 
 Flags may be written before or after the text or the link, in any order:
@@ -131,7 +158,8 @@ It must not contain:
 - kubeconfig
 - private keys
 - admin tokens
-- production domains
+- production domains, except the public demo instance this README names on
+  purpose so the client has a working example to point at
 - real bucket names
 - SQLite databases
 - PVC dumps
