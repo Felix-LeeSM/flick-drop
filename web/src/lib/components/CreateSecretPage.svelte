@@ -717,6 +717,10 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							</Label>
 						</div>
 						{#if usePassphrase}
+							<!-- The checkbox above carries the only visible passphrase wording, so
+							     the field itself needs its own associated label to have an
+							     accessible name (root AGENTS.md). -->
+							<Label for="secret-passphrase" class="sr-only">Passphrase</Label>
 							<div class="relative">
 								<Input
 									id="secret-passphrase"

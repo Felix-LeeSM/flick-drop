@@ -1,5 +1,11 @@
 # Design prototype handoff — 2026-09-09
 
+> 이 문서는 완료된 작업 기록이다. 아래 본문은 시안을 넘길 때 쓴 원문이고, 이식
+> 결과는 마지막 §구현 결과에 있다. 본문이 가리키는 `web/src/routes/prototype/`과
+> `/tmp` 스크린샷은 저장소에 없다 — 시안 라우트는 데모 링크
+> `https://example.invalid/s/design-preview`를 들고 있어서 일부러 커밋하지 않았다.
+> 확정된 디자인은 `web/src/lib/components/CreateSecretPage.svelte`에서 본다.
+
 ## Goal / 현재 상태
 
 Flick 생성·공유 화면의 디자인 검토를 마쳤다. 사용자가 **2번 Expandable Action Bar**를 최종 선택했다. 다음 작업은 확정 시안을 실제 생성·공유 흐름에 이식하는 것이다.
