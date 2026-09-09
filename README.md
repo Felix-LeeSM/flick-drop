@@ -94,11 +94,19 @@ kubectl get secret db -o jsonpath='{.data.password}' | base64 -d | flick send
 flick send -passphrase -ttl 24h "the database password"
 flick send -file ./credentials.json -ttl 30m
 
+# Or say nothing and be asked for the secret, its lifetime, and whether it
+# needs a passphrase, one at a time. Flags already given are not asked about.
+flick send
+
 # Opening consumes the secret. Text goes to stdout, files are saved by their
 # decrypted name; a passphrase is prompted for only when the secret needs one.
 flick open 'https://flick.example.com/s/abc123#key=...'
 flick open https://flick.example.com/s/abc123 > recovered.txt
 ```
+
+Flags may be written before or after the text or the link, in any order:
+`flick send "db password" -ttl 24h` and `flick send -ttl 24h "db password"` are
+the same command.
 
 `FLICK_PASSPHRASE` replaces the prompt for scripted use. A passphrase is never
 accepted as a flag, because command arguments are visible to every process on

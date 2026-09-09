@@ -245,6 +245,101 @@ func TestUsageNamesBothCommands(t *testing.T) {
 	}
 }
 
+// Running `flick send` with nothing to send used to be a usage error. It now
+// asks, and Enter must keep the default lifetime so the common case stays one
+// keystroke.
+func TestPromptTTLTakesTheDefaultOnAnEmptyLine(t *testing.T) {
+	withStdin(t, "\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != time.Hour {
+				t.Errorf("ttl = %s, want the 1h default", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+	})
+}
+
+func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
+	withStdin(t, "24h\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != 24*time.Hour {
+				t.Errorf("ttl = %s, want 24h", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+	})
+
+	withStdin(t, "tomorrow\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			_, err := promptTTL(time.Hour)
+			return err
+		})
+		if err == nil {
+			t.Error("promptTTL accepted a value that is not a duration")
+		}
+	})
+}
+
+func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
+	for typed, want := range map[string]bool{
+		"y\n": true, "Y\n": true, "yes\n": true,
+		"\n": false, "n\n": false, "sure\n": false,
+	} {
+		withStdin(t, typed, func() {
+			_, _, err := captureOutput(t, func() error {
+				answered, err := promptYesNo("Protect it? [y/N]: ")
+				if answered != want {
+					t.Errorf("promptYesNo(%q) = %v, want %v", typed, answered, want)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatalf("promptYesNo: %v", err)
+			}
+		})
+	}
+}
+
+// readLine must consume exactly one line: the next reader on this terminal is
+// often the passphrase prompt, and a buffered reader would have swallowed it.
+func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
+	withStdin(t, "24h\nthe next answer\n", func() {
+		first, err := readLine()
+		if err != nil {
+			t.Fatalf("readLine: %v", err)
+		}
+		second, err := readLine()
+		if err != nil {
+			t.Fatalf("readLine: %v", err)
+		}
+		if first != "24h" || second != "the next answer" {
+			t.Errorf("lines = %q and %q", first, second)
+		}
+	})
+}
+
+// A flag that was actually typed must not be asked about again.
+func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
+	flags := newSendFlags()
+	if err := flags.Parse([]string{"-ttl", "1h"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !flagGiven(flags, "ttl") {
+		t.Error("a typed -ttl was reported as absent")
+	}
+	if flagGiven(flags, "passphrase") {
+		t.Error("an untouched -passphrase was reported as given")
+	}
+}
+
 // salvage is the last stop for a secret the server has already destroyed: if it
 // does not reach the user here, nothing else will. Text goes to stdout so a
 // redirect still catches it.
