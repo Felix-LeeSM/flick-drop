@@ -42,6 +42,11 @@ type OpenResult struct {
 	// requested name when a collision was avoided. Empty means nothing was
 	// written and the caller owns the payload.
 	WrittenPath string
+	// FilenameUnreadable reports that the secret carried a name that did not
+	// decrypt, as opposed to carrying none. The payload is written either way,
+	// but the two must not look alike to the recipient: the only causes are
+	// corruption and tampering, and that is worth a word on stderr.
+	FilenameUnreadable bool
 }
 
 // ErrWriteAfterConsume marks the one unrecoverable-looking case: the secret was
@@ -121,14 +126,16 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	}
 
 	result := OpenResult{Kind: opened.Kind, Plaintext: plaintext, ContentType: opened.ContentType}
-	if opened.Kind == "file" {
-		result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key)
-		if err != nil {
-			// The body decrypted, so the payload is intact even though its name
-			// is not. The server has already destroyed its copy, so this has to
-			// travel as ErrWriteAfterConsume — the caller keys off that to
-			// surface the plaintext instead of discarding it with the error.
-			return result, fmt.Errorf("%w: decrypt filename: %w", ErrWriteAfterConsume, err)
+	// The name is read only when it decides where the payload lands: with
+	// -output the caller already named the path, and the held handle ignores
+	// the name entirely. Nor is a name that fails an error: encrypted_filename
+	// is optional in contracts/openapi.yaml, the body decrypted, and the server
+	// has destroyed its copy — losing the secret over a missing label is the
+	// worse outcome. writePayload falls back to "flick-file" for an empty name.
+	if opened.Kind == "file" && opts.OutputPath == "" {
+		if result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key); err != nil {
+			result.Filename = ""
+			result.FilenameUnreadable = opened.EncryptedFilename != ""
 		}
 	}
 
