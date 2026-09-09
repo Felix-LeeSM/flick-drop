@@ -1,0 +1,45 @@
+{
+  "access_proof": {
+    "kdf": {
+      "algorithm": "PBKDF2-SHA-256",
+      "iterations": 600000,
+      "key_length_bits": 256,
+      "salt": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+    },
+    "passphrase": "correct horse battery staple",
+    "proof": "0YQ5A9JBREaKIKfKhuYnzcN+F6A68dNrusfXkEClsTw="
+  },
+  "file_model_b": {
+    "ciphertext": "RFO0ehSjM478COCN0rk+rRp5mDRP6QqFk9l0RSs7H3WmPwM3IKfqYRP0TWlJ5w==",
+    "content_type": "application/pdf",
+    "encrypted_filename": "{\"nonce\":\"UFFSU1RVVldYWVpb\",\"ciphertext\":\"x6RAu/Pn/Kq2i5NGXDx5BmYermq7FGHXpUyuEIBqksjncLeV\"}",
+    "filename": "quarterly-report.pdf",
+    "filename_nonce": "UFFSU1RVVldYWVpb",
+    "key": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8=",
+    "nonce": "gIGCg4SFhoeIiYqL",
+    "plaintext": "flick golden vector: file body"
+  },
+  "fragment": {
+    "fragment": "key=cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8",
+    "key": "cHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo8="
+  },
+  "note": "Golden vectors shared by internal/clientcrypto (Go) and web/src/lib/crypto (browser). Salts, nonces, and keys are fixed non-random patterns and the passphrase is a public example — nothing here is a real secret. If a value has to be regenerated, the wire format changed and every existing share link is affected.",
+  "text_model_a": {
+    "ciphertext": "5M+5OnCmWbPE/tiP3L2U+EwSzSWVU31vDKOqsz57BARYBJqNHrLD+agF07np1bTSsQ==",
+    "kdf": {
+      "algorithm": "PBKDF2-SHA-256",
+      "iterations": 600000,
+      "key_length_bits": 256,
+      "salt": "EBESExQVFhcYGRobHB0eHw=="
+    },
+    "nonce": "ICEiIyQlJicoKSor",
+    "passphrase": "correct horse battery staple",
+    "plaintext": "flick golden vector: model A text"
+  },
+  "text_model_b": {
+    "ciphertext": "U4eqg3RUN3YYUVmCHgI78OfJnnJhGWzd5ATeaoHKra0oebVWTzMaEGdv00iwmQ++CQ==",
+    "key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+    "nonce": "ICEiIyQlJicoKSor",
+    "plaintext": "flick golden vector: model B text"
+  }
+}
