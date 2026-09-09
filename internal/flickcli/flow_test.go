@@ -828,6 +828,11 @@ func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
 		"absent":    "",
 	} {
 		t.Run(name, func(t *testing.T) {
+			// A name that was sent and failed is a tampering or corruption
+			// signal; a name that was never sent is not. The two must not look
+			// alike to the caller, which reports one and stays quiet about the
+			// other.
+			wantUnreadable := envelope != ""
 			fake := newFakeFlick(t)
 			dir := t.TempDir()
 
@@ -853,6 +858,9 @@ func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
 			}
 			if want := filepath.Join(dir, "flick-file"); result.WrittenPath != want {
 				t.Errorf("WrittenPath = %q, want the generic %q", result.WrittenPath, want)
+			}
+			if result.FilenameUnreadable != wantUnreadable {
+				t.Errorf("FilenameUnreadable = %v, want %v", result.FilenameUnreadable, wantUnreadable)
 			}
 			written, err := os.ReadFile(result.WrittenPath)
 			if err != nil {

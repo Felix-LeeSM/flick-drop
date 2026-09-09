@@ -288,6 +288,57 @@ func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
 	})
 }
 
+// The secret has already been typed at a prompt that does not echo it, so a
+// mistyped lifetime must be asked again rather than throw the send away.
+func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
+	withStdin(t, "tomorrow\n999h\n24h\n", func() {
+		_, stderr, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != 24*time.Hour {
+				t.Errorf("ttl = %s, want 24h", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+		if !strings.Contains(stderr, "not a duration") {
+			t.Errorf("stderr did not explain the bad duration: %q", stderr)
+		}
+		// 999h parses but exceeds the contract's ceiling. Catching it here
+		// keeps the passphrase prompt from running before the rejection.
+		if !strings.Contains(stderr, "A secret lives between") {
+			t.Errorf("stderr did not reject an out-of-range lifetime: %q", stderr)
+		}
+	})
+}
+
+// Ctrl-D at a prompt means stop. Reading it as an empty line would take the
+// default and send a secret the user was trying not to send.
+func TestPromptsTreatEndOfInputAsACancel(t *testing.T) {
+	withStdin(t, "", func() {
+		_, _, err := captureOutput(t, func() error {
+			_, err := promptTTL(time.Hour)
+			return err
+		})
+		if !errors.Is(err, errCancelled) {
+			t.Errorf("promptTTL at EOF = %v, want a cancel", err)
+		}
+	})
+	withStdin(t, "", func() {
+		_, _, err := captureOutput(t, func() error {
+			answered, err := promptYesNo("Protect it? [y/N]: ")
+			if answered {
+				t.Error("EOF was read as yes")
+			}
+			return err
+		})
+		if !errors.Is(err, errCancelled) {
+			t.Errorf("promptYesNo at EOF = %v, want a cancel", err)
+		}
+	})
+}
+
 func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
 	for typed, want := range map[string]bool{
 		"y\n": true, "Y\n": true, "yes\n": true,

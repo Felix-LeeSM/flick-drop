@@ -42,6 +42,11 @@ type OpenResult struct {
 	// requested name when a collision was avoided. Empty means nothing was
 	// written and the caller owns the payload.
 	WrittenPath string
+	// FilenameUnreadable reports that the secret carried a name that did not
+	// decrypt, as opposed to carrying none. The payload is written either way,
+	// but the two must not look alike to the recipient: the only causes are
+	// corruption and tampering, and that is worth a word on stderr.
+	FilenameUnreadable bool
 }
 
 // ErrWriteAfterConsume marks the one unrecoverable-looking case: the secret was
@@ -128,7 +133,10 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	// has destroyed its copy — losing the secret over a missing label is the
 	// worse outcome. writePayload falls back to "flick-file" for an empty name.
 	if opened.Kind == "file" && opts.OutputPath == "" {
-		result.Filename, _ = clientcrypto.DecryptFilename(opened.EncryptedFilename, key)
+		if result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key); err != nil {
+			result.Filename = ""
+			result.FilenameUnreadable = opened.EncryptedFilename != ""
+		}
 	}
 
 	// A text secret with no -output belongs on the caller's stdout.

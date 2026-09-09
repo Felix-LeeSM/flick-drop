@@ -224,6 +224,12 @@ func runOpen(ctx context.Context, args []string) error {
 	}
 
 	if result.WrittenPath != "" {
+		if result.FilenameUnreadable {
+			// The payload is separately authenticated, so its content is
+			// sound; only the name failed. Saying so is the recipient's one
+			// hint that the metadata was corrupted or tampered with.
+			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
+		}
 		fmt.Fprintf(os.Stderr, "Saved %s\n", result.WrittenPath)
 		return nil
 	}
@@ -307,12 +313,20 @@ func readText(args []string) (string, error) {
 	return text, nil
 }
 
+// errCancelled is Ctrl-D at a prompt: the user asked to stop, so the send is
+// abandoned without an error message that reads like a failure.
+var errCancelled = errors.New("cancelled")
+
 // promptSecretText asks for the payload when `flick send` was run with nothing
 // to send. It is read without echo, like a passphrase: the point of typing a
 // secret at a prompt instead of passing it as an argument is that it stays out
 // of the shell history, and leaving it on screen gives half of that back.
 func promptSecretText() (string, error) {
-	fmt.Fprintln(os.Stderr, "Type or paste the secret and press Enter. It is not echoed.")
+	// One line, and said so: the reader stops at the first newline, so a pasted
+	// PEM key would leave its remaining lines to be eaten by the next prompt.
+	fmt.Fprintln(os.Stderr,
+		"Type or paste the secret on one line and press Enter. It is not echoed.")
+	fmt.Fprintln(os.Stderr, "For anything multi-line, use -file or pipe it in instead.")
 	text, err := promptHidden("Secret: ")
 	if err != nil {
 		return "", err
@@ -325,22 +339,32 @@ func promptSecretText() (string, error) {
 
 // promptTTL asks how long the secret should live. Enter takes the default, so
 // the common case stays one keystroke.
+//
+// A bad answer is asked again rather than returned as an error: the secret has
+// already been typed at a prompt that does not echo it, and aborting here would
+// make the user type it all over again. The contract bounds are checked here
+// too, not left to flickcli.Send, so "999h" is caught before the passphrase
+// prompt rather than after it.
 func promptTTL(fallback time.Duration) (time.Duration, error) {
-	fmt.Fprintf(os.Stderr, "Expires in [%s]: ", fallback)
-	typed, err := readLine()
-	if err != nil {
-		return 0, err
+	for {
+		fmt.Fprintf(os.Stderr, "Expires in [%s]: ", fallback)
+		typed, err := readLine()
+		if err != nil {
+			return 0, err
+		}
+		if typed == "" {
+			return fallback, nil
+		}
+		chosen, err := time.ParseDuration(typed)
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "%q is not a duration like 30m or 24h.\n", typed)
+		case chosen < flickcli.MinTTL || chosen > flickcli.MaxTTL:
+			fmt.Fprintf(os.Stderr, "A secret lives between %s and %s.\n", flickcli.MinTTL, flickcli.MaxTTL)
+		default:
+			return chosen, nil
+		}
 	}
-	if typed == "" {
-		return fallback, nil
-	}
-	// Parsed here, but the contract bounds are checked by flickcli.Send, which
-	// is the same check the flag takes.
-	chosen, err := time.ParseDuration(typed)
-	if err != nil {
-		return 0, fmt.Errorf("%q is not a duration like 30m or 24h", typed)
-	}
-	return chosen, nil
 }
 
 func promptYesNo(label string) (bool, error) {
@@ -357,6 +381,9 @@ func promptYesNo(label string) (bool, error) {
 // pull whatever follows into a buffer this function then throws away, and what
 // follows a prompt here is often the passphrase reader taking the terminal
 // directly.
+//
+// Ctrl-D on an empty line is a cancel, not an empty answer: reading it as
+// "take the default" would send a secret the user was trying not to send.
 func readLine() (string, error) {
 	line := make([]byte, 0, 32)
 	buf := make([]byte, 1)
@@ -369,6 +396,9 @@ func readLine() (string, error) {
 			line = append(line, buf[0])
 		}
 		if errors.Is(err, io.EOF) {
+			if len(line) == 0 {
+				return "", errCancelled
+			}
 			break
 		}
 		if err != nil {
