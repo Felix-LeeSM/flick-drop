@@ -542,6 +542,46 @@ func TestOpenNeverOverwritesAnExistingFile(t *testing.T) {
 	}
 }
 
+// When the write really cannot happen the secret is already consumed, so the
+// error must arrive with the payload attached — cmd/flick keys off
+// ErrWriteAfterConsume to salvage it instead of discarding it.
+func TestOpenReportsTheUnwritablePayloadInsteadOfLosingIt(t *testing.T) {
+	fake := newFakeFlick(t)
+	dir := t.TempDir()
+	// Every name writePayload would try, taken: "notes.txt" and its 99
+	// numbered variants.
+	for attempt := range 100 {
+		taken := filepath.Join(dir, "notes.txt")
+		if attempt > 0 {
+			taken = numberedPath(taken, attempt)
+		}
+		if err := os.WriteFile(taken, []byte("taken"), 0o600); err != nil {
+			t.Fatalf("seed file: %v", err)
+		}
+	}
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName:  "notes.txt",
+		FileBytes: []byte("the secret payload"),
+		TTL:       DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if !errors.Is(err, ErrWriteAfterConsume) {
+		t.Fatalf("err = %v, want it to wrap ErrWriteAfterConsume", err)
+	}
+	if string(result.Plaintext) != "the secret payload" {
+		t.Errorf("payload was lost with the error: %q", result.Plaintext)
+	}
+}
+
 // A Model B link without its fragment cannot be decrypted, so the client must
 // notice before the open consumes the secret.
 func TestOpenWithoutFragmentKeyDoesNotConsumeTheSecret(t *testing.T) {
@@ -778,16 +818,63 @@ func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
 	}
 }
 
-// A malformed encrypted_filename arrives after the open has already consumed
-// the secret. The contract allows the field to be absent, so the client must
-// survive it with the payload rather than discard a secret that no longer
-// exists anywhere else.
-func TestOpenSalvagesThePayloadWhenTheFilenameCannotBeDecrypted(t *testing.T) {
+// A malformed or absent encrypted_filename arrives after the open has already
+// consumed the secret. The contract allows the field to be absent, and the body
+// decrypted fine, so the payload is written under a generic name rather than
+// handed back as an error over a secret that no longer exists anywhere else.
+func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
+	for name, envelope := range map[string]string{
+		"malformed": `{"nonce":"","ciphertext":""}`,
+		"absent":    "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			dir := t.TempDir()
+
+			sent, err := Send(context.Background(), fake.client(), SendOptions{
+				FileName:  "report.pdf",
+				FileBytes: []byte("body survives a broken name"),
+				TTL:       DefaultTTL,
+			})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			fake.mu.Lock()
+			fake.secrets[sent.ID].encryptedFilename = envelope
+			fake.mu.Unlock()
+
+			link, err := ParseShareLink(sent.Link)
+			if err != nil {
+				t.Fatalf("parse link: %v", err)
+			}
+			result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			if want := filepath.Join(dir, "flick-file"); result.WrittenPath != want {
+				t.Errorf("WrittenPath = %q, want the generic %q", result.WrittenPath, want)
+			}
+			written, err := os.ReadFile(result.WrittenPath)
+			if err != nil {
+				t.Fatalf("read written file: %v", err)
+			}
+			if string(written) != "body survives a broken name" {
+				t.Errorf("written payload = %q", written)
+			}
+		})
+	}
+}
+
+// With -output the caller named the path, so the decrypted filename is never
+// used. Reading it anyway made an optional field cost the user an error, an
+// empty file at the path they asked for, and a hunt for the salvaged copy.
+func TestOpenWithOutputPathIgnoresAnUndecryptableFilename(t *testing.T) {
 	fake := newFakeFlick(t)
+	target := filepath.Join(t.TempDir(), "report.pdf")
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
 		FileName:  "report.pdf",
-		FileBytes: []byte("body survives a broken name"),
+		FileBytes: []byte("payload"),
 		TTL:       DefaultTTL,
 	})
 	if err != nil {
@@ -801,15 +888,19 @@ func TestOpenSalvagesThePayloadWhenTheFilenameCannotBeDecrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse link: %v", err)
 	}
-	result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: t.TempDir()})
-	if err == nil {
-		t.Fatal("expected a filename decryption failure")
+	result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target})
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	if !errors.Is(err, ErrWriteAfterConsume) {
-		t.Errorf("err = %v, want it to wrap ErrWriteAfterConsume so the caller surfaces the payload", err)
+	if result.WrittenPath != target {
+		t.Errorf("WrittenPath = %q, want %q", result.WrittenPath, target)
 	}
-	if string(result.Plaintext) != "body survives a broken name" {
-		t.Errorf("payload was lost with the error: %q", result.Plaintext)
+	written, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(written) != "payload" {
+		t.Errorf("written payload = %q", written)
 	}
 }
 

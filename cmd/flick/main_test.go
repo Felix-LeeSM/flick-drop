@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
 
 // newOpenFlags mirrors the flag set runOpen builds, so the hoisting tests
@@ -240,6 +243,148 @@ func TestUsageNamesBothCommands(t *testing.T) {
 			t.Errorf("usage text does not mention %q", needed)
 		}
 	}
+}
+
+// salvage is the last stop for a secret the server has already destroyed: if it
+// does not reach the user here, nothing else will. Text goes to stdout so a
+// redirect still catches it.
+func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
+	dir := t.TempDir()
+	cause := errors.New("disk full")
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, dir, cause)
+	})
+
+	if !errors.Is(err, cause) {
+		t.Errorf("err = %v, want it to carry the cause", err)
+	}
+	if stdout != "sk-live-value" {
+		t.Errorf("stdout = %q, want the payload", stdout)
+	}
+	if !strings.Contains(stderr, "only remaining copy") {
+		t.Errorf("stderr did not warn that this is the last copy: %q", stderr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a text salvage wrote files: %v", entries)
+	}
+}
+
+// Raw file bytes on a terminal are unrecoverable, so a file secret goes to
+// disk — next to where the user asked for it, not into the shared temp
+// directory that nothing clears.
+func TestSalvageWritesAFileSecretBesideTheRequestedOutput(t *testing.T) {
+	dir := t.TempDir()
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, dir, errors.New("disk full"))
+	})
+
+	if err == nil {
+		t.Fatal("salvage reported success for a secret that could not be written")
+	}
+	if stdout != "" {
+		t.Errorf("file bytes were dumped on stdout: %q", stdout)
+	}
+	rescued := rescuedPath(t, stderr)
+	if filepath.Dir(rescued) != dir {
+		t.Errorf("rescued file = %s, want it inside %s", rescued, dir)
+	}
+	written, readErr := os.ReadFile(rescued)
+	if readErr != nil {
+		t.Fatalf("read rescued file: %v", readErr)
+	}
+	if string(written) != "binary payload" {
+		t.Errorf("rescued payload = %q", written)
+	}
+	info, statErr := os.Stat(rescued)
+	if statErr != nil {
+		t.Fatalf("stat rescued file: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("rescued file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// An unusable output directory is the likeliest reason the write failed in the
+// first place, so it must not take the payload down with it.
+func TestSalvageFallsBackToTheTempDirectoryWhenTheOutputDirectoryIsUnusable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, missing, errors.New("disk full"))
+	})
+
+	if err == nil {
+		t.Fatal("salvage reported success for a secret that could not be written")
+	}
+	rescued := rescuedPath(t, stderr)
+	t.Cleanup(func() { os.Remove(rescued) })
+	written, readErr := os.ReadFile(rescued)
+	if readErr != nil {
+		t.Fatalf("read rescued file: %v", readErr)
+	}
+	if string(written) != "binary payload" {
+		t.Errorf("rescued payload = %q", written)
+	}
+}
+
+func TestRescueDirPrefersTheDirectoryOfTheRequestedOutput(t *testing.T) {
+	if got := rescueDir(filepath.Join("out", "secret.txt"), "."); got != "out" {
+		t.Errorf("rescueDir with -output = %q, want out", got)
+	}
+	if got := rescueDir("", "downloads"); got != "downloads" {
+		t.Errorf("rescueDir without -output = %q, want downloads", got)
+	}
+}
+
+// rescuedPath reads back the path salvage announced on stderr, which is the
+// only way the user learns where their secret went.
+func rescuedPath(t *testing.T, stderr string) string {
+	t.Helper()
+	_, after, found := strings.Cut(stderr, "Payload written to ")
+	if !found {
+		t.Fatalf("stderr never named the rescue file: %q", stderr)
+	}
+	path, _, found := strings.Cut(after, " —")
+	if !found {
+		t.Fatalf("stderr did not terminate the rescue path: %q", stderr)
+	}
+	return path
+}
+
+// captureOutput redirects os.Stdout and os.Stderr into files for the duration
+// of body, so the payload salvage prints can be asserted on.
+func captureOutput(t *testing.T, body func() error) (stdout, stderr string, err error) {
+	t.Helper()
+	dir := t.TempDir()
+	outFile, stdoutErr := os.Create(filepath.Join(dir, "stdout"))
+	errFile, stderrErr := os.Create(filepath.Join(dir, "stderr"))
+	if stdoutErr != nil || stderrErr != nil {
+		t.Fatalf("create capture files: %v %v", stdoutErr, stderrErr)
+	}
+	defer outFile.Close()
+	defer errFile.Close()
+
+	originalOut, originalErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outFile, errFile
+	err = body()
+	os.Stdout, os.Stderr = originalOut, originalErr
+
+	return readFile(t, outFile.Name()), readFile(t, errFile.Name()), err
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
 }
 
 // withStdin swaps os.Stdin for a pipe holding the given content, so readText

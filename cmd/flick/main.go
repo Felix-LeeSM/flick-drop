@@ -188,7 +188,7 @@ func runOpen(ctx context.Context, args []string) error {
 		OutputDir:  *outputDir,
 	})
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
-		return salvage(result, err)
+		return salvage(result, rescueDir(*output, *outputDir), err)
 	}
 	if err != nil {
 		return err
@@ -213,9 +213,9 @@ func runOpen(ctx context.Context, args []string) error {
 // exist, so it is put somewhere the user can still reach.
 //
 // Text goes to stdout. A file secret does not: raw bytes written to a terminal
-// are effectively unrecoverable, so it goes to a temp file whose path is named
-// on stderr.
-func salvage(result flickcli.OpenResult, cause error) error {
+// are effectively unrecoverable, so it goes to a file next to the destination
+// the user asked for, whose path is named on stderr.
+func salvage(result flickcli.OpenResult, dir string, cause error) error {
 	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
 	fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
 
@@ -227,7 +227,13 @@ func salvage(result flickcli.OpenResult, cause error) error {
 		return cause
 	}
 
-	rescued, err := os.CreateTemp("", "flick-rescued-*")
+	rescued, err := os.CreateTemp(dir, "flick-rescued-*")
+	if err != nil && dir != "" {
+		// That directory is a likely reason the write failed in the first
+		// place, so the shared temp directory is the last resort rather than
+		// the default: it is where a plaintext lingers longest unnoticed.
+		rescued, err = os.CreateTemp("", "flick-rescued-*")
+	}
 	if err != nil {
 		return fmt.Errorf("%w (and no rescue file could be created: %w)", cause, err)
 	}
@@ -237,6 +243,16 @@ func salvage(result flickcli.OpenResult, cause error) error {
 	}
 	fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", rescued.Name())
 	return cause
+}
+
+// rescueDir names where a salvaged payload should land: beside the file the
+// user asked for. os.TempDir() is a poor home for a plaintext — many systems
+// do not clear it promptly, and nothing here removes the file.
+func rescueDir(output, outputDir string) string {
+	if output != "" {
+		return filepath.Dir(output)
+	}
+	return outputDir
 }
 
 // readText takes the payload from the argument, or from stdin when none is
