@@ -83,9 +83,12 @@ Prebuilt binaries for macOS, Linux, and Windows are attached to every `cli/v*`
 release, next to a `SHA256SUMS` file. A downloaded binary is something you are
 about to run, so verify it before you do.
 
+On macOS and Linux — set `version` to the latest
+[release](https://github.com/Felix-LeeSM/flick-drop/releases):
+
 ```bash
 version=v0.2.0
-platform=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64, windows_amd64
+platform=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
 base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
 
 curl -fsSLO "$base/flick_${version}_${platform}.tar.gz"
@@ -96,6 +99,11 @@ tar -xzf "flick_${version}_${platform}.tar.gz"
 sudo install -m 0755 flick /usr/local/bin/flick
 flick version
 ```
+
+On Windows, download `flick_<version>_windows_amd64.tar.gz` and `SHA256SUMS`
+from the same release, check the archive with
+`Get-FileHash flick_<version>_windows_amd64.tar.gz -Algorithm SHA256` against
+its line in `SHA256SUMS`, then extract `flick.exe` somewhere on `PATH`.
 
 Or build it from source with Go 1.25 or newer:
 

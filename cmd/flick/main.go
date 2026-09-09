@@ -472,8 +472,14 @@ func promptHidden(label string) (string, error) {
 	fmt.Fprint(os.Stderr, label)
 	typed, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
+	if errors.Is(err, io.EOF) {
+		// Ctrl-D here means the same thing it means at every other prompt.
+		// ReadPassword reports it as a read error, which would otherwise
+		// surface as a failure the user did not have.
+		return "", errCancelled
+	}
 	if err != nil {
-		return "", fmt.Errorf("could not read the passphrase: %w", err)
+		return "", fmt.Errorf("could not read that: %w", err)
 	}
 	return string(typed), nil
 }
