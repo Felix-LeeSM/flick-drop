@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -774,5 +775,65 @@ func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// A malformed encrypted_filename arrives after the open has already consumed
+// the secret. The contract allows the field to be absent, so the client must
+// survive it with the payload rather than discard a secret that no longer
+// exists anywhere else.
+func TestOpenSalvagesThePayloadWhenTheFilenameCannotBeDecrypted(t *testing.T) {
+	fake := newFakeFlick(t)
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName:  "report.pdf",
+		FileBytes: []byte("body survives a broken name"),
+		TTL:       DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	fake.mu.Lock()
+	fake.secrets[sent.ID].encryptedFilename = `{"nonce":"","ciphertext":""}`
+	fake.mu.Unlock()
+
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected a filename decryption failure")
+	}
+	if !errors.Is(err, ErrWriteAfterConsume) {
+		t.Errorf("err = %v, want it to wrap ErrWriteAfterConsume so the caller surfaces the payload", err)
+	}
+	if string(result.Plaintext) != "body survives a broken name" {
+		t.Errorf("payload was lost with the error: %q", result.Plaintext)
+	}
+}
+
+// A decryption failure after the open must not leave the reserved -output path
+// behind as an empty file where the user asked for a secret.
+func TestOpenRemovesTheReservedFileWhenDecryptionFails(t *testing.T) {
+	fake := newFakeFlick(t)
+	target := filepath.Join(t.TempDir(), "secret.txt")
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	// A link whose fragment key is not the key the payload was sealed with.
+	link.Key = make([]byte, clientcrypto.RawKeyBytes)
+
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target}); err == nil {
+		t.Fatal("expected decryption to fail with the wrong key")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("a failed decryption left %s behind", target)
 	}
 }

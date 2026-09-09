@@ -20,8 +20,13 @@ import {
 	encryptFileWithKey,
 	encryptText,
 	encryptTextWithKey,
+	generateSecretKey,
 	importAesGcmKey,
-	type KdfParams
+	KDF_ITERATIONS,
+	type KdfParams,
+	NONCE_BYTES,
+	RAW_KEY_BYTES,
+	SALT_BYTES
 } from './text';
 
 type Vectors = {
@@ -141,5 +146,30 @@ describe('golden vectors shared with the Go client', () => {
 
 		expect(encodeKeyFragment(raw)).toBe(v.fragment);
 		expect(decodeKeyFragment(`#${v.fragment}`)).toEqual(raw);
+	});
+
+	// Every vector supplies its own salt and nonce, so the fixture pins how
+	// those bytes are used but not how many are generated. A one-sided change
+	// to the salt or nonce size would leave both suites green and surface only
+	// as an AEAD tag mismatch between clients, so the sizes are asserted here
+	// and in internal/clientcrypto/vectors_test.go.
+	it('pins the salt, nonce, and key sizes the generators must produce', async () => {
+		expect(base64ToBytes(vectors.text_model_a.kdf.salt)).toHaveLength(SALT_BYTES);
+		expect(base64ToBytes(vectors.access_proof.kdf.salt)).toHaveLength(SALT_BYTES);
+		expect(base64ToBytes(vectors.text_model_a.nonce)).toHaveLength(NONCE_BYTES);
+		expect(base64ToBytes(vectors.text_model_b.nonce)).toHaveLength(NONCE_BYTES);
+		expect(base64ToBytes(vectors.file_model_b.nonce)).toHaveLength(NONCE_BYTES);
+		expect(base64ToBytes(vectors.file_model_b.filename_nonce)).toHaveLength(NONCE_BYTES);
+		expect(base64ToBytes(vectors.text_model_b.key)).toHaveLength(RAW_KEY_BYTES);
+		expect(base64ToBytes(vectors.fragment.key)).toHaveLength(RAW_KEY_BYTES);
+
+		// The half the fixture cannot see: what the generators actually emit.
+		const encrypted = await encryptText('x', 'passphrase');
+		expect(base64ToBytes(encrypted.kdf.salt)).toHaveLength(SALT_BYTES);
+		expect(base64ToBytes(encrypted.nonce)).toHaveLength(NONCE_BYTES);
+		expect(encrypted.kdf.iterations).toBe(KDF_ITERATIONS);
+
+		const { raw } = await generateSecretKey();
+		expect(raw).toHaveLength(RAW_KEY_BYTES);
 	});
 });

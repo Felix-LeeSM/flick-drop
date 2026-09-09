@@ -107,21 +107,28 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		// the metadata probe: the two salts are independent, and only the
 		// payload's block describes the encryption key.
 		if key, err = clientcrypto.KeyFromPayload(opened.Payload(), passphrase); err != nil {
+			reserved.discard()
 			return OpenResult{}, err
 		}
 	}
 
 	plaintext, err := clientcrypto.Decrypt(opened.Payload(), key)
 	if err != nil {
+		// Nothing was recovered, so the reserved path must not be left behind
+		// as an empty file where the user asked for a secret.
+		reserved.discard()
 		return OpenResult{}, err
 	}
 
 	result := OpenResult{Kind: opened.Kind, Plaintext: plaintext, ContentType: opened.ContentType}
 	if opened.Kind == "file" {
-		if result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key); err != nil {
-			// The body decrypted, so the payload is intact and worth returning
-			// even though its name is not.
-			return result, fmt.Errorf("decrypt filename: %w", err)
+		result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key)
+		if err != nil {
+			// The body decrypted, so the payload is intact even though its name
+			// is not. The server has already destroyed its copy, so this has to
+			// travel as ErrWriteAfterConsume — the caller keys off that to
+			// surface the plaintext instead of discarding it with the error.
+			return result, fmt.Errorf("%w: decrypt filename: %w", ErrWriteAfterConsume, err)
 		}
 	}
 

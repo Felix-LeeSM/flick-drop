@@ -188,15 +188,7 @@ func runOpen(ctx context.Context, args []string) error {
 		OutputDir:  *outputDir,
 	})
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
-		// The server has already destroyed its copy, so the payload in hand is
-		// the only one left. Dumping it to stdout is ugly next to an error, and
-		// still better than being the reason a secret ceased to exist.
-		fmt.Fprintf(os.Stderr, "flick: %v\n", err)
-		fmt.Fprintln(os.Stderr, "The secret is gone from the server. Its contents follow on stdout — save them now.")
-		if _, writeErr := os.Stdout.Write(result.Plaintext); writeErr != nil {
-			return writeErr
-		}
-		return err
+		return salvage(result, err)
 	}
 	if err != nil {
 		return err
@@ -213,6 +205,38 @@ func runOpen(ctx context.Context, args []string) error {
 		fmt.Println()
 	}
 	return err
+}
+
+// salvage handles the one case where the secret no longer exists anywhere but
+// this process: the server consumed it and the local write failed afterwards.
+// Losing the payload here would make the client the reason a secret ceased to
+// exist, so it is put somewhere the user can still reach.
+//
+// Text goes to stdout. A file secret does not: raw bytes written to a terminal
+// are effectively unrecoverable, so it goes to a temp file whose path is named
+// on stderr.
+func salvage(result flickcli.OpenResult, cause error) error {
+	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
+	fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
+
+	if result.Kind != "file" {
+		fmt.Fprintln(os.Stderr, "Its contents follow on stdout — save them now.")
+		if _, err := os.Stdout.Write(result.Plaintext); err != nil {
+			return fmt.Errorf("%w (and the payload could not be printed: %w)", cause, err)
+		}
+		return cause
+	}
+
+	rescued, err := os.CreateTemp("", "flick-rescued-*")
+	if err != nil {
+		return fmt.Errorf("%w (and no rescue file could be created: %w)", cause, err)
+	}
+	defer rescued.Close()
+	if _, err := rescued.Write(result.Plaintext); err != nil {
+		return fmt.Errorf("%w (and the rescue file could not be written: %w)", cause, err)
+	}
+	fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", rescued.Name())
+	return cause
 }
 
 // readText takes the payload from the argument, or from stdin when none is

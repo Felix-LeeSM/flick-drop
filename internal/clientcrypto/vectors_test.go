@@ -195,3 +195,59 @@ func TestGoldenVectorFragment(t *testing.T) {
 		t.Errorf("decoded fragment key = %s, want %s", base64.StdEncoding.EncodeToString(decoded), v.Key)
 	}
 }
+
+// Every vector supplies its own salt and nonce, so the fixture pins how those
+// bytes are used but not how many are generated. A one-sided change to
+// SaltBytes or NonceBytes would leave both suites green and only surface as an
+// AEAD tag mismatch between clients, so the lengths are asserted directly.
+func TestGoldenVectorPinsSaltAndNonceLengths(t *testing.T) {
+	v := loadVectors(t)
+
+	lengths := map[string]struct {
+		value string
+		want  int
+	}{
+		"model A KDF salt":    {v.TextModelA.KDF.Salt, SaltBytes},
+		"access KDF salt":     {v.AccessProof.KDF.Salt, SaltBytes},
+		"model A nonce":       {v.TextModelA.Nonce, NonceBytes},
+		"model B nonce":       {v.TextModelB.Nonce, NonceBytes},
+		"model B key":         {v.TextModelB.Key, RawKeyBytes},
+		"file body nonce":     {v.FileModelB.Nonce, NonceBytes},
+		"file filename nonce": {v.FileModelB.FilenameNonce, NonceBytes},
+		"file key":            {v.FileModelB.Key, RawKeyBytes},
+		"fragment key":        {v.Fragment.Key, RawKeyBytes},
+	}
+	for name, check := range lengths {
+		if got := len(decodeBase64(t, name, check.value)); got != check.want {
+			t.Errorf("%s is %d bytes, want %d", name, got, check.want)
+		}
+	}
+
+	// The generators must produce those same lengths, which is the half the
+	// fixture cannot see.
+	_, kdf, err := NewKDF("passphrase")
+	if err != nil {
+		t.Fatalf("NewKDF: %v", err)
+	}
+	if got := len(decodeBase64(t, "generated salt", kdf.Salt)); got != SaltBytes {
+		t.Errorf("NewKDF salt is %d bytes, want %d", got, SaltBytes)
+	}
+	if kdf.Iterations != KDFIterations {
+		t.Errorf("NewKDF iterations = %d, want %d", kdf.Iterations, KDFIterations)
+	}
+
+	key, err := NewRandomKey()
+	if err != nil {
+		t.Fatalf("NewRandomKey: %v", err)
+	}
+	if len(key) != RawKeyBytes {
+		t.Errorf("NewRandomKey produced %d bytes, want %d", len(key), RawKeyBytes)
+	}
+	payload, err := Encrypt([]byte("x"), key, KDFParams{})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if got := len(decodeBase64(t, "generated nonce", payload.Nonce)); got != NonceBytes {
+		t.Errorf("Encrypt nonce is %d bytes, want %d", got, NonceBytes)
+	}
+}
