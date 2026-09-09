@@ -629,3 +629,150 @@ func TestSendRejectsTTLOutsideTheContractBounds(t *testing.T) {
 		})
 	}
 }
+
+// -output must not truncate an existing file. The old path used os.WriteFile,
+// so opening a text secret into an existing name destroyed it — and if that
+// write then failed, the secret was gone from the server too.
+func TestOpenWithOutputPathNeverTruncatesAnExistingFile(t *testing.T) {
+	fake := newFakeFlick(t)
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(existing, []byte("do not clobber"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: existing}); err == nil {
+		t.Fatal("expected an error rather than an overwrite")
+	}
+
+	untouched, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("read seeded file: %v", err)
+	}
+	if string(untouched) != "do not clobber" {
+		t.Error("the existing file was overwritten")
+	}
+
+	// Refused before the consuming call, so the secret still exists.
+	fake.mu.Lock()
+	openCalls := fake.openCalls
+	fake.mu.Unlock()
+	if openCalls != 0 {
+		t.Errorf("open endpoint was called %d times; the secret was burned for nothing", openCalls)
+	}
+}
+
+// An unusable output directory must be caught before the open, not after: the
+// secret is destroyed by the open, and a typo in -output-dir would otherwise
+// take the payload with it.
+func TestOpenChecksTheOutputDirectoryBeforeConsuming(t *testing.T) {
+	fake := newFakeFlick(t)
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName:  "report.pdf",
+		FileBytes: []byte("payload"),
+		TTL:       DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "no-such-directory")
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: missing}); err == nil {
+		t.Fatal("expected an error for a missing output directory")
+	}
+
+	fake.mu.Lock()
+	openCalls := fake.openCalls
+	fake.mu.Unlock()
+	if openCalls != 0 {
+		t.Errorf("open endpoint was called %d times before the directory check", openCalls)
+	}
+
+	// The secret survived, so a corrected directory still works.
+	dir := t.TempDir()
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("open after fixing the directory: %v", err)
+	}
+	if filepath.Dir(opened.WrittenPath) != dir {
+		t.Errorf("wrote to %s, want a file under %s", opened.WrittenPath, dir)
+	}
+}
+
+// A refused open must not leave the empty file that reserving the path created.
+func TestOpenRemovesTheReservedFileWhenTheOpenFails(t *testing.T) {
+	fake := newFakeFlick(t)
+	target := filepath.Join(t.TempDir(), "secret.txt")
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	// Consume it once so the second open is refused after the path is reserved.
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link}); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target}); err == nil {
+		t.Fatal("a consumed secret opened a second time")
+	}
+
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("a failed open left %s behind", target)
+	}
+}
+
+func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
+	fake := newFakeFlick(t)
+	target := filepath.Join(t.TempDir(), "secret.txt")
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "written payload", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if opened.WrittenPath != target {
+		t.Errorf("WrittenPath = %q, want %q", opened.WrittenPath, target)
+	}
+	written, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(written) != "written payload" {
+		t.Errorf("written payload = %q", written)
+	}
+	// A secret on disk must not be world-readable.
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}

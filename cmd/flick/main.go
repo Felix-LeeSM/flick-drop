@@ -43,6 +43,9 @@ Usage:
 
 Run "flick <command> -h" for the flags of a command.
 
+Text that begins with a dash needs "--" first, or it is read as a flag:
+  flick send -- -----BEGIN...
+
 Environment:
   FLICK_URL           Default deployment URL (overridden by -url)
   FLICK_PASSPHRASE    Passphrase for non-interactive use, instead of a prompt
@@ -184,17 +187,24 @@ func runOpen(ctx context.Context, args []string) error {
 		OutputPath: *output,
 		OutputDir:  *outputDir,
 	})
+	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		// The server has already destroyed its copy, so the payload in hand is
+		// the only one left. Dumping it to stdout is ugly next to an error, and
+		// still better than being the reason a secret ceased to exist.
+		fmt.Fprintf(os.Stderr, "flick: %v\n", err)
+		fmt.Fprintln(os.Stderr, "The secret is gone from the server. Its contents follow on stdout — save them now.")
+		if _, writeErr := os.Stdout.Write(result.Plaintext); writeErr != nil {
+			return writeErr
+		}
+		return err
+	}
 	if err != nil {
 		return err
 	}
 
-	if result.Kind == "file" {
-		fmt.Fprintf(os.Stderr, "Saved %s (%s)\n", result.WrittenPath, result.ContentType)
+	if result.WrittenPath != "" {
+		fmt.Fprintf(os.Stderr, "Saved %s\n", result.WrittenPath)
 		return nil
-	}
-	if *output != "" {
-		// 0600: a secret written to disk should not be world-readable.
-		return os.WriteFile(*output, result.Plaintext, 0o600)
 	}
 	_, err = os.Stdout.Write(result.Plaintext)
 	if err == nil && !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
@@ -302,8 +312,11 @@ func hoistFlags(flags *flag.FlagSet, args []string) []string {
 		arg := args[i]
 		if arg == "--" {
 			// Everything after "--" is positional by convention, including
-			// text that begins with a dash.
-			positional = append(positional, args[i+1:]...)
+			// text that begins with a dash. The terminator itself is re-emitted
+			// ahead of those arguments so the flag package still honours it —
+			// dropping it would hand "-my-secret" back to Parse as a flag,
+			// which is exactly what the escape hatch exists to prevent.
+			positional = append(positional, args[i:]...)
 			break
 		}
 		if len(arg) < 2 || !strings.HasPrefix(arg, "-") {

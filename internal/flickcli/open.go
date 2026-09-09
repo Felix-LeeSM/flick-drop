@@ -22,34 +22,42 @@ type OpenOptions struct {
 	// Passphrase is called only for Model A secrets, after the metadata probe
 	// and before the consuming open.
 	Passphrase PassphraseFunc
-	// OutputPath writes the payload to this exact path. Empty means text goes
-	// to the caller's stdout and a file is written under its decrypted name in
-	// OutputDir.
+	// OutputPath writes the payload to this exact path, for a text or a file
+	// secret alike. Empty means text goes to the caller's stdout and a file is
+	// written under its decrypted name in OutputDir.
 	OutputPath string
 	// OutputDir is where a file secret lands when OutputPath is empty.
 	OutputDir string
 }
 
-// OpenResult reports what was recovered. Text secrets carry Plaintext; file
-// secrets carry Filename and WrittenPath.
+// OpenResult reports what was recovered. Plaintext is always populated, even
+// when writing it out failed, so a caller can still salvage a payload the
+// server has already destroyed.
 type OpenResult struct {
 	Kind        string
 	Plaintext   []byte
 	Filename    string
 	ContentType string
 	// WrittenPath is the file actually written, which may differ from the
-	// requested name when a collision was avoided.
+	// requested name when a collision was avoided. Empty means nothing was
+	// written and the caller owns the payload.
 	WrittenPath string
 }
 
+// ErrWriteAfterConsume marks the one unrecoverable-looking case: the secret was
+// consumed on the server and then could not be written locally. The payload is
+// still in the returned OpenResult.Plaintext, and the caller must surface it
+// rather than discard it — the server has no second copy.
+var ErrWriteAfterConsume = errors.New("secret was opened and consumed but could not be written")
+
 // Open consumes the secret and decrypts it locally.
 //
-// Order matters and is not incidental: the metadata probe and the passphrase
-// prompt both happen before the consuming open, so an abandoned prompt or a
-// missing key costs nothing. Once OpenSecret returns, the payload exists only
-// in this process — a failure after that point loses the secret for good, which
-// is why the result is decrypted and returned rather than streamed straight to
-// a file handle that might not open.
+// Order matters and is not incidental. Everything that can fail is done before
+// the consuming open: the metadata probe, the passphrase prompt, the check that
+// a link-key secret actually carries its key, and — because a secret destroyed
+// on the server and then dropped on the floor locally is the worst outcome this
+// client has — reserving the output destination. Once OpenSecret returns, the
+// payload exists only in this process.
 func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, error) {
 	if opts.Link.ID == "" {
 		return OpenResult{}, errors.New("no secret ID to open")
@@ -78,8 +86,18 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		)
 	}
 
+	// Reserved before the open, not after: a missing directory, a name already
+	// taken, or a read-only volume must cost nothing. Discarded if the open
+	// itself fails, so a refused open leaves no empty file behind.
+	reserved, err := reserveDestination(opts, metadata.Kind)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	defer reserved.close()
+
 	opened, err := client.OpenSecret(ctx, opts.Link.ID, accessProof)
 	if err != nil {
+		reserved.discard()
 		return OpenResult{}, err
 	}
 
@@ -99,31 +117,113 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	}
 
 	result := OpenResult{Kind: opened.Kind, Plaintext: plaintext, ContentType: opened.ContentType}
-	if opened.Kind != "file" {
+	if opened.Kind == "file" {
+		if result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key); err != nil {
+			// The body decrypted, so the payload is intact and worth returning
+			// even though its name is not.
+			return result, fmt.Errorf("decrypt filename: %w", err)
+		}
+	}
+
+	// A text secret with no -output belongs on the caller's stdout.
+	if opts.OutputPath == "" && opened.Kind != "file" {
 		return result, nil
 	}
 
-	if result.Filename, err = clientcrypto.DecryptFilename(opened.EncryptedFilename, key); err != nil {
-		return result, fmt.Errorf("decrypt filename: %w", err)
-	}
-	if result.WrittenPath, err = writePayload(opts, result.Filename, plaintext); err != nil {
-		// The secret is already consumed at this point, so the error names the
-		// payload as still recoverable from the process output rather than
-		// implying it can be fetched again.
-		return result, fmt.Errorf("secret was opened and consumed but could not be written: %w", err)
+	result.WrittenPath, err = reserved.write(opts, result.Filename, plaintext)
+	if err != nil {
+		return result, fmt.Errorf("%w: %w", ErrWriteAfterConsume, err)
 	}
 	return result, nil
 }
 
-// writePayload writes a file secret without ever overwriting an existing file.
-// The filename comes from the sender, so it is reduced to its base name first:
-// a payload named "../../.ssh/authorized_keys" must land in the output
-// directory as "authorized_keys", not escape it.
-func writePayload(opts OpenOptions, filename string, payload []byte) (string, error) {
-	target := opts.OutputPath
-	if target == "" {
-		target = filepath.Join(opts.OutputDir, safeFilename(filename))
+// destination is an output path claimed before the secret is consumed. For an
+// explicit -output it holds an open, exclusively created file; for a file
+// secret written under its decrypted name it holds only a checked directory,
+// since the name is not known until after decryption.
+type destination struct {
+	file *os.File
+	path string
+}
+
+func (d *destination) close() {
+	if d.file != nil {
+		d.file.Close()
 	}
+}
+
+// discard removes a reserved file that will never be written, so a refused open
+// does not leave an empty file where the user asked for a secret.
+func (d *destination) discard() {
+	if d.file != nil {
+		d.file.Close()
+		d.file = nil
+		os.Remove(d.path)
+	}
+}
+
+func (d *destination) write(opts OpenOptions, filename string, payload []byte) (string, error) {
+	if d.file != nil {
+		if _, err := d.file.Write(payload); err != nil {
+			return "", err
+		}
+		return d.path, d.file.Sync()
+	}
+	return writePayload(opts, filename, payload)
+}
+
+// reserveDestination claims the output before anything destructive happens.
+func reserveDestination(opts OpenOptions, kind string) (*destination, error) {
+	if opts.OutputPath != "" {
+		// O_EXCL: an explicit -output is the caller's stated path, so a
+		// collision is an error rather than a silent overwrite. Truncating here
+		// would destroy a local file to make room for the secret.
+		file, err := os.OpenFile(opts.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return nil, fmt.Errorf("%s already exists", opts.OutputPath)
+			}
+			return nil, err
+		}
+		return &destination{file: file, path: opts.OutputPath}, nil
+	}
+	if kind != "file" {
+		return &destination{}, nil
+	}
+	// The filename is only known after decryption, so the directory is what can
+	// be checked in advance. Catching a typo here costs nothing; catching it
+	// after the open would cost the secret.
+	if err := checkWritableDir(opts.OutputDir); err != nil {
+		return nil, err
+	}
+	return &destination{}, nil
+}
+
+func checkWritableDir(dir string) error {
+	if dir == "" {
+		dir = "."
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("output directory is not usable: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	probe, err := os.CreateTemp(dir, ".flick-write-check-*")
+	if err != nil {
+		return fmt.Errorf("output directory is not writable: %w", err)
+	}
+	probe.Close()
+	return os.Remove(probe.Name())
+}
+
+// writePayload writes a file secret under its decrypted name without ever
+// overwriting an existing file. The name comes from the sender, so it is
+// reduced to its base name first: a payload named "../../.ssh/authorized_keys"
+// must land in the output directory as "authorized_keys", not escape it.
+func writePayload(opts OpenOptions, filename string, payload []byte) (string, error) {
+	target := filepath.Join(opts.OutputDir, safeFilename(filename))
 
 	for attempt := range 100 {
 		candidate := target
@@ -132,11 +232,6 @@ func writePayload(opts OpenOptions, filename string, payload []byte) (string, er
 		}
 		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, os.ErrExist) {
-			// An explicit --output is the caller's stated choice of path, so a
-			// collision there is an error rather than a silent rename.
-			if opts.OutputPath != "" {
-				return "", fmt.Errorf("%s already exists", candidate)
-			}
 			continue
 		}
 		if err != nil {

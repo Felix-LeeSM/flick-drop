@@ -3,8 +3,6 @@
 Flick is a self-hosted, open-source service for sharing short-lived secrets
 and files through one-time links.
 
-**Live demo:** https://flick.dev-felix.work/
-
 It is designed for people who want a small deployable alternative to sending
 passwords, API keys, private notes, or temporary files through chat, email, or
 long-lived cloud drives. A Flick secret is meant to be created, opened once,
