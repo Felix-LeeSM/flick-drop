@@ -69,6 +69,41 @@ enough for an OCI Free Tier-style deployment, using compute, block volume/PVC,
 and Object Storage. OCI quotas and Always Free policies can change, so deployers
 should verify current limits in their own tenancy before production use.
 
+## Command-Line Client
+
+`flick` creates and opens secrets from a terminal. It encrypts locally, exactly
+as the browser does — the passphrase, the derived key, and the plaintext never
+leave the machine it runs on.
+
+```bash
+go install github.com/Felix-LeeSM/flick-drop/cmd/flick@latest
+```
+
+Prebuilt binaries for macOS, Linux, and Windows are attached to each `cli/v*`
+release, with a `SHA256SUMS` file to verify a download against.
+
+```bash
+# Point the client at a deployment (or pass -url per command).
+export FLICK_URL=https://flick.example.com
+
+# The key travels in the link fragment; anyone holding the link can open it once.
+flick send "sk-live-example"
+kubectl get secret db -o jsonpath='{.data.password}' | base64 -d | flick send
+
+# Or require a passphrase, which is prompted for and sent through another channel.
+flick send -passphrase -ttl 24h "the database password"
+flick send -file ./credentials.json -ttl 30m
+
+# Opening consumes the secret. Text goes to stdout, files are saved by their
+# decrypted name; a passphrase is prompted for only when the secret needs one.
+flick open 'https://flick.example.com/s/abc123#key=...'
+flick open https://flick.example.com/s/abc123 > recovered.txt
+```
+
+`FLICK_PASSPHRASE` replaces the prompt for scripted use. A passphrase is never
+accepted as a flag, because command arguments are visible to every process on
+the machine through `ps` and land in shell history.
+
 ## Repository Boundary
 
 This repository is intended to be public.
