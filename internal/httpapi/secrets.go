@@ -39,20 +39,20 @@ type createSecretResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-// presignedPOSTResponse hands the client a presigned POST form so it uploads
-// the ciphertext straight to the bucket; the server never sees the bytes.
-type presignedPOSTResponse struct {
+// presignedUploadResponse hands the client a presigned upload so it sends the
+// ciphertext straight to the bucket; the server never sees the bytes. Headers
+// are part of the signature and must be echoed verbatim.
+type presignedUploadResponse struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
 	ExpiresAt string            `json:"expires_at"`
-	Fields    map[string]string `json:"fields"`
-	FileField string            `json:"file_field"`
+	Headers   map[string]string `json:"headers"`
 }
 
 type createSecretLargeResponse struct {
-	ID        string                `json:"id"`
-	ExpiresAt string                `json:"expires_at"`
-	Upload    presignedPOSTResponse `json:"upload"`
+	ID        string                  `json:"id"`
+	ExpiresAt string                  `json:"expires_at"`
+	Upload    presignedUploadResponse `json:"upload"`
 }
 
 type accessRequest struct {
@@ -125,7 +125,7 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Large payloads omit ciphertext: the client uploads it straight to the
-	// bucket via a presigned POST, then calls /finalize. Small payloads take
+	// bucket via a presigned PUT, then calls /finalize. Small payloads take
 	// the inline path below.
 	if req.Ciphertext == "" {
 		s.createLargeSecret(w, r, req)
@@ -172,7 +172,7 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createLargeSecret stages a pending_upload secret and returns a presigned POST
+// createLargeSecret stages a pending_upload secret and returns a presigned PUT
 // form so the client uploads the ciphertext directly to the bucket.
 func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req createSecretRequest) {
 	var accessProofHash string
@@ -205,12 +205,11 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 	writeJSON(w, http.StatusCreated, createSecretLargeResponse{
 		ID:        res.ID,
 		ExpiresAt: res.ExpiresAt.Format(timeFormat),
-		Upload: presignedPOSTResponse{
+		Upload: presignedUploadResponse{
 			URL:       res.Upload.URL,
 			Method:    res.Upload.Method,
 			ExpiresAt: res.Upload.ExpiresAt.Format(timeFormat),
-			Fields:    res.Upload.Fields,
-			FileField: res.Upload.FileField,
+			Headers:   res.Upload.Headers,
 		},
 	})
 }

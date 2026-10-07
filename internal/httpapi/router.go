@@ -25,17 +25,18 @@ import (
 var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
 
 type Server struct {
-	db                    *sql.DB
-	secrets               *secrets.Store
-	outbox                *events.OutboxStore
-	newJobID              func() (string, error)
-	payloadInlineMaxBytes int64
-	maxFileBytes          int64
-	allowedOrigin         string
-	internalToken         string
-	metricsToken          string
-	openLimiter           *rateLimiter
-	createLimiter         *rateLimiter
+	db                       *sql.DB
+	secrets                  *secrets.Store
+	outbox                   *events.OutboxStore
+	newJobID                 func() (string, error)
+	payloadInlineMaxBytes    int64
+	advertisedInlineMaxBytes int64
+	maxFileBytes             int64
+	allowedOrigin            string
+	internalToken            string
+	metricsToken             string
+	openLimiter              *rateLimiter
+	createLimiter            *rateLimiter
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
 	// ponytail: a one-method closure beats dragging the whole driver type in here.
@@ -43,17 +44,23 @@ type Server struct {
 }
 
 type Options struct {
-	PayloadInlineMaxBytes int64
-	MaxFileBytes          int64
-	AllowedOrigin         string
-	InternalToken         string
-	MetricsToken          string
-	OpenRatePerMinute     int
-	CreateRatePerMinute   int
-	TrustedProxies        []*net.IPNet
-	OutboxStore           *events.OutboxStore
-	NewJobID              func() (string, error)
-	NATSConnected         func() bool
+	// PayloadInlineMaxBytes bounds the ciphertext the inline path accepts; it
+	// sizes the request body limit. AdvertisedInlineMaxBytes is the plaintext
+	// equivalent reported by /api/config — smaller by the AEAD tag, since the
+	// browser compares its plaintext size against it. Defaults to
+	// PayloadInlineMaxBytes when unset.
+	PayloadInlineMaxBytes    int64
+	AdvertisedInlineMaxBytes int64
+	MaxFileBytes             int64
+	AllowedOrigin            string
+	InternalToken            string
+	MetricsToken             string
+	OpenRatePerMinute        int
+	CreateRatePerMinute      int
+	TrustedProxies           []*net.IPNet
+	OutboxStore              *events.OutboxStore
+	NewJobID                 func() (string, error)
+	NATSConnected            func() bool
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -61,23 +68,28 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	if payloadInlineMaxBytes <= 0 {
 		payloadInlineMaxBytes = 1048576
 	}
+	advertisedInlineMaxBytes := opts.AdvertisedInlineMaxBytes
+	if advertisedInlineMaxBytes <= 0 {
+		advertisedInlineMaxBytes = payloadInlineMaxBytes
+	}
 	maxFileBytes := opts.MaxFileBytes
 	if maxFileBytes <= 0 {
 		maxFileBytes = 52428800
 	}
 
 	server := Server{
-		db:                    db,
-		secrets:               secretStore,
-		outbox:                opts.OutboxStore,
-		newJobID:              events.NewJobID,
-		payloadInlineMaxBytes: payloadInlineMaxBytes,
-		maxFileBytes:          maxFileBytes,
-		allowedOrigin:         strings.TrimRight(opts.AllowedOrigin, "/"),
-		internalToken:         opts.InternalToken,
-		metricsToken:          opts.MetricsToken,
-		openLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		createLimiter:         newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
+		db:                       db,
+		secrets:                  secretStore,
+		outbox:                   opts.OutboxStore,
+		newJobID:                 events.NewJobID,
+		payloadInlineMaxBytes:    payloadInlineMaxBytes,
+		advertisedInlineMaxBytes: advertisedInlineMaxBytes,
+		maxFileBytes:             maxFileBytes,
+		allowedOrigin:            strings.TrimRight(opts.AllowedOrigin, "/"),
+		internalToken:            opts.InternalToken,
+		metricsToken:             opts.MetricsToken,
+		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID

@@ -21,7 +21,8 @@ manual/nightly checks
   OCI dev bucket smoke when credentials are configured
 
 release checks
-  Docker Hub image publish on manual dispatch or version tag push
+  Docker Hub image publish on manual dispatch or v* tag push
+  flick CLI binary release on manual dispatch or cli/v* tag push
 ```
 
 ## Local Entry Points
@@ -149,3 +150,27 @@ Docker Hub:
 - `DOCKERHUB_NAMESPACE` must be one lowercase Docker Hub namespace component
 - manual custom tags must match `v<release>`, or `sha-<12-hex>` only when it is
   the checked-out commit SHA tag
+
+## CLI Release
+
+`.github/workflows/release-cli.yml` cross-compiles the `flick` command for
+macOS, Linux, and Windows and attaches the archives, plus a `SHA256SUMS` file,
+to a GitHub release. It needs no registry credentials; `GITHUB_TOKEN` with
+`contents: write` is the only permission it uses.
+
+It triggers on `cli/v*` tags, deliberately a different namespace from the `v*`
+tags that publish images. Actions ref globs do not cross `/`, so a CLI release
+never republishes `flick-api`, `flick-worker`, and `flick-web`, and a server
+release never rebuilds the CLI.
+
+The workflow applies the same trust checks as the image publish, because a
+release asset is something users download and execute:
+
+- the ref must be a `cli/v*` tag, and a manual dispatch must name a tag that
+  already exists rather than a branch
+- the tagged commit must already be reachable from the repository default
+  branch, so binaries are only ever built from code that passed `review-gate`
+- `scripts/ci/go.sh` runs before anything is built
+
+A `cli/v*` tag is not a Go module version, so `go install ...@cli/v0.1.0` does
+not resolve. Go users install with `@latest` or pin to the release commit SHA.

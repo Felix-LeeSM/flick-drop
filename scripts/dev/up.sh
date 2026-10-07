@@ -5,7 +5,6 @@ export FLICK_ENV="${FLICK_ENV:-development}"
 export FLICK_LOG_LEVEL="${FLICK_LOG_LEVEL:-debug}"
 export FLICK_PUBLIC_BASE_URL="${FLICK_PUBLIC_BASE_URL:-http://localhost:5173}"
 export PUBLIC_FLICK_API_BASE_URL="${PUBLIC_FLICK_API_BASE_URL:-http://localhost:8080}"
-export PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES="${PUBLIC_FLICK_LOCAL_FILE_MAX_BYTES:-1048560}"
 export FLICK_API_BASE_URL="${FLICK_API_BASE_URL:-http://localhost:8080}"
 export FLICK_INTERNAL_API_BASE_URL="${FLICK_INTERNAL_API_BASE_URL:-http://localhost:8080}"
 export FLICK_INTERNAL_TOKEN="${FLICK_INTERNAL_TOKEN:-change-me-local}"
@@ -22,7 +21,6 @@ export FLICK_MAX_FILE_BYTES="${FLICK_MAX_FILE_BYTES:-52428800}"
 export FLICK_DEFAULT_TTL_SECONDS="${FLICK_DEFAULT_TTL_SECONDS:-3600}"
 export FLICK_MIN_TTL_SECONDS="${FLICK_MIN_TTL_SECONDS:-300}"
 export FLICK_MAX_TTL_SECONDS="${FLICK_MAX_TTL_SECONDS:-604800}"
-export FLICK_STORAGE_LARGE_BACKEND="${FLICK_STORAGE_LARGE_BACKEND:-disabled}"
 export FLICK_OPEN_RATE_PER_MIN="${FLICK_OPEN_RATE_PER_MIN:-10}"
 export FLICK_TRUSTED_PROXIES="${FLICK_TRUSTED_PROXIES:-}"
 export FLICK_WORKER_ID="${FLICK_WORKER_ID:-local-worker-1}"
@@ -30,6 +28,9 @@ export FLICK_WORKER_CONCURRENCY="${FLICK_WORKER_CONCURRENCY:-2}"
 export FLICK_CREATE_RATE_PER_MIN="${FLICK_CREATE_RATE_PER_MIN:-5}"
 # M3: dev turns on S3-compatible storage against local MinIO. Set
 # FLICK_DEV_SKIP_MINIO=1 to keep storage disabled (CI/test without docker).
+# This is the only place the backend is defaulted — an earlier
+# "${...:-disabled}" export here made this ":-s3" unreachable and quietly kept
+# large uploads off in local dev.
 export FLICK_STORAGE_LARGE_BACKEND="${FLICK_STORAGE_LARGE_BACKEND:-s3}"
 export FLICK_S3_ENDPOINT="${FLICK_S3_ENDPOINT:-http://localhost:9000}"
 export FLICK_S3_REGION="${FLICK_S3_REGION:-us-east-1}"
