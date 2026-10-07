@@ -2,90 +2,48 @@ package storage
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// PresignPOST returns a presigned POST form whose policy pins the object key
-// and enforces content-length-range [0, maxSize] — the bucket rejects an
-// oversized upload with 413 before any bytes land. Go's AWS SDK does not build
-// presigned POST, so the SigV4 POST signature is derived manually: the policy
-// (base64) is the string-to-sign, signed with the standard 4-step key chain.
-func (c *Client) PresignPOST(_ context.Context, key string, maxSize int64, ttl time.Duration) (POSTForm, error) {
+// PresignPUT returns a presigned PUT whose signature covers Content-Length, so
+// the bucket rejects any body that is not exactly size bytes — an upload of the
+// wrong length fails authentication before the object lands. That is stricter
+// than the content-length-range this replaced, which allowed anything up to a
+// ceiling.
+//
+// PUT rather than POST because Oracle's S3 Compatibility API does not implement
+// POST Object (browser form upload with a policy document); a presigned POST
+// there returns 403 SignatureDoesNotMatch. PUT is supported by every
+// S3-compatible store this targets, MinIO included.
+func (c *Client) PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error) {
 	if key == "" {
-		return POSTForm{}, fmt.Errorf("object key is required")
+		return UploadInstruction{}, fmt.Errorf("object key is required")
 	}
-	if maxSize <= 0 {
-		return POSTForm{}, fmt.Errorf("max size must be positive")
+	if size <= 0 {
+		return UploadInstruction{}, fmt.Errorf("size must be positive")
 	}
 
-	now := c.now().UTC()
-	expiration := now.Add(ttl)
-	date := now.Format("20060102")
-	amzDate := now.Format("20060102T150405Z")
-	credential := fmt.Sprintf("%s/%s/%s/s3/aws4_request", c.cfg.AccessKeyID, date, c.cfg.Region)
-
-	policy := postPolicy{
-		Expiration: expiration.Format("2006-01-02T15:04:05.000Z"),
-		Conditions: []any{
-			map[string]string{"bucket": c.cfg.Bucket},
-			map[string]string{"key": key},
-			[]any{"content-length-range", int64(0), maxSize},
-			map[string]string{"x-amz-credential": credential},
-			map[string]string{"x-amz-algorithm": "AWS4-HMAC-SHA256"},
-			map[string]string{"x-amz-date": amzDate},
-		},
-	}
-	policyJSON, err := json.Marshal(policy)
+	req, err := s3.NewPresignClient(c.s3).PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(c.cfg.Bucket),
+		Key:           aws.String(key),
+		ContentLength: aws.Int64(size),
+	}, s3.WithPresignExpires(ttl))
 	if err != nil {
-		return POSTForm{}, fmt.Errorf("marshal post policy: %w", err)
+		return UploadInstruction{}, fmt.Errorf("presign put %q: %w", key, err)
 	}
-	policyB64 := base64.StdEncoding.EncodeToString(policyJSON)
 
-	signature := signPOSTPolicy(c.cfg.SecretAccessKey, date, c.cfg.Region, policyB64)
-
-	return POSTForm{
-		URL:       c.postURL(),
-		Method:    "POST",
-		ExpiresAt: expiration,
-		Fields: map[string]string{
-			"key":              key,
-			"policy":           policyB64,
-			"x-amz-algorithm":  "AWS4-HMAC-SHA256",
-			"x-amz-credential": credential,
-			"x-amz-date":       amzDate,
-			"x-amz-signature":  signature,
-		},
-		FileField: "file",
+	// Content-Length is in the signature, so the browser has to send exactly
+	// this value. fetch() sets it from the body, which is why the client must
+	// upload the raw ciphertext rather than a multipart envelope.
+	return UploadInstruction{
+		URL:       req.URL,
+		Method:    req.Method,
+		ExpiresAt: c.now().UTC().Add(ttl),
+		Headers:   map[string]string{"Content-Length": strconv.FormatInt(size, 10)},
 	}, nil
-}
-
-type postPolicy struct {
-	Expiration string `json:"expiration"`
-	Conditions []any  `json:"conditions"`
-}
-
-func signPOSTPolicy(secret, date, region, policyB64 string) string {
-	key := deriveSigningKey(secret, date, region, "s3")
-	return hex.EncodeToString(hmacSHA256(key, []byte(policyB64)))
-}
-
-// deriveSigningKey is the standard SigV4 4-step HMAC chain:
-// HMAC(HMAC(HMAC(HMAC("AWS4"+secret, date), region), service), "aws4_request").
-func deriveSigningKey(secret, date, region, service string) []byte {
-	k := hmacSHA256([]byte("AWS4"+secret), []byte(date))
-	k = hmacSHA256(k, []byte(region))
-	k = hmacSHA256(k, []byte(service))
-	return hmacSHA256(k, []byte("aws4_request"))
-}
-
-func hmacSHA256(key, data []byte) []byte {
-	h := hmac.New(sha256.New, key)
-	h.Write(data)
-	return h.Sum(nil)
 }

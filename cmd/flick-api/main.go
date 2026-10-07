@@ -76,9 +76,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
 	}
-	// The ciphertext cap is the plaintext cap plus the AES-GCM tag and a safety
-	// margin; finalize HEAD re-verifies against this.
-	maxObjectBytes := cfg.MaxFileBytes + 4096
+	// The ciphertext cap is exactly the plaintext cap plus the AES-GCM tag: the
+	// presigned upload signs that length, and CreateLarge derives it from the
+	// declared plaintext size. Slack here would widen the real ceiling past what
+	// /api/config advertises.
+	maxObjectBytes := cfg.MaxFileBytes + secrets.AEADOverheadBytes
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
@@ -121,16 +123,17 @@ func main() {
 	server := &http.Server{
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
-			PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
-			MaxFileBytes:          cfg.MaxFileBytes,
-			AllowedOrigin:         cfg.PublicBaseURL,
-			InternalToken:         cfg.InternalToken,
-			MetricsToken:          cfg.MetricsToken,
-			OpenRatePerMinute:     cfg.OpenRatePerMinute,
-			CreateRatePerMinute:   cfg.CreateRatePerMinute,
-			TrustedProxies:        cfg.TrustedProxies,
-			OutboxStore:           outboxStore,
-			NATSConnected:         natsConn.IsConnected,
+			PayloadInlineMaxBytes:    cfg.PayloadInlineMaxBytes,
+			AdvertisedInlineMaxBytes: cfg.EffectivePayloadInlineMaxBytes(secrets.AEADOverheadBytes),
+			MaxFileBytes:             cfg.EffectiveMaxFileBytes(secrets.AEADOverheadBytes),
+			AllowedOrigin:            cfg.PublicBaseURL,
+			InternalToken:            cfg.InternalToken,
+			MetricsToken:             cfg.MetricsToken,
+			OpenRatePerMinute:        cfg.OpenRatePerMinute,
+			CreateRatePerMinute:      cfg.CreateRatePerMinute,
+			TrustedProxies:           cfg.TrustedProxies,
+			OutboxStore:              outboxStore,
+			NATSConnected:            natsConn.IsConnected,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

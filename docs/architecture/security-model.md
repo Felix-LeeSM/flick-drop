@@ -183,9 +183,19 @@ Residual risks remain:
   leaks) can serve modified client code that exfiltrates the passphrase or
   Model B fragment key during open, recovering the plaintext. The design
   therefore targets passive leakage (database, log, backup exposure), not an
-  actively malicious server. A native/CLI client that the server cannot
-  re-deliver would close this gap but is deferred for now due to sharing
-  friction.
+  actively malicious server, for anyone using the browser.
+
+  The `flick` CLI (`cmd/flick`) does close this gap for its own users. It is
+  installed once and the server cannot re-deliver it, so a server that turns
+  malicious cannot swap out the code that holds the passphrase or the fragment
+  key. That protection is only as good as the install: it depends on the
+  binary being fetched from a release built by `.github/workflows/release-cli.yml`
+  from a commit already on `main`, and on the downloader checking `SHA256SUMS`.
+  The CLI carries its own copy of the client crypto in `internal/clientcrypto`,
+  which is a second implementation of the same wire format and is pinned to the
+  browser's by the shared golden vectors in
+  `tests/fixtures/client-crypto-vectors.json` — see that package's `AGENTS.md`
+  for why those vectors must not be regenerated to make a test pass.
 
 Runbooks must document checkpoint/vacuum and backup retention behavior. The
 product should communicate that Flick is ephemeral delivery, not guaranteed
@@ -253,6 +263,5 @@ TLS-terminating ingress (see Transport above).
   Headers for why it is deferred)
 - admin audit viewer without sensitive values
 - optional notification without revealing secret contents
-- native/CLI client to defend against an actively malicious server (deferred —
-  sharing friction currently outweighs the benefit; the honest-server
-  assumption is documented above)
+- reproducible or signed CLI release artifacts, so a downloader can verify more
+  than the `SHA256SUMS` published alongside the binaries

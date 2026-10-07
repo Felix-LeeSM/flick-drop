@@ -12,7 +12,8 @@ import {
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
-	TypeIcon
+	TypeIcon,
+	XIcon
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
@@ -59,8 +60,9 @@ import {
 	encryptTextWithKey,
 	generateSecretKey
 } from '$lib/crypto/text';
+import { bundleFiles } from '$lib/files/bundle';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
-import { formatBytes } from '$lib/utils';
+import { cn, formatBytes } from '$lib/utils';
 
 type StatusKind = 'idle' | 'encrypting' | 'uploading' | 'error';
 type CreateMode = 'text' | 'file' | CredentialType;
@@ -88,16 +90,22 @@ onMount(() => {
 	});
 });
 const api = $derived(createSecretApiClient({ limits }));
-const baseModeOptions = [
-	{ type: 'text', label: 'Text', icon: TypeIcon },
-	{ type: 'file', label: 'File', icon: FileUpIcon }
-] as const;
 const credentialIconComponents = {
 	'key-round': KeyRoundIcon,
 	'credit-card': CreditCardIcon,
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
+// One flat list so the expandable type bar renders as a single row of buttons.
+const modeOptions: Array<{ type: CreateMode; label: string; icon: typeof ListPlusIcon }> = [
+	{ type: 'text', label: 'Text', icon: TypeIcon },
+	{ type: 'file', label: 'File', icon: FileUpIcon },
+	...CREDENTIAL_TEMPLATES.map((template) => ({
+		type: template.type,
+		label: template.label,
+		icon: credentialIcon(template.icon)
+	}))
+];
 
 let mode = $state<CreateMode>('text');
 let plaintext = $state('');
@@ -112,9 +120,16 @@ let customActive = $state(false);
 let customValue = $state(2);
 let customUnit = $state<'minutes' | 'hours' | 'days'>('days');
 const ttlSeconds = $derived(customActive ? customValue * ttlUnitFactor[customUnit] : presetSeconds);
-let selectedFiles = $state<FileList>();
+// pickedFiles is what the user chose; selectedFile is what actually uploads —
+// the same File when one was picked, or the zipped bundle when several were.
+let pickedFiles = $state<File[]>([]);
 let selectedFile = $state<File | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
+let bundling = $state(false);
+let dragActive = $state(false);
+// Monotonic token: bundling is async and runs can overlap (add, then remove
+// mid-zip), so only the latest applyFiles run may commit its result.
+let bundleToken = 0;
 let shareUrl = $state('');
 let expiresAt = $state('');
 let status = $state('');
@@ -144,7 +159,9 @@ $effect(() => {
 });
 
 const selectedFileTooLarge = $derived(
-	selectedFile !== null && selectedFile.size > limits.maxFileBytes
+	// Judge on the raw byte total, not the zip size: an over-limit batch is
+	// rejected before the slow zip runs. The server re-enforces the exact size.
+	pickedFiles.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes
 );
 const hasCredentialPayload = $derived(
 	(credentialEnvelope.title ?? '').trim().length > 0 ||
@@ -163,7 +180,8 @@ const canCreate = $derived(
 		(!usePassphrase || passphrase.length > 0) &&
 		ttlSeconds >= MIN_TTL_SECONDS &&
 		ttlSeconds <= MAX_TTL_SECONDS &&
-		!isCreating
+		!isCreating &&
+		!bundling
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -306,15 +324,112 @@ function switchMode(nextMode: CreateMode): void {
 	}
 }
 
-function syncSelectedFile(): void {
-	selectedFile = selectedFiles?.item(0) ?? null;
+// Recomputes the single File that uploads from the current batch. One file rides
+// as-is; several are zipped into bundle.zip (async, so the form shows "Zipping").
+async function applyFiles(files: File[]): Promise<void> {
 	status = '';
 	statusKind = 'idle';
+	pickedFiles = files;
+
+	// Claim this run. A later run (or a sync return below) bumps the token, so a
+	// stale zip resolving late is dropped instead of resurrecting a removed file
+	// or clearing `bundling` while a newer run is still going.
+	const token = ++bundleToken;
+
+	// Pre-flight on the raw total before the slow zip: skip building an unusable
+	// bundle when the batch already exceeds the limit (selectedFileTooLarge shows
+	// it). The server re-enforces the exact bundle size.
+	if (files.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes) {
+		selectedFile = null;
+		bundling = false;
+		return;
+	}
+	if (files.length <= 1) {
+		selectedFile = files[0] ?? null;
+		bundling = false;
+		return;
+	}
+	bundling = true;
+	selectedFile = null;
+	try {
+		const bundled = await bundleFiles(files);
+		if (token === bundleToken) {
+			selectedFile = bundled;
+		}
+	} catch {
+		if (token === bundleToken) {
+			selectedFile = null;
+			status = 'Could not zip those files. Try again.';
+			statusKind = 'error';
+		}
+	} finally {
+		if (token === bundleToken) {
+			bundling = false;
+		}
+	}
+}
+
+function fileKey(file: File): string {
+	return `${file.name}|${file.size}|${file.lastModified}`;
+}
+
+// Accumulate: each pick/drop adds to the batch. Same-identity files are skipped so
+// a double-drop doesn't duplicate; order is preserved.
+function addFiles(incoming: File[]): void {
+	const seen = new Set(pickedFiles.map(fileKey));
+	const merged = [...pickedFiles];
+	for (const file of incoming) {
+		if (!seen.has(fileKey(file))) {
+			seen.add(fileKey(file));
+			merged.push(file);
+		}
+	}
+	void applyFiles(merged);
+}
+
+function removeFile(index: number): void {
+	void applyFiles(pickedFiles.filter((_, position) => position !== index));
+}
+
+function onFileInputChange(event: Event): void {
+	const input = event.currentTarget as HTMLInputElement;
+	addFiles(Array.from(input.files ?? []));
+	// Clear so re-picking the same file still fires onchange for the next add.
+	input.value = '';
+}
+
+function onDragOver(event: DragEvent): void {
+	event.preventDefault();
+	if (!isCreating) {
+		dragActive = true;
+	}
+}
+
+function onDragLeave(event: DragEvent): void {
+	event.preventDefault();
+	dragActive = false;
+}
+
+function onDrop(event: DragEvent): void {
+	event.preventDefault();
+	dragActive = false;
+	if (isCreating) {
+		return;
+	}
+	const files = Array.from(event.dataTransfer?.files ?? []);
+	if (files.length > 0) {
+		addFiles(files);
+	}
 }
 
 function clearSelectedFile(): void {
+	// Bump the token so an in-flight zip (e.g. bundling still running when the
+	// user switches mode) can't resolve late and resurrect the cleared bundle.
+	bundleToken += 1;
 	selectedFile = null;
-	selectedFiles = undefined;
+	pickedFiles = [];
+	bundling = false;
+	dragActive = false;
 	if (fileInput) {
 		fileInput.value = '';
 	}
@@ -418,6 +533,25 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						<QrCodeIcon class="size-4" aria-hidden="true" />
 						Show QR
 					</Button>
+					<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
+						<LockKeyholeIcon
+							class="mt-0.5 size-4 shrink-0 text-muted-foreground"
+							aria-hidden="true"
+						/>
+						<div class="grid gap-1">
+							{#if usePassphrase}
+								<strong class="text-sm font-medium">Send the passphrase separately.</strong>
+								<p class="text-sm text-muted-foreground">
+									The recipient needs both the link and the passphrase to open this.
+								</p>
+							{:else}
+								<strong class="text-sm font-medium">Share only with your recipient.</strong>
+								<p class="text-sm text-muted-foreground">
+									Anyone with this full link can open it once.
+								</p>
+							{/if}
+						</div>
+					</aside>
 					<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
 						Create another
 					</Button>
@@ -434,49 +568,41 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
-					<div class="grid gap-2.5">
-						<span class="micro text-muted-foreground">type</span>
-						<div class="flex flex-wrap gap-2" role="group" aria-label="Secret type">
-							{#each baseModeOptions as option (option.type)}
-								{@const Icon = option.icon}
-								<Button
-									type="button"
-									variant={mode === option.type ? 'toggleActive' : 'toggle'}
-									size="seg"
-									aria-pressed={mode === option.type}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode(option.type);
-									}}
-								>
-									<Icon class="size-4" />
-									{option.label}
-								</Button>
-							{/each}
-							{#each CREDENTIAL_TEMPLATES as template (template.type)}
-								{@const Icon = credentialIcon(template.icon)}
-								<Button
-									type="button"
-									variant={mode === template.type ? 'toggleActive' : 'toggle'}
-									size="seg"
-									aria-pressed={mode === template.type}
-									disabled={isCreating}
-									onclick={() => {
-										switchMode(template.type);
-									}}
-								>
-									<Icon class="size-4" />
-									{template.label}
-								</Button>
-							{/each}
-						</div>
+					<!-- Expandable action bar: every type stays visible as an icon, and the
+					     labels expand together on hover or keyboard focus. The button's
+					     aria-label carries the name, so the icon and the visual label are
+					     hidden from assistive tech to avoid a doubled announcement. -->
+					<div
+						class="type-bar flex w-fit max-w-full flex-wrap gap-1 rounded-2xl border border-border bg-card p-1.5 md:flex-nowrap md:rounded-full"
+						role="group"
+						aria-label="Secret type"
+					>
+						{#each modeOptions as option (option.type)}
+							{@const Icon = option.icon}
+							<Button
+								type="button"
+								variant={mode === option.type ? 'toggleActive' : 'ghost'}
+								size="seg"
+								class={cn(
+									'gap-0 rounded-full border-transparent px-2.5',
+									mode !== option.type && 'text-muted-foreground'
+								)}
+								aria-label={option.label}
+								aria-pressed={mode === option.type}
+								disabled={isCreating}
+								onclick={() => {
+									switchMode(option.type);
+								}}
+							>
+								<Icon class="size-4" aria-hidden="true" />
+								<span class="type-label" aria-hidden="true">{option.label}</span>
+							</Button>
+						{/each}
 					</div>
 
 					{#if mode === 'text'}
 						<div class="grid gap-2.5">
-							<Label for="secret-text" class="micro font-normal text-muted-foreground">
-								payload
-							</Label>
+							<Label for="secret-text" class="text-sm font-medium">Message</Label>
 							<Textarea
 								id="secret-text"
 								class="min-h-48 resize-y"
@@ -488,51 +614,113 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						</div>
 					{:else if mode === 'file'}
 						<div class="grid gap-2.5">
-							<Label for="secret-file" class="micro font-normal text-muted-foreground">
-								payload
-							</Label>
-							<Input
-								id="secret-file"
-								type="file"
-								bind:ref={fileInput}
-								bind:files={selectedFiles}
-								disabled={isCreating}
-								onchange={syncSelectedFile}
-							/>
-							<div
-								class="flex min-h-9 items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+							<span class="text-sm font-medium">Files</span>
+							<!-- Label wraps the input, so a click opens the picker natively and a
+							     drop lands files without any wiring; focus-within surfaces the
+							     visually-hidden input's keyboard focus on the zone. -->
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<label
+								class={cn(
+									'grid cursor-pointer place-items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-ring',
+									dragActive
+										? 'border-primary bg-primary/5'
+										: 'border-border bg-muted/20 hover:bg-muted/40',
+									isCreating && 'pointer-events-none opacity-60'
+								)}
+								ondragover={onDragOver}
+								ondragenter={onDragOver}
+								ondragleave={onDragLeave}
+								ondrop={onDrop}
 							>
-								<span class="truncate text-muted-foreground">
-									{selectedFile ? selectedFile.name : 'No file selected'}
-								</span>
-								{#if selectedFile}
-									<span class="shrink-0 font-mono text-xs text-muted-foreground">
-										{formatBytes(selectedFile.size)}
-									</span>
+								<FileUpIcon
+									class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
+									aria-hidden="true"
+								/>
+								<p class="text-sm">
+									<span class="font-medium text-foreground">Drop files</span>
+									<span class="text-muted-foreground"> or click to browse</span>
+								</p>
+								<p class="micro text-muted-foreground">
+									<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
+									Multiple files are zipped into one · up to
+									<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
+								</p>
+								<input
+									bind:this={fileInput}
+									id="secret-file"
+									type="file"
+									multiple
+									class="sr-only"
+									aria-label="Add files to upload"
+									disabled={isCreating}
+									onchange={onFileInputChange}
+								/>
+							</label>
+							{#if pickedFiles.length > 0}
+								<ul class="grid gap-1.5">
+									{#each pickedFiles as file, index (fileKey(file))}
+										<li
+											class="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+										>
+											<span class="truncate text-muted-foreground">{file.name}</span>
+											<span class="flex shrink-0 items-center gap-2">
+												<span class="font-mono text-xs text-muted-foreground">
+													{formatBytes(file.size)}
+												</span>
+												<button
+													type="button"
+													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													aria-label={`Remove ${file.name}`}
+													disabled={isCreating}
+													onclick={() => {
+														removeFile(index);
+													}}
+												>
+													<XIcon class="size-4" aria-hidden="true" />
+												</button>
+											</span>
+										</li>
+									{/each}
+								</ul>
+								{#if bundling}
+									<p
+										class="micro text-right text-muted-foreground"
+										role="status"
+										aria-live="polite"
+									>
+										Zipping {pickedFiles.length} files…
+									</p>
+								{:else if pickedFiles.length > 1 && selectedFile}
+									<p class="micro text-right normal-case text-muted-foreground">
+										{pickedFiles.length} files → {selectedFile.name} · {formatBytes(selectedFile.size)}
+									</p>
 								{/if}
-							</div>
+							{/if}
 							{#if selectedFileTooLarge}
 								<p class="text-sm text-destructive" role="alert" aria-live="assertive">
-									Choose a file up to {formatBytes(limits.maxFileBytes)}.
+									Choose files up to {formatBytes(limits.maxFileBytes)} total.
 								</p>
 							{/if}
 						</div>
 					{:else}
 						<div class="grid gap-2.5">
-							<span class="micro text-muted-foreground">{modeLabel(mode)}</span>
+							<span class="text-sm font-medium">{modeLabel(mode)}</span>
 							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
 						</div>
 					{/if}
 
 					<div class="grid gap-2.5">
-						<div class="flex items-center justify-between">
-							<span class="micro text-muted-foreground">passphrase</span>
-						</div>
 						<div class="flex min-h-9 items-center gap-2">
 							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
-							<Label for="use-passphrase" class="text-sm font-medium">Protect with passphrase</Label>
+							<Label for="use-passphrase" class="text-sm font-medium">
+								Protect with a passphrase
+							</Label>
 						</div>
 						{#if usePassphrase}
+							<!-- The checkbox above carries the only visible passphrase wording, so
+							     the field itself needs its own associated label to have an
+							     accessible name (root AGENTS.md). -->
+							<Label for="secret-passphrase" class="sr-only">Passphrase</Label>
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
@@ -568,6 +756,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									{/if}
 								</Button>
 							</div>
+							<p class="text-sm text-muted-foreground">
+								Your recipient will need this passphrase. Send it separately from the link.
+							</p>
 						{:else}
 							<p class="text-sm text-muted-foreground">
 								Anyone with the link can open this once. The decryption key is embedded in the URL
@@ -577,7 +768,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 					</div>
 
 					<div class="grid gap-2.5">
-						<span class="micro text-muted-foreground">lifetime</span>
+						<span class="text-sm font-medium">Expires after</span>
 						<div class="flex flex-wrap items-center gap-2" role="group" aria-label="Secret lifetime">
 							{#each ttlPresets as option (option.value)}
 								<Button
@@ -687,3 +878,44 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 </main>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />
+
+<style>
+/* Type bar labels. Touch and narrow viewports keep every label visible, so the
+   collapse only applies where a fine pointer can hover the bar and the row has
+   room to stay on one line. */
+.type-label {
+	margin-left: 0.5rem;
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+	.type-label {
+		display: inline-block;
+		max-width: 0;
+		margin-left: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		opacity: 0;
+		filter: blur(3px);
+		transition:
+			max-width 350ms cubic-bezier(0.22, 1, 0.36, 1),
+			margin-left 350ms cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 180ms ease,
+			filter 240ms ease;
+	}
+
+	/* Hover or focus anywhere in the bar expands all labels at once. */
+	.type-bar:hover .type-label,
+	.type-bar:focus-within .type-label {
+		max-width: 5rem;
+		margin-left: 0.5rem;
+		opacity: 1;
+		filter: blur(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.type-label {
+		transition: none;
+	}
+}
+</style>

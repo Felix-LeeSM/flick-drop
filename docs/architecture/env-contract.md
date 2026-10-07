@@ -34,13 +34,13 @@ Local development:
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` (Prometheus scrape). Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/metrics` fails closed (401). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max payload size stored as SQLite BLOB. |
-| `FLICK_MAX_FILE_BYTES` | Upload hard limit. |
+| `FLICK_MAX_FILE_BYTES` | Upload hard limit. While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises `FLICK_PAYLOAD_INLINE_MAX_BYTES` minus the 16-byte AES-GCM tag instead of this value. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
 | `FLICK_OPEN_RATE_PER_MIN` | Max `/open` requests per client IP + path per minute. |
-| `FLICK_CREATE_RATE_PER_MIN` | Max `/api/secrets` (presigned POST issuance) requests per client IP + path per minute. |
+| `FLICK_CREATE_RATE_PER_MIN` | Max `/api/secrets` (presigned upload issuance) requests per client IP + path per minute. |
 | `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in api.db. |
 | `FLICK_REAPER_BATCH_SIZE` | Max secrets reclaimed per reaper tick. |
 | `FLICK_TRUSTED_PROXIES` | Comma-separated CIDRs whose peer may set X-Forwarded-For. Empty = direct peer IP only. |

@@ -13,26 +13,25 @@ export const DEFAULT_API_BASE_URL =
 
 export type TtlSeconds = number;
 
-// PresignedPost mirrors the server's presignedPOSTResponse: a form the browser
-// POSTs to upload ciphertext straight to the object store. The server never
-// sees the bytes. The bucket rejects uploads outside the signed
-// content-length-range with 413.
-export type PresignedPost = {
+// PresignedUpload mirrors the server's presignedUploadResponse: a signed request
+// the browser sends the raw ciphertext to, so the server never sees the bytes.
+// Content-Length is inside the signature, so a body of any other length is
+// rejected by the bucket before the object lands.
+export type PresignedUpload = {
 	url: string;
 	method: string;
 	expires_at: string;
-	fields: Record<string, string>;
-	file_field: string;
+	headers: Record<string, string>;
 };
 
 export type CreateSecretResponse = {
 	id: string;
 	expires_at: string;
 	// Present only for large secrets (request omitted ciphertext). The client
-	// uploads the ciphertext multipart to `url` with `fields`, then calls
-	// /finalize. Defined here so the large path can read it, but callers see a
-	// plain { id, expires_at } — the S3 upload + finalize are completed inside.
-	upload?: PresignedPost;
+	// sends the raw ciphertext to `url`, then calls /finalize. Defined here so
+	// the large path can read it, but callers see a plain { id, expires_at } —
+	// the upload + finalize are completed inside.
+	upload?: PresignedUpload;
 };
 
 export type SecretKind = 'text' | 'file';
@@ -198,8 +197,8 @@ function createInlineFileSecret(
 }
 
 // createLargeFileSecret uploads the ciphertext straight to the object store:
-//   1. POST /api/secrets WITHOUT ciphertext → server returns a presigned POST.
-//   2. POST the ciphertext multipart to the object store using the signed form.
+//   1. POST /api/secrets WITHOUT ciphertext → server returns a presigned upload.
+//   2. Send the raw ciphertext as the body of that signed request.
 //   3. POST /api/secrets/{id}/finalize so the server HEAD-checks the object and
 //      activates the secret.
 // Resolves to a plain { id, expires_at } so callers are unaware of the routing.
@@ -252,30 +251,44 @@ async function createLargeFileSecret(
 	return { id: staged.id, expires_at: staged.expires_at };
 }
 
-// uploadToObjectStore POSTs the signed form fields and the ciphertext as the
-// file_field. The file field must be appended last for the object store to
-// validate the signature. The ciphertext is base64; it must be decoded to raw
-// bytes so the upload length matches the signed content-length-range.
+// uploadToObjectStore sends the raw ciphertext as the request body. The
+// ciphertext arrives base64 and must be decoded first: Content-Length is signed,
+// and base64 is a third longer than the bytes it encodes, so uploading the text
+// form would fail authentication. Content-Length is not set by hand — the
+// browser forbids it as a header and derives it from the body, which is exactly
+// the signed value.
 async function uploadToObjectStore(
 	fetcher: typeof fetch,
-	upload: PresignedPost,
+	upload: PresignedUpload,
 	ciphertextBase64: string,
 	signal?: AbortSignal
 ): Promise<void> {
 	const bytes = base64ToBytes(ciphertextBase64);
-	const formData = new FormData();
-	for (const [key, value] of Object.entries(upload.fields)) {
-		formData.append(key, value);
+	// Content-Length is a forbidden header name, so it cannot be set here — the
+	// browser derives it from the body. Compare against the signed value anyway:
+	// a mismatch means the encryption overhead assumption drifted from the
+	// server's, and failing here names the cause instead of leaving a bare 403
+	// from the bucket.
+	const signedLength = Number(upload.headers['Content-Length']);
+	if (Number.isFinite(signedLength) && signedLength !== bytes.byteLength) {
+		throw new SecretApiError('Upload size mismatch. Try again.', 'upload_failed', 0);
 	}
 	// bytes is a fresh Uint8Array over an ArrayBuffer (offset 0), so its backing
-	// buffer carries the exact ciphertext length the signed range expects.
-	formData.append(upload.file_field, new Blob([bytes.buffer as ArrayBuffer]));
+	// buffer carries exactly the signed ciphertext length.
+	const body = bytes.buffer as ArrayBuffer;
+	// Echo every signed header except Content-Length, which is a forbidden
+	// header name — the browser refuses to let us set it and derives it from the
+	// body instead. Any other header the server signs (a checksum, a content
+	// type) has to travel, or the signature stops matching.
+	const headers = Object.fromEntries(
+		Object.entries(upload.headers).filter(([name]) => name.toLowerCase() !== 'content-length')
+	);
 
 	let response: Response;
 	try {
 		// ponytail: fetch can't report upload byte-progress (needs XHR) — signal
 		// gives cancel-only. A progress bar would mean swapping to XMLHttpRequest.
-		response = await fetcher(upload.url, { method: upload.method, body: formData, signal });
+		response = await fetcher(upload.url, { method: upload.method, headers, body, signal });
 	} catch (error) {
 		// A user-triggered abort is not a failure — surface it distinctly so the
 		// caller routes it to the idle path instead of an "Upload failed" error.
