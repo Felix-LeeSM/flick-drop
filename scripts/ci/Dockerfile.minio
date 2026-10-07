@@ -1,0 +1,12 @@
+# MinIO's community registry images are no longer available. Build the CI-only
+# fixture from official source commits, using the repository's Go toolchain.
+FROM golang:1.25.11-alpine AS build
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+# RELEASE.2025-10-15T17-29-55Z
+RUN go install github.com/minio/minio@9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
+# RELEASE.2025-08-13T08-35-41Z
+RUN go install github.com/minio/mc@7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+FROM alpine:3.22
+COPY --from=build /go/bin/minio /go/bin/mc /usr/local/bin/
+ENTRYPOINT ["minio"]
