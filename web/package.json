@@ -14,7 +14,8 @@
 		"lint": "biome ci .",
 		"lint:fix": "biome check --write .",
 		"test:unit": "vitest",
-		"test": "vitest --run"
+		"test": "vitest --run",
+		"test:browser": "node --test src/lib/components/OpenSecretPage.browser.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.0",
@@ -28,6 +29,7 @@
 		"@types/node": "^24",
 		"bits-ui": "^2.18.1",
 		"clsx": "^2.1.1",
+		"playwright": "1.63.0",
 		"shadcn-svelte": "^1.3.0",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
