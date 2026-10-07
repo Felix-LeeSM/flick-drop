@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 )
 
 // S3Config configures the S3-compatible large-object store (MinIO dev, OCI
@@ -99,6 +101,9 @@ func Load() (Config, error) {
 	}
 	if cfg.PayloadInlineMaxBytes, err = envPositiveInt64("FLICK_PAYLOAD_INLINE_MAX_BYTES", cfg.PayloadInlineMaxBytes); err != nil {
 		return Config{}, err
+	}
+	if cfg.PayloadInlineMaxBytes <= secrets.AEADOverheadBytes {
+		return Config{}, fmt.Errorf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be greater than %d bytes (AES-GCM tag)", secrets.AEADOverheadBytes)
 	}
 	if cfg.MaxFileBytes, err = envPositiveInt64("FLICK_MAX_FILE_BYTES", cfg.MaxFileBytes); err != nil {
 		return Config{}, err
