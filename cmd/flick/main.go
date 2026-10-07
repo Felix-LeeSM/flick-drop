@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -42,6 +43,13 @@ Usage:
   flick version                    Print the client version
 
 Run "flick <command> -h" for the flags of a command.
+
+Flags may go before or after the text or the link, in any order:
+  flick send -ttl 24h "db password"
+  flick send "db password" -ttl 24h
+
+Run "flick send" with nothing to send and it asks for the secret, its lifetime,
+and whether to protect it with a passphrase, one at a time.
 
 Text that begins with a dash needs "--" first, or it is read as a flag:
   flick send -- -----BEGIN...
@@ -105,6 +113,7 @@ func runSend(ctx context.Context, args []string) error {
 	}
 
 	opts := flickcli.SendOptions{TTL: *ttl, ShareOrigin: *shareURL}
+	wantPassphrase := *askPassphrase
 
 	switch {
 	case *filePath != "":
@@ -117,6 +126,26 @@ func runSend(ctx context.Context, args []string) error {
 		}
 		opts.FileBytes = payload
 		opts.FileName = fileNameOf(*filePath)
+	case flags.NArg() == 0 && term.IsTerminal(int(os.Stdin.Fd())):
+		// Nothing to send and a human at the terminal: ask for the parts the
+		// command line left out, one at a time, instead of failing with a
+		// usage error. A pipe or an argument means the caller already knows
+		// what they want, so nothing is asked there.
+		text, err := promptSecretText()
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+		if !flagGiven(flags, "ttl") {
+			if opts.TTL, err = promptTTL(*ttl); err != nil {
+				return err
+			}
+		}
+		if !wantPassphrase {
+			if wantPassphrase, err = promptYesNo("Protect it with a passphrase? [y/N]: "); err != nil {
+				return err
+			}
+		}
 	default:
 		text, err := readText(flags.Args())
 		if err != nil {
@@ -125,7 +154,7 @@ func runSend(ctx context.Context, args []string) error {
 		opts.Text = text
 	}
 
-	if *askPassphrase {
+	if wantPassphrase {
 		passphrase, err := readNewPassphrase()
 		if err != nil {
 			return err
@@ -188,13 +217,19 @@ func runOpen(ctx context.Context, args []string) error {
 		OutputDir:  *outputDir,
 	})
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
-		return salvage(result, err)
+		return salvage(result, rescueDir(*output, *outputDir), err)
 	}
 	if err != nil {
 		return err
 	}
 
 	if result.WrittenPath != "" {
+		if result.FilenameUnreadable {
+			// The payload is separately authenticated, so its content is
+			// sound; only the name failed. Saying so is the recipient's one
+			// hint that the metadata was corrupted or tampered with.
+			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
+		}
 		fmt.Fprintf(os.Stderr, "Saved %s\n", result.WrittenPath)
 		return nil
 	}
@@ -213,9 +248,9 @@ func runOpen(ctx context.Context, args []string) error {
 // exist, so it is put somewhere the user can still reach.
 //
 // Text goes to stdout. A file secret does not: raw bytes written to a terminal
-// are effectively unrecoverable, so it goes to a temp file whose path is named
-// on stderr.
-func salvage(result flickcli.OpenResult, cause error) error {
+// are effectively unrecoverable, so it goes to a file next to the destination
+// the user asked for, whose path is named on stderr.
+func salvage(result flickcli.OpenResult, dir string, cause error) error {
 	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
 	fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
 
@@ -227,7 +262,13 @@ func salvage(result flickcli.OpenResult, cause error) error {
 		return cause
 	}
 
-	rescued, err := os.CreateTemp("", "flick-rescued-*")
+	rescued, err := os.CreateTemp(dir, "flick-rescued-*")
+	if err != nil && dir != "" {
+		// That directory is a likely reason the write failed in the first
+		// place, so the shared temp directory is the last resort rather than
+		// the default: it is where a plaintext lingers longest unnoticed.
+		rescued, err = os.CreateTemp("", "flick-rescued-*")
+	}
 	if err != nil {
 		return fmt.Errorf("%w (and no rescue file could be created: %w)", cause, err)
 	}
@@ -239,17 +280,25 @@ func salvage(result flickcli.OpenResult, cause error) error {
 	return cause
 }
 
+// rescueDir names where a salvaged payload should land: beside the file the
+// user asked for. os.TempDir() is a poor home for a plaintext — many systems
+// do not clear it promptly, and nothing here removes the file.
+func rescueDir(output, outputDir string) string {
+	if output != "" {
+		return filepath.Dir(output)
+	}
+	return outputDir
+}
+
 // readText takes the payload from the argument, or from stdin when none is
-// given. Reading from stdin is what makes `... | flick send` work.
+// given. Reading from stdin is what makes `... | flick send` work. A terminal
+// with no argument never reaches here; runSend asks for the text instead.
 func readText(args []string) (string, error) {
 	if len(args) > 1 {
 		return "", errors.New("give the text as one argument, or pipe it on stdin")
 	}
 	if len(args) == 1 {
 		return args[0], nil
-	}
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", errors.New("nothing to send: give text as an argument, pipe it on stdin, or use -file")
 	}
 	piped, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -264,6 +313,114 @@ func readText(args []string) (string, error) {
 	return text, nil
 }
 
+// errCancelled is Ctrl-D at a prompt: the user asked to stop, so the send is
+// abandoned without an error message that reads like a failure.
+var errCancelled = errors.New("cancelled")
+
+// promptSecretText asks for the payload when `flick send` was run with nothing
+// to send. It is read without echo, like a passphrase: the point of typing a
+// secret at a prompt instead of passing it as an argument is that it stays out
+// of the shell history, and leaving it on screen gives half of that back.
+func promptSecretText() (string, error) {
+	// One line, and said so: the reader stops at the first newline, so a pasted
+	// PEM key would leave its remaining lines to be eaten by the next prompt.
+	fmt.Fprintln(os.Stderr,
+		"Type or paste the secret on one line and press Enter. It is not echoed.")
+	fmt.Fprintln(os.Stderr, "For anything multi-line, use -file or pipe it in instead.")
+	text, err := promptHidden("Secret: ")
+	if err != nil {
+		return "", err
+	}
+	if text == "" {
+		return "", errors.New("nothing to send")
+	}
+	return text, nil
+}
+
+// promptTTL asks how long the secret should live. Enter takes the default, so
+// the common case stays one keystroke.
+//
+// A bad answer is asked again rather than returned as an error: the secret has
+// already been typed at a prompt that does not echo it, and aborting here would
+// make the user type it all over again. The contract bounds are checked here
+// too, not left to flickcli.Send, so "999h" is caught before the passphrase
+// prompt rather than after it.
+func promptTTL(fallback time.Duration) (time.Duration, error) {
+	for {
+		fmt.Fprintf(os.Stderr, "Expires in [%s]: ", fallback)
+		typed, err := readLine()
+		if err != nil {
+			return 0, err
+		}
+		if typed == "" {
+			return fallback, nil
+		}
+		chosen, err := time.ParseDuration(typed)
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "%q is not a duration like 30m or 24h.\n", typed)
+		case chosen < flickcli.MinTTL || chosen > flickcli.MaxTTL:
+			fmt.Fprintf(os.Stderr, "A secret lives between %s and %s.\n", flickcli.MinTTL, flickcli.MaxTTL)
+		default:
+			return chosen, nil
+		}
+	}
+}
+
+func promptYesNo(label string) (bool, error) {
+	fmt.Fprint(os.Stderr, label)
+	typed, err := readLine()
+	if err != nil {
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(typed))
+	return answer == "y" || answer == "yes", nil
+}
+
+// readLine reads one line from stdin a byte at a time. A bufio.Reader would
+// pull whatever follows into a buffer this function then throws away, and what
+// follows a prompt here is often the passphrase reader taking the terminal
+// directly.
+//
+// Ctrl-D on an empty line is a cancel, not an empty answer: reading it as
+// "take the default" would send a secret the user was trying not to send.
+func readLine() (string, error) {
+	line := make([]byte, 0, 32)
+	buf := make([]byte, 1)
+	for {
+		read, err := os.Stdin.Read(buf)
+		if read > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			line = append(line, buf[0])
+		}
+		if errors.Is(err, io.EOF) {
+			if len(line) == 0 {
+				return "", errCancelled
+			}
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	return strings.TrimRight(string(line), "\r"), nil
+}
+
+// flagGiven reports whether a flag was actually written on the command line,
+// as opposed to holding its default. An interactive send asks only about what
+// the caller left out.
+func flagGiven(flags *flag.FlagSet, name string) bool {
+	given := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	return given
+}
+
 // readNewPassphrase prompts twice so a typo does not produce a secret nobody
 // can open. FLICK_PASSPHRASE skips the prompt for scripted use.
 //
@@ -276,11 +433,11 @@ func readNewPassphrase() (string, error) {
 		}
 		return fromEnv, nil
 	}
-	first, err := promptPassphrase("Passphrase: ")
+	first, err := promptHidden("Passphrase: ")
 	if err != nil {
 		return "", err
 	}
-	second, err := promptPassphrase("Confirm passphrase: ")
+	second, err := promptHidden("Confirm passphrase: ")
 	if err != nil {
 		return "", err
 	}
@@ -300,10 +457,10 @@ func readExistingPassphrase() (string, error) {
 		}
 		return fromEnv, nil
 	}
-	return promptPassphrase("Passphrase: ")
+	return promptHidden("Passphrase: ")
 }
 
-func promptPassphrase(label string) (string, error) {
+func promptHidden(label string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		return "", errors.New(
@@ -315,8 +472,14 @@ func promptPassphrase(label string) (string, error) {
 	fmt.Fprint(os.Stderr, label)
 	typed, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
+	if errors.Is(err, io.EOF) {
+		// Ctrl-D here means the same thing it means at every other prompt.
+		// ReadPassword reports it as a read error, which would otherwise
+		// surface as a failure the user did not have.
+		return "", errCancelled
+	}
 	if err != nil {
-		return "", fmt.Errorf("could not read the passphrase: %w", err)
+		return "", fmt.Errorf("could not read that: %w", err)
 	}
 	return string(typed), nil
 }

@@ -31,6 +31,11 @@ Encryption, HTTP calls, and share-link handling belong in
   what makes `flick open <link> > secret.txt` write only the secret.
 - Piped stdout stays byte-exact — no trailing newline is added unless stdout is
   a terminal.
+- `flick send` with nothing to send and a terminal on stdin asks for the parts
+  the command line left out, one at a time. It asks only about those: a flag
+  that was typed is never re-asked, and a pipe or an argument means the caller
+  already decided, so nothing is asked there. The secret itself is read without
+  echo for the same reason it is not a flag value.
 
 ## Releases
 

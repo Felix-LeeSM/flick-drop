@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
 
 // newOpenFlags mirrors the flag set runOpen builds, so the hoisting tests
@@ -240,6 +243,294 @@ func TestUsageNamesBothCommands(t *testing.T) {
 			t.Errorf("usage text does not mention %q", needed)
 		}
 	}
+}
+
+// Running `flick send` with nothing to send used to be a usage error. It now
+// asks, and Enter must keep the default lifetime so the common case stays one
+// keystroke.
+func TestPromptTTLTakesTheDefaultOnAnEmptyLine(t *testing.T) {
+	withStdin(t, "\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != time.Hour {
+				t.Errorf("ttl = %s, want the 1h default", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+	})
+}
+
+func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
+	withStdin(t, "24h\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != 24*time.Hour {
+				t.Errorf("ttl = %s, want 24h", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+	})
+
+	withStdin(t, "tomorrow\n", func() {
+		_, _, err := captureOutput(t, func() error {
+			_, err := promptTTL(time.Hour)
+			return err
+		})
+		if err == nil {
+			t.Error("promptTTL accepted a value that is not a duration")
+		}
+	})
+}
+
+// The secret has already been typed at a prompt that does not echo it, so a
+// mistyped lifetime must be asked again rather than throw the send away.
+func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
+	withStdin(t, "tomorrow\n999h\n24h\n", func() {
+		_, stderr, err := captureOutput(t, func() error {
+			chosen, err := promptTTL(time.Hour)
+			if chosen != 24*time.Hour {
+				t.Errorf("ttl = %s, want 24h", chosen)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatalf("promptTTL: %v", err)
+		}
+		if !strings.Contains(stderr, "not a duration") {
+			t.Errorf("stderr did not explain the bad duration: %q", stderr)
+		}
+		// 999h parses but exceeds the contract's ceiling. Catching it here
+		// keeps the passphrase prompt from running before the rejection.
+		if !strings.Contains(stderr, "A secret lives between") {
+			t.Errorf("stderr did not reject an out-of-range lifetime: %q", stderr)
+		}
+	})
+}
+
+// Ctrl-D at a prompt means stop. Reading it as an empty line would take the
+// default and send a secret the user was trying not to send.
+func TestPromptsTreatEndOfInputAsACancel(t *testing.T) {
+	withStdin(t, "", func() {
+		_, _, err := captureOutput(t, func() error {
+			_, err := promptTTL(time.Hour)
+			return err
+		})
+		if !errors.Is(err, errCancelled) {
+			t.Errorf("promptTTL at EOF = %v, want a cancel", err)
+		}
+	})
+	withStdin(t, "", func() {
+		_, _, err := captureOutput(t, func() error {
+			answered, err := promptYesNo("Protect it? [y/N]: ")
+			if answered {
+				t.Error("EOF was read as yes")
+			}
+			return err
+		})
+		if !errors.Is(err, errCancelled) {
+			t.Errorf("promptYesNo at EOF = %v, want a cancel", err)
+		}
+	})
+}
+
+func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
+	for typed, want := range map[string]bool{
+		"y\n": true, "Y\n": true, "yes\n": true,
+		"\n": false, "n\n": false, "sure\n": false,
+	} {
+		withStdin(t, typed, func() {
+			_, _, err := captureOutput(t, func() error {
+				answered, err := promptYesNo("Protect it? [y/N]: ")
+				if answered != want {
+					t.Errorf("promptYesNo(%q) = %v, want %v", typed, answered, want)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatalf("promptYesNo: %v", err)
+			}
+		})
+	}
+}
+
+// readLine must consume exactly one line: the next reader on this terminal is
+// often the passphrase prompt, and a buffered reader would have swallowed it.
+func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
+	withStdin(t, "24h\nthe next answer\n", func() {
+		first, err := readLine()
+		if err != nil {
+			t.Fatalf("readLine: %v", err)
+		}
+		second, err := readLine()
+		if err != nil {
+			t.Fatalf("readLine: %v", err)
+		}
+		if first != "24h" || second != "the next answer" {
+			t.Errorf("lines = %q and %q", first, second)
+		}
+	})
+}
+
+// A flag that was actually typed must not be asked about again.
+func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
+	flags := newSendFlags()
+	if err := flags.Parse([]string{"-ttl", "1h"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !flagGiven(flags, "ttl") {
+		t.Error("a typed -ttl was reported as absent")
+	}
+	if flagGiven(flags, "passphrase") {
+		t.Error("an untouched -passphrase was reported as given")
+	}
+}
+
+// salvage is the last stop for a secret the server has already destroyed: if it
+// does not reach the user here, nothing else will. Text goes to stdout so a
+// redirect still catches it.
+func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
+	dir := t.TempDir()
+	cause := errors.New("disk full")
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, dir, cause)
+	})
+
+	if !errors.Is(err, cause) {
+		t.Errorf("err = %v, want it to carry the cause", err)
+	}
+	if stdout != "sk-live-value" {
+		t.Errorf("stdout = %q, want the payload", stdout)
+	}
+	if !strings.Contains(stderr, "only remaining copy") {
+		t.Errorf("stderr did not warn that this is the last copy: %q", stderr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a text salvage wrote files: %v", entries)
+	}
+}
+
+// Raw file bytes on a terminal are unrecoverable, so a file secret goes to
+// disk — next to where the user asked for it, not into the shared temp
+// directory that nothing clears.
+func TestSalvageWritesAFileSecretBesideTheRequestedOutput(t *testing.T) {
+	dir := t.TempDir()
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, dir, errors.New("disk full"))
+	})
+
+	if err == nil {
+		t.Fatal("salvage reported success for a secret that could not be written")
+	}
+	if stdout != "" {
+		t.Errorf("file bytes were dumped on stdout: %q", stdout)
+	}
+	rescued := rescuedPath(t, stderr)
+	if filepath.Dir(rescued) != dir {
+		t.Errorf("rescued file = %s, want it inside %s", rescued, dir)
+	}
+	written, readErr := os.ReadFile(rescued)
+	if readErr != nil {
+		t.Fatalf("read rescued file: %v", readErr)
+	}
+	if string(written) != "binary payload" {
+		t.Errorf("rescued payload = %q", written)
+	}
+	info, statErr := os.Stat(rescued)
+	if statErr != nil {
+		t.Fatalf("stat rescued file: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("rescued file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// An unusable output directory is the likeliest reason the write failed in the
+// first place, so it must not take the payload down with it.
+func TestSalvageFallsBackToTheTempDirectoryWhenTheOutputDirectoryIsUnusable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, missing, errors.New("disk full"))
+	})
+
+	if err == nil {
+		t.Fatal("salvage reported success for a secret that could not be written")
+	}
+	rescued := rescuedPath(t, stderr)
+	t.Cleanup(func() { os.Remove(rescued) })
+	written, readErr := os.ReadFile(rescued)
+	if readErr != nil {
+		t.Fatalf("read rescued file: %v", readErr)
+	}
+	if string(written) != "binary payload" {
+		t.Errorf("rescued payload = %q", written)
+	}
+}
+
+func TestRescueDirPrefersTheDirectoryOfTheRequestedOutput(t *testing.T) {
+	if got := rescueDir(filepath.Join("out", "secret.txt"), "."); got != "out" {
+		t.Errorf("rescueDir with -output = %q, want out", got)
+	}
+	if got := rescueDir("", "downloads"); got != "downloads" {
+		t.Errorf("rescueDir without -output = %q, want downloads", got)
+	}
+}
+
+// rescuedPath reads back the path salvage announced on stderr, which is the
+// only way the user learns where their secret went.
+func rescuedPath(t *testing.T, stderr string) string {
+	t.Helper()
+	_, after, found := strings.Cut(stderr, "Payload written to ")
+	if !found {
+		t.Fatalf("stderr never named the rescue file: %q", stderr)
+	}
+	path, _, found := strings.Cut(after, " —")
+	if !found {
+		t.Fatalf("stderr did not terminate the rescue path: %q", stderr)
+	}
+	return path
+}
+
+// captureOutput redirects os.Stdout and os.Stderr into files for the duration
+// of body, so the payload salvage prints can be asserted on.
+func captureOutput(t *testing.T, body func() error) (stdout, stderr string, err error) {
+	t.Helper()
+	dir := t.TempDir()
+	outFile, stdoutErr := os.Create(filepath.Join(dir, "stdout"))
+	errFile, stderrErr := os.Create(filepath.Join(dir, "stderr"))
+	if stdoutErr != nil || stderrErr != nil {
+		t.Fatalf("create capture files: %v %v", stdoutErr, stderrErr)
+	}
+	defer outFile.Close()
+	defer errFile.Close()
+
+	originalOut, originalErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outFile, errFile
+	err = body()
+	os.Stdout, os.Stderr = originalOut, originalErr
+
+	return readFile(t, outFile.Name()), readFile(t, errFile.Name()), err
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
 }
 
 // withStdin swaps os.Stdin for a pipe holding the given content, so readText
