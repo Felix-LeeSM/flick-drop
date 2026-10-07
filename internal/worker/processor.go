@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
@@ -12,7 +13,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const DefaultMaxAttempts = 3
+const (
+	DefaultMaxAttempts = 3
+	JobTimeout         = 30 * time.Second
+)
 
 // tracer instruments job processing. With tracing off (no OTLP endpoint) it is
 // OTel's no-op, so tracer.Start costs nothing. The worker.Process span continues
@@ -114,8 +118,16 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 		Attempt: started.Attempt.Attempt,
 		Started: true,
 	}
-	if err := p.handler.HandleJob(ctx, event); err != nil {
-		return p.finishFailed(ctx, event, string(canonicalPayload), started.Attempt, result, err)
+	jobCtx, cancel := context.WithTimeout(ctx, JobTimeout)
+	defer cancel()
+	jobErr := p.handler.HandleJob(jobCtx, event)
+	if ctx.Err() != nil {
+		// Shutdown is an interruption, not a handler failure. Leave the lease
+		// for redelivery; a cancelled context cannot commit receipt state.
+		return result, ctx.Err()
+	}
+	if jobErr != nil {
+		return p.finishFailed(ctx, event, string(canonicalPayload), started.Attempt, result, jobErr)
 	}
 	if err := p.store.MarkSucceeded(ctx, started.Attempt.ID); err != nil {
 		return result, err
@@ -127,11 +139,17 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 
 func (p *Processor) ProcessMessage(ctx context.Context, payloadJSON []byte) (events.MessageAction, error) {
 	result, err := p.Process(ctx, payloadJSON)
+	if errors.Is(err, ErrInvalidJob) {
+		return events.MessageTerminate, nil
+	}
 	if err != nil {
 		return "", err
 	}
 	if result.DeadLettered {
 		return events.MessageTerminate, nil
+	}
+	if result.AlreadyProcessing {
+		return events.MessageRetry, nil
 	}
 	return events.MessageAck, nil
 }
@@ -149,7 +167,11 @@ func (p *Processor) finishFailed(
 	}
 	result.Failed = true
 
-	if attempt.Attempt < p.maxAttempts {
+	failures, err := p.store.failureCount(ctx, event.JobID)
+	if err != nil {
+		return result, err
+	}
+	if failures < p.maxAttempts {
 		telemetry.JobsProcessed.WithLabelValues(event.Kind, "failed").Inc()
 		return result, jobErr
 	}

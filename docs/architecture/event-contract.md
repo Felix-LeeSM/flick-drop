@@ -74,15 +74,16 @@ Initial consumer defaults:
 ```text
 durable: flick-worker
 ack policy: explicit
-max deliver: 3
+max deliver: unlimited (-1)
 batch size: 8
+retry delay: 5 seconds
 ```
 
 Message disposition:
 
 - valid job processed successfully or already completed: ack
-- duplicate delivery while the same job is already processing: ack
-- transient processing error before the retry limit: nak
+- duplicate delivery while the same job is already processing: delayed nak
+- transient processing error before the retry limit: delayed nak
 - invalid payload: term
 - terminal dead-letter result: term
 
@@ -104,3 +105,28 @@ Expected behavior:
 
 The worker owns `worker.db` and records receipts, attempts, and dead letters.
 The worker calls internal API endpoints for API-owned mutations.
+
+`internal/worker/store.go` claims each attempt for one minute, measured from
+`job_receipts.updated_at`. A delivery during that lease retries without invoking
+the handler or acknowledging the job. After the lease expires, the next delivery
+closes the interrupted attempt and claims a new one in the same transaction.
+This recovers persisted receipts after a crash without resetting live work when
+another worker process starts during a rolling deployment. Receipt state still
+fences late completion by attempt number. Workers sharing a database must use
+the same clock; scaling across separate worker databases remains unsupported.
+
+`internal/worker/processor.go` gives each handler a 30-second context deadline,
+leaving the rest of the lease for cancellation and receipt persistence. Handlers
+must honor that context and remain idempotent: a crash after deletion but before
+completion can repeat a deletion. Shutdown cancellation leaves the receipt for
+lease recovery. Expired attempts are recorded as `failed` with a NULL `error`,
+which distinguishes an unknown outcome from a reported handler failure.
+
+Three recorded handler failures dead-letter a job. Interruptions, active
+duplicates, and receipt-storage errors do not spend that budget. JetStream
+delivery is unlimited because the broker cannot distinguish those cases from
+handler failures. A permanent worker-database failure therefore needs operator
+intervention; it cannot silently exhaust broker delivery and hide cleanup.
+
+For receipts or messages stranded by an older release, see
+[worker cleanup recovery](../runbook/worker-recovery.md).

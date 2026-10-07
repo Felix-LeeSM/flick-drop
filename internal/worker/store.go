@@ -9,6 +9,11 @@ import (
 )
 
 const (
+	// ProcessingLease outlasts JobTimeout so a live handler has time to stop
+	// before another delivery reclaims its receipt. No process-local ownership:
+	// rolling deployments can briefly share the same worker database.
+	ProcessingLease = time.Minute
+
 	StateProcessing = "processing"
 	StateSucceeded  = "succeeded"
 	StateFailed     = "failed"
@@ -123,11 +128,22 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind string) (StartResu
 	if receipt.State == StateDead {
 		return StartResult{}, ErrJobDead
 	}
+	now := s.now().UTC()
 	if !created && receipt.State == StateProcessing {
-		return StartResult{}, ErrJobProcessing
+		if now.Before(receipt.UpdatedAt.Add(ProcessingLease)) {
+			return StartResult{}, ErrJobProcessing
+		}
+		// A lease expiry says nothing about the side effect. Retain the attempt
+		// as interrupted (failed with no error), then replay the idempotent job.
+		// Interruptions do not spend the handler's failure budget.
+		if _, err := tx.ExecContext(ctx, `update job_attempts
+			set result = ?, finished_at = ?, error = null
+			where job_id = ? and result = ?`,
+			AttemptFailed, formatTime(now), jobID, AttemptRunning); err != nil {
+			return StartResult{}, fmt.Errorf("recover interrupted attempt: %w", err)
+		}
 	}
 
-	now := s.now().UTC()
 	attemptNumber := receipt.Attempts + 1
 	result, err := tx.ExecContext(ctx, `update job_receipts
 		set state = ?, attempts = ?, updated_at = ?, last_error = null
@@ -183,6 +199,13 @@ func (s *ReceiptStore) MarkFailed(ctx context.Context, attemptID int64, jobErr e
 		return fmt.Errorf("job error is required")
 	}
 	return s.finishAttempt(ctx, attemptID, AttemptFailed, jobErr)
+}
+
+func (s *ReceiptStore) failureCount(ctx context.Context, jobID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `select count(*) from job_attempts
+		where job_id = ? and result = ? and error is not null`, jobID, AttemptFailed).Scan(&count)
+	return count, err
 }
 
 func (s *ReceiptStore) DeadLetter(ctx context.Context, jobID, kind, payloadJSON string, jobErr error) error {

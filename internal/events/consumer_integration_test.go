@@ -17,7 +17,7 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 		url = "nats://127.0.0.1:4222"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	conn, err := ConnectNATS(url)
@@ -51,6 +51,15 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 	if err := consumer.EnsureConsumer(ctx, stream, subject, durable, 3); err != nil {
 		t.Fatalf("ensure consumer: %v", err)
 	}
+	// Upgrading an existing deployment must remove the broker delivery limit;
+	// only the worker knows which deliveries were real handler failures.
+	if err := consumer.EnsureConsumer(ctx, stream, subject, durable, 0); err != nil {
+		t.Fatalf("upgrade consumer: %v", err)
+	}
+	info, err := consumer.js.ConsumerInfo(stream, durable)
+	if err != nil || info.Config.MaxDeliver != -1 {
+		t.Fatalf("consumer = %+v, error = %v, want unlimited delivery", info, err)
+	}
 	sub, err := consumer.PullSubscribe(ctx, stream, subject, durable)
 	if err != nil {
 		t.Fatalf("pull subscribe: %v", err)
@@ -70,6 +79,22 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 	}
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d, want 1", len(messages))
+	}
+	// Retry more than the former limit, then complete. The first retry uses
+	// the real delayed NAK; the rest use immediate NAK to keep this test short.
+	for retry := range 4 {
+		if retry == 0 {
+			err = messages[0].Nak()
+		} else {
+			err = messages[0].(natsMessage).msg.Nak()
+		}
+		if err != nil {
+			t.Fatalf("retry %d: %v", retry, err)
+		}
+		messages, err = consumer.Fetch(ctx, sub, 1, DefaultRetryDelay+time.Second)
+		if err != nil || len(messages) != 1 {
+			t.Fatalf("retry %d: messages = %d, error = %v", retry, len(messages), err)
+		}
 	}
 
 	result, err := ConsumeMessages(ctx, messages, MessageProcessorFunc(func(_ context.Context, got []byte) (MessageAction, error) {
