@@ -24,6 +24,19 @@ spec:
         - name: web
           image: docker.io/example/flick-web:latest
           imagePullPolicy: IfNotPresent
+          # Only the CSP origin list is needed here — nginx renders it into the
+          # csp.conf snippet at start. The rest of flick-config is API/worker
+          # state the web container has no use for.
+          env:
+            - name: FLICK_CSP_CONNECT_SRC
+              valueFrom:
+                configMapKeyRef:
+                  name: flick-config
+                  key: FLICK_CSP_CONNECT_SRC
+                  # Optional on purpose: the image already defaults it to "",
+                  # so an overlay that replaces flick-config without this key
+                  # must not put every web pod in CreateContainerConfigError.
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

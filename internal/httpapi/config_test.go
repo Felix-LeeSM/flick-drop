@@ -53,3 +53,23 @@ func TestGetConfigFallsBackToDefaultsWhenUnset(t *testing.T) {
 		t.Fatalf("max_file_bytes = %d, want 52428800 (default fallback)", body.MaxFileBytes)
 	}
 }
+
+// TestGetConfigAdvertisesPlaintextInlineCeiling pins /api/config to the
+// plaintext ceiling: the browser compares its plaintext size against it, while
+// PayloadInlineMaxBytes bounds the ciphertext and sizes the request body limit.
+func TestGetConfigAdvertisesPlaintextInlineCeiling(t *testing.T) {
+	fixture := newTestRouterFixture(t, Options{
+		PayloadInlineMaxBytes:    2048,
+		AdvertisedInlineMaxBytes: 2032,
+		MaxFileBytes:             4096,
+	})
+
+	resp := performJSON(t, fixture.router, http.MethodGet, "/api/config", nil)
+	var body configResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if body.PayloadInlineMaxBytes != 2032 {
+		t.Fatalf("payload_inline_max_bytes = %d, want 2032 (advertised plaintext value)", body.PayloadInlineMaxBytes)
+	}
+}

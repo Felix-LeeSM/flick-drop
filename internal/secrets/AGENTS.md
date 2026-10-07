@@ -10,8 +10,10 @@ A secret moves through these states:
 - `active`: ciphertext present, openable until `expires_at`.
 - `pending_upload`: a large secret staged by `CreateLarge` (`store.go:264`)
   awaiting `Finalize` (`store.go:355`). The browser uploads ciphertext to S3
-  via a presigned POST, then calls `/finalize`, which HEADs the object and
-  flips the row to `active` (`activateSecretTx`, `store.go:414`).
+  via a presigned PUT whose signature pins Content-Length, then calls
+  `/finalize`, which HEADs the object, checks its length is exactly the staged
+  plaintext plus the AEAD tag, and flips the row to `active`
+  (`activateSecretTx`, `store.go:414`).
 - reaped: hard-deleted by the expiration reaper (see below).
 
 Small payloads (≤ inline threshold) write a SQLite BLOB inline (`Create`,
