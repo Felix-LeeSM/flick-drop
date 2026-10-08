@@ -1,8 +1,8 @@
 # One-time request links v1
 
 Status: approved v1 contract from #203. #205 implements the inline API and
-SQLite lifecycle. Browser crypto/UI and large-object reservations are separate
-#204/#206/#207 deliveries. Existing send-link formats and CLI vectors are
+SQLite lifecycle. #204 implements browser crypto and #206 implements the inline
+requester/submitter UI. Large-object reservations remain the separate #207 delivery. Existing send-link formats and CLI vectors are
 unchanged. Sender management follows the separate #199 contract.
 
 ## Product and authority
@@ -141,6 +141,39 @@ Chromium Web Crypto. The browser harness bundles the module with Vite and serves
 it through Playwright's intercepted HTTPS origin, with no listener, API, or
 object store. Native RSA-OAEP/AES-GCM and secure contexts are required; the
 included browser check targets Chromium, with no Firefox or Safari validation.
+
+## Browser flow (#206)
+
+`/request` creates a request; `/r/{id}` submits text or one inline file;
+`/r/{id}/receive` checks requester status, cancels, or opens once. The main send
+page links to request creation. Existing Model A/B send formats are unchanged.
+`web/src/lib/api/requests.ts` sends only the selected capability in Authorization,
+uses empty bodies for Open/revoke, and snapshots each encrypted submission body
+with its generation and random attempt token for exact retries.
+
+`web/src/lib/state/request-links.ts` parses role-specific fragments and holds one
+transient submission-link handoff. Only submission links get native Share and QR
+controls. The private retrieval link has a separate copy action and explicitly
+warns about key loss, browser history/sync, clipboard managers, and screenshots.
+A private link without its key still permits status/cancellation; it cannot enable
+Open. The full private link supports reload and another device, but cannot recover
+the separate submission link or a consumed response.
+
+Owner polling starts at ten seconds, runs only while visible, backs off to at most
+120 seconds on failures, and stops at terminal states or expiry. Cancellation
+refreshes status before confirmation and reads server status after a 409 race.
+An unknown Open result never triggers another Open. Explicit 429/503 rejections
+allow another user-triggered Open; the API contract says neither consumes content.
+Plaintext and file object URLs are cleared when leaving or reaching known expiry.
+
+Submitters check the fragment fingerprint before encryption. The current inline
+file ceiling is `min(payloadInlineMaxBytes, maxFileBytes)` from `/api/config`;
+`payloadInlineMaxBytes` is already the plaintext allowance after the GCM tag.
+The UI reports acceptance only from the submit response or matching attempt
+receipt. An unknown response retains the same immutable encrypted body in memory;
+the user checks the attempt and can explicitly retry only that body when waiting.
+Leaving/reloading discards the retry receipt. No private key, plaintext, or filename
+is written to browser storage, Svelte navigation state, HTTP, or error messages.
 
 ## Lifetime and transitions
 

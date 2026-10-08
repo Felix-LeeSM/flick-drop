@@ -17,7 +17,8 @@
 		"test": "vitest --run",
 		"test:browser": "node --test src/lib/components/*.browser.mjs",
 		"test:storage-browser": "node --test src/lib/components/CreateSecretPage.live.mjs",
-		"test:management": "node --test src/lib/components/ManageSecretPage.live.mjs"
+		"test:management": "node --test src/lib/components/ManageSecretPage.live.mjs",
+		"test:requests": "node --test src/lib/components/RequestPages.live.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.0",
