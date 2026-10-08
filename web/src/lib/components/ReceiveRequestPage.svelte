@@ -10,9 +10,9 @@ import {
 	requestLimits
 } from '$lib/api/requests';
 import { DEFAULT_API_BASE_URL } from '$lib/api/secrets';
+import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
 import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
-import RequestFrame from '$lib/components/RequestFrame.svelte';
 import UrlField from '$lib/components/UrlField.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Textarea } from '$lib/components/ui/textarea';
@@ -377,7 +377,7 @@ onMount(() => {
 </script>
 
 <svelte:head><title>Private retrieval - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
-<RequestFrame>
+<DeliveryFrame>
 	<div class="grid gap-2">
 		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
 		<p class="text-sm text-muted-foreground">Private requester page. Checking status does not open the content.</p>
@@ -424,5 +424,5 @@ onMount(() => {
 	{/if}
 	{#if snapshot && !terminal}<Button variant="destructive" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
 	<a href={resolve('/request')} class="py-3 text-center text-sm underline underline-offset-4">Create another request</a>
-</RequestFrame>
+</DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />

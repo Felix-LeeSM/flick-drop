@@ -30,22 +30,18 @@ import {
 	type TtlSeconds
 } from '$lib/api/secrets';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
+import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
+import LifetimePicker from '$lib/components/LifetimePicker.svelte';
 import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
 import SuccessCheck from '$lib/components/SuccessCheck.svelte';
-import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 import UrlField from '$lib/components/UrlField.svelte';
-import { Button, buttonVariants } from '$lib/components/ui/button';
+import { Button } from '$lib/components/ui/button';
 import { Checkbox } from '$lib/components/ui/checkbox';
 import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
 import { Textarea } from '$lib/components/ui/textarea';
-import {
-	DEFAULT_TTL_SECONDS,
-	formatTtlRange,
-	MAX_TTL_SECONDS,
-	MIN_TTL_SECONDS
-} from '$lib/config/ttl';
+import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, MIN_TTL_SECONDS } from '$lib/config/ttl';
 import {
 	buildEnvelope,
 	CREDENTIAL_TEMPLATES,
@@ -73,18 +69,6 @@ import { cn, formatBytes } from '$lib/utils';
 type StatusKind = 'idle' | 'encrypting' | 'saving' | 'error' | FileUploadProgress['stage'];
 type CreateMode = 'text' | 'file' | CredentialType;
 
-const ttlUnitFactor: Record<'minutes' | 'hours' | 'days', number> = {
-	minutes: 60,
-	hours: 3600,
-	days: 86_400
-};
-const ttlPresets: Array<{ label: string; value: number }> = [
-	{ label: '10 min', value: 600 },
-	{ label: '1 hour', value: 3600 },
-	{ label: '24 hours', value: 86_400 },
-	{ label: '7 days', value: 604_800 }
-];
-
 // File size limits come from the server at boot (GET /api/config). They start at
 // the built-in defaults so the create flow is usable immediately, then settle
 // once the fetch resolves. The server re-enforces both limits, so a stale
@@ -102,7 +86,7 @@ const credentialIconComponents = {
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
-// One flat list so the expandable type bar renders as a single row of buttons.
+// Stable cells keep every type name visible without moving pointer targets.
 const modeOptions: Array<{ type: CreateMode; label: string; icon: typeof ListPlusIcon }> = [
 	{ type: 'text', label: 'Text', icon: TypeIcon },
 	{ type: 'file', label: 'File', icon: FileUpIcon },
@@ -121,11 +105,7 @@ let passphrase = $state('');
 // generates a random key carried in the URL fragment. See security-model.md.
 let usePassphrase = $state(true);
 let revealPassphrase = $state(false);
-let presetSeconds = $state(DEFAULT_TTL_SECONDS);
-let customActive = $state(false);
-let customValue = $state(2);
-let customUnit = $state<'minutes' | 'hours' | 'days'>('days');
-const ttlSeconds = $derived(customActive ? customValue * ttlUnitFactor[customUnit] : presetSeconds);
+let ttlSeconds = $state(DEFAULT_TTL_SECONDS);
 // pickedFiles is what the user chose; selectedFile is what actually uploads —
 // the same File when one was picked, or the zipped bundle when several were.
 let pickedFiles = $state<File[]>([]);
@@ -185,6 +165,7 @@ const hasCreatePayload = $derived(
 const canCreate = $derived(
 	hasCreatePayload &&
 		(!usePassphrase || passphrase.length > 0) &&
+		Number.isInteger(ttlSeconds) &&
 		ttlSeconds >= MIN_TTL_SECONDS &&
 		ttlSeconds <= MAX_TTL_SECONDS &&
 		!isCreating &&
@@ -532,20 +513,10 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 	<title>Create secret - Flick</title>
 </svelte:head>
 
-<main class="min-h-screen px-3 py-4 text-foreground sm:px-5 sm:py-6">
-	<div class="mx-auto grid w-full max-w-xl gap-8">
-		<header class="flex items-center justify-between gap-3">
-			<a class="flex items-center gap-2.5" href={resolve('/')}>
-				<span class="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-					<LockKeyholeIcon class="size-4" aria-hidden="true" />
-				</span>
-				<span class="font-serif text-lg leading-none">Flick</span>
-			</a>
-			<nav class="flex items-center gap-2">
-				<a href={resolve('/request')} class="px-2 py-3 text-sm underline underline-offset-4">Request a secret</a>
-				<ThemeToggle />
-			</nav>
-		</header>
+<DeliveryFrame>
+	{#snippet navigation()}
+		<a href={resolve('/request')} class="px-2 py-3 text-sm underline underline-offset-4">Request a secret</a>
+	{/snippet}
 
 		{#if hasResult}
 			<section class="grid gap-7">
@@ -624,12 +595,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
-					<!-- Expandable action bar: every type stays visible as an icon, and the
-					     labels expand together on hover or keyboard focus. The button's
-					     aria-label carries the name, so the icon and the visual label are
-					     hidden from assistive tech to avoid a doubled announcement. -->
+
 					<div
-						class="type-bar flex w-fit max-w-full flex-wrap gap-1 rounded-2xl border border-border bg-card p-1.5 md:flex-nowrap md:rounded-full"
+						class="grid grid-cols-3 gap-1 rounded-xl border border-border bg-card p-1.5 sm:grid-cols-6"
 						role="group"
 						aria-label="Secret type"
 					>
@@ -640,10 +608,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								variant={mode === option.type ? 'toggleActive' : 'ghost'}
 								size="seg"
 								class={cn(
-									'gap-0 rounded-full border-transparent px-2.5',
+									'h-11 w-full min-w-0 gap-1.5 rounded-lg border-transparent px-1 text-xs transition-colors active:not-aria-[haspopup]:translate-y-0',
 									mode !== option.type && 'text-muted-foreground'
 								)}
-								aria-label={option.label}
 								aria-pressed={mode === option.type}
 								disabled={isCreating}
 								onclick={() => {
@@ -651,7 +618,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								}}
 							>
 								<Icon class="size-4" aria-hidden="true" />
-								<span class="type-label" aria-hidden="true">{option.label}</span>
+								<span>{option.label}</span>
 							</Button>
 						{/each}
 					</div>
@@ -823,68 +790,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						{/if}
 					</div>
 
-					<div class="grid gap-2.5">
-						<span class="text-sm font-medium">Expires after</span>
-						<div class="flex flex-wrap items-center gap-2" role="group" aria-label="Secret lifetime">
-							{#each ttlPresets as option (option.value)}
-								<Button
-									type="button"
-									variant={!customActive && ttlSeconds === option.value ? 'toggleActive' : 'toggle'}
-									size="pill"
-									aria-pressed={!customActive && ttlSeconds === option.value}
-									disabled={isCreating}
-									onclick={() => {
-										presetSeconds = option.value;
-										customActive = false;
-									}}
-								>
-									{#if !customActive && ttlSeconds === option.value}
-										<ClockIcon class="size-3.5" aria-hidden="true" />
-									{/if}
-									{option.label}
-								</Button>
-							{/each}
-							<div
-								class={`${buttonVariants({
-									variant: customActive ? 'toggleActive' : 'toggle',
-									size: 'pill'
-								})} px-1.5`}
-							>
-								<input
-									type="text"
-									inputmode="numeric"
-									size={Math.max(2, String(customValue).length)}
-									aria-label="Custom lifetime value"
-									placeholder="2"
-									value={customValue > 0 ? customValue : ''}
-									class="min-w-10 border-0 bg-transparent p-0 text-center font-mono text-xs leading-none outline-none sm:text-sm"
-									disabled={isCreating}
-									onfocus={() => (customActive = true)}
-									oninput={(event) => {
-										customActive = true;
-										const digits = event.currentTarget.value.replace(/\D/g, '');
-										event.currentTarget.value = digits;
-										customValue = digits === '' ? 0 : Number(digits);
-									}}
-								/>
-								<select
-									bind:value={customUnit}
-									aria-label="Custom lifetime unit"
-									class="cursor-pointer appearance-none border-0 bg-transparent p-0 font-mono text-xs leading-none outline-none sm:text-sm"
-									onchange={() => (customActive = true)}
-								>
-									<option value="minutes">min</option>
-									<option value="hours">hours</option>
-									<option value="days">days</option>
-								</select>
-							</div>
-						</div>
-						{#if ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS}
-							<p class="text-sm text-destructive" role="alert" aria-live="assertive">
-								{formatTtlRange(MIN_TTL_SECONDS, MAX_TTL_SECONDS)}
-							</p>
-						{/if}
-					</div>
+					<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" />
 
 					<div class="grid gap-3">
 						<Button
@@ -938,48 +844,6 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 			<a href={resolve('/guides/password-sharing/')} class="py-2 underline underline-offset-4">Sharing passwords</a>
 			<a href={resolve('/guides/temporary-file-sharing/')} class="py-2 underline underline-offset-4">Sharing temporary files</a>
 		</nav>
-	</div>
-</main>
+</DeliveryFrame>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />
-
-<style>
-/* Type bar labels. Touch and narrow viewports keep every label visible, so the
-   collapse only applies where a fine pointer can hover the bar and the row has
-   room to stay on one line. */
-.type-label {
-	margin-left: 0.5rem;
-}
-
-@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
-	.type-label {
-		display: inline-block;
-		max-width: 0;
-		margin-left: 0;
-		overflow: hidden;
-		white-space: nowrap;
-		opacity: 0;
-		filter: blur(3px);
-		transition:
-			max-width 350ms cubic-bezier(0.22, 1, 0.36, 1),
-			margin-left 350ms cubic-bezier(0.22, 1, 0.36, 1),
-			opacity 180ms ease,
-			filter 240ms ease;
-	}
-
-	/* Hover or focus anywhere in the bar expands all labels at once. */
-	.type-bar:hover .type-label,
-	.type-bar:focus-within .type-label {
-		max-width: 5rem;
-		margin-left: 0.5rem;
-		opacity: 1;
-		filter: blur(0);
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.type-label {
-		transition: none;
-	}
-}
-</style>

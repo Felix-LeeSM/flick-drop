@@ -1,12 +1,12 @@
 <script lang="ts">
+import { LockKeyholeIcon, ShieldCheckIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { createRequestApiClient } from '$lib/api/requests';
-import RequestFrame from '$lib/components/RequestFrame.svelte';
+import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
+import LifetimePicker from '$lib/components/LifetimePicker.svelte';
 import { Button } from '$lib/components/ui/button';
-import { Input } from '$lib/components/ui/input';
-import { Label } from '$lib/components/ui/label';
 import {
 	DEFAULT_TTL_SECONDS,
 	formatTtlRange,
@@ -26,7 +26,10 @@ import {
 } from '$lib/state/request-links';
 
 const api = createRequestApiClient();
-let ttl = $state(DEFAULT_TTL_SECONDS / 60);
+let ttl = $state(DEFAULT_TTL_SECONDS);
+const validTtl = $derived(
+	Number.isInteger(ttl) && ttl >= MIN_TTL_SECONDS && ttl <= MAX_TTL_SECONDS
+);
 let busy = $state(false);
 let error = $state('');
 let unknown = $state(false);
@@ -48,7 +51,7 @@ async function create(): Promise<void> {
 	if (busy) {
 		return;
 	}
-	const seconds = ttl * 60;
+	const seconds = ttl;
 	if (!Number.isInteger(seconds) || seconds < MIN_TTL_SECONDS || seconds > MAX_TTL_SECONDS) {
 		error = formatTtlRange(MIN_TTL_SECONDS, MAX_TTL_SECONDS);
 		return;
@@ -99,24 +102,24 @@ async function create(): Promise<void> {
 </script>
 
 <svelte:head><title>Request a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
-<RequestFrame>
-	<div class="grid gap-2">
-		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>Request a secret</h1>
-		<p class="text-sm text-muted-foreground">Let someone send you text or one file. Only your private retrieval link can decrypt it, once.</p>
+<DeliveryFrame>
+	{#snippet navigation()}
+		<a href={resolve('/')} class="px-2 py-3 text-sm underline underline-offset-4">Send a secret</a>
+	{/snippet}
+	<div class="grid gap-1.5">
+		<p class="micro flex items-center gap-1.5 text-muted-foreground">
+			<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
+			end-to-end encrypted · one-time request
+		</p>
+		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>Request a secret</h1>
+		<p class="text-sm text-muted-foreground">Get a link for someone to send you text or a file, once.</p>
 	</div>
 	<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void create(); }}>
-		<div class="grid gap-2">
-			<Label for="request-lifetime">Expires after (minutes)</Label>
-			<Input id="request-lifetime" type="number" min={MIN_TTL_SECONDS / 60} max={MAX_TTL_SECONDS / 60} step="1" bind:value={ttl} required disabled={busy} />
-			<p class="text-sm text-muted-foreground">The deadline starts now. A submission does not extend it.</p>
+		<div class="grid gap-2.5">
+			<LifetimePicker bind:seconds={ttl} disabled={busy} groupLabel="Request lifetime" />
+			<p class="text-sm text-muted-foreground">Starts when you create the link. Submitting does not extend it.</p>
 		</div>
-		<aside class="grid gap-2 rounded-xl bg-muted/40 p-5 text-sm">
-			<strong>Save your private retrieval link.</strong>
-			<p>It contains your decryption key. Anyone with the complete link can retrieve the content. Browser history and sync, clipboard managers, and screenshots may retain it.</p>
-			<p>You can reopen the complete link on another device until it expires. Losing the link or its key means losing the content; Flick cannot recover it.</p>
-		</aside>
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
-		<Button type="submit" class="h-11" disabled={busy}>{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
+		<Button type="submit" class="h-11 w-full shadow-lg shadow-primary/25" disabled={busy || !validTtl}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
 	</form>
-	<a href={resolve('/')} class="py-3 text-center text-sm underline underline-offset-4">Send a secret instead</a>
-</RequestFrame>
+</DeliveryFrame>
