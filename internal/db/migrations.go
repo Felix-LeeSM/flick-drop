@@ -44,6 +44,17 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at datetime not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
+		`create table if not exists object_reconciliation_cursor (
+            id integer primary key check (id = 1),
+            continuation_token text not null default '',
+            generation integer not null default 0
+        )`,
+		`insert or ignore into object_reconciliation_cursor (id) values (1)`,
+		`create table if not exists object_reconciliation_pending (
+            object_key text primary key,
+            job_id text not null unique
+        )`,
+		`create index if not exists idx_secrets_storage_key on secrets(storage_key)`,
 		// No FK: early payload reclamation must preserve the sender outcome.
 		`create table if not exists secret_management (
 			secret_id text primary key,

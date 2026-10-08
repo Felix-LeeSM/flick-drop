@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // rateLimiter is a per-key token bucket limiter with no external dependencies.
@@ -87,8 +89,17 @@ func (rl *rateLimiter) cleanup() {
 // middleware applies the limiter keyed by client IP + request path. Requests
 // over the limit get 429 with a Retry-After hint.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
+	return rl.middlewareByKey(next, func(r *http.Request) string { return r.URL.Path })
+}
+
+// Both management actions spend the same client/delivery bucket.
+func (rl *rateLimiter) managementMiddleware(next http.Handler) http.Handler {
+	return rl.middlewareByKey(next, func(r *http.Request) string { return chi.URLParam(r, "id") })
+}
+
+func (rl *rateLimiter) middlewareByKey(next http.Handler, resource func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := rl.clientIP(r) + "|" + r.URL.Path
+		key := rl.clientIP(r) + "|" + resource(r)
 		if !rl.allow(key, time.Now()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")

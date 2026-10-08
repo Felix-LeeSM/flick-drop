@@ -47,6 +47,7 @@ type ObjectInfo struct {
 
 // ObjectStore is the surface the secrets store depends on for large payloads.
 type ObjectStore interface {
+	List(ctx context.Context, prefix, cursor string, limit int) (ObjectPage, error)
 	PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error)
 	Head(ctx context.Context, key string) (ObjectInfo, error)
 	Get(ctx context.Context, key string) ([]byte, error)

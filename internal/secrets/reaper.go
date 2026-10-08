@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -121,7 +122,13 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 // and enqueues an object-delete event for any S3-backed row — all in one
 // transaction. A failure rolls the claim back, leaving reclaim_enqueued_at NULL
 // so the next tick retries. Returns the number of secrets reaped.
-func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
+func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
+	claimed, expiryErr := r.claimExpired(ctx)
+	_, reconciliationErr := r.ReconcileOnce(ctx)
+	return claimed, errors.Join(expiryErr, reconciliationErr)
+}
+
+func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 	ctx, span := tracer.Start(ctx, "secrets.Reaper.ClaimOnce")
 	defer func() { telemetry.EndSpan(span, err) }()
 
@@ -131,7 +138,12 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 	// reclaimable; used by the CASE in claimReclaimableSQL for fair ordering.
 	orphanTTLModifier := fmt.Sprintf("+%d seconds", int(r.pendingTTL.Seconds()))
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire reaper connection: %w", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin reaper claim tx: %w", err)
 	}
@@ -174,6 +186,7 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 	}
 
 	if err := tx.Commit(); err != nil {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
 	}
 	// Record the reclaim after the commit so a rolled-back tick does not bump

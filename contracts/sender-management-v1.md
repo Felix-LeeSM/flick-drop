@@ -2,10 +2,12 @@
 
 Status: accepted design for [#199](https://github.com/Felix-LeeSM/flick-drop/issues/199),
 [#200](https://github.com/Felix-LeeSM/flick-drop/issues/200) implements capability
-issuance, status, and bounded metadata retention. Cancellation/object reconciliation
-in [#201](https://github.com/Felix-LeeSM/flick-drop/issues/201) and the browser flow
-in [#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) remain planned.
-`openapi.yaml` describes implemented endpoints; `/revoke` is not available yet.
+issuance, status, and bounded metadata retention.
+[#201](https://github.com/Felix-LeeSM/flick-drop/issues/201) implements cancellation
+and recurring object reconciliation. The browser flow in
+[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) remains planned.
+`openapi.yaml` describes implemented public endpoints; worker acknowledgements
+are defined in [internal API](internal-api.md).
 
 ## Capability and browser custody
 
@@ -54,7 +56,7 @@ original creation session. Use the copy you saved or create a new delivery."
 A management visit must never call the recipient `/open` endpoint. No persistent
 browser history of deliveries is introduced.
 
-## HTTP surface and planned cancellation
+## HTTP surface and cancellation
 
 All field names below belong to contract v1. Existing create request fields,
 recipient routes, encryption formats, and finalize request/response stay valid.
@@ -77,7 +79,7 @@ legacy clients need no new commands or request fields.
 | Request | Success | Purpose |
 | --- | --- | --- |
 | `GET /api/secrets/{id}/management` | `200` status snapshot | Read without consuming |
-| `POST /api/secrets/{id}/revoke` with `{}` (planned) | `200` cancelled snapshot | Cancel active/pending delivery |
+| `POST /api/secrets/{id}/revoke` with `{}` | `200` cancelled snapshot | Cancel active/pending delivery |
 
 Both requests require the bearer token for that ID. The snapshot contains only
 `id`, `status`, `expires_at`, `management_expires_at`, and `can_cancel`.
@@ -88,7 +90,8 @@ recipient URL, or the raw management token again.
 Missing, malformed, wrong-ID, wrong, expired, and unknown tokens/records return
 the same `404` error code `management_unavailable`, with no status fields.
 Authenticated cancellation of `opened`, `locked`, or `unavailable` returns `409`
-code `not_cancellable` plus the same safe status snapshot. Repeated cancellation
+code `not_cancellable` plus the same safe status snapshot, encoded as
+`{"error":{"code":"not_cancellable","message":"Delivery cannot be cancelled"},"status":{...}}`. Repeated cancellation
 of `cancelled` returns `200`; it does not schedule duplicate immediate jobs.
 Malformed JSON returns `400`; rate limits use `429`; transient failures use
 `503` and must not masquerade as a terminal state. Apply the existing
@@ -170,7 +173,7 @@ Worker deletion is asynchronous and idempotent under existing retries and
 dead-letter handling. Cancellation does not revoke ciphertext already released,
 erase recipient copies, or guarantee physical erasure from storage/backups.
 
-## Planned late PUT cleanup without a completion deadline
+## Late PUT cleanup without a completion deadline
 
 A presigned PUT is not revoked by an API state change. URL expiry limits request
 authorization, not a proven upper bound on completion of requests already

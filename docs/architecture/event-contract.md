@@ -138,17 +138,45 @@ live processing lease still expires before recovery can change its receipt.
 For receipts or messages stranded by an older release, see
 [worker cleanup recovery](../runbook/worker-recovery.md).
 
-## Planned M8 Cancellation and Reconciliation
+## M8 Cancellation and Reconciliation
 
-[Sender management v1](../../contracts/sender-management-v1.md) specifies future
-cancellation and late-PUT cleanup. Cancellation commits its outcome, API access
-block, inline removal, and required outbox rows together. Existing deletion job
-kinds and reason `manual` cover cancellation; no management token enters a job.
+[Sender management v1](../../contracts/sender-management-v1.md) cancellation commits
+its outcome, API access block, inline removal, and required outbox rows together.
+Existing deletion kinds and reason `manual` cover cancellation. Recurring scans
+use `delete_oci_object` with reason `orphan`; the event JSON shape is unchanged.
 
-Recurring object reconciliation needs at most one pending job per object key,
-a durable API-owned listing cursor, and a worker-to-API terminal acknowledgement
-so a later object appearance can schedule a fresh job ID. A successful receipt
-must not suppress deletion of a later PUT. Terminal acknowledgement retries and
-receipt-based crash recovery are part of #201; publish the internal endpoint
-contract and update worker behavior together. Do not expire a pending claim
-merely because a guessed upload or worker time limit passed.
+The API scans one bounded page of `managed/secrets/` per reaper tick and keeps one
+pending reconciliation job per object key plus a durable, generation-fenced cursor.
+A scan never queues deletion of an unexpired live active or pending upload.
+Database/list/enqueue failures cannot be treated as an absent live object or an
+empty successful page. Claims have no lease timeout.
+
+For every `delete_oci_object` in `managed/secrets/`, the worker persists the
+terminal success/dead receipt first, then calls
+`POST /internal/object-reconciliation/ack` with its object key and job ID, before
+NATS Ack/Term. The [internal endpoint contract](../../contracts/internal-api.md)
+defines authentication and idempotency. Immediate cleanup jobs also acknowledge;
+an ID that has no matching reconciliation claim is a harmless no-op.
+
+API acknowledgement failures retry independently of the handler failure budget.
+After a crash or terminal redelivery, the worker repeats the acknowledgement
+without repeating DELETE. Both success and dead-letter acknowledgements release
+the matching pending claim, allowing a subsequent listing to queue a fresh job ID
+if an object remains or appears later. A stale acknowledgement cannot remove a
+newer claim. A dead-letter receipt still records failure; it does not prove erasure.
+
+For an upgrade, replace **all** workers with the acknowledgement-capable version
+before enabling the new API scanner. Wait for every old worker pod to disappear,
+including terminating pods; Deployment rollout readiness alone is insufficient.
+An old worker can DELETE and NATS Ack without releasing the API claim. If a late
+PUT follows, that claim prevents later scans from scheduling another deletion.
+
+During the worker-first rollout, an old API returns HTTP 404 for the acknowledgement
+endpoint. The updated worker retains the NATS delivery for retry until the API is
+upgraded. Never roll back a worker to a version without acknowledgement support
+while reconciliation jobs or claims can exist, even if the API is rolled back.
+See the [safe upgrade procedure](../runbook/k3s-base.md#apply).
+
+A worker with object storage disabled fails managed deletions instead of reporting
+success. Recurring cleanup is eventual while the API, broker, worker, listing, and
+delete permissions are available; no finite PUT-completion or deletion SLA is assumed.

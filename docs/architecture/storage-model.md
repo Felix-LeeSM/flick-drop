@@ -81,20 +81,19 @@ Cleanup jobs are idempotent:
 - missing object-storage object: success
 - already consumed/expired: success
 
-## M8 Management Retention and Planned Late-Upload Reconciliation
+## M8 Management Retention and Late-Upload Reconciliation
 
 [Sender management v1](../../contracts/sender-management-v1.md) defines the
 management lifecycle. #200 implements management records, status, and expiry;
-object reconciliation remains planned in #201. Management hashes and minimal terminal outcomes expire at the
+#201 implements cancellation and object reconciliation. Management hashes and minimal terminal outcomes expire at the
 original secret deadline. Early payload cleanup does not erase that outcome;
 expiry sweeps purge management records and consumed secret metadata after open
-or lockout. Cancellation remains planned.
+or lockout. Cancellation removes its live secret and payload in the same transaction
+as any required object-delete job.
 No account history or content-retention extension is introduced.
 
 New managed S3 payloads use the exclusive, never-reused `managed/secrets/{id}` namespace.
-Immediate transactional cleanup jobs remain the existing deletion path. Planned
-recurring
-API-owned `ListObjectsV2` reconciliation of `managed/secrets/` supplies the second path:
+Immediate transactional cleanup jobs remain the existing deletion path. Recurring API-owned `ListObjectsV2` reconciliation of `managed/secrets/` supplies the second path:
 check live-row protection, enqueue deletion through the outbox, and let workers
 delete. Persisted pagination and bounded per-key pending claims survive restarts.
 Each late reappearance needs a fresh job ID after the preceding job terminates.
@@ -107,5 +106,8 @@ and retention locks remain operator-owned residual risks. Failed listing or
 blocked deletion must stay visible and retryable, not count as successful
 erasure. No new bucket-setting startup gate or automatic policy change is
 introduced. Provider lifecycle is an optional backstop, not an assumed
-configuration or deletion SLA. #201 implements the contract's failure recovery
-and pending-claim acknowledgements.
+configuration or deletion SLA. The API stores a single generation-fenced listing cursor and one pending job ID
+per key. Each tick gives expiry and listing their own bounded batch; a failed
+expiry batch does not prevent listing. Invalid provider cursors restart a pass;
+other listing failures retain the cursor and claims for retry. The worker
+acknowledges terminal receipts through the [internal API](../../contracts/internal-api.md).

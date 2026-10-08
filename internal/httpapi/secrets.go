@@ -513,27 +513,71 @@ func (s Server) createSecretBodyLimit() int64 {
 	return base64PayloadLimit + createBodyOverheadLimit
 }
 
-func (s Server) getManagementStatus(w http.ResponseWriter, r *http.Request) {
+type managementStatusResponse struct {
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	ExpiresAt           string `json:"expires_at"`
+	ManagementExpiresAt string `json:"management_expires_at"`
+	CanCancel           bool   `json:"can_cancel"`
+}
+
+func managementResponse(status secrets.ManagementStatus) managementStatusResponse {
+	return managementStatusResponse{status.ID, status.Status, status.ExpiresAt.Format(timeFormat), status.ExpiresAt.Format(timeFormat), status.CanCancel}
+}
+
+func managementBearer(r *http.Request) string {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || len(r.Header.Values("Authorization")) != 1 {
-		token = ""
+		return ""
 	}
-	status, err := s.secrets.Management(r.Context(), chi.URLParam(r, "id"), token)
+	return token
+}
+
+func writeManagementError(w http.ResponseWriter, err error) {
 	if errors.Is(err, secrets.ErrManagementUnavailable) {
 		writeError(w, http.StatusNotFound, "management_unavailable", "management link is unavailable")
+	} else {
+		writeError(w, http.StatusServiceUnavailable, "management_status_failed", "management status is temporarily unavailable")
+	}
+}
+
+func (s Server) getManagementStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.secrets.Management(r.Context(), chi.URLParam(r, "id"), managementBearer(r))
+	if err != nil {
+		writeManagementError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, managementResponse(status))
+}
+
+func (s Server) revokeSecret(w http.ResponseWriter, r *http.Request) {
+	id, token := chi.URLParam(r, "id"), managementBearer(r)
+	// Authenticate before interpreting the cancellation body; wrong credentials
+	// receive the same unavailable response regardless of the delivery's state.
+	if _, err := s.secrets.Management(r.Context(), id, token); err != nil {
+		writeManagementError(w, err)
+		return
+	}
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
+	var body map[string]json.RawMessage
+	if err := decoder.Decode(&body); err != nil || body == nil || len(body) != 0 || decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be an empty JSON object")
+		return
+	}
+	status, err := s.secrets.Revoke(r.Context(), id, token)
+	if errors.Is(err, secrets.ErrNotCancellable) {
+		writeJSON(w, http.StatusConflict, struct {
+			Error  errorBody                `json:"error"`
+			Status managementStatusResponse `json:"status"`
+		}{errorBody{"not_cancellable", "Delivery cannot be cancelled"}, managementResponse(status)})
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "management_status_failed", "management status is temporarily unavailable")
+		writeManagementError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, struct {
-		ID                  string `json:"id"`
-		Status              string `json:"status"`
-		ExpiresAt           string `json:"expires_at"`
-		ManagementExpiresAt string `json:"management_expires_at"`
-		CanCancel           bool   `json:"can_cancel"`
-	}{status.ID, status.Status, status.ExpiresAt.Format(timeFormat), status.ExpiresAt.Format(timeFormat), status.CanCancel})
+	writeJSON(w, http.StatusOK, managementResponse(status))
 }
 
 func managementNoStore(next http.Handler) http.Handler {
@@ -541,4 +585,28 @@ func managementNoStore(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
+	decoder.DisallowUnknownFields()
+	var req struct {
+		JobID     string `json:"job_id"`
+		ObjectKey string `json:"object_key"`
+	}
+	if err := decoder.Decode(&req); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid cleanup acknowledgement")
+		return
+	}
+	err := s.secrets.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
+	if errors.Is(err, secrets.ErrInvalidInput) {
+		writeError(w, http.StatusBadRequest, "invalid_cleanup", "invalid cleanup acknowledgement")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "cleanup_ack_failed", "cleanup acknowledgement is temporarily unavailable")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

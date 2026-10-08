@@ -52,6 +52,12 @@ Directory structure:
   reads authenticated outcomes without loading payloads, and purges managed
   metadata at the original expiry. `reaper.go:ClaimOnce` calls the bounded purge
   even for consumed managed secrets; legacy consumed-row retention is unchanged.
+- `management.go:Revoke` authenticates and commits cancellation with payload
+  deletion and the required object-delete outbox record. A failed commit must
+  roll back on the exclusively owned SQLite connection before releasing it.
+- `reconciliation.go:ReconcileOnce` scans only `managed/secrets/`, protects live
+  rows, and commits the generation-fenced cursor with per-key pending jobs.
+  `Store.AcknowledgeObjectCleanup` clears only the matching key/job-ID claim.
 - Do not create generic utility folders.
 
 Rules:
