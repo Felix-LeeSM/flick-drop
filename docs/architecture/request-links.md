@@ -136,16 +136,27 @@ an accepted payload, reset TTL, or cancel an accepted submission. Every lookup
 checks the deadline even when the reaper is delayed. No status claims a human
 has read the data: consumed means the server authorized ciphertext release.
 
-Every submission has a client-generated random 32-byte `attempt_token`, known
+Every request has a monotonically increasing integer `generation`,
+starting at 1 and returned in submission instructions. Every submission,
+reservation, finalize, abandon, and attempt-status body must carry that value.
+The API accepts only the current generation; expired or abandoned reservations
+increment the generation atomically before returning to waiting. Permit at most
+16 generations per request to bound reservation churn; after generation 16 ends,
+the request becomes unavailable instead of accepting another attempt or wrapping.
+The UI asks for a new request link when that budget is exhausted. A delayed generation
+1 upload cannot become a new attempt after generations 1 and 2 have ended.
+No list of old attempt hashes is retained; stale-generation status is unavailable.
+
+Every submission also has a client-generated random 32-byte `attempt_token`, known
 before the first request and sent in the JSON body only where specified below.
-The API stores its hash plus a digest over the accepted immutable envelope,
+The API stores the current generation, token hash, and a digest over the immutable envelope,
 kind, size, and inline ciphertext (or expected large-object checksum). This is
 a bounded retry receipt, retained only to request expiry. Duplicate submission
 with the same token and exact content returns the previous outcome without
 another transition; a different body/token conflicts. A submitter may query its
 attempt status using submission authorization and the attempt token in a POST
 body after a lost response. Status returns no ciphertext or owner token.
-Clients retry only that exact immutable attempt; they never regenerate an
+Clients retry only that exact immutable generation and attempt; they never regenerate an
 encryption key or new attempt automatically after an unknown outcome.
 
 Creation response loss cannot recover server-issued tokens. Explain the unknown
@@ -163,15 +174,15 @@ return `503 storage_unavailable` and do not consume or finalize.
 | Method and path | Authorization | Request / response |
 | --- | --- | --- |
 | POST `/` | None; create rate limit | public_key, ttl_seconds → id, expires_at, submission_token, retrieval_token |
-| GET `/{id}` | Submission token | public_key, fingerprint, expires_at, can_submit; no ciphertext |
-| POST `/{id}/submit` | Submission token | attempt_token, kind, size_bytes, envelope, ciphertext → submitted receipt |
-| POST `/{id}/attempt` | Submission token | attempt_token → waiting/uploading/accepted/unavailable; no owner details |
+| GET `/{id}` | Submission token | public_key, fingerprint, expires_at, generation, can_submit; no ciphertext |
+| POST `/{id}/submit` | Submission token | generation, attempt_token, kind, size_bytes, envelope, ciphertext → submitted receipt |
+| POST `/{id}/attempt` | Submission token | generation, attempt_token → waiting/uploading/accepted/unavailable; no owner details |
 | GET `/{id}/owner` | Retrieval token | public_key, fingerprint, expires_at, state; no ciphertext |
 | POST `/{id}/open` | Retrieval token | no body → one envelope and ciphertext; consuming |
 | POST `/{id}/revoke` | Retrieval token | no body → cancelled; consumed returns conflict |
-| POST `/{id}/upload` | Submission token | attempt_token, immutable file metadata and ciphertext checksum → upload instruction, reservation_expires_at |
-| POST `/{id}/finalize` | Submission token | attempt_token → submitted receipt |
-| POST `/{id}/abandon` | Submission token | attempt_token → waiting; only cancels that pending reservation |
+| POST `/{id}/upload` | Submission token | generation, attempt_token, immutable file metadata and ciphertext checksum → upload instruction, reservation_expires_at |
+| POST `/{id}/finalize` | Submission token | generation, attempt_token → submitted receipt |
+| POST `/{id}/abandon` | Submission token | generation, attempt_token → waiting with incremented generation; only cancels that pending reservation |
 
 Use existing create/open rate-limit configuration for issuance and mutating
 submission/owner operations. Metadata/owner/attempt reads must also have bounded
@@ -196,13 +207,22 @@ metadata, not an access token.
 An old issued PUT must never overwrite the immutable accepted payload: finalize
 writes those same verified bytes to a distinct server-only final key, then atomically
 accepts that final key only if the attempt remains the active reservation. No
-PUT instruction targets a final key. Reserve the final key in the active attempt
+PUT instruction targets a final key. There is exactly one stable final key per
+immutable attempt, reused by same-attempt finalize retries. Reserve the final key in the active attempt
 record before the server write, so reconciliation protects both that final key
 and the upload key until the attempt commits or becomes invalid. Do not validate
 a GET then copy a mutable
 source key: another PUT could replace the source between those operations.
-A failed/racing final write is an orphan and is reclaimed. Check request expiry
-again when committing after object verification. Finalize may buffer ciphertext
+A duplicate finalize returns the accepted receipt if that same attempt already
+won. Concurrent writes to the final key must use the identical bytes verified
+against the immutable attempt checksum. A losing call, timeout, or failed PUT
+response must never itself delete or enqueue deletion of the final key: another
+call may have accepted it, or the failed response may follow a successful write.
+Only API-owned cleanup/reconciliation may schedule deletion after a transaction
+proves the key has no active or accepted reference and its generation cannot be
+accepted again. Submitted keys remain protected until open/revoke/expiry; active
+attempt keys remain protected until their attempt/request deadline or abandon.
+Check request expiry again when committing after object verification. Finalize may buffer ciphertext
 up to the existing file-size cap, as the current open operation already does.
 
 Immediate unavailability does not mean immediate physical deletion. Revoke,
@@ -218,7 +238,7 @@ risks; no lifecycle rule is silently assumed configured.
 ## Ownership and implementation boundaries
 
 Use an API-owned `requests` table for public key, token hashes, state, expiry,
-attempt receipt/hash, immutable envelope, and storage reference, and a separate
+current generation and attempt receipt/hash, immutable envelope, and storage reference, and a separate
 inline payload table with cascading deletion. Keep payload-independent owner
 metadata only until the original deadline. The API alone writes these tables;
 the worker continues processing cleanup through existing internal interfaces.
@@ -236,3 +256,6 @@ The exact migration and live OpenAPI are part of #205, not this proposal.
 All four require independent review. Test missing/cross-role tokens, substituted
 keys, modified envelopes, duplicate/conflicting submits, parallel opens/revokes,
 expired requests, mismatched private keys, and existing send-link compatibility.
+Include A-expired/B-abandoned/A-delayed reservation replay, the generation
+upper bound, simultaneous same-attempt finalize, and final PUT response loss
+followed by retry; an accepted final key must survive every losing call.
