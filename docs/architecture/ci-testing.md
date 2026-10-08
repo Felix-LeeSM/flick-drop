@@ -12,6 +12,7 @@ PR checks
   env contract
   contracts
   Go checks
+  MinIO storage integration tests
   web checks
   container image builds
   NATS compose smoke
@@ -36,9 +37,9 @@ mise run smoke-k3d
 ```
 
 The `check` task includes shell, repo-structure, Kubernetes manifest structure,
-env-contract, contract, Go, web, and local container image checks. The image
-check skips only when Docker is not available locally; CI treats a missing
-Docker daemon as a failure.
+env-contract, contract, Go, MinIO storage integration, web, and local container
+image checks. The MinIO and image checks skip only when Docker is not available
+locally; CI treats a missing Docker daemon as a failure.
 
 ## GitHub Repository Policy
 
@@ -136,6 +137,20 @@ ciphertext bodies, plaintext secrets, passphrases, or derived keys.
 
 PR CI must not require object storage credentials. S3 adapter behavior should be
 tested with the MinIO integration test and fake clients in PR checks.
+
+`scripts/ci/storage-integration.sh` runs inside the required `Repo checks` job
+through `scripts/ci/all.sh`. It reuses the MinIO services in `compose.yaml` with
+a unique Compose project and a dynamically allocated loopback port.
+Because the official community registry images are unavailable, the script
+builds `scripts/ci/Dockerfile.minio` from pinned official MinIO and mc source
+commits with Go 1.25.11; the image override applies only to the test project.
+The cold build is bounded by the `Repo checks` job's 30-minute timeout.
+The script waits for readiness with a 60-second retry window, creates the test bucket, and runs
+`go test -count=1 -timeout 2m -v -tags integration ./internal/storage/`.
+The script overrides inherited S3 settings with the local test bucket and
+credentials and removes its own containers, network, volumes, and image tag on exit.
+Run the script directly to check presigned uploads, size enforcement, and
+HEAD/GET/DELETE against MinIO without starting the application or NATS.
 
 Real OCI dev bucket smoke tests (S3-compatibility mode) are manual or scheduled
 and run only when the required secrets are present.

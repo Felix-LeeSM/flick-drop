@@ -8,5 +8,6 @@ scripts/ci/env-contract.sh
 scripts/ci/ttl-drift.sh
 scripts/ci/contracts.sh
 scripts/ci/go.sh
+scripts/ci/storage-integration.sh
 scripts/ci/web.sh
 scripts/ci/images.sh
