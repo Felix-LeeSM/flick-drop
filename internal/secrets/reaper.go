@@ -23,6 +23,8 @@ const (
 // secrets are excluded because /open already enqueued their cleanup. Reason is
 // derived from state: active → expired, pending_upload → orphan. Pending
 // uploads are also reclaimable at content expiry, even before PendingTTL.
+// formatTime stores canonical UTC RFC3339Nano. Removing its final Z preserves
+// exact chronological ordering for expiry, including absent or shorter fractions.
 //
 // Ordering is by a unified "reclaimable-since" timestamp so the two classes
 // compete fairly for a batch slot: an expired-active row is reclaimable since
@@ -40,7 +42,7 @@ const claimReclaimableSQL = `with candidates as (
 	where reclaim_enqueued_at is null
 		and consumed_at is null
 		and (
-			(expires_at <= ?)
+			(rtrim(expires_at, 'Z') <= rtrim(?, 'Z'))
 			or (state = 'pending_upload' and created_at <= ?)
 		)
 	order by case state
