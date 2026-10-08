@@ -308,6 +308,7 @@ func TestReaperSkipsUnexpired(t *testing.T) {
 	})
 	insertSecret(t, ctx, conn, secretFixture{ // pending_upload within PendingTTL
 		id:        "sec_pending_live",
+		expiresAt: now.Add(time.Hour),
 		state:     "pending_upload",
 		createdAt: now.Add(-5 * time.Minute),
 		updatedAt: now.Add(-5 * time.Minute),

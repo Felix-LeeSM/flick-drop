@@ -1,11 +1,11 @@
-# Sender Management Contract v1 — Planned
+# Sender Management Contract v1
 
 Status: accepted design for [#199](https://github.com/Felix-LeeSM/flick-drop/issues/199),
-not implemented. [#200](https://github.com/Felix-LeeSM/flick-drop/issues/200),
-[#201](https://github.com/Felix-LeeSM/flick-drop/issues/201), and
-[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) implement the API,
-cancellation/cleanup, and UI. `openapi.yaml` describes the running API; add the
-endpoints there with their implementation, not in this documentation PR.
+[#200](https://github.com/Felix-LeeSM/flick-drop/issues/200) implements capability
+issuance, status, and bounded metadata retention. Cancellation/object reconciliation
+in [#201](https://github.com/Felix-LeeSM/flick-drop/issues/201) and the browser flow
+in [#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) remain planned.
+`openapi.yaml` describes implemented endpoints; `/revoke` is not available yet.
 
 ## Capability and browser custody
 
@@ -54,9 +54,9 @@ original creation session. Use the copy you saved or create a new delivery."
 A management visit must never call the recipient `/open` endpoint. No persistent
 browser history of deliveries is introduced.
 
-## Proposed HTTP surface
+## HTTP surface and planned cancellation
 
-All field names below belong to proposal v1. Existing create request fields,
+All field names below belong to contract v1. Existing create request fields,
 recipient routes, encryption formats, and finalize request/response stay valid.
 Both inline and staged-S3 create responses add:
 
@@ -77,7 +77,7 @@ legacy clients need no new commands or request fields.
 | Request | Success | Purpose |
 | --- | --- | --- |
 | `GET /api/secrets/{id}/management` | `200` status snapshot | Read without consuming |
-| `POST /api/secrets/{id}/revoke` with `{}` | `200` cancelled snapshot | Cancel active/pending delivery |
+| `POST /api/secrets/{id}/revoke` with `{}` (planned) | `200` cancelled snapshot | Cancel active/pending delivery |
 
 Both requests require the bearer token for that ID. The snapshot contains only
 `id`, `status`, `expires_at`, `management_expires_at`, and `can_cancel`.
@@ -170,7 +170,7 @@ Worker deletion is asynchronous and idempotent under existing retries and
 dead-letter handling. Cancellation does not revoke ciphertext already released,
 erase recipient copies, or guarantee physical erasure from storage/backups.
 
-## Late PUT cleanup without a completion deadline
+## Planned late PUT cleanup without a completion deadline
 
 A presigned PUT is not revoked by an API state change. URL expiry limits request
 authorization, not a proven upper bound on completion of requests already

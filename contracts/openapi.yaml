@@ -74,7 +74,12 @@ paths:
               $ref: "#/components/schemas/CreateSecretRequest"
       responses:
         "201":
-          description: Secret created.
+          description: Secret created; the independent management token is returned only here.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
@@ -112,6 +117,44 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "410":
           description: Secret already consumed or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/secrets/{id}/management:
+    get:
+      operationId: getManagementStatus
+      summary: Read delivery status using its independent management capability.
+      description: >
+        Valid only before the original expiry. Opened means the release transaction
+        committed; it does not confirm reading or decryption. This read never consumes
+        the delivery. Cancellation is not implemented by this endpoint.
+      security:
+        - managementToken: []
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Authenticated status snapshot.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementStatusResponse"
+        "404":
+          description: management_unavailable for missing, invalid, mismatched, or expired capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Management rate limit exceeded; recipient attempts are unaffected.
+        "503":
+          description: Status temporarily unavailable; no terminal outcome is implied.
           content:
             application/json:
               schema:
@@ -219,6 +262,10 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
+    managementToken:
+      type: http
+      scheme: bearer
+      description: Independent per-delivery capability, valid until the original expiry.
     internalToken:
       type: apiKey
       in: header
@@ -324,17 +371,44 @@ components:
     CreateSecretResponse:
       type: object
       additionalProperties: false
-      required: [id, expires_at]
+      required: [id, expires_at, management_token, management_expires_at]
       properties:
         id:
           type: string
         expires_at:
           type: string
           format: date-time
+        management_token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Canonical unpadded base64url encoding of 32 independent random bytes.
+        management_expires_at:
+          type: string
+          format: date-time
+          description: Equal to expires_at; reads never extend the deadline.
         upload:
           allOf:
             - $ref: "#/components/schemas/PresignedUpload"
           description: Present only for large secrets (request omitted ciphertext). The client sends the raw ciphertext as the request body to `url`, echoing `headers`, then calls /finalize.
+    ManagementStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [id, status, expires_at, management_expires_at, can_cancel]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending_upload, active, opened, locked, unavailable]
+        expires_at:
+          type: string
+          format: date-time
+        management_expires_at:
+          type: string
+          format: date-time
+        can_cancel:
+          type: boolean
+          description: Whether the domain state is eligible for cancellation; the revoke API is a separate planned operation.
     PresignedUpload:
       type: object
       additionalProperties: false

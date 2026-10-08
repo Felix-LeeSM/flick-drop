@@ -44,6 +44,14 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at datetime not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
+		// No FK: early payload reclamation must preserve the sender outcome.
+		`create table if not exists secret_management (
+			secret_id text primary key,
+			token_hash blob not null check (length(token_hash) = 32),
+			expires_at datetime not null,
+			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
+		)`,
+		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
 		`create table if not exists outbox_events (
 			id text primary key,
 			subject text not null,
