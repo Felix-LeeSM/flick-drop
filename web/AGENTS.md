@@ -32,13 +32,25 @@ Product principles:
 
 Security invariants:
 
-- Derive encryption keys in the browser from user-entered passphrases.
-- Share links contain only secret IDs.
+- `web/src/lib/crypto/text.ts` derives Model A keys from user-entered
+  passphrases; Model B generates a random key in the browser.
+- `web/src/lib/api/secrets.ts:createShareUrl` puts only the secret ID in the
+  path and puts Model B keys only in the `#key=...` fragment, as specified in
+  `docs/architecture/security-model.md`. Never put keys in URL paths/queries.
 - Never send passphrases, derived keys, plaintext secret content, or plaintext
   filenames to the API.
 - Encrypt text and files with Web Crypto before upload.
-- Keep passphrases and derived keys out of localStorage, sessionStorage,
-  IndexedDB, URLs, telemetry, and error reports.
+- Keep passphrases and encryption keys out of localStorage, sessionStorage,
+  IndexedDB, `history.state`, telemetry, and error reports. The sole key-bearing
+  URL exception is the Model B recipient fragment defined by
+  `web/src/lib/crypto/fragment.ts`; passphrases never enter URLs.
+- `contracts/sender-management-v1.md` defines the planned M8 management URL
+  `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL
+  from create to management only in browser memory; a refreshed or new-device
+  management visit offers status/cancellation without reconstructing that URL.
+- `contracts/sender-management-v1.md` requires separate recipient-sharing and
+  private-management-link actions. Never share the management page location
+  as the recipient URL or send a management token to recipient `/open`.
 - Treat API responses as ciphertext plus metadata until browser-side decrypt
   succeeds.
 

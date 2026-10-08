@@ -152,3 +152,15 @@ pragma busy_timeout = 5000;
 
 Vacuum/checkpoint policy belongs in the operations runbook because it affects
 disk usage and residual ciphertext retention.
+
+## Planned M8 Management Metadata
+
+The schema displayed above predates sender management.
+[Sender management v1](../../contracts/sender-management-v1.md) proposes an
+API-owned `secret_management` record with `secret_id`, `token_hash`, the original
+`expires_at`, and nullable terminal `outcome`. The record survives early payload
+cleanup but is purged at expiry, including for consumed secrets. Raw tokens and
+recipient keys never enter the schema. Object-reconciliation cursor/pending-job
+bookkeeping is operational cleanup state, separate from expiring management
+authority. #200/#201 must add migrations and update this schema with runtime
+implementation; this documentation change does not create tables.
