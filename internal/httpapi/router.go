@@ -37,6 +37,7 @@ type Server struct {
 	metricsToken             string
 	openLimiter              *rateLimiter
 	createLimiter            *rateLimiter
+	managementLimiter        *rateLimiter
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
 	// ponytail: a one-method closure beats dragging the whole driver type in here.
@@ -90,6 +91,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		metricsToken:             opts.MetricsToken,
 		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
+		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -109,6 +111,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
+	r.With(managementNoStore, server.managementLimiter.middleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
@@ -128,7 +131,7 @@ func (s Server) cors(next http.Handler) http.Handler {
 		if s.allowedOrigin != "" && origin == s.allowedOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.Header().Set("Vary", "Origin")
 		}
 

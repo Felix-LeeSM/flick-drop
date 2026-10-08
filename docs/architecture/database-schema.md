@@ -52,6 +52,16 @@ create table secret_payloads (
   foreign key (secret_id) references secrets(id) on delete cascade
 );
 
+create table secret_management (
+  secret_id text primary key,
+  token_hash blob not null check (length(token_hash) = 32),
+  expires_at datetime not null,
+  outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
+);
+
+create index idx_secret_management_expires_at
+  on secret_management(expires_at, secret_id);
+
 create table audit_events (
   id integer primary key autoincrement,
   secret_id text,
@@ -153,14 +163,18 @@ pragma busy_timeout = 5000;
 Vacuum/checkpoint policy belongs in the operations runbook because it affects
 disk usage and residual ciphertext retention.
 
-## Planned M8 Management Metadata
+## M8 Management Metadata
 
-The schema displayed above predates sender management.
-[Sender management v1](../../contracts/sender-management-v1.md) proposes an
-API-owned `secret_management` record with `secret_id`, `token_hash`, the original
-`expires_at`, and nullable terminal `outcome`. The record survives early payload
-cleanup but is purged at expiry, including for consumed secrets. Raw tokens and
-recipient keys never enter the schema. Object-reconciliation cursor/pending-job
-bookkeeping is operational cleanup state, separate from expiring management
-authority. #200/#201 must add migrations and update this schema with runtime
-implementation; this documentation change does not create tables.
+`secret_management` has no cascading foreign key: orphan/payload reclamation
+must not erase an authenticated outcome before the original expiry. SHA-256
+hashes are 32-byte BLOBs; raw management tokens are never persisted. Expiry uses
+fixed-width UTC nanosecond timestamps for exact indexed comparisons. Existing
+secrets receive no retroactive credential.
+
+`internal/secrets/management.go` records `opened`/`locked` with the transition;
+the reaper records orphan `unavailable` before deleting its secret row. Bounded
+reaper sweeps purge expired management rows and their consumed secret metadata,
+without changing legacy consumed-row retention. Public management reads enforce
+the deadline even while cleanup is delayed. `cancelled` is reserved by the
+[approved contract](../../contracts/sender-management-v1.md); #201 implements
+cancellation and the separate object-reconciliation bookkeeping.

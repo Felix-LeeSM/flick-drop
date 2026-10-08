@@ -197,3 +197,46 @@ func TestMigrateAPIRelaxesStrictKDFColumns(t *testing.T) {
 		t.Fatalf("second migrate api: %v", err)
 	}
 }
+
+func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into secrets (id,kind,storage_backend,storage_key,nonce,size_bytes,expires_at,created_at,updated_at)
+		values ('legacy','text','sqlite_blob','legacy','nonce',1,'2026-10-08','2026-10-08','2026-10-08')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop table secret_management`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from secrets where id = 'legacy'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("legacy row lost: %d %v", count, err)
+	}
+	if err := conn.QueryRow(`select count(*) from secret_management`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy token fabricated: %d %v", count, err)
+	}
+	if _, err := conn.Exec(`insert into secret_management values ('legacy', zeroblob(32), '2026-10-08T00:00:00.000000000Z', 'opened')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`delete from secrets where id = 'legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from secret_management where outcome = 'opened'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("outcome lost on migration/payload reclamation: %d %v", count, err)
+	}
+}
