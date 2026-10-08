@@ -10,6 +10,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"runtime/debug"
 
 	"go.opentelemetry.io/otel"
@@ -24,7 +25,8 @@ import (
 
 // TracingOptions configures SetupTracing. Endpoint is FLICK_OTLP_ENDPOINT, a
 // full OTLP/HTTP URL such as "http://otel-collector:4318"; empty disables
-// tracing entirely.
+// tracing entirely. A URL without a path uses /v1/traces; explicit paths,
+// including /, are preserved.
 type TracingOptions struct {
 	ServiceName string
 	Endpoint    string
@@ -43,7 +45,16 @@ func SetupTracing(ctx context.Context, opts TracingOptions) (func(context.Contex
 		return noop, nil
 	}
 
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(opts.Endpoint))
+	endpoint, err := url.Parse(opts.Endpoint)
+	if err != nil {
+		// The parse error includes the URL, which may contain collector credentials.
+		return nil, fmt.Errorf("invalid otlp trace endpoint URL")
+	}
+	// Preserve the pre-v1.45 exporter default for URLs without a path.
+	if endpoint.Path == "" {
+		endpoint.Path = "/v1/traces"
+	}
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint.String()))
 	if err != nil {
 		return nil, fmt.Errorf("create otlp trace exporter: %w", err)
 	}
