@@ -64,6 +64,11 @@ Local development:
 
 ## Web
 
+The optional public-guide sponsor is build-time repository configuration in
+`web/src/lib/components/sponsor.ts`, not an environment variable or remote
+configuration endpoint. `SPONSOR = null` disables it. See the configuration and
+measurement boundaries in [advertising-experiment.md](advertising-experiment.md).
+
 Runtime env for the nginx-served web container (distinct from the build-time
 `PUBLIC_FLICK_*` vars baked into the bundle). Read at container start, not build.
 
