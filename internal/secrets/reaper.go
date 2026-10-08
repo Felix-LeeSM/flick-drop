@@ -43,7 +43,7 @@ const claimReclaimableSQL = `with candidates as (
 		and consumed_at is null
 		and (
 			(rtrim(expires_at, 'Z') <= rtrim(?, 'Z'))
-			or (state = 'pending_upload' and created_at <= ?)
+			or (state = 'pending_upload' and rtrim(created_at, 'Z') <= rtrim(?, 'Z'))
 		)
 	order by case state
 			when 'active' then datetime(expires_at)
