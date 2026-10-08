@@ -147,6 +147,15 @@ The key must travel only in the fragment. Placing it in the path or query
 string would send it to the API and into access logs, at which point the server
 could decrypt the payload on open — breaking the core invariant.
 
+## Planned one-time requests
+
+[Request links v1](request-links.md) proposes independent submission/retrieval
+tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
+submission link cannot retrieve or decrypt content. The private retrieval link
+deliberately carries the requester key in its fragment, with explicit custody
+and history-exposure guidance. These are M9 implementation requirements, not
+live endpoints or changes to existing Model A/Model B formats.
+
 ## Structured Credentials
 
 Structured credentials are a browser-side text-secret encoding, not a new server
@@ -256,6 +265,15 @@ externalized.
 `Strict-Transport-Security` is intentionally not set on the pod (plain `:8080`,
 local `flick.localhost` base ingress); production overlays add HSTS at the
 TLS-terminating ingress (see Transport above).
+
+## Advertising boundary
+
+The app origin must not load third-party advertising or analytics scripts,
+including on public routes that share the SvelteKit runtime. Creation, open,
+management, and request pages handle browser-only secrets. M10 permits only
+an optional first-party static sponsor on public guides; the scope, separate
+origin requirement for future ad-network trials, and aggregate measurement
+rules are defined in [Advertising experiment](advertising-experiment.md).
 
 ## Future Security Features
 

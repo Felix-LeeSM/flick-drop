@@ -56,6 +56,15 @@ API's finalize check succeeds. Cancelling the PUT stops that browser attempt
 and prevents a later finalize or share result; any staged upload still follows
 the existing pending-upload expiry and orphan cleanup policy.
 
+## Planned request storage
+
+M9 [request links](request-links.md) use separate API-owned request metadata
+and inline ciphertext, with the original request deadline bounding both
+submission and retrieval. Large request uploads will use attempt-specific
+objects and a separate `managed/requests/` reconciliation namespace. Request
+storage is not implemented yet; it must not be swept using sender-secret
+live-row checks.
+
 ## Deletion Semantics
 
 Deleting a secret means Flick no longer serves the ciphertext and no server

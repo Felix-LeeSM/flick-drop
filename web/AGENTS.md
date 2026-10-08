@@ -41,9 +41,10 @@ Security invariants:
   filenames to the API.
 - Encrypt text and files with Web Crypto before upload.
 - Keep passphrases and encryption keys out of localStorage, sessionStorage,
-  IndexedDB, `history.state`, telemetry, and error reports. The sole key-bearing
-  URL exception is the Model B recipient fragment defined by
-  `web/src/lib/crypto/fragment.ts`; passphrases never enter URLs.
+  IndexedDB, `history.state`, telemetry, and error reports. Permitted key-bearing
+  fragments are the Model B recipient link defined by
+  `web/src/lib/crypto/fragment.ts` and the planned requester-only retrieval link
+  defined by `docs/architecture/request-links.md`; passphrases never enter URLs.
 - `contracts/sender-management-v1.md` defines the planned M8 management URL
   `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL
   from create to management only in browser memory; a refreshed or new-device
@@ -56,3 +57,13 @@ Security invariants:
 
 Use `PUBLIC_` environment variables only for values safe to ship to the browser.
 Do not expose internal tokens, OCI settings, NATS URLs, or server-only config.
+
+Planned request-link boundary:
+
+- `docs/architecture/request-links.md` defines M9's proposed RSA-OAEP/AES-GCM
+  envelope and separate submission/retrieval authority; request crypto belongs
+  in `src/lib/crypto/requests.ts`, independently of existing `text.ts` formats.
+- `docs/architecture/request-links.md` permits the requester-only PKCS#8 key in
+  `/r/{id}/receive#receive=...&key=...` for explicit private-link custody. The
+  request key must never enter HTTP, path/query, browser storage, telemetry,
+  or `history.state`. A submission link must never contain the requester key.

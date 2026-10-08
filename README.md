@@ -12,15 +12,16 @@ and removed.
 
 ## What It Does
 
-- Creates one-time links for encrypted text secrets and small encrypted files.
+- Creates one-time links for encrypted text secrets and files.
+- Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
 - Removes a secret after five invalid passphrase attempts.
 - Stores only ciphertext and metadata on the server side.
-- Derives encryption keys in the browser from a user-entered passphrase.
+- Encrypts in the browser using a passphrase-derived key or a random link key.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.
 - Supports local SQLite storage for small encrypted payloads.
-- Plans S3-compatible object storage support for larger encrypted files.
+- Supports S3-compatible object storage for larger encrypted files when enabled.
 
 Example links:
 
@@ -29,8 +30,14 @@ https://drop.example.com/s/abc123
 https://drop.example.com/s/xyz789
 ```
 
-The link contains only a secret ID. The recipient must enter the passphrase in
-the browser to decrypt the payload.
+Passphrase-protected links contain only a secret ID; send the passphrase through
+a separate channel. Passphrase-free links also carry a random decryption key in
+the URL fragment (`#key=...`), which the browser does not send to the server.
+Anyone holding the complete passphrase-free link can open it once.
+
+One-time request links are planned in M9, with separate submission and private
+retrieval links. The [request-link contract](docs/architecture/request-links.md)
+defines the proposed flow; request endpoints are not implemented yet.
 
 ## Security Model
 
@@ -40,12 +47,13 @@ Flick is built around one rule:
 The server should never know the plaintext secret, passphrase, or derived key.
 ```
 
-The browser derives a key from the user-entered passphrase and encrypts the text
-or file before upload. The API stores ciphertext, nonce, KDF salt/parameters,
-size, content type, expiration metadata, storage location, and a hash of a
-separate access proof. The passphrase and derived key never leave the browser.
-Ciphertext is returned only after the API verifies the access proof and marks
-the secret consumed in the same operation.
+The browser encrypts the text or file before upload. For passphrase-protected
+links, the API stores a hash of a separate access proof and requires that proof
+before releasing ciphertext. Passphrase-free links use a random key in the
+fragment and permit an ID-only ciphertext release. Both models consume the
+secret in the release transaction; neither sends the encryption key to the API.
+The server stores ciphertext and the metadata needed for storage, expiry, and
+browser-side decryption. See the [security model](docs/architecture/security-model.md).
 
 This does not make Flick a password manager or long-term vault. It is an
 ephemeral delivery service: short-lived, one-time, and intentionally limited.
