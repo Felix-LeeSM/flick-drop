@@ -12,7 +12,7 @@ import {
 	type Submission
 } from '$lib/api/requests';
 import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '$lib/api/secrets';
-import RequestFrame from '$lib/components/RequestFrame.svelte';
+import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
@@ -496,7 +496,7 @@ onMount(() => {
 </script>
 
 <svelte:head><title>Submit a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
-<RequestFrame>
+<DeliveryFrame>
 	<div class="grid gap-2">
 		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
 		<p class="text-sm text-muted-foreground">Your browser encrypts the content for the requester. The first accepted submission wins.</p>
@@ -539,4 +539,4 @@ onMount(() => {
 		<p role="status">{busy ? 'Loading request…' : 'Request status is unknown.'}</p>
 		<Button variant="outline" disabled={busy} onclick={() => { void load(); }}>Retry loading request</Button>
 	{/if}
-</RequestFrame>
+</DeliveryFrame>
