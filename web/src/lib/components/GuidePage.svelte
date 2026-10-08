@@ -2,6 +2,7 @@
 import { LockKeyholeIcon } from '@lucide/svelte';
 import type { Snippet } from 'svelte';
 import { base, resolve } from '$app/paths';
+import SponsorSlot from '$lib/components/SponsorSlot.svelte';
 import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 
 let {
@@ -42,6 +43,7 @@ let {
 		<article class="guide-copy mt-14 max-w-prose leading-7">
 			{@render children()}
 		</article>
+		<SponsorSlot />
 	</main>
 	<nav aria-label="Sharing guides" class="flex flex-wrap gap-x-6 gap-y-2 border-t pt-5 text-sm text-muted-foreground">
 		<a href={`${base}/guides/password-sharing/`} class="py-2 underline underline-offset-4">Sharing passwords</a>

@@ -19,6 +19,7 @@
 		"test:storage-browser": "node --test src/lib/components/CreateSecretPage.live.mjs",
 		"test:management": "node --test src/lib/components/ManageSecretPage.live.mjs",
 		"test:guides": "node --test src/lib/components/Guides.live.mjs",
+		"test:sponsor": "node --test src/lib/components/SponsorSlot.live.mjs",
 		"test:requests": "node --test src/lib/components/RequestPages.live.mjs",
 		"test:request-storage": "node --test src/lib/components/RequestUpload.live.mjs"
 	},

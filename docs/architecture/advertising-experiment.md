@@ -50,6 +50,23 @@ has its own privacy practices. Disable the configuration to remove the slot.
 This direct sponsorship contract is separate from Google ad placement rules;
 shipping the component does not accept an advertiser agreement.
 
+The implemented configuration is `SPONSOR` in
+`web/src/lib/components/sponsor.ts`. Its shipped value is `null`. To enable a
+reviewed agreement, replace `null` with literal `name`, `description`, and `url`
+strings, then rebuild and deploy the web image. The URL must be an absolute,
+canonical HTTPS URL (including the trailing slash for a bare origin), without
+credentials, query, or fragment. Invalid or missing fields render no placement.
+Name and description render as escaped text, never HTML. Do not place user data
+in any configuration field. No environment variable or remote service supplies
+the creative; the operator owns review of the public copy and destination.
+Set `SPONSOR` back to `null`, rebuild, and deploy to disable it.
+
+`SponsorSlot.svelte` appears only after the article in `GuidePage.svelte`,
+separated from its tool CTA and navigation. The placement is present at the
+initial render when enabled, so no asynchronous creative changes the layout.
+It opens the literal destination in a new tab without a referrer or opener.
+No impression/click counter is implemented; these measures remain unmeasured.
+
 ## Publisher policy check
 
 Official sources checked on 2026-10-08; re-check before a provider submission:
@@ -127,3 +144,12 @@ creative requests, no tracking requests, no app identifiers, and no referrer.
 Check that sensitive routes never render the sponsor and the CSP is unchanged.
 Provider approval, actual traffic, and actual financial results remain separate
 external inputs, not software test outcomes.
+
+Run `pnpm --dir web test:sponsor` against the built site selected by
+`FLICK_WEB_URL` with the default disabled configuration. For an enabled local
+fixture, set `SPONSOR` to `{ name: 'Synthetic sponsor', description: 'Test
+placement only.', url: 'https://sponsor.example.test/' }`, rebuild the isolated
+site, and run with `FLICK_SPONSOR_TEST_ENABLED=1`. The browser intercepts that
+synthetic destination locally; it checks the outgoing request has no referrer,
+the new tab has no opener, and only public guides contain the slot. Restore
+`SPONSOR = null` before committing; never ship a fixture as a real agreement.
