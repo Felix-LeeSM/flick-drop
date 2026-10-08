@@ -289,7 +289,8 @@ rules are defined in [Advertising experiment](advertising-experiment.md).
 
 [Sender management v1](../../contracts/sender-management-v1.md) is the accepted
 design. #200 implements issuance and status; #201 implements cancellation and
-recurring object cleanup. The browser flow remains planned in #202. New deliveries get an independent
+recurring object cleanup. `web/src/lib/components/ManageSecretPage.svelte` implements
+the #202 browser status/cancellation flow. New deliveries get an independent
 32-byte random management bearer; the API stores only its SHA-256 hash. The
 private management fragment never contains the recipient encryption key. Status
 and cancellation authority end at the original content expiry; neither operation

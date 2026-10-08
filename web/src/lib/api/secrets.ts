@@ -33,10 +33,12 @@ export type PresignedUpload = {
 export type CreateSecretResponse = {
 	id: string;
 	expires_at: string;
+	management_token?: string;
+	management_expires_at?: string;
 	// Present only for large secrets (request omitted ciphertext). The client
 	// sends the raw ciphertext to `url`, then calls /finalize. Defined here so
-	// the large path can read it, but callers see a plain { id, expires_at } —
-	// the upload + finalize are completed inside.
+	// the large path can read it. The result preserves management authority
+	// only after upload + finalize are completed inside.
 	upload?: PresignedUpload;
 };
 
@@ -216,7 +218,7 @@ function createInlineFileSecret(
 //   2. Send the raw ciphertext as the body of that signed request.
 //   3. POST /api/secrets/{id}/finalize so the server HEAD-checks the object and
 //      activates the secret.
-// Resolves to a plain { id, expires_at } so callers are unaware of the routing.
+// Preserves the creation capability after successful finalize, without upload credentials.
 async function createLargeFileSecret(
 	fetcher: typeof fetch,
 	baseUrl: string,
@@ -270,7 +272,16 @@ async function createLargeFileSecret(
 		}
 	);
 
-	return { id: staged.id, expires_at: staged.expires_at };
+	return {
+		id: staged.id,
+		expires_at: staged.expires_at,
+		...(staged.management_token
+			? {
+					management_token: staged.management_token,
+					management_expires_at: staged.management_expires_at
+				}
+			: {})
+	};
 }
 
 // uploadToObjectStore sends the raw ciphertext as the request body. The

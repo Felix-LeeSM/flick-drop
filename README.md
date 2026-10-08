@@ -14,6 +14,7 @@ and removed.
 
 - Creates one-time links for encrypted text secrets and files.
 - Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
+- Provides a private management link to check a delivery or cancel it before it is opened, without an account.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
 - Removes a secret after five invalid passphrase attempts.
@@ -34,6 +35,20 @@ Passphrase-protected links contain only a secret ID; send the passphrase through
 a separate channel. Passphrase-free links also carry a random decryption key in
 the URL fragment (`#key=...`), which the browser does not send to the server.
 Anyone holding the complete passphrase-free link can open it once.
+
+Successful creation opens a private management page. Copy or share the
+**recipient link** from that page, and keep the **management link** for yourself.
+The management link expires at the original delivery deadline. Anyone with it
+can check or cancel the delivery, but it cannot decrypt content or recover a
+lost recipient link. Save both links where needed: after a refresh or on
+another device, the management page offers only status and cancellation.
+Flick does not keep browser delivery history or recover lost links.
+
+An `Opened` status means the server authorized release of the encrypted
+content, not that anyone read it. Cancellation prevents a later opening; it
+cannot recall content already delivered or guarantee physical erasure of copies.
+Older API deployments that do not return management capabilities retain the
+original recipient-link result until the API is upgraded.
 
 One-time request links are planned in M9, with separate submission and private
 retrieval links. The [request-link contract](docs/architecture/request-links.md)

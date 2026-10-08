@@ -45,10 +45,14 @@ Security invariants:
   fragments are the Model B recipient link defined by
   `web/src/lib/crypto/fragment.ts` and the planned requester-only retrieval link
   defined by `docs/architecture/request-links.md`; passphrases never enter URLs.
-- `contracts/sender-management-v1.md` defines the planned M8 management URL
+- `contracts/sender-management-v1.md` defines the M8 management URL
   `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL
   from create to management only in browser memory; a refreshed or new-device
   management visit offers status/cancellation without reconstructing that URL.
+- `src/lib/state/created-delivery.ts` holds only one in-memory recipient-link
+  handoff, consumed by `src/lib/components/ManageSecretPage.svelte`. Never move
+  the handoff into browser storage or `goto()` state. The management route
+  `src/routes/m/[id]/+page.svelte` remounts when the ID or fragment changes.
 - `contracts/sender-management-v1.md` requires separate recipient-sharing and
   private-management-link actions. Never share the management page location
   as the recipient URL or send a management token to recipient `/open`.
