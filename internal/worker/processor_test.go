@@ -65,7 +65,7 @@ func TestProcessorSkipsDuplicateProcessingJob(t *testing.T) {
 	handler := &fakeJobHandler{}
 	processor := newTestProcessor(t, store, handler, 3)
 
-	if _, err := store.Start(ctx, "job_processing", events.KindDeleteSecret); err != nil {
+	if _, err := store.Start(ctx, "job_processing", events.KindDeleteSecret, string(testJobPayload(t, "job_processing")), DefaultMaxAttempts); err != nil {
 		t.Fatalf("start existing job: %v", err)
 	}
 	result, err := processor.Process(ctx, testJobPayload(t, "job_processing"))
