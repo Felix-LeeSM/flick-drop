@@ -257,6 +257,15 @@ externalized.
 local `flick.localhost` base ingress); production overlays add HSTS at the
 TLS-terminating ingress (see Transport above).
 
+## Advertising boundary
+
+The app origin must not load third-party advertising or analytics scripts,
+including on public routes that share the SvelteKit runtime. Creation, open,
+management, and request pages handle browser-only secrets. M10 permits only
+an optional first-party static sponsor on public guides; the scope, separate
+origin requirement for future ad-network trials, and aggregate measurement
+rules are defined in [Advertising experiment](advertising-experiment.md).
+
 ## Future Security Features
 
 - Argon2id client-side KDF after WASM dependency review
