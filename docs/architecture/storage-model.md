@@ -48,6 +48,15 @@ Object Storage receives browser-encrypted ciphertext only. Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 
+## Planned request storage
+
+M9 [request links](request-links.md) use separate API-owned request metadata
+and inline ciphertext, with the original request deadline bounding both
+submission and retrieval. Large request uploads will use attempt-specific
+objects and a separate `managed/requests/` reconciliation namespace. Request
+storage is not implemented yet; it must not be swept using sender-secret
+live-row checks.
+
 ## Deletion Semantics
 
 Deleting a secret means Flick no longer serves the ciphertext and no server
