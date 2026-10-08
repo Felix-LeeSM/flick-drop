@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -564,7 +565,9 @@ func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 		requireError(t, err, ErrInvalid)
 	}
 	weak, _ := rsa.GenerateKey(rand.Reader, 1024)
-	wrongExponent := rsa.PublicKey{N: weak.N, E: 3}
+	strongDER, _ := base64.StdEncoding.DecodeString(publicKey(t))
+	strong, _ := x509.ParsePKIXPublicKey(strongDER)
+	wrongExponent := rsa.PublicKey{N: strong.(*rsa.PublicKey).N, E: 3}
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	badKeys := []string{"", "not a key", publicKey(t) + "\n", publicKey(t) + "="}
 	for _, key := range []any{&weak.PublicKey, &wrongExponent, &ec.PublicKey} {
@@ -619,5 +622,27 @@ func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 	requireError(t, err, ErrTooLarge)
 	if count(t, f.db, "request_payloads") != 0 {
 		t.Fatal("invalid input wrote payload")
+	}
+}
+
+func TestInlineExactLimits(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		size int64
+	}{{"text", 0}, {"file", 0}, {"text", 1008}, {"file", 900}} {
+		t.Run(fmt.Sprintf("%s_%d", tc.kind, tc.size), func(t *testing.T) {
+			f := newFixture(t)
+			c := f.create(t)
+			in := submission(tc.kind)
+			in.SizeBytes = tc.size
+			in.Ciphertext = encoded(int(tc.size)+16, 7)
+			if _, err := f.store.Submit(context.Background(), c.ID, c.SubmissionToken, in); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.store.Open(context.Background(), c.ID, c.RetrievalToken)
+			if err != nil || got.Ciphertext != in.Ciphertext {
+				t.Fatalf("inline boundary round trip: %v", err)
+			}
+		})
 	}
 }

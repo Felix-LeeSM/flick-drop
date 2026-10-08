@@ -147,14 +147,20 @@ The key must travel only in the fragment. Placing it in the path or query
 string would send it to the API and into access logs, at which point the server
 could decrypt the payload on open — breaking the core invariant.
 
-## Planned one-time requests
+## One-time inline requests
 
-[Request links v1](request-links.md) proposes independent submission/retrieval
+[Request links v1](request-links.md) defines independent submission/retrieval
 tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
 submission link cannot retrieve or decrypt content. The private retrieval link
 deliberately carries the requester key in its fragment, with explicit custody
-and history-exposure guidance. These are M9 implementation requirements, not
-live endpoints or changes to existing Model A/Model B formats.
+and history-exposure guidance. #205 implements the inline API with separate
+SHA-256 capability hashes, strict canonical RSA SPKI/envelope validation,
+non-consuming authenticated metadata, and atomic one-time ciphertext release.
+The API cannot validate RSA labels or GCM authentication; clients must enforce
+the request ID/kind bindings when encrypting and decrypting. HTTP spans contain
+only method, route template, and status; request bodies and Authorization are
+excluded. Browser UX and large request storage remain separate M9 work.
+Existing Model A/Model B formats are unchanged.
 
 ## Structured Credentials
 

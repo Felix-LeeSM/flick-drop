@@ -13,6 +13,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/httpapi"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
@@ -120,6 +121,16 @@ func main() {
 		log.Fatalf("create outbox publisher: %v", err)
 	}
 
+	requestStore, err := requests.NewStore(conn, requests.Options{
+		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
+		MaxFileBytes:          cfg.MaxFileBytes,
+		MinTTLSeconds:         cfg.MinTTLSeconds,
+		DefaultTTLSeconds:     cfg.DefaultTTLSeconds,
+		MaxTTLSeconds:         cfg.MaxTTLSeconds,
+	})
+	if err != nil {
+		log.Fatalf("create request store: %v", err)
+	}
 	server := &http.Server{
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
@@ -134,6 +145,7 @@ func main() {
 			TrustedProxies:           cfg.TrustedProxies,
 			OutboxStore:              outboxStore,
 			NATSConnected:            natsConn.IsConnected,
+			RequestStore:             requestStore,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

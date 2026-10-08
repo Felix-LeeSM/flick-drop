@@ -1,8 +1,9 @@
 # One-time request links v1
 
-Status: proposed contract for #203. Endpoints and schema below are not live;
-#204–#207 implement and verify them. Existing send-link formats and CLI vectors
-are unchanged. Sender management follows the separate #199 contract.
+Status: approved v1 contract from #203. #205 implements the inline API and
+SQLite lifecycle. Browser crypto/UI and large-object reservations are separate
+#204/#206/#207 deliveries. Existing send-link formats and CLI vectors are
+unchanged. Sender management follows the separate #199 contract.
 
 ## Product and authority
 
@@ -194,7 +195,11 @@ Creation response loss cannot recover server-issued tokens. Explain the unknown
 outcome and let the unused request expire; never automatically create again.
 Open response loss is likewise unrecoverable by design.
 
-## Planned HTTP contract
+## HTTP contract
+
+The first seven endpoints below are implemented for inline content. The
+`upload`, `finalize`, and `abandon` endpoints remain unavailable until #207.
+`contracts/openapi.yaml` describes only the implemented subset.
 
 All paths below are under `/api/requests`. Authorization failures, unknown IDs,
 and expired requests return the same `404 request_unavailable`; malformed input
@@ -215,9 +220,28 @@ return `503 storage_unavailable` and do not consume or finalize.
 | POST `/{id}/finalize` | Submission token | generation, attempt_token → submitted receipt |
 | POST `/{id}/abandon` | Submission token | generation, attempt_token → waiting with incremented generation; only cancels that pending reservation |
 
+Inline creation accepts omitted `ttl_seconds` as the configured default; an
+explicit zero is invalid. Open and revoke require an empty HTTP body. Query
+parameters, duplicate JSON fields, case aliases, unknown fields, and null values
+are rejected. Successful submit returns `{generation, state: "submitted"}`;
+attempt status returns `{generation, state: "waiting"|"accepted"|"unavailable"}`.
+Open returns `{kind, size_bytes, envelope, ciphertext}` and revoke returns
+`{state: "cancelled"}`. The accepted receipt survives open/revoke until expiry
+and describes historical acceptance, not present deliverability. Immutable
+content comparison ignores JSON whitespace and property order.
+
+Inline open/revoke delete payload bytes and encrypted metadata in their SQLite
+transaction, so no external cleanup job remains. Every write transaction checks
+the deadline after acquiring the writer and before commit. Failed COMMIT rolls
+back on the same pinned connection before the connection can be reused.
+The existing API reaper purges request rows and cascading payloads in bounded
+batches, including consumed/cancelled requests, at the original deadline.
+
 Use existing create/open rate-limit configuration for issuance and mutating
 submission/owner operations. Metadata/owner/attempt reads must also have bounded
-per-client limits. The browser polls owner status at most once per 10 seconds
+per-client limits. Inline metadata, attempt, submit, open, and revoke share one
+per-client bucket across request IDs; rotating IDs does not bypass the limit.
+The browser polls owner status at most once per 10 seconds
 while visible, stops at terminal state/expiry, backs off on errors, and offers
 a manual refresh. No WebSocket or notification service is added.
 
@@ -273,7 +297,9 @@ current generation and attempt receipt/hash, immutable envelope, and storage ref
 inline payload table with cascading deletion. Keep payload-independent owner
 metadata only until the original deadline. The API alone writes these tables;
 the worker continues processing cleanup through existing internal interfaces.
-The exact migration and live OpenAPI are part of #205, not this proposal.
+`internal/db/migrations.go` and `contracts/openapi.yaml` define the implemented
+inline schema and HTTP shapes. Inline records have no external storage reference;
+#207 adds the reservation states and object references when implemented.
 
 - #204: browser-only crypto module, immutable synthetic decrypt golden vectors,
   tamper/cross-request vectors and strict validation; no HTTP/UI/storage.

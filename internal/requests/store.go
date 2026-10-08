@@ -301,7 +301,11 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 		}
 		return Receipt{in.Generation, "submitted"}, nil
 	}
-	if _, err := tx.ExecContext(ctx, `update requests set state = 'submitted', attempt_token_hash = ?, attempt_body_hash = ?, kind = ?, size_bytes = ?, envelope_json = ? where id = ? and state = 'waiting' and generation = ?`, attempt, bodyHash[:], in.Kind, in.SizeBytes, string(envelope), id, in.Generation); err != nil {
+	changed, err := tx.ExecContext(ctx, `update requests set state = 'submitted', attempt_token_hash = ?, attempt_body_hash = ?, kind = ?, size_bytes = ?, envelope_json = ? where id = ? and state = 'waiting' and generation = ?`, attempt, bodyHash[:], in.Kind, in.SizeBytes, string(envelope), id, in.Generation)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err := requireTransition(changed); err != nil {
 		return Receipt{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into request_payloads (request_id, ciphertext) values (?, ?)`, id, ciphertext); err != nil {
@@ -371,7 +375,7 @@ func (s *Store) Open(ctx context.Context, id, token string) (Payload, error) {
 	}
 	payload.Envelope = json.RawMessage(envelope)
 	payload.Ciphertext = base64.StdEncoding.EncodeToString(ciphertext)
-	if err := clearPayloadTx(ctx, tx.Tx, id, "consumed"); err != nil {
+	if err := clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed"); err != nil {
 		return Payload{}, err
 	}
 	if err := s.commit(tx, row.expires); err != nil {
@@ -389,18 +393,32 @@ func (s *Store) Revoke(ctx context.Context, id, token string) error {
 	if row.state == "consumed" {
 		return ErrConflict
 	}
-	if err := clearPayloadTx(ctx, tx.Tx, id, "cancelled"); err != nil {
+	if err := clearPayloadTx(ctx, tx.Tx, id, row.state, "cancelled"); err != nil {
 		return err
 	}
 	return s.commit(tx, row.expires)
 }
 
-func clearPayloadTx(ctx context.Context, tx *sql.Tx, id, state string) error {
+func clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousState, state string) error {
 	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = ?`, id); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `update requests set state = ?, kind = null, size_bytes = null, envelope_json = null where id = ?`, state, id)
-	return err
+	changed, err := tx.ExecContext(ctx, `update requests set state = ?, kind = null, size_bytes = null, envelope_json = null where id = ? and state = ?`, state, id, previousState)
+	if err != nil {
+		return err
+	}
+	return requireTransition(changed)
+}
+
+func requireTransition(result sql.Result) error {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 // PurgeExpiredTx runs in the existing API reaper transaction. Inline ciphertext
