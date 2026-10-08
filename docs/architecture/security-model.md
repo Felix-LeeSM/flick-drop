@@ -147,6 +147,15 @@ The key must travel only in the fragment. Placing it in the path or query
 string would send it to the API and into access logs, at which point the server
 could decrypt the payload on open — breaking the core invariant.
 
+## Planned one-time requests
+
+[Request links v1](request-links.md) proposes independent submission/retrieval
+tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
+submission link cannot retrieve or decrypt content. The private retrieval link
+deliberately carries the requester key in its fragment, with explicit custody
+and history-exposure guidance. These are M9 implementation requirements, not
+live endpoints or changes to existing Model A/Model B formats.
+
 ## Structured Credentials
 
 Structured credentials are a browser-side text-secret encoding, not a new server
