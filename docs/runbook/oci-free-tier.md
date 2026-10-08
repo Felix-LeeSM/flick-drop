@@ -99,6 +99,15 @@ Recommended bucket boundary:
 - do not use pre-authenticated requests for normal secret delivery
 - align bucket lifecycle cleanup with Flick TTL, cleanup lag, and backup policy
 
+Planned M8 [sender management v1](../../contracts/sender-management-v1.md) adds
+List permission for the exclusive `managed/secrets/` prefix alongside existing
+Get/Put/Delete permissions. #201 must verify pagination and late-PUT cleanup
+against the configured provider. Existing lifecycle rules do not prove that
+recurring API reconciliation exists or is healthy. The operator retains control
+of historical versions, replicas, and retention/object-lock policies; blocked
+deletion is not successful erasure. This plan changes no private bucket setting
+and adds no automatic bucket-setting gate to existing S3 startup.
+
 Set `FLICK_STORAGE_LARGE_BACKEND=s3` only after the bucket and Customer Secret
 Key credentials are ready. Leave it `disabled` for SQLite-only deployments.
 

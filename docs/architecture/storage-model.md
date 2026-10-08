@@ -63,3 +63,30 @@ Cleanup jobs are idempotent:
 - missing SQLite payload: success
 - missing object-storage object: success
 - already consumed/expired: success
+
+## Planned M8 Management Retention and Late Uploads
+
+[Sender management v1](../../contracts/sender-management-v1.md) specifies future
+behavior; the current implementation has not added management records or object
+reconciliation. Management hashes and minimal terminal outcomes expire at the
+original secret deadline. Early payload cleanup does not erase that outcome;
+expiry sweeps purge the management record even after open, lockout, or cancellation.
+No account history or content-retention extension is introduced.
+
+New managed S3 payloads use the exclusive, never-reused `managed/secrets/{id}` namespace.
+Immediate transactional cleanup jobs remain the first deletion path. Recurring
+API-owned `ListObjectsV2` reconciliation of `managed/secrets/` supplies the second path:
+check live-row protection, enqueue deletion through the outbox, and let workers
+delete. Persisted pagination and bounded per-key pending claims survive restarts.
+Each late reappearance needs a fresh job ID after the preceding job terminates.
+No finite PUT completion deadline or permanently retained secret tombstone is
+assumed. Legacy keys and objects outside `managed/secrets/` are excluded.
+
+Managed storage adds prefix listing to existing Get/Put/Delete permissions.
+Reconciliation removes current objects; historical versions, replicas, backups,
+and retention locks remain operator-owned residual risks. Failed listing or
+blocked deletion must stay visible and retryable, not count as successful
+erasure. No new bucket-setting startup gate or automatic policy change is
+introduced. Provider lifecycle is an optional backstop, not an assumed
+configuration or deletion SLA. #201 implements the contract's failure recovery
+and pending-claim acknowledgements.
