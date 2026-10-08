@@ -5,7 +5,8 @@ Status: accepted design for [#199](https://github.com/Felix-LeeSM/flick-drop/iss
 issuance, status, and bounded metadata retention.
 [#201](https://github.com/Felix-LeeSM/flick-drop/issues/201) implements cancellation
 and recurring object reconciliation. The browser flow in
-[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) remains planned.
+[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) implements the private
+management page and the in-memory recipient-link handoff.
 `openapi.yaml` describes implemented public endpoints; worker acknowledgements
 are defined in [internal API](internal-api.md).
 
@@ -71,8 +72,8 @@ Both inline and staged-S3 create responses add:
 
 These are additive fields beside the existing `id`, `expires_at`, and optional
 `upload`. The browser must preserve the fields across PUT/finalize;
-`web/src/lib/api/secrets.ts:createLargeFileSecret` currently discards extra
-fields. Existing CLI decoding in `internal/flickcli/client.go:Client.do` accepts
+`web/src/lib/api/secrets.ts:createLargeFileSecret` preserves the fields until
+the successful handoff. Existing CLI decoding in `internal/flickcli/client.go:Client.do` accepts
 unknown response fields. Existing secrets receive no retroactive token, and
 legacy clients need no new commands or request fields.
 

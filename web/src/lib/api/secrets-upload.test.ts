@@ -13,6 +13,8 @@ const payload: EncryptedFilePayload = {
 const staged = {
 	id: 'large-id',
 	expires_at: '2099-01-01T00:00:00Z',
+	management_token: 'A'.repeat(43),
+	management_expires_at: '2099-01-01T00:00:00Z',
 	upload: {
 		url: 'https://object-store.local/upload',
 		method: 'PUT',
@@ -83,7 +85,12 @@ describe('native encrypted upload', () => {
 		expect(progress).toHaveBeenLastCalledWith({ stage: 'finalizing' });
 		expect(completed).toBe(false);
 		finalize.resolve(Response.json({ finalized: true }));
-		await expect(result).resolves.toEqual({ id: staged.id, expires_at: staged.expires_at });
+		await expect(result).resolves.toEqual({
+			id: staged.id,
+			expires_at: staged.expires_at,
+			management_token: staged.management_token,
+			management_expires_at: staged.management_expires_at
+		});
 	});
 
 	it('aborts the PUT and ignores captured late callbacks without finalizing', async () => {

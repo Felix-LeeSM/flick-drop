@@ -16,8 +16,10 @@ import {
 	XIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
+import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { type ClientLimits, defaultLimits, getConfig } from '$lib/api/config';
+import { createManagementUrl, isManagementToken } from '$lib/api/management';
 import {
 	type CreateSecretResponse,
 	createSecretApiClient,
@@ -65,6 +67,7 @@ import {
 } from '$lib/crypto/text';
 import { bundleFiles } from '$lib/files/bundle';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
+import { clearCreatedDelivery, handOffCreatedDelivery } from '$lib/state/created-delivery';
 import { cn, formatBytes } from '$lib/utils';
 
 type StatusKind = 'idle' | 'encrypting' | 'saving' | 'error' | FileUploadProgress['stage'];
@@ -134,6 +137,7 @@ let dragActive = $state(false);
 // mid-zip), so only the latest applyFiles run may commit its result.
 let bundleToken = 0;
 let shareUrl = $state('');
+let managementUrl = $state('');
 let expiresAt = $state('');
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
@@ -223,6 +227,7 @@ async function createSecret(): Promise<void> {
 		}
 		status = '';
 		statusKind = 'idle';
+		await openManagement(created);
 	} catch (error) {
 		// A user-cancelled upload returns to the idle form, not a red error — the
 		// user chose to stop, nothing failed.
@@ -238,6 +243,28 @@ async function createSecret(): Promise<void> {
 		isCreating = false;
 		abortController = null;
 		uploadProgress = null;
+	}
+}
+
+async function openManagement(created: CreateSecretResponse): Promise<void> {
+	if (created.management_token && isManagementToken(created.management_token)) {
+		managementUrl = createManagementUrl(
+			window.location.origin,
+			created.id,
+			created.management_token
+		);
+		handOffCreatedDelivery({
+			id: created.id,
+			token: created.management_token,
+			recipientUrl: shareUrl,
+			usesPassphrase: usePassphrase
+		});
+		try {
+			await goto(managementUrl);
+		} catch {
+			clearCreatedDelivery();
+			// The delivery already exists; keep its links usable if navigation fails.
+		}
 	}
 }
 
@@ -467,6 +494,7 @@ function requireSelectedFile(): File {
 
 function createAnother(): void {
 	shareUrl = '';
+	managementUrl = '';
 	expiresAt = '';
 	status = '';
 	statusKind = 'idle';
@@ -546,6 +574,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				<div class="grid gap-3">
 					<UrlField value={shareUrl} id="share-url" />
 					<NativeShareButton recipientUrl={shareUrl} />
+					{#if managementUrl}
+						<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
+					{/if}
 					<Button
 						type="button"
 						variant="outline"

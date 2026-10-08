@@ -144,6 +144,16 @@ copy/QR fallbacks, and narrow-screen keyboard/touch controls. `test:browser`
 runs both component suites. These checks do not open a native OS share sheet;
 verify the share sheet and selected target app on a real device separately.
 
+`ManageSecretPage.browser.mjs` extends the mocked browser suite with both access
+models, memory-only recipient handoff, separate copy/share/QR actions, reload,
+invalid links, retryable errors, lockout, known expiry, and an open/cancel race.
+`pnpm --dir web test:management` runs `ManageSecretPage.live.mjs` against a real
+API with #200 and #201 implemented. The live suite creates synthetic Model A/B
+text deliveries and verifies management followed by one-time open or cancellation.
+Run the separate `test:storage-browser` suite for inline/S3 file round trips and
+upload/finalize progress with the same management navigation. Mocked browser
+tests do not replace the real API lifecycle checks.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.
