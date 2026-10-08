@@ -1,18 +1,13 @@
 <script lang="ts">
 import {
 	ClockIcon,
-	CreditCardIcon,
 	EyeIcon,
 	EyeOffIcon,
 	FileUpIcon,
 	FlameIcon,
-	IdCardIcon,
-	KeyRoundIcon,
-	ListPlusIcon,
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
-	TypeIcon,
 	XIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
@@ -34,6 +29,7 @@ import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
 import LifetimePicker from '$lib/components/LifetimePicker.svelte';
 import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
+import SecretTypeSelector from '$lib/components/SecretTypeSelector.svelte';
 import SuccessCheck from '$lib/components/SuccessCheck.svelte';
 import UrlField from '$lib/components/UrlField.svelte';
 import { Button } from '$lib/components/ui/button';
@@ -83,22 +79,6 @@ onMount(() => {
 	});
 });
 const api = $derived(createSecretApiClient({ limits }));
-const credentialIconComponents = {
-	'key-round': KeyRoundIcon,
-	'credit-card': CreditCardIcon,
-	'id-card': IdCardIcon,
-	'list-plus': ListPlusIcon
-};
-// Stable cells keep every type name visible without moving pointer targets.
-const modeOptions: Array<{ type: CreateMode; label: string; icon: typeof ListPlusIcon }> = [
-	{ type: 'text', label: 'Text', icon: TypeIcon },
-	{ type: 'file', label: 'File', icon: FileUpIcon },
-	...CREDENTIAL_TEMPLATES.map((template) => ({
-		type: template.type,
-		label: template.label,
-		icon: credentialIcon(template.icon)
-	}))
-];
 
 let mode = $state<CreateMode>('text');
 let plaintext = $state('');
@@ -506,10 +486,6 @@ function modeLabel(value: CreateMode): string {
 	}
 	return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
 }
-
-function credentialIcon(icon: string): typeof ListPlusIcon {
-	return credentialIconComponents[icon as keyof typeof credentialIconComponents] ?? ListPlusIcon;
-}
 </script>
 
 <svelte:head>
@@ -599,33 +575,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
 
-					<div
-						class="flex w-fit max-w-full flex-wrap gap-1 rounded-2xl border border-border bg-card p-1.5 md:flex-nowrap md:rounded-full"
-						role="group"
-						aria-label="Secret type"
-						aria-busy={!isHydrated}
-					>
-						{#each modeOptions as option (option.type)}
-							{@const Icon = option.icon}
-							<Button
-								type="button"
-								variant={mode === option.type ? 'toggleActive' : 'ghost'}
-								size="seg"
-								class={cn(
-									'gap-2 rounded-full border-transparent px-2.5 transition-colors active:not-aria-[haspopup]:translate-y-0',
-									mode !== option.type && 'text-muted-foreground'
-								)}
-								aria-pressed={mode === option.type}
-								disabled={!isHydrated || isCreating}
-								onclick={() => {
-									switchMode(option.type);
-								}}
-							>
-								<Icon class="size-4" aria-hidden="true" />
-								<span>{option.label}</span>
-							</Button>
-						{/each}
-					</div>
+					<SecretTypeSelector value={mode} disabled={!isHydrated || isCreating} onSelect={switchMode} />
 
 					{#if mode === 'text'}
 						<div class="grid gap-2.5">
