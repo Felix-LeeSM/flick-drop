@@ -137,3 +137,18 @@ live processing lease still expires before recovery can change its receipt.
 
 For receipts or messages stranded by an older release, see
 [worker cleanup recovery](../runbook/worker-recovery.md).
+
+## Planned M8 Cancellation and Reconciliation
+
+[Sender management v1](../../contracts/sender-management-v1.md) specifies future
+cancellation and late-PUT cleanup. Cancellation commits its outcome, API access
+block, inline removal, and required outbox rows together. Existing deletion job
+kinds and reason `manual` cover cancellation; no management token enters a job.
+
+Recurring object reconciliation needs at most one pending job per object key,
+a durable API-owned listing cursor, and a worker-to-API terminal acknowledgement
+so a later object appearance can schedule a fresh job ID. A successful receipt
+must not suppress deletion of a later PUT. Terminal acknowledgement retries and
+receipt-based crash recovery are part of #201; publish the internal endpoint
+contract and update worker behavior together. Do not expire a pending claim
+merely because a guessed upload or worker time limit passed.
