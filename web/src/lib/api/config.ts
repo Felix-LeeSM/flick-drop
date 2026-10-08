@@ -1,9 +1,11 @@
 // Client-facing size limits, fetched from the server at boot via GET /api/config.
 // The server re-enforces both limits, so these values are advisory — a fetch
 // failure (offline, misconfigured origin) must not break the app, so it falls
-// back to the same built-in defaults as internal/config/defaults.go.
+// back to the plaintext equivalents of internal/config/defaults.go.
 
-export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_048_576; // 1 MiB
+// Inline storage bounds ciphertext, so reserve the 16-byte AES-GCM tag.
+export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_048_576 - 16; // 1 MiB minus tag
+// The large-file limit already counts plaintext bytes; do not subtract the tag.
 export const DEFAULT_MAX_FILE_BYTES = 52_428_800; // 50 MiB
 
 export type ClientLimits = {
