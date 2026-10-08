@@ -159,7 +159,9 @@ non-consuming authenticated metadata, and atomic one-time ciphertext release.
 The API cannot validate RSA labels or GCM authentication; clients must enforce
 the request ID/kind bindings when encrypting and decrypting. HTTP spans contain
 only method, route template, and status; request bodies and Authorization are
-excluded. Browser UX and large request storage remain separate M9 work.
+excluded. The browser flow uses the reviewed request crypto module, validates the
+private key against owner metadata before Open, and keeps decrypted content and
+retry receipts only in memory. Large request storage remains separate M9 work.
 Existing Model A/Model B formats are unchanged.
 
 ## Structured Credentials

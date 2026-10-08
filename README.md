@@ -13,6 +13,7 @@ and removed.
 ## What It Does
 
 - Creates one-time links for encrypted text secrets and files.
+- Creates one-time requests with separate submission and private retrieval links for text or one inline file.
 - Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
 - Provides a private management link to check a delivery or cancel it before it is opened, without an account.
 - Expires secrets automatically after a short TTL.
@@ -50,9 +51,26 @@ cannot recall content already delivered or guarantee physical erasure of copies.
 Older API deployments that do not return management capabilities retain the
 original recipient-link result until the API is upgraded.
 
-One-time request links are planned in M9, with separate submission and private
-retrieval links. The [request-link contract](docs/architecture/request-links.md)
-defines the proposed flow; request endpoints are not implemented yet.
+Choose **Request a secret** to collect text or one small file. Share the
+**submission link** and save the separate **private retrieval link**. The first
+accepted submission wins; only the private retrieval link can open and decrypt
+it once. Request files are limited to the smaller of the configured inline
+plaintext limit and file limit. Large request uploads remain planned.
+
+The private retrieval link contains the decryption key. Its complete fragment
+supports refresh, browser restart, and another device before expiry; Flick does
+not save the key in browser storage. Browser history/sync, clipboard managers,
+and screenshots may retain the complete link. Anyone with it can retrieve or
+cancel the request. Losing the key is irreversible, and a lost open response
+cannot be recovered or safely replayed. Status checks never open the content.
+The initial submission link is held only in browser memory and cannot be
+reconstructed from a refreshed retrieval page.
+
+If a submission response is lost, keep the submitter tab open. Check the attempt
+before explicitly retrying the same encrypted content. No automatic retry creates
+a new key or submission attempt. See the
+[request-link contract](docs/architecture/request-links.md) for authority,
+expiry, and response-loss details.
 
 ## Security Model
 

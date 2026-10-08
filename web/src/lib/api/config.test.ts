@@ -3,7 +3,8 @@ import {
 	DEFAULT_MAX_FILE_BYTES,
 	DEFAULT_PAYLOAD_INLINE_MAX_BYTES,
 	defaultLimits,
-	getConfig
+	getConfig,
+	getVerifiedConfig
 } from './config';
 
 describe('getConfig', () => {
@@ -60,5 +61,46 @@ describe('getConfig', () => {
 		await getConfig('http://api.local///', fetcher);
 
 		expect(fetcher).toHaveBeenCalledWith('http://api.local/api/config');
+	});
+});
+
+describe('verified config before one-time retrieval', () => {
+	it('keeps larger custom limits instead of silently using advisory defaults', async () => {
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(
+				Response.json({ payload_inline_max_bytes: 4_194_288, max_file_bytes: 8_388_608 })
+			);
+		expect(await getVerifiedConfig('https://api.example.test/', fetcher)).toEqual({
+			payloadInlineMaxBytes: 4_194_288,
+			maxFileBytes: 8_388_608
+		});
+		expect(fetcher.mock.calls[0][1]).toMatchObject({
+			credentials: 'omit',
+			cache: 'no-store',
+			redirect: 'error'
+		});
+	});
+	it.each([
+		{},
+		null,
+		{ payload_inline_max_bytes: '1048576', max_file_bytes: 100 },
+		{ payload_inline_max_bytes: 0, max_file_bytes: 100 },
+		{ payload_inline_max_bytes: 12.5, max_file_bytes: 100 },
+		{ payload_inline_max_bytes: 100, max_file_bytes: Number.MAX_SAFE_INTEGER }
+	])('rejects invalid config without a fallback', async (body) => {
+		await expect(
+			getVerifiedConfig('/', vi.fn<typeof fetch>().mockResolvedValue(Response.json(body)))
+		).rejects.toThrow('Nothing has been opened.');
+	});
+	it('fails closed on config transport and HTTP failures', async () => {
+		for (const fetcher of [
+			vi.fn<typeof fetch>().mockRejectedValue(new Error('transport details')),
+			vi.fn<typeof fetch>().mockResolvedValue(Response.json({}, { status: 503 }))
+		]) {
+			await expect(getVerifiedConfig('/', fetcher)).rejects.toThrow(
+				'Could not verify size limits.'
+			);
+		}
 	});
 });
