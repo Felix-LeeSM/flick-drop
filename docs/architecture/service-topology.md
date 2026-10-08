@@ -23,6 +23,10 @@ SvelteKit adapter.
 Public HTTP/JSON API for secret creation, metadata lookup, and verified one-time
 open operations. It is the only service that mutates `api.db` directly.
 
+`internal/requests` implements the independent inline request lifecycle behind
+`/api/requests`; the API alone writes `requests` and `request_payloads`. Existing
+send-secret routes and worker ownership are unchanged.
+
 The API also publishes async jobs through an outbox table and NATS JetStream.
 
 ### `flick-worker`

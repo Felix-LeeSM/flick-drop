@@ -106,6 +106,12 @@ Expected behavior:
 The worker owns `worker.db` and records receipts, attempts, and dead letters.
 The worker calls internal API endpoints for API-owned mutations.
 
+Inline [request links](request-links.md) need no worker event: open/revoke
+remove their BLOB and encrypted metadata in the same API SQLite transaction,
+and the API reaper cascades payload deletion when purging expired requests.
+No request capability, public key, envelope, or ciphertext enters the outbox.
+Large request cleanup remains part of #207.
+
 `internal/worker/store.go` claims each attempt for one minute, measured from
 `job_receipts.updated_at`. A delivery during that lease retries without invoking
 the handler or acknowledging the job. After the lease expires, the next delivery

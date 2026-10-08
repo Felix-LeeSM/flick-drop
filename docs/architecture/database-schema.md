@@ -112,14 +112,49 @@ the one-time open proof. `access_proof_hash` stores a server-side hash of that
 proof. The proof is not an encryption key and cannot directly decrypt the
 payload.
 
-## Planned request schema
+## Request schema
 
-M9 [request links](request-links.md) require an API-owned `requests` table and
-an inline payload table separate from existing send secrets. The proposed
-record holds the public key, independent token hashes, bounded attempt receipt,
-envelope, state, storage references, and original deadline. #205 introduces the
-migration and exact SQL; no request table is present in the live schema above.
-The worker must not read or write request tables directly.
+M9 [request links](request-links.md) use separate API-owned inline storage.
+`internal/db/migrations.go:MigrateAPI` creates the following tables and index
+idempotently, without changing existing send secrets or worker tables:
+
+```sql
+create table requests (
+  id text primary key,
+  public_key text not null,
+  fingerprint text not null,
+  submission_token_hash blob not null check (length(submission_token_hash) = 32),
+  retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
+  state text not null default 'waiting' check (state in ('waiting', 'submitted', 'consumed', 'cancelled')),
+  generation integer not null default 1 check (generation between 1 and 16),
+  attempt_token_hash blob check (length(attempt_token_hash) = 32),
+  attempt_body_hash blob check (length(attempt_body_hash) = 32),
+  kind text check (kind in ('text', 'file')),
+  size_bytes integer check (size_bytes >= 0),
+  envelope_json text,
+  expires_at text not null,
+  check ((attempt_token_hash is null) = (attempt_body_hash is null)),
+  check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
+		);
+
+create index idx_requests_expires_at on requests(expires_at, id);
+
+create table request_payloads (
+  request_id text primary key,
+  ciphertext blob not null,
+  foreign key (request_id) references requests(id) on delete cascade
+		);
+```
+
+`expires_at` is fixed-width UTC with nine fractional digits for exact indexed
+comparisons. Only SHA-256 token hashes are stored. The immutable submission
+hash covers canonical envelope, kind, size, and ciphertext; duplicate attempts
+cannot overwrite content or extend the deadline. Generation stays at 1 for
+inline requests, with the 1..16 constraint reserved for the approved #207 flow.
+Open/revoke clear payloads, envelope, kind, and size in the same transaction.
+Public key, token hashes, minimal owner state, and attempt receipt expire at
+the original deadline; the API reaper purges them even after early consumption
+or cancellation. The worker never reads or writes request tables.
 
 ## `worker.db`
 

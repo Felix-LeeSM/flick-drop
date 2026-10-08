@@ -320,8 +320,340 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/requests:
+    post:
+      operationId: createRequest
+      summary: Create a one-time inline request.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Tokens are returned only on creation; a lost response cannot recover them.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRequest"
+      responses:
+        "201":
+          description: Create a one-time inline request.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedRequest"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}:
+    get:
+      operationId: getRequestInstructions
+      summary: Read submission instructions without consuming.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Read submission instructions without consuming.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestInstructions"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/submit:
+    post:
+      operationId: submitRequest
+      summary: Accept one immutable inline submission or return its existing receipt.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitRequest"
+      responses:
+        "200":
+          description: Accept one immutable inline submission or return its existing receipt.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestReceipt"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/attempt:
+    post:
+      operationId: getRequestAttempt
+      summary: Recover the outcome of the same generation and attempt without content.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestAttempt"
+      responses:
+        "200":
+          description: Recover the outcome of the same generation and attempt without content.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestAttemptStatus"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/owner:
+    get:
+      operationId: getRequestOwner
+      summary: Read requester status without consuming.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{retrievalToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Read requester status without consuming.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestOwner"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/open:
+    post:
+      operationId: openRequest
+      summary: Release ciphertext at most once; never automatically retry.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+        The request body must be empty. A non-empty body is rejected.
+      security: [{retrievalToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Release ciphertext at most once; never automatically retry.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestPayload"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/revoke:
+    post:
+      operationId: revokeRequest
+      summary: Cancel and remove inline bytes; cancelled retries are idempotent.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+        The request body must be empty. A non-empty body is rejected.
+      security: [{retrievalToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      responses:
+        "200":
+          description: Cancel and remove inline bytes; cancelled retries are idempotent.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestCancelled"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
 components:
+  headers:
+    RequestNoStore:
+      schema: {type: string, const: no-store}
+  responses:
+    RequestInvalid:
+      description: Malformed input, unknown fields, invalid crypto metadata, or query parameters.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: invalid_request}
+    RequestUnavailable:
+      description: Unknown ID, missing or wrong role capability, expired request, or stale generation.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: request_unavailable}
+    RequestConflict:
+      description: A conflicting attempt or state; consumed requests cannot be revoked.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: request_conflict}
+    RequestTooLarge:
+      description: HTTP body or ciphertext exceeds the configured inline limit; large request uploads are not available.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: payload_too_large}
+    RequestRateLimited:
+      description: Per-client rate exceeded. Uses existing create/open rate configuration.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+        Retry-After:
+          schema: {type: string, const: "60"}
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: rate_limited}
+    RequestStorageUnavailable:
+      description: Temporary storage failure. No transition was committed; retry the same immutable submission only.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/RequestNoStore"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: storage_unavailable}
   securitySchemes:
+    submissionToken:
+      type: http
+      scheme: bearer
+      description: Independent 32-byte submission capability in canonical unpadded base64url; never accepted in a query or path.
+    retrievalToken:
+      type: http
+      scheme: bearer
+      description: Independent 32-byte requester capability in canonical unpadded base64url; cannot submit.
     managementToken:
       type: http
       scheme: bearer
@@ -339,6 +671,204 @@ components:
         type: string
         minLength: 1
   schemas:
+    RequestCapability:
+      type: string
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Canonical unpadded base64url encoding of exactly 32 bytes, including zero trailing pad bits.
+    RequestPublicKey:
+      type: string
+      format: byte
+      maxLength: 684
+      description: Canonical standard base64 DER SPKI RSA public key; modulus 2048 bits, exponent 65537. No other key type is accepted.
+    RequestGeneration:
+      type: integer
+      minimum: 1
+      maximum: 16
+      description: Current generation from instructions. Inline requests remain at generation 1; a stale generation is unavailable.
+    CreateRequest:
+      type: object
+      additionalProperties: false
+      required: [public_key]
+      properties:
+        public_key:
+          $ref: "#/components/schemas/RequestPublicKey"
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          description: Within configured min/max TTL (defaults 300..604800). Omission uses the configured default (3600); zero and null are invalid. Submission does not extend expiry.
+    CreatedRequest:
+      type: object
+      additionalProperties: false
+      required: [id, expires_at, submission_token, retrieval_token]
+      properties:
+        id: {type: string}
+        expires_at: {type: string, format: date-time}
+        submission_token:
+          $ref: "#/components/schemas/RequestCapability"
+        retrieval_token:
+          $ref: "#/components/schemas/RequestCapability"
+    RequestInstructions:
+      type: object
+      additionalProperties: false
+      required: [public_key, fingerprint, expires_at, generation, can_submit]
+      properties:
+        public_key:
+          $ref: "#/components/schemas/RequestPublicKey"
+        fingerprint:
+          $ref: "#/components/schemas/RequestCapability"
+        expires_at: {type: string, format: date-time}
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        can_submit: {type: boolean}
+    RequestOwner:
+      type: object
+      additionalProperties: false
+      required: [public_key, fingerprint, expires_at, state]
+      properties:
+        public_key:
+          $ref: "#/components/schemas/RequestPublicKey"
+        fingerprint:
+          $ref: "#/components/schemas/RequestCapability"
+        expires_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [waiting, submitted, consumed, cancelled]
+    RequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [version, algorithm, wrapped_key, nonce]
+      description: >
+        Serialized JSON is at most 4096 bytes. Binary fields require canonical
+        standard base64. Version 1 uses RSA-OAEP SHA-256/MGF1-SHA-256 and
+        AES-256-GCM with a 16-byte tag. Clients must enforce the request ID and
+        kind bindings defined in docs/architecture/request-links.md. The API
+        validates shapes and lengths; only the client can authenticate ciphertext.
+      properties:
+        version: {type: integer, const: 1}
+        algorithm: {type: string, const: RSA-OAEP-256+A256GCM}
+        wrapped_key:
+          type: string
+          format: byte
+          minLength: 344
+          maxLength: 344
+          description: Exactly 256 decoded bytes wrapping a fresh 32-byte AES key.
+        nonce:
+          type: string
+          format: byte
+          minLength: 16
+          maxLength: 16
+          description: Exactly 12 decoded bytes.
+        encrypted_filename:
+          type: object
+          additionalProperties: false
+          required: [nonce, ciphertext]
+          properties:
+            nonce:
+              type: string
+              format: byte
+              minLength: 16
+              maxLength: 16
+              description: Exactly 12 decoded bytes; must differ from payload nonce.
+            ciphertext:
+              type: string
+              format: byte
+              minLength: 24
+              maxLength: 1388
+              description: 17..1040 decoded bytes.
+    RequestKindRules:
+      if:
+        properties:
+          kind: {const: text}
+      then:
+        properties:
+          envelope:
+            properties:
+              encrypted_filename: false
+      else:
+        properties:
+          envelope:
+            required: [encrypted_filename]
+    RequestPayload:
+      type: object
+      additionalProperties: false
+      required: [kind, size_bytes, envelope, ciphertext]
+      allOf:
+        - $ref: "#/components/schemas/RequestKindRules"
+      properties:
+        kind: {type: string, enum: [text, file]}
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Original content length. Ciphertext must fit the configured inline bound; files also obey the configured file-size limit.
+        envelope:
+          $ref: "#/components/schemas/RequestEnvelope"
+        ciphertext:
+          type: string
+          format: byte
+          description: Canonical standard base64 of exactly size_bytes + 16 decoded bytes.
+    SubmitRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, attempt_token, kind, size_bytes, envelope, ciphertext]
+      allOf:
+        - $ref: "#/components/schemas/RequestKindRules"
+      description: >
+        Keep the attempt token and immutable kind, size, envelope, and ciphertext
+        through an unknown outcome. Exact immutable-content retries return the
+        original submitted receipt, including after consumption or cancellation,
+        until the original deadline. Different content or token conflicts.
+        JSON whitespace and property order do not change immutable content.
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        attempt_token:
+          $ref: "#/components/schemas/RequestCapability"
+        kind: {type: string, enum: [text, file]}
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        envelope:
+          $ref: "#/components/schemas/RequestEnvelope"
+        ciphertext:
+          type: string
+          format: byte
+          description: Canonical standard base64 of exactly size_bytes + 16 decoded bytes, within the configured inline limit.
+    RequestAttempt:
+      type: object
+      additionalProperties: false
+      required: [generation, attempt_token]
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        attempt_token:
+          $ref: "#/components/schemas/RequestCapability"
+    RequestReceipt:
+      type: object
+      additionalProperties: false
+      required: [generation, state]
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        state: {type: string, const: submitted}
+    RequestAttemptStatus:
+      type: object
+      additionalProperties: false
+      required: [generation, state]
+      description: accepted records acceptance, not current deliverability or a human read. A different losing attempt returns unavailable.
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        state: {type: string, enum: [waiting, accepted, unavailable]}
+    RequestCancelled:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: {type: string, const: cancelled}
     HealthResponse:
       type: object
       additionalProperties: false
