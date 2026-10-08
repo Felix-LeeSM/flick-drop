@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -183,6 +184,9 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 
 	if err := purgeManagementTx(ctx, tx, now, r.batchSize); err != nil {
 		return 0, err
+	}
+	if err := requests.PurgeExpiredTx(ctx, tx, now, r.batchSize); err != nil {
+		return 0, fmt.Errorf("purge expired requests: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
