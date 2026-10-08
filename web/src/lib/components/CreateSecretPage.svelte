@@ -934,6 +934,10 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				</form>
 			</section>
 		{/if}
+		<nav aria-label="Sharing guides" class="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm text-muted-foreground">
+			<a href={resolve('/guides/password-sharing/')} class="py-2 underline underline-offset-4">Sharing passwords</a>
+			<a href={resolve('/guides/temporary-file-sharing/')} class="py-2 underline underline-offset-4">Sharing temporary files</a>
+		</nav>
 	</div>
 </main>
 
