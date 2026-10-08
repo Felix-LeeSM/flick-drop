@@ -99,7 +99,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 		return ProcessResult{}, err
 	}
 
-	started, err := p.store.Start(ctx, event.JobID, event.Kind)
+	started, err := p.store.Start(ctx, event.JobID, event.Kind, string(canonicalPayload), p.maxAttempts)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrJobProcessing):
@@ -162,21 +162,14 @@ func (p *Processor) finishFailed(
 	result ProcessResult,
 	jobErr error,
 ) (ProcessResult, error) {
-	if err := p.store.MarkFailed(ctx, attempt.ID, jobErr); err != nil {
-		return result, err
-	}
-	result.Failed = true
-
-	failures, err := p.store.failureCount(ctx, event.JobID)
+	dead, err := p.store.MarkFailed(ctx, attempt.ID, jobErr, payloadJSON, p.maxAttempts)
 	if err != nil {
 		return result, err
 	}
-	if failures < p.maxAttempts {
+	result.Failed = true
+	if !dead {
 		telemetry.JobsProcessed.WithLabelValues(event.Kind, "failed").Inc()
 		return result, jobErr
-	}
-	if err := p.store.DeadLetter(ctx, event.JobID, event.Kind, payloadJSON, jobErr); err != nil {
-		return result, err
 	}
 	result.DeadLettered = true
 	telemetry.JobsProcessed.WithLabelValues(event.Kind, "dead").Inc()

@@ -3,6 +3,8 @@
 Current workers retry interrupted cleanup after the one-minute receipt lease
 expires. Duplicate delivery during a live lease retries without acknowledging
 the message. See the [event contract](../architecture/event-contract.md).
+Redelivery also completes dead-lettering for an unfinished receipt that already
+has three recorded handler failures; the worker does not run cleanup again.
 
 An older worker could acknowledge a `processing` receipt without completing its
 cleanup, or exhaust the former three-delivery broker limit. Updating the worker

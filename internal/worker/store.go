@@ -77,8 +77,8 @@ func (s *ReceiptStore) SetNowForTest(now func() time.Time) {
 	s.now = now
 }
 
-func (s *ReceiptStore) Start(ctx context.Context, jobID, kind string) (StartResult, error) {
-	if jobID == "" || kind == "" {
+func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON string, maxFailures int) (StartResult, error) {
+	if jobID == "" || kind == "" || payloadJSON == "" || maxFailures < 1 {
 		return StartResult{}, ErrInvalidJob
 	}
 
@@ -144,6 +144,30 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind string) (StartResu
 		}
 	}
 
+	if !created {
+		failures, err := failureCount(ctx, tx, jobID)
+		if err != nil {
+			return StartResult{}, err
+		}
+		if failures >= maxFailures {
+			// Older workers could commit the final failure before its dead letter.
+			// Finish that transition without claiming another handler attempt.
+			var lastError string
+			if err := tx.QueryRowContext(ctx, `select error from job_attempts
+				where job_id = ? and result = ? and error is not null
+				order by attempt desc limit 1`, jobID, AttemptFailed).Scan(&lastError); err != nil {
+				return StartResult{}, fmt.Errorf("load final job failure: %w", err)
+			}
+			if err := deadLetter(ctx, tx, receipt, payloadJSON, lastError, now); err != nil {
+				return StartResult{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return StartResult{}, fmt.Errorf("commit recovered dead letter: %w", err)
+			}
+			return StartResult{}, ErrJobDead
+		}
+	}
+
 	attemptNumber := receipt.Attempts + 1
 	result, err := tx.ExecContext(ctx, `update job_receipts
 		set state = ?, attempts = ?, updated_at = ?, last_error = null
@@ -191,65 +215,40 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind string) (StartResu
 }
 
 func (s *ReceiptStore) MarkSucceeded(ctx context.Context, attemptID int64) error {
-	return s.finishAttempt(ctx, attemptID, AttemptSucceeded, nil)
+	_, err := s.finishAttempt(ctx, attemptID, AttemptSucceeded, nil, "", 0)
+	return err
 }
 
-func (s *ReceiptStore) MarkFailed(ctx context.Context, attemptID int64, jobErr error) error {
+// MarkFailed commits the failure and, at the limit, its terminal receipt and
+// dead letter together. The returned bool is true only after that commit.
+func (s *ReceiptStore) MarkFailed(ctx context.Context, attemptID int64, jobErr error, payloadJSON string, maxFailures int) (bool, error) {
 	if jobErr == nil {
-		return fmt.Errorf("job error is required")
+		return false, fmt.Errorf("job error is required")
 	}
-	return s.finishAttempt(ctx, attemptID, AttemptFailed, jobErr)
+	if payloadJSON == "" || maxFailures < 1 {
+		return false, ErrInvalidJob
+	}
+	return s.finishAttempt(ctx, attemptID, AttemptFailed, jobErr, payloadJSON, maxFailures)
 }
 
-func (s *ReceiptStore) failureCount(ctx context.Context, jobID string) (int, error) {
+func failureCount(ctx context.Context, q receiptQueryer, jobID string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `select count(*) from job_attempts
+	err := q.QueryRowContext(ctx, `select count(*) from job_attempts
 		where job_id = ? and result = ? and error is not null`, jobID, AttemptFailed).Scan(&count)
 	return count, err
 }
 
-func (s *ReceiptStore) DeadLetter(ctx context.Context, jobID, kind, payloadJSON string, jobErr error) error {
-	if jobID == "" || kind == "" || payloadJSON == "" {
-		return ErrInvalidJob
-	}
-	if jobErr == nil {
-		return fmt.Errorf("job error is required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
+func deadLetter(ctx context.Context, tx *sql.Tx, receipt Receipt, payloadJSON, jobError string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `update job_receipts
+		set state = ?, last_error = ?, updated_at = ?, completed_at = ?
+		where job_id = ? and state = ? and attempts = ?`,
+		StateDead, jobError, formatTime(now), formatTime(now),
+		receipt.JobID, receipt.State, receipt.Attempts)
 	if err != nil {
-		return fmt.Errorf("begin dead letter job: %w", err)
+		return fmt.Errorf("update dead job receipt: %w", err)
 	}
-	defer rollback(tx)
-
-	receipt, err := loadReceipt(ctx, tx, jobID)
-	if err == nil {
-		if receipt.Kind != kind || receipt.State == StateSucceeded {
-			return ErrInvalidJob
-		}
-	} else if !errors.Is(err, ErrNotFound) {
+	if err := requireAffected(result); err != nil {
 		return err
-	}
-
-	now := s.now().UTC()
-	_, err = tx.ExecContext(ctx, `insert into job_receipts (
-		job_id, kind, state, attempts, last_error, first_seen_at, updated_at, completed_at
-	) values (?, ?, ?, 0, ?, ?, ?, ?)
-	on conflict(job_id) do update set
-		state = excluded.state,
-		last_error = excluded.last_error,
-		updated_at = excluded.updated_at,
-		completed_at = excluded.completed_at`,
-		jobID,
-		kind,
-		StateDead,
-		jobErr.Error(),
-		formatTime(now),
-		formatTime(now),
-		formatTime(now),
-	)
-	if err != nil {
-		return fmt.Errorf("upsert dead job receipt: %w", err)
 	}
 
 	_, err = tx.ExecContext(ctx, `insert into dead_letters (
@@ -260,19 +259,16 @@ func (s *ReceiptStore) DeadLetter(ctx context.Context, jobID, kind, payloadJSON 
 		payload_json = excluded.payload_json,
 		error = excluded.error,
 		created_at = excluded.created_at`,
-		jobID,
-		kind,
+		receipt.JobID,
+		receipt.Kind,
 		payloadJSON,
-		jobErr.Error(),
+		jobError,
 		formatTime(now),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert dead letter: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit dead letter job: %w", err)
-	}
 	return nil
 }
 
@@ -331,26 +327,26 @@ func (s *ReceiptStore) DeadLetterRecord(ctx context.Context, jobID string) (Dead
 	return record, nil
 }
 
-func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, result string, jobErr error) error {
+func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, result string, jobErr error, payloadJSON string, maxFailures int) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin finish job attempt: %w", err)
+		return false, fmt.Errorf("begin finish job attempt: %w", err)
 	}
 	defer rollback(tx)
 
 	attempt, err := loadAttempt(ctx, tx, attemptID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if attempt.Result != AttemptRunning {
-		return fmt.Errorf("job attempt is already finished")
+		return false, ErrStaleAttempt
 	}
 	receipt, err := loadReceipt(ctx, tx, attempt.JobID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if receipt.State != StateProcessing || receipt.Attempts != attempt.Attempt {
-		return ErrStaleAttempt
+		return false, ErrStaleAttempt
 	}
 
 	now := s.now().UTC()
@@ -369,10 +365,10 @@ func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, resul
 		AttemptRunning,
 	)
 	if err != nil {
-		return fmt.Errorf("update job attempt: %w", err)
+		return false, fmt.Errorf("update job attempt: %w", err)
 	}
 	if err := requireAffected(updateResult); err != nil {
-		return err
+		return false, err
 	}
 
 	receiptState := StateSucceeded
@@ -396,20 +392,35 @@ func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, resul
 		attempt.Attempt,
 	)
 	if err != nil {
-		return fmt.Errorf("update job receipt: %w", err)
+		return false, fmt.Errorf("update job receipt: %w", err)
 	}
 	affected, err := updateResult.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read affected rows: %w", err)
+		return false, fmt.Errorf("read affected rows: %w", err)
 	}
 	if affected != 1 {
-		return ErrStaleAttempt
+		return false, ErrStaleAttempt
+	}
+
+	dead := false
+	if result == AttemptFailed {
+		failures, err := failureCount(ctx, tx, attempt.JobID)
+		if err != nil {
+			return false, err
+		}
+		if failures >= maxFailures {
+			receipt.State = StateFailed
+			if err := deadLetter(ctx, tx, receipt, payloadJSON, *errText, now); err != nil {
+				return false, err
+			}
+			dead = true
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit finish job attempt: %w", err)
+		return false, fmt.Errorf("commit finish job attempt: %w", err)
 	}
-	return nil
+	return dead, nil
 }
 
 type receiptQueryer interface {

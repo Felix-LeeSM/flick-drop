@@ -135,6 +135,9 @@ create table dead_letters (
 `job_attempts` rows with `result = 'failed'` and `error IS NULL` record an
 interrupted attempt whose outcome is unknown, not a handler failure. The worker
 counts only failed attempts with a non-NULL error toward its three-failure limit.
+The final failed attempt, `job_receipts.state = 'dead'`, and `dead_letters` row
+are committed atomically. Recovery also honors failed attempts already stored
+by earlier workers, without a schema migration.
 See [event contract](event-contract.md) for recovery and acknowledgement rules.
 
 ## SQLite Settings

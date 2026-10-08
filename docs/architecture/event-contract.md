@@ -128,5 +128,12 @@ delivery is unlimited because the broker cannot distinguish those cases from
 handler failures. A permanent worker-database failure therefore needs operator
 intervention; it cannot silently exhaust broker delivery and hide cleanup.
 
+Recording a failure, checking its budget, and writing a terminal receipt/dead
+letter happen in one transaction, fenced by the current attempt number. A failed
+dead-letter write rolls back the attempt failure too. Before starting a retry, the worker
+also checks persisted failures: a receipt left by an older worker after its
+third failure becomes dead-lettered without another handler call. An existing
+live processing lease still expires before recovery can change its receipt.
+
 For receipts or messages stranded by an older release, see
 [worker cleanup recovery](../runbook/worker-recovery.md).
