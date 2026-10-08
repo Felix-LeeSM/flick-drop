@@ -101,6 +101,15 @@ the one-time open proof. `access_proof_hash` stores a server-side hash of that
 proof. The proof is not an encryption key and cannot directly decrypt the
 payload.
 
+## Planned request schema
+
+M9 [request links](request-links.md) require an API-owned `requests` table and
+an inline payload table separate from existing send secrets. The proposed
+record holds the public key, independent token hashes, bounded attempt receipt,
+envelope, state, storage references, and original deadline. #205 introduces the
+migration and exact SQL; no request table is present in the live schema above.
+The worker must not read or write request tables directly.
+
 ## `worker.db`
 
 ```sql
