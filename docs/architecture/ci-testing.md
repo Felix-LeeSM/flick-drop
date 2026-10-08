@@ -107,6 +107,22 @@ Browser tests should prove:
 5. expired secret is blocked
 6. local file secret upload decrypts to a downloadable file
 
+The focused recipient-page browser regression is `web/src/lib/components/OpenSecretPage.browser.mjs`.
+It uses Playwright Chromium with mocked metadata/open responses and the shared
+crypto vectors to exercise loading, retry after network/503/429 failures, both
+access models, and terminal 404/410 responses. Run it locally:
+
+```sh
+pnpm --dir web exec playwright install chromium
+pnpm --dir web dev --host 127.0.0.1
+# In another terminal, with the dev server running:
+pnpm --dir web test:browser
+```
+
+`FLICK_WEB_URL` can point the browser check at another running web instance.
+This focused check is separate from the default Node unit suite; it does not
+replace the complete create/open/file browser scenarios listed above.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.

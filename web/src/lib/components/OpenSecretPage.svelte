@@ -61,8 +61,10 @@ let downloadSize = $state(0);
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isOpening = $state(false);
+let isLoading = $state(true);
+let canRetryLoad = $state(false);
 let hasOpened = $state(false);
-// True when the link itself is unusable (incomplete / failed to load) so the only
+// True when the link itself is unusable (incomplete / not found / burned) so the only
 // sensible next step is to create a new secret. Stays false for passphrase typos,
 // which are retryable via the open form.
 let linkUnusable = $state(false);
@@ -71,7 +73,7 @@ let copyState = $state<'idle' | 'copied'>('idle');
 // metadata on mount: Model A secrets expose an access block, Model B do not.
 let accessModel = $state<'a' | 'b' | 'unknown'>('unknown');
 let linkKey = $state<CryptoKey | null>(null);
-// Metadata fetched once on mount and reused on open — the Model A KDF lives here,
+// Metadata loaded on mount or explicit retry and reused on open — the Model A KDF lives here,
 // so openPassphraseSecret no longer re-fetches it (one fewer round-trip).
 let metadata = $state<GetSecretMetadataResponse | null>(null);
 
@@ -80,6 +82,11 @@ onMount(() => {
 });
 
 async function loadModel(): Promise<void> {
+	isLoading = true;
+	canRetryLoad = false;
+	linkUnusable = false;
+	status = 'Loading secret';
+	statusKind = 'idle';
 	try {
 		metadata = await api.getSecretMetadata(secretId);
 		accessModel = metadata.access ? 'a' : 'b';
@@ -93,17 +100,32 @@ async function loadModel(): Promise<void> {
 			}
 			linkKey = await importAesGcmKey(raw);
 		}
+		status = '';
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : 'Could not load this secret.';
 		statusKind = 'error';
-		// Link is unusable only when the server confirmed it (not-found / burned).
-		// status 0 is a transient network failure the user can retry, so we don't push them to create.
-		linkUnusable = error instanceof SecretApiError && error.status !== 0;
+		// Missing/burned secrets and unusable fragment keys cannot recover through
+		// metadata retry. Network, rate-limit, and server failures can.
+		linkUnusable = accessModel === 'b' || isUnavailable(error);
+		canRetryLoad = !linkUnusable;
+	} finally {
+		isLoading = false;
 	}
 }
 
+function isUnavailable(error: unknown): boolean {
+	return error instanceof SecretApiError && (error.status === 404 || error.status === 410);
+}
+
 const canOpen = $derived(
-	!isOpening && !hasOpened && (accessModel === 'b' ? linkKey !== null : passphrase.length > 0)
+	!isLoading &&
+		!canRetryLoad &&
+		!linkUnusable &&
+		!isOpening &&
+		!hasOpened &&
+		(accessModel === 'b'
+			? linkKey !== null
+			: metadata?.access !== undefined && passphrase.length > 0)
 );
 
 let secretHeading = $state<HTMLHeadingElement | null>(null);
@@ -158,7 +180,7 @@ async function openSecret(): Promise<void> {
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
 		statusKind = 'error';
-		linkUnusable = false;
+		linkUnusable = isUnavailable(error);
 	} finally {
 		isOpening = false;
 	}
@@ -387,7 +409,7 @@ function revokeDownloadUrl(): void {
 						<p class="text-sm text-muted-foreground">
 							This link opens without a passphrase. Anyone with the full URL can open it once.
 						</p>
-					{:else}
+					{:else if accessModel === 'a'}
 						<div class="grid gap-2.5">
 							<Label for="open-passphrase" class="micro font-normal text-muted-foreground">
 								passphrase
@@ -439,6 +461,12 @@ function revokeDownloadUrl(): void {
 							{isOpening ? 'Opening' : 'Open'}
 						{/if}
 					</Button>
+
+					{#if canRetryLoad}
+						<Button type="button" variant="outline" class="h-11 w-full" onclick={() => void loadModel()}>
+							Retry loading
+						</Button>
+					{/if}
 
 					{#if status.length > 0}
 						<p
