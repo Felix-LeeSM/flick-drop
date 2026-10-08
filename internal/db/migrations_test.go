@@ -5,6 +5,62 @@ import (
 	"testing"
 )
 
+func TestRequestSchemaMigrationConstraintsAndCascade(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for range 2 {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,expires_at)
+		values('request-test','synthetic-public-key','synthetic-fingerprint',zeroblob(32),zeroblob(32),'2026-10-08T00:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`update requests set generation=0`, `update requests set generation=17`,
+		`update requests set submission_token_hash=zeroblob(31)`,
+		`update requests set retrieval_token_hash=zeroblob(33)`,
+		`update requests set state='submitted'`,
+		`update requests set attempt_token_hash=zeroblob(32)`,
+	} {
+		if _, err := conn.Exec(statement); err == nil {
+			t.Fatalf("invalid row accepted: %s", statement)
+		}
+	}
+	if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values('request-test',zeroblob(16))`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("migration erased payload")
+	}
+	if _, err := conn.Exec(`delete from requests`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("request delete did not cascade")
+	}
+	worker, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	if err := MigrateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.QueryRow(`select count(*) from sqlite_master where name in ('requests','request_payloads')`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("request schema entered worker DB")
+	}
+}
+
 func TestMigrateAPICreatesOutboxEvents(t *testing.T) {
 	ctx := context.Background()
 	conn, err := OpenSQLite(ctx, ":memory:")
