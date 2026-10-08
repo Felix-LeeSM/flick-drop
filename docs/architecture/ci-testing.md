@@ -154,6 +154,50 @@ Run the separate `test:storage-browser` suite for inline/S3 file round trips and
 upload/finalize progress with the same management navigation. Mocked browser
 tests do not replace the real API lifecycle checks.
 
+### Request browser flow
+
+`RequestPages.browser.mjs` joins `pnpm --dir web test:browser`. It uses real browser
+crypto with mocked API responses for separate sharing/private custody, missing or
+malformed keys, fingerprint pinning, exact retries after response loss, lost Open,
+cancellation races, file decryption, known-expiry cleanup, 429, and inline limits.
+The API-client and fragment/handoff checks run in `pnpm --dir web test` alongside
+unchanged Model A/B and request crypto vectors.
+
+`pnpm --dir web test:requests` runs `RequestPages.live.mjs` against a real API and
+separate browser contexts. It covers text/file round trips, private-link refresh
+and another device, cross-role denials, duplicate content rejection, concurrent
+submit/Open winners, cancellation, and expiry. Use an isolated temporary API
+database with a three-second test request enabled; never run against production:
+
+```sh
+# Terminal 1: local NATS plus a disposable API database (no S3/worker needed).
+docker compose up -d nats
+request_test_dir=$(mktemp -d)
+FLICK_API_DB_PATH="$request_test_dir/api.db" \
+FLICK_API_ADDR=127.0.0.1:8080 \
+FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
+FLICK_STORAGE_LARGE_BACKEND=disabled \
+FLICK_MIN_TTL_SECONDS=1 \
+FLICK_CREATE_RATE_PER_MIN=1000 FLICK_OPEN_RATE_PER_MIN=1000 \
+go run ./cmd/flick-api
+# After stopping this test API, remove only its temporary directory.
+
+# Terminal 2: use the API above, preserving the normal browser TTL choices.
+PUBLIC_FLICK_API_BASE_URL=http://127.0.0.1:8080 \
+pnpm --dir web dev --host 127.0.0.1
+
+# Terminal 3: Chromium must already be installed with Playwright.
+FLICK_WEB_URL=http://127.0.0.1:5173 FLICK_API_URL=http://127.0.0.1:8080 \
+pnpm --dir web test:requests
+pnpm --dir web test:browser
+```
+
+The live suite captures dummy browser requests to check that private keys,
+plaintext, and filenames never enter HTTP, and checks browser storage/navigation
+state. Mocked tests do not prove real lifecycle behavior. Browser launch, a local
+listener, and a running API/NATS are prerequisites; a build or unit-test pass is
+not browser, mobile-device, OS share-sheet, or real-API evidence.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.

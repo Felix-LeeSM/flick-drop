@@ -542,6 +542,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				<span class="font-serif text-lg leading-none">Flick</span>
 			</a>
 			<nav class="flex items-center gap-2">
+				<a href={resolve('/request')} class="px-2 py-3 text-sm underline underline-offset-4">Request a secret</a>
 				<ThemeToggle />
 			</nav>
 		</header>

@@ -54,3 +54,44 @@ export async function getConfig(
 		return defaultLimits();
 	}
 }
+
+// A consuming request must know the server's actual bounds before decrypting.
+// Advisory defaults are useful for creation, but could discard a larger valid
+// one-time response if a custom deployment's config request temporarily fails.
+export async function getVerifiedConfig(
+	baseUrl: string,
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal
+): Promise<ClientLimits> {
+	try {
+		const response = await fetcher(`${baseUrl.replace(/\/+$/, '')}/api/config`, {
+			signal,
+			credentials: 'omit',
+			cache: 'no-store',
+			redirect: 'error',
+			referrerPolicy: 'no-referrer'
+		});
+		if (!response.ok) {
+			throw new Error();
+		}
+		const raw = (await response.json()) as RawConfig | null;
+		for (const value of [raw?.payload_inline_max_bytes, raw?.max_file_bytes]) {
+			if (
+				typeof value !== 'number' ||
+				!Number.isSafeInteger(value) ||
+				value <= 0 ||
+				value > Number.MAX_SAFE_INTEGER - 16
+			) {
+				throw new Error();
+			}
+		}
+		return {
+			payloadInlineMaxBytes: raw?.payload_inline_max_bytes as number,
+			maxFileBytes: raw?.max_file_bytes as number
+		};
+	} catch {
+		throw new Error(
+			'Could not verify size limits. Refresh status before opening. Nothing has been opened.'
+		);
+	}
+}
