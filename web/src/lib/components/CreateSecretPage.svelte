@@ -27,6 +27,7 @@ import {
 	type TtlSeconds
 } from '$lib/api/secrets';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
+import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
 import SuccessCheck from '$lib/components/SuccessCheck.svelte';
 import ThemeToggle from '$lib/components/ThemeToggle.svelte';
@@ -522,6 +523,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 
 				<div class="grid gap-3">
 					<UrlField value={shareUrl} id="share-url" />
+					<NativeShareButton recipientUrl={shareUrl} />
 					<Button
 						type="button"
 						variant="outline"

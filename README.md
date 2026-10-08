@@ -13,6 +13,7 @@ and removed.
 ## What It Does
 
 - Creates one-time links for encrypted text secrets and small encrypted files.
+- Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
 - Removes a secret after five invalid passphrase attempts.
