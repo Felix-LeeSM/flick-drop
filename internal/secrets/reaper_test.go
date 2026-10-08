@@ -31,6 +31,42 @@ func newTestReaper(t *testing.T, conn *sql.DB, store *Store, outbox outboxEnqueu
 	return reaper
 }
 
+func TestReaperPurgesRequestsAtOriginalDeadline(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
+	now := time.Date(2026, 10, 8, 0, 0, 0, 500000000, time.UTC)
+	reaper.SetNowForTest(func() time.Time { return now })
+	for _, entry := range []struct{ id, state, expires string }{
+		{"waiting", "waiting", "2026-10-08T00:00:00.500000000Z"},
+		{"consumed", "consumed", "2026-10-08T00:00:00.000000000Z"},
+		{"cancelled", "cancelled", "2026-10-08T00:00:00.499999999Z"},
+		{"live", "waiting", "2026-10-08T00:00:00.500000001Z"},
+	} {
+		if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,expires_at) values (?, 'synthetic', 'synthetic', zeroblob(32), zeroblob(32), ?, ?)`, entry.id, entry.state, entry.expires); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values (?, zeroblob(16))`, entry.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []int{2, 1} {
+		if _, err := reaper.ClaimOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		for _, table := range []string{"requests", "request_payloads"} {
+			if err := conn.QueryRow("select count(*) from " + table).Scan(&n); err != nil || n != want {
+				t.Fatalf("%s retained %d rows, want %d: %v", table, n, want, err)
+			}
+		}
+	}
+	if len(readOutboxEvents(t, ctx, conn)) != 0 {
+		t.Fatal("inline purge enqueued an unnecessary worker job")
+	}
+}
+
 type secretFixture struct {
 	id             string
 	kind           string

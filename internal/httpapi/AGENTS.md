@@ -11,7 +11,8 @@ Directory structure:
   nested directories.
 - Handlers must not execute SQL directly, run migrations, set up NATS streams,
   or call object-storage SDK logic. The router may carry `*sql.DB`
-  (`internal/httpapi/router.go:18`) only to inject into `internal/secrets.Store`
+  (`internal/httpapi/router.go`) only to inject into `internal/secrets.Store`
+  or `internal/requests.Store`
   (including transaction boundaries delegated to Store methods) — never to run
   queries itself.
 

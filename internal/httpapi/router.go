@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
@@ -27,6 +28,7 @@ var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
 type Server struct {
 	db                       *sql.DB
 	secrets                  *secrets.Store
+	requests                 *requests.Store
 	outbox                   *events.OutboxStore
 	newJobID                 func() (string, error)
 	payloadInlineMaxBytes    int64
@@ -38,6 +40,7 @@ type Server struct {
 	openLimiter              *rateLimiter
 	createLimiter            *rateLimiter
 	managementLimiter        *rateLimiter
+	requestLimiter           *rateLimiter
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
 	// ponytail: a one-method closure beats dragging the whole driver type in here.
@@ -62,6 +65,7 @@ type Options struct {
 	OutboxStore              *events.OutboxStore
 	NewJobID                 func() (string, error)
 	NATSConnected            func() bool
+	RequestStore             *requests.Store
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -81,6 +85,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	server := Server{
 		db:                       db,
 		secrets:                  secretStore,
+		requests:                 opts.RequestStore,
 		outbox:                   opts.OutboxStore,
 		newJobID:                 events.NewJobID,
 		payloadInlineMaxBytes:    payloadInlineMaxBytes,
@@ -92,6 +97,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -114,6 +120,19 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
 	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
+	r.Route("/api/requests", func(r chi.Router) {
+		r.Use(server.requestReady)
+		r.With(server.createLimiter.middleware).Post("/", server.createRequest)
+		r.Group(func(r chi.Router) {
+			r.Use(server.requestRateLimit)
+			r.Get("/{id}", server.getRequestInstructions)
+			r.Post("/{id}/submit", server.submitRequest)
+			r.Post("/{id}/attempt", server.getRequestAttempt)
+			r.Get("/{id}/owner", server.getRequestOwner)
+			r.Post("/{id}/open", server.openRequest)
+			r.Post("/{id}/revoke", server.revokeRequest)
+		})
+	})
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
 		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)
@@ -129,6 +148,10 @@ func (s Server) cors(next http.Handler) http.Handler {
 		// This is the only middleware that runs unconditionally for /api, which
 		// the ingress routes straight to flick-api (nginx headers cover only /).
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Also covers preflight, unknown routes, rate limits and error responses.
+		if r.URL.Path == "/api/requests" || strings.HasPrefix(r.URL.Path, "/api/requests/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		origin := strings.TrimRight(r.Header.Get("Origin"), "/")
 		if s.allowedOrigin != "" && origin == s.allowedOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
