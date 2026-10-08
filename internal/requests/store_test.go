@@ -557,6 +557,56 @@ func TestFailedCommitRollsBackBeforeConnectionReuse(t *testing.T) {
 	}
 }
 
+func TestCancelledCommitPreservesReplacementCleanup(t *testing.T) {
+	f := newFixture(t)
+	c := f.create(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	f.store.now = func() time.Time {
+		calls++
+		if calls == 2 {
+			cancel()
+			// Let database/sql perform its asynchronous cancellation rollback.
+			// Our failed-COMMIT cleanup then discards that physical connection.
+			time.Sleep(10 * time.Millisecond)
+		}
+		return f.now
+	}
+	in := submission("text")
+	_, err := f.store.Submit(ctx, c.ID, c.SubmissionToken, in)
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("cancelled submission: %v", err)
+	}
+	f.store.now = func() time.Time { return f.now }
+	for pragma, want := range map[string]int{"foreign_keys": 1, "busy_timeout": 5000} {
+		var got int
+		if err := f.db.QueryRow("pragma " + pragma).Scan(&got); err != nil || got != want {
+			t.Fatalf("replacement %s = %d, want %d: %v", pragma, got, want, err)
+		}
+	}
+	if count(t, f.db, "request_payloads") != 0 {
+		t.Fatal("cancelled transaction retained a payload")
+	}
+	if _, err := f.store.Submit(context.Background(), c.ID, c.SubmissionToken, in); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := PurgeExpiredTx(context.Background(), tx, c.ExpiresAt, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, f.db, "requests") != 0 || count(t, f.db, "request_payloads") != 0 {
+		t.Fatal("replacement connection left expired metadata or orphan ciphertext")
+	}
+}
+
 func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
