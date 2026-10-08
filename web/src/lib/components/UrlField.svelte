@@ -8,9 +8,17 @@ type Props = {
 	value: string;
 	id?: string;
 	class?: string;
+	label?: string;
+	copyLabel?: string;
 };
 
-let { value, id, class: className = '' }: Props = $props();
+let {
+	value,
+	id,
+	class: className = '',
+	label = 'Share URL',
+	copyLabel = 'Copy to clipboard'
+}: Props = $props();
 
 let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
 let resetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -42,7 +50,7 @@ async function copy(): Promise<void> {
 			class="h-11 w-full truncate pr-12 font-mono text-sm"
 			value={value}
 			readonly
-			aria-label="Share URL"
+			aria-label={label}
 			title={value}
 		/>
 		<Button
@@ -53,7 +61,7 @@ async function copy(): Promise<void> {
 				'absolute right-1 size-9 text-muted-foreground hover:text-foreground',
 				copyState === 'copied' && 'bg-success/15 text-success'
 			)}
-			aria-label="Copy to clipboard"
+			aria-label={copyLabel}
 			title="Copy"
 			onclick={() => {
 				void copy();

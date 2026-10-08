@@ -97,7 +97,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create cleanup handler: %v", err)
 	}
-	processor, err := worker.NewProcessor(receiptStore, cleanupHandler, worker.ProcessorOptions{})
+	processor, err := worker.NewProcessor(receiptStore, cleanupHandler, worker.ProcessorOptions{Acknowledger: cleanupClient})
 	if err != nil {
 		log.Fatalf("create worker processor: %v", err)
 	}

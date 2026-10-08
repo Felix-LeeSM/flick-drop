@@ -13,6 +13,12 @@ export const DEFAULT_API_BASE_URL =
 
 export type TtlSeconds = number;
 
+export type FileUploadProgress = {
+	stage: 'preparing' | 'uploading' | 'finalizing';
+	loaded?: number;
+	total?: number;
+};
+
 // PresignedUpload mirrors the server's presignedUploadResponse: a signed request
 // the browser sends the raw ciphertext to, so the server never sees the bytes.
 // Content-Length is inside the signature, so a body of any other length is
@@ -27,10 +33,12 @@ export type PresignedUpload = {
 export type CreateSecretResponse = {
 	id: string;
 	expires_at: string;
+	management_token?: string;
+	management_expires_at?: string;
 	// Present only for large secrets (request omitted ciphertext). The client
 	// sends the raw ciphertext to `url`, then calls /finalize. Defined here so
-	// the large path can read it, but callers see a plain { id, expires_at } —
-	// the upload + finalize are completed inside.
+	// the large path can read it. The result preserves management authority
+	// only after upload + finalize are completed inside.
 	upload?: PresignedUpload;
 };
 
@@ -72,8 +80,9 @@ export type SecretApiClient = {
 		payload: EncryptedFilePayload,
 		ttlSeconds: TtlSeconds,
 		access?: AccessVerifierPayload,
-		// Aborts the large-file S3 upload (the only long, un-cancellable leg).
-		signal?: AbortSignal
+		// Cancels a large-file attempt; no later upload/finalize or result may follow.
+		signal?: AbortSignal,
+		onProgress?: (progress: FileUploadProgress) => void
 	): Promise<CreateSecretResponse>;
 	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
 	openSecret(id: string, accessProof?: string): Promise<GetSecretResponse>;
@@ -128,7 +137,7 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			});
 		},
 
-		createFileSecret(payload, ttlSeconds, access, signal) {
+		createFileSecret(payload, ttlSeconds, access, signal, onProgress) {
 			if (payload.size_bytes > limits.maxFileBytes) {
 				// Reject before any network call — the server would refuse it too.
 				return Promise.reject(
@@ -138,7 +147,15 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			if (payload.size_bytes <= limits.payloadInlineMaxBytes) {
 				return createInlineFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
 			}
-			return createLargeFileSecret(fetcher, baseUrl, payload, ttlSeconds, access, signal);
+			return createLargeFileSecret(
+				fetcher,
+				baseUrl,
+				payload,
+				ttlSeconds,
+				access,
+				signal,
+				onProgress
+			);
 		},
 
 		getSecretMetadata(id) {
@@ -201,15 +218,18 @@ function createInlineFileSecret(
 //   2. Send the raw ciphertext as the body of that signed request.
 //   3. POST /api/secrets/{id}/finalize so the server HEAD-checks the object and
 //      activates the secret.
-// Resolves to a plain { id, expires_at } so callers are unaware of the routing.
+// Preserves the creation capability after successful finalize, without upload credentials.
 async function createLargeFileSecret(
 	fetcher: typeof fetch,
 	baseUrl: string,
 	payload: EncryptedFilePayload,
 	ttlSeconds: TtlSeconds,
 	access?: AccessVerifierPayload,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	onProgress?: (progress: FileUploadProgress) => void
 ): Promise<CreateSecretResponse> {
+	throwIfUploadAborted(signal);
+	onProgress?.({ stage: 'preparing' });
 	const body: Record<string, unknown> = {
 		kind: 'file',
 		// ciphertext intentionally omitted — that's what selects the large path.
@@ -226,6 +246,7 @@ async function createLargeFileSecret(
 	}
 
 	const staged = await requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
+		signal,
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
@@ -236,19 +257,31 @@ async function createLargeFileSecret(
 		throw new SecretApiError('Could not start the large upload. Try again.', 'upload_failed', 0);
 	}
 
-	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext, signal);
+	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext, signal, onProgress);
+	throwIfUploadAborted(signal);
+	onProgress?.({ stage: 'finalizing' });
 
 	await requestJson<{ id: string; finalized: boolean }>(
 		fetcher,
 		`${baseUrl}/api/secrets/${encodeURIComponent(staged.id)}/finalize`,
 		{
+			signal,
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: '{}'
 		}
 	);
 
-	return { id: staged.id, expires_at: staged.expires_at };
+	return {
+		id: staged.id,
+		expires_at: staged.expires_at,
+		...(staged.management_token
+			? {
+					management_token: staged.management_token,
+					management_expires_at: staged.management_expires_at
+				}
+			: {})
+	};
 }
 
 // uploadToObjectStore sends the raw ciphertext as the request body. The
@@ -257,19 +290,23 @@ async function createLargeFileSecret(
 // form would fail authentication. Content-Length is not set by hand — the
 // browser forbids it as a header and derives it from the body, which is exactly
 // the signed value.
-async function uploadToObjectStore(
+export async function uploadToObjectStore(
 	fetcher: typeof fetch,
 	upload: PresignedUpload,
 	ciphertextBase64: string,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	onProgress?: (progress: FileUploadProgress) => void
 ): Promise<void> {
+	throwIfUploadAborted(signal);
 	const bytes = base64ToBytes(ciphertextBase64);
 	// Content-Length is a forbidden header name, so it cannot be set here — the
 	// browser derives it from the body. Compare against the signed value anyway:
 	// a mismatch means the encryption overhead assumption drifted from the
 	// server's, and failing here names the cause instead of leaving a bare 403
 	// from the bucket.
-	const signedLength = Number(upload.headers['Content-Length']);
+	const signedLength = Number(
+		Object.entries(upload.headers).find(([name]) => name.toLowerCase() === 'content-length')?.[1]
+	);
 	if (Number.isFinite(signedLength) && signedLength !== bytes.byteLength) {
 		throw new SecretApiError('Upload size mismatch. Try again.', 'upload_failed', 0);
 	}
@@ -284,10 +321,73 @@ async function uploadToObjectStore(
 		Object.entries(upload.headers).filter(([name]) => name.toLowerCase() !== 'content-length')
 	);
 
+	onProgress?.({ stage: 'uploading' });
+	throwIfUploadAborted(signal);
+	if (typeof XMLHttpRequest !== 'undefined') {
+		return new Promise<void>((resolve, reject) => {
+			const xhr = new XMLHttpRequest();
+			let settled = false;
+			const finish = (error?: SecretApiError) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				signal?.removeEventListener('abort', abort);
+				xhr.upload.onprogress = null;
+				xhr.onload = xhr.onerror = xhr.onabort = xhr.ontimeout = null;
+				if (error) {
+					reject(error);
+				} else {
+					resolve();
+				}
+			};
+			const abort = () => {
+				finish(new SecretApiError('Upload cancelled.', 'upload_cancelled', 0));
+				xhr.abort();
+			};
+			xhr.upload.onprogress = (event) => {
+				if (!settled && !signal?.aborted) {
+					onProgress?.({
+						stage: 'uploading',
+						loaded: event.loaded,
+						total: event.lengthComputable && event.total > 0 ? event.total : undefined
+					});
+				}
+			};
+			xhr.onload = () => {
+				if (signal?.aborted) {
+					abort();
+				} else if (xhr.status >= 200 && xhr.status < 300) {
+					finish();
+				} else {
+					finish(new SecretApiError('Upload failed. Try again.', 'upload_failed', xhr.status));
+				}
+			};
+			xhr.onerror = xhr.ontimeout = () =>
+				finish(
+					new SecretApiError(
+						'Could not reach the upload endpoint. Check your connection and try again.',
+						'network_error',
+						0
+					)
+				);
+			xhr.onabort = abort;
+			try {
+				xhr.open(upload.method, upload.url);
+				for (const [name, value] of Object.entries(headers)) {
+					xhr.setRequestHeader(name, value);
+				}
+				signal?.addEventListener('abort', abort, { once: true });
+				xhr.send(body);
+			} catch {
+				finish(new SecretApiError('Could not start the upload. Try again.', 'upload_failed', 0));
+			}
+		});
+	}
+
+	// Non-browser clients retain fetch with indeterminate progress.
 	let response: Response;
 	try {
-		// ponytail: fetch can't report upload byte-progress (needs XHR) — signal
-		// gives cancel-only. A progress bar would mean swapping to XMLHttpRequest.
 		response = await fetcher(upload.url, { method: upload.method, headers, body, signal });
 	} catch (error) {
 		// A user-triggered abort is not a failure — surface it distinctly so the
@@ -306,6 +406,12 @@ async function uploadToObjectStore(
 	}
 }
 
+function throwIfUploadAborted(signal?: AbortSignal | null): void {
+	if (signal?.aborted) {
+		throw new SecretApiError('Upload cancelled.', 'upload_cancelled', 0);
+	}
+}
+
 export function createShareUrl(origin: string, id: string, key?: Uint8Array): string {
 	const url = new URL(origin);
 	url.pathname = `/s/${encodeURIComponent(id)}`;
@@ -321,10 +427,12 @@ async function requestJson<T>(
 	input: RequestInfo | URL,
 	init?: RequestInit
 ): Promise<T> {
+	throwIfUploadAborted(init?.signal);
 	let response: Response;
 	try {
 		response = await fetcher(input, init);
 	} catch {
+		throwIfUploadAborted(init?.signal);
 		throw new SecretApiError(
 			'Could not reach Flick. Check your connection and try again.',
 			'network_error',
@@ -332,6 +440,7 @@ async function requestJson<T>(
 		);
 	}
 
+	throwIfUploadAborted(init?.signal);
 	if (!response.ok) {
 		const serverError = await readServerError(response);
 		throw new SecretApiError(
@@ -340,7 +449,9 @@ async function requestJson<T>(
 			response.status
 		);
 	}
-	return (await response.json()) as T;
+	const result = (await response.json()) as T;
+	throwIfUploadAborted(init?.signal);
+	return result;
 }
 
 type ServerError = {

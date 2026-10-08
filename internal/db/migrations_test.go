@@ -5,6 +5,62 @@ import (
 	"testing"
 )
 
+func TestRequestSchemaMigrationConstraintsAndCascade(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for range 2 {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,expires_at)
+		values('request-test','synthetic-public-key','synthetic-fingerprint',zeroblob(32),zeroblob(32),'2026-10-08T00:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`update requests set generation=0`, `update requests set generation=17`,
+		`update requests set submission_token_hash=zeroblob(31)`,
+		`update requests set retrieval_token_hash=zeroblob(33)`,
+		`update requests set state='submitted'`,
+		`update requests set attempt_token_hash=zeroblob(32)`,
+	} {
+		if _, err := conn.Exec(statement); err == nil {
+			t.Fatalf("invalid row accepted: %s", statement)
+		}
+	}
+	if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values('request-test',zeroblob(16))`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("migration erased payload")
+	}
+	if _, err := conn.Exec(`delete from requests`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("request delete did not cascade")
+	}
+	worker, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	if err := MigrateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.QueryRow(`select count(*) from sqlite_master where name in ('requests','request_payloads')`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("request schema entered worker DB")
+	}
+}
+
 func TestMigrateAPICreatesOutboxEvents(t *testing.T) {
 	ctx := context.Background()
 	conn, err := OpenSQLite(ctx, ":memory:")
@@ -195,5 +251,136 @@ func TestMigrateAPIRelaxesStrictKDFColumns(t *testing.T) {
 	// Idempotent: a second migration is a no-op (columns already nullable).
 	if err := MigrateAPI(ctx, conn); err != nil {
 		t.Fatalf("second migrate api: %v", err)
+	}
+}
+
+func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into secrets (id,kind,storage_backend,storage_key,nonce,size_bytes,expires_at,created_at,updated_at)
+		values ('legacy','text','sqlite_blob','legacy','nonce',1,'2026-10-08','2026-10-08','2026-10-08')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop table secret_management`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from secrets where id = 'legacy'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("legacy row lost: %d %v", count, err)
+	}
+	if err := conn.QueryRow(`select count(*) from secret_management`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy token fabricated: %d %v", count, err)
+	}
+	if _, err := conn.Exec(`insert into secret_management values ('legacy', zeroblob(32), '2026-10-08T00:00:00.000000000Z', 'opened')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`delete from secrets where id = 'legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from secret_management where outcome = 'opened'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("outcome lost on migration/payload reclamation: %d %v", count, err)
+	}
+}
+
+func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(`drop table object_reconciliation_cursor; drop table object_reconciliation_pending`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(`update object_reconciliation_cursor set continuation_token='page-two',generation=4; insert into object_reconciliation_pending values ('managed/secrets/key','job')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var cursor, job string
+	var generation int
+	if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor`).Scan(&cursor, &generation); err != nil || cursor != "page-two" || generation != 4 {
+		t.Fatalf("migration reset cursor: %s %d %v", cursor, generation, err)
+	}
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending`).Scan(&job); err != nil || job != "job" {
+		t.Fatalf("migration lost pending claim: %s %v", job, err)
+	}
+	if _, err := conn.Exec(`insert into object_reconciliation_pending values ('managed/secrets/key','other')`); err == nil {
+		t.Fatal("duplicate pending key accepted")
+	}
+	if _, err := conn.Exec(`insert into object_reconciliation_pending values ('managed/secrets/other','job')`); err == nil {
+		t.Fatal("duplicate job fence accepted")
+	}
+}
+
+func TestRequestLargeMigrationPreservesInlineDatabase(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The exact pre-large-upload shape, including its restrictive state CHECK.
+	for _, statement := range []string{
+		`create table requests (id text primary key, public_key text not null, fingerprint text not null, submission_token_hash blob not null check(length(submission_token_hash)=32), retrieval_token_hash blob not null check(length(retrieval_token_hash)=32), state text not null default 'waiting' check(state in ('waiting','submitted','consumed','cancelled')), generation integer not null default 1 check(generation between 1 and 16), attempt_token_hash blob, attempt_body_hash blob, kind text, size_bytes integer, envelope_json text, expires_at text not null)`,
+		`create table request_payloads(request_id text primary key, ciphertext blob not null, foreign key(request_id) references requests(id) on delete cascade)`,
+		`insert into requests values('existing','public','fingerprint',zeroblob(32),zeroblob(32),'submitted',3,zeroblob(32),zeroblob(32),'text',1,'{}','2026-10-08T00:00:00.000000000Z')`,
+		`insert into request_payloads values('existing',X'010203')`,
+	} {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var state, backend string
+	var generation int
+	var payload []byte
+	if err := conn.QueryRow(`select r.state,r.generation,r.storage_backend,p.ciphertext from requests r join request_payloads p on p.request_id=r.id`).Scan(&state, &generation, &backend, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if state != "submitted" || generation != 3 || backend != "sqlite_blob" || string(payload) != "\x01\x02\x03" {
+		t.Fatal("migration changed inline request")
+	}
+	if _, err := conn.Exec(`update requests set state='uploading',storage_backend='s3_object',kind='file',upload_key='managed/requests/upload',final_key='managed/requests/final',ciphertext_sha256=zeroblob(32),reservation_expires_at=expires_at`); err != nil {
+		t.Fatal("new state CHECK absent", err)
+	}
+	if _, err := conn.Exec(`delete from requests`); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("FK cascade lost", err)
+	}
+	var foreignKeys int
+	if err := conn.QueryRow(`pragma foreign_keys`).Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+		t.Fatal("FK enforcement not restored", err)
 	}
 }

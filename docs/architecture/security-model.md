@@ -147,14 +147,27 @@ The key must travel only in the fragment. Placing it in the path or query
 string would send it to the API and into access logs, at which point the server
 could decrypt the payload on open — breaking the core invariant.
 
-## Planned one-time requests
+## One-time requests
 
-[Request links v1](request-links.md) proposes independent submission/retrieval
+[Request links v1](request-links.md) defines independent submission/retrieval
 tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
 submission link cannot retrieve or decrypt content. The private retrieval link
 deliberately carries the requester key in its fragment, with explicit custody
-and history-exposure guidance. These are M9 implementation requirements, not
-live endpoints or changes to existing Model A/Model B formats.
+and history-exposure guidance. #205 implements the inline API with separate
+SHA-256 capability hashes, strict canonical RSA SPKI/envelope validation,
+non-consuming authenticated metadata, and atomic one-time ciphertext release.
+The API cannot validate RSA labels or GCM authentication; clients must enforce
+the request ID/kind bindings when encrypting and decrypting. HTTP spans contain
+only method, route template, and status; request bodies and Authorization are
+excluded. The browser flow uses the reviewed request crypto module, validates the
+private key against owner metadata before Open, and keeps decrypted content and
+retry receipts only in memory. Large file reservations bind one generation, attempt token, immutable
+envelope, size, and ciphertext SHA-256. Only verified bounded bytes are PUT to a
+pre-reserved server-only final key; a signed staging PUT cannot overwrite accepted
+content. The API rechecks reservation and original expiry at acceptance, and object
+read failures never consume. Generation exhaustion returns unavailable. Recurring
+request-prefix cleanup handles late writes even after capability metadata is gone.
+Existing Model A/Model B formats are unchanged.
 
 ## Structured Credentials
 
@@ -285,10 +298,12 @@ rules are defined in [Advertising experiment](advertising-experiment.md).
 - reproducible or signed CLI release artifacts, so a downloader can verify more
   than the `SHA256SUMS` published alongside the binaries
 
-## Planned M8 Sender Management
+## M8 Sender Management
 
 [Sender management v1](../../contracts/sender-management-v1.md) is the accepted
-design, not implemented runtime behavior. New deliveries get an independent
+design. #200 implements issuance and status; #201 implements cancellation and
+recurring object cleanup. `web/src/lib/components/ManageSecretPage.svelte` implements
+the #202 browser status/cancellation flow. New deliveries get an independent
 32-byte random management bearer; the API stores only its SHA-256 hash. The
 private management fragment never contains the recipient encryption key. Status
 and cancellation authority end at the original content expiry; neither operation

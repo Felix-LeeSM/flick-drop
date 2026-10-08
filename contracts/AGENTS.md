@@ -5,14 +5,13 @@ This directory holds shared service contracts.
 Expected files:
 
 - `openapi.yaml`: browser/web to API HTTP contract.
-- `sender-management-v1.md`: planned M8 sender management API, capability, and
+- `sender-management-v1.md`: M8 sender management API, capability, and
   lifecycle contract; `openapi.yaml` changes only with runtime implementation.
 - `credential-payload.schema.json`: browser-only structured credential JSON
   after the `FLCR1:` prefix and before text-secret encryption.
 - `events/*.schema.json`: NATS job/event payload contracts.
-- Worker→API internal endpoint contract: not yet materialized as a file. The
-  internal endpoints live in `internal/httpapi/router.go` (`/internal/...`); add
-  `internal-api.md` or an OpenAPI extension when the contract stabilizes.
+- `internal-api.md`: worker cleanup and job-ID-fenced object reconciliation
+  acknowledgements routed in `internal/httpapi/router.go`.
 
 Contracts must not contain real IDs, credentials, production domains, plaintext
 secrets, derived keys, or private bucket names.

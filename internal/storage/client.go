@@ -47,10 +47,19 @@ type ObjectInfo struct {
 
 // ObjectStore is the surface the secrets store depends on for large payloads.
 type ObjectStore interface {
+	List(ctx context.Context, prefix, cursor string, limit int) (ObjectPage, error)
 	PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error)
 	Head(ctx context.Context, key string) (ObjectInfo, error)
 	Get(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
+}
+
+// RequestObjectStore adds bounded reads and server-only final writes. Existing
+// send-link storage behavior continues using ObjectStore unchanged.
+type RequestObjectStore interface {
+	ObjectStore
+	GetBounded(context.Context, string, int64) ([]byte, error)
+	Put(context.Context, string, []byte) error
 }
 
 type Client struct {
@@ -94,3 +103,4 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) SetNowForTest(now func() time.Time) { c.now = now }
 
 var _ ObjectStore = (*Client)(nil)
+var _ RequestObjectStore = (*Client)(nil)

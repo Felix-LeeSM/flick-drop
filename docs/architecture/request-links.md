@@ -1,8 +1,10 @@
 # One-time request links v1
 
-Status: proposed contract for #203. Endpoints and schema below are not live;
-#204–#207 implement and verify them. Existing send-link formats and CLI vectors
-are unchanged. Sender management follows the separate #199 contract.
+Status: approved v1 contract from #203. #205 implements the inline API and
+SQLite lifecycle; #207 implements reserved object uploads and recurring cleanup.
+#204 implements browser crypto and #206 implements the requester/submitter UI.
+Existing send-link formats and CLI vectors are
+unchanged. Sender management follows the separate #199 contract.
 
 ## Product and authority
 
@@ -110,6 +112,84 @@ algorithms, fields, malformed/noncanonical base64, wrong lengths, negative or
 fractional sizes, kind/filename mismatches, and invalid key material before
 database writes or crypto. Do not reinterpret existing Model A/B envelopes.
 
+## Browser crypto module (#204)
+
+`web/src/lib/crypto/requests.ts` implements this envelope without HTTP, browser
+storage, UI, or crypto dependencies. Callers supply explicit plaintext byte
+bounds through `RequestLimits.maxTextBytes` and `RequestLimits.maxFileBytes`;
+the later API client subtracts the 16-byte GCM tag from its inline ciphertext
+limit to obtain `maxTextBytes`. The module returns base64 ciphertext for the inline
+path; large-upload callers decode those same bytes for the object-store PUT.
+Existing send-link crypto remains separate.
+
+Both key import functions require the expected public-key fingerprint. The
+submitter obtains that value from its shared fragment; the requester obtains
+it from owner status before consuming Open. Imports check native RSA parameters
+and byte-for-byte canonical DER re-export. Private import also verifies a local
+OAEP encrypt/decrypt challenge so structurally accepted but unusable private
+components cannot enable a consuming Open. Keys and challenge bytes stay in
+memory. The module rejects request IDs longer than 256 characters, CR/LF, and
+lossy UTF-8; callers use the server-issued ID unchanged.
+
+`tests/fixtures/request-crypto-v1.json` contains immutable public synthetic
+RSA material and ciphertext produced independently with Node's `node:crypto`.
+Never use these keys for real requests or regenerate the fixture to match a
+changed implementation. Unit tests decrypt those vectors, reject an otherwise
+valid AES-128 downgrade, and cover malformed keys, tampering and request/kind
+replay. Run `pnpm --dir web test` for unit coverage and
+`pnpm --dir web exec node --test src/lib/crypto/requests.browser.mjs` for actual
+Chromium Web Crypto. The browser harness bundles the module with Vite and serves
+it through Playwright's intercepted HTTPS origin, with no listener, API, or
+object store. Native RSA-OAEP/AES-GCM and secure contexts are required; the
+included browser check targets Chromium, with no Firefox or Safari validation.
+
+## Browser flow (#206 and #207)
+
+`/request` creates a request; `/r/{id}` submits text or one file;
+`/r/{id}/receive` checks requester status, cancels, or opens once. The main send
+page links to request creation. Existing Model A/B send formats are unchanged.
+`web/src/lib/api/requests.ts` sends only the selected capability in Authorization,
+uses empty bodies for Open/revoke, and snapshots each encrypted submission body
+with its generation and random attempt token for exact retries.
+
+`web/src/lib/state/request-links.ts` parses role-specific fragments and holds one
+transient submission-link handoff. Only submission links get native Share and QR
+controls. The private retrieval link has a separate copy action and explicitly
+warns about key loss, browser history/sync, clipboard managers, and screenshots.
+A private link without its key still permits status/cancellation; it cannot enable
+Open. The full private link supports reload and another device, but cannot recover
+the separate submission link or a consumed response.
+
+Owner polling starts at ten seconds, runs only while visible, backs off to at most
+120 seconds on failures, and stops at terminal states or expiry. Cancellation
+refreshes status before confirmation and reads server status after a 409 race.
+An unknown Open result never triggers another Open. Explicit 429/503 rejections
+allow another user-triggered Open; the API contract says neither consumes content.
+The requester verifies the actual `/api/config` limits before enabling Open;
+failed or malformed configuration cannot silently substitute a smaller default
+and consume a file that the browser would then reject. Plaintext and file object
+URLs are cleared when leaving or reaching known expiry. A persisted `pageshow`
+reloads cleared request pages without replaying Open or submission. The submission
+page explains that its previous in-memory attempt was discarded.
+
+Submitters check the fragment fingerprint before encryption and verify configured
+limits before submitting. Files use the advertised `maxFileBytes`, which the API
+already clamps to the inline allowance when object storage is disabled.
+`payloadInlineMaxBytes` is already the plaintext allowance after the GCM tag;
+text and files within that allowance use the inline path. Larger files retain an
+immutable ciphertext/checksum/attempt snapshot in memory, reserve an upload, PUT
+the ciphertext with byte progress, and finalize. A complete PUT is not acceptance.
+Only a successful submit/finalize or matching accepted receipt confirms acceptance.
+
+After an unknown response, the user checks the same attempt and can explicitly
+retry its exact encrypted bytes. Cancellation must abandon that reservation and
+confirm a new generation before offering a new submission. If the reservation
+response was lost, cancellation first resolves the same immutable reservation;
+it cannot assume that aborting an HTTP request removed server state. An expired
+upload instruction must be abandoned before a new attempt. Leaving/reloading
+discards the retry receipt. No private key, plaintext, or filename is written to
+browser storage, Svelte navigation state, HTTP, or error messages.
+
 ## Lifetime and transitions
 
 Use the existing configured min/default/max TTL and size limits. Defaults are
@@ -163,7 +243,10 @@ Creation response loss cannot recover server-issued tokens. Explain the unknown
 outcome and let the unused request expire; never automatically create again.
 Open response loss is likewise unrecoverable by design.
 
-## Planned HTTP contract
+## HTTP contract
+
+All endpoints below are implemented. `contracts/openapi.yaml` defines the strict
+request and response shapes, including reserved large-file uploads.
 
 All paths below are under `/api/requests`. Authorization failures, unknown IDs,
 and expired requests return the same `404 request_unavailable`; malformed input
@@ -184,20 +267,63 @@ return `503 storage_unavailable` and do not consume or finalize.
 | POST `/{id}/finalize` | Submission token | generation, attempt_token → submitted receipt |
 | POST `/{id}/abandon` | Submission token | generation, attempt_token → waiting with incremented generation; only cancels that pending reservation |
 
+Inline creation accepts omitted `ttl_seconds` as the configured default; an
+explicit zero is invalid. Open and revoke require an empty HTTP body. Query
+parameters, duplicate JSON fields, case aliases, unknown fields, and null values
+are rejected. Successful submit returns `{generation, state: "submitted"}`;
+attempt status returns `{generation, state: "waiting"|"uploading"|"accepted"|"unavailable"}`.
+Only the matching active attempt sees `uploading`; other attempts see `unavailable`.
+Open returns `{kind, size_bytes, envelope, ciphertext}` and revoke returns
+`{state: "cancelled"}`. The accepted receipt survives open/revoke until expiry
+and describes historical acceptance, not present deliverability. Immutable
+content comparison ignores JSON whitespace and property order.
+
+Inline open/revoke delete payload bytes and encrypted metadata in their SQLite
+transaction, so no external cleanup job remains. Every write transaction checks
+the deadline after acquiring the writer and before commit. Failed COMMIT rolls
+back on the same pinned connection before the connection can be reused.
+The existing API reaper purges request rows and cascading payloads in bounded
+batches, including consumed/cancelled requests, at the original deadline.
+
 Use existing create/open rate-limit configuration for issuance and mutating
 submission/owner operations. Metadata/owner/attempt reads must also have bounded
-per-client limits. The browser polls owner status at most once per 10 seconds
+per-client limits. Inline metadata, attempt, submit, open, and revoke share one
+per-client bucket across request IDs; rotating IDs does not bypass the limit.
+The browser polls owner status at most once per 10 seconds
 while visible, stops at terminal state/expiry, backs off on errors, and offers
 a manual refresh. No WebSocket or notification service is added.
 
 ## Large upload and cleanup (#207)
 
-Large upload endpoints remain unavailable until #207; #205 rejects above-inline
-payloads. Reservation lasts at most the existing 15-minute pending-upload TTL
+`/upload` accepts a strict object containing `generation`, `attempt_token`,
+`kind: "file"`, `size_bytes`, `envelope`, and `ciphertext_sha256` (canonical
+standard base64 of the 32-byte SHA-256 digest of the ciphertext). Files must exceed
+the inline ciphertext limit and stay within the configured plaintext file limit.
+The HTTP body is bounded to 8,192 bytes. Disabled S3 returns
+`503 storage_unavailable`; advertised file limits already clamp to the inline
+maximum when S3 is disabled.
+
+A reservation returns `200 {generation, state: "uploading", upload,
+reservation_expires_at}`. `upload` has the existing signed PUT instruction shape;
+its `expires_at` equals `reservation_expires_at`. An already accepted identical
+retry returns `200 {generation, state: "submitted"}` without another instruction.
+`/finalize` and `/abandon` accept only `{generation, attempt_token}` (1,024-byte
+HTTP body bound). Finalize returns the submitted receipt. Abandon returns
+`{generation: <next>, state: "waiting"}`; ending generation 16 returns
+`404 request_unavailable`. Owner status includes `uploading`, but exhaustion
+returns 404 for owner/instructions/attempt rather than a new public state.
+
+Reservation lasts at most the existing 15-minute pending-upload TTL
 and never past request expiry. Only one reservation is active. Inline submitters
 and other large attempts conflict while reserved. The same attempt can recover
 an upload instruction after response loss, without extending either deadline;
-if the instruction expired, the attempt must be abandoned before a new attempt.
+an expired reservation is invalidated and advances the generation atomically
+on the next authenticated operation or reaper tick. An abandon of an older
+generation returns 404. If an aborted reserve response has an unknown outcome,
+a same-generation `waiting` status does not prove the original call cannot still
+reserve: recover the same immutable `/upload` before abandoning it. Do not
+discard attempt material or generate a new attempt until a newer generation or
+terminal result establishes the outcome.
 
 Object keys are unique, never reused, and exclusively under `managed/requests/`.
 Each attempt has its own key. Pin ciphertext length in the signed PUT and store
@@ -242,7 +368,11 @@ current generation and attempt receipt/hash, immutable envelope, and storage ref
 inline payload table with cascading deletion. Keep payload-independent owner
 metadata only until the original deadline. The API alone writes these tables;
 the worker continues processing cleanup through existing internal interfaces.
-The exact migration and live OpenAPI are part of #205, not this proposal.
+`internal/db/migrations.go` and `contracts/openapi.yaml` define the implemented
+schema and HTTP shapes. `internal/db/requests.go` upgrades older inline-only
+tables by rebuilding the state CHECK on one pinned connection while preserving
+inline payloads and their foreign key. Request storage references, reservation
+deadlines, and independent reconciliation cursor/claims are API-owned.
 
 - #204: browser-only crypto module, immutable synthetic decrypt golden vectors,
   tamper/cross-request vectors and strict validation; no HTTP/UI/storage.

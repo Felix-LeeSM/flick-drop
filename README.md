@@ -13,7 +13,9 @@ and removed.
 ## What It Does
 
 - Creates one-time links for encrypted text secrets and files.
+- Creates one-time requests with separate submission and private retrieval links for text or one encrypted file.
 - Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
+- Provides a private management link to check a delivery or cancel it before it is opened, without an account.
 - Expires secrets automatically after a short TTL.
 - Deletes consumed or expired data through an async worker.
 - Removes a secret after five invalid passphrase attempts.
@@ -35,9 +37,46 @@ a separate channel. Passphrase-free links also carry a random decryption key in
 the URL fragment (`#key=...`), which the browser does not send to the server.
 Anyone holding the complete passphrase-free link can open it once.
 
-One-time request links are planned in M9, with separate submission and private
-retrieval links. The [request-link contract](docs/architecture/request-links.md)
-defines the proposed flow; request endpoints are not implemented yet.
+Successful creation opens a private management page. Copy or share the
+**recipient link** from that page, and keep the **management link** for yourself.
+The management link expires at the original delivery deadline. Anyone with it
+can check or cancel the delivery, but it cannot decrypt content or recover a
+lost recipient link. Save both links where needed: after a refresh or on
+another device, the management page offers only status and cancellation.
+Flick does not keep browser delivery history or recover lost links.
+
+An `Opened` status means the server authorized release of the encrypted
+content, not that anyone read it. Cancellation prevents a later opening; it
+cannot recall content already delivered or guarantee physical erasure of copies.
+Older API deployments that do not return management capabilities retain the
+original recipient-link result until the API is upgraded.
+
+Choose **Request a secret** to collect text or one file. Share the
+**submission link** and save the separate **private retrieval link**. The first
+accepted submission wins; only the private retrieval link can open and decrypt
+it once. Request files use the configured file limit. Files above the inline limit upload
+encrypted bytes to S3-compatible storage when enabled; with storage disabled, the
+advertised file limit stays at the inline allowance. Uploading 100 percent is not
+acceptance: the server must verify and finalize the file first.
+
+The private retrieval link contains the decryption key. Its complete fragment
+supports refresh, browser restart, and another device before expiry; Flick does
+not save the key in browser storage. Browser history/sync, clipboard managers,
+and screenshots may retain the complete link. Anyone with it can retrieve or
+cancel the request. Losing the key is irreversible, and a lost open response
+cannot be recovered or safely replayed. Status checks never open the content.
+The initial submission link is held only in browser memory and cannot be
+reconstructed from a refreshed retrieval page.
+
+If a submission response is lost, keep the submitter tab open. Check the attempt
+before explicitly retrying the same encrypted content. No automatic retry creates
+a new key or submission attempt. Cancelling an upload also requires server
+confirmation; stopping the browser transfer alone does not delete uploaded bytes.
+A confirmed cancellation or expired reservation advances the attempt generation
+before another file can be submitted. Server cleanup handles abandoned and late
+uploads. See the
+[request-link contract](docs/architecture/request-links.md) for authority,
+expiry, and response-loss details.
 
 ## Security Model
 

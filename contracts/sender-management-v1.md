@@ -1,11 +1,14 @@
-# Sender Management Contract v1 — Planned
+# Sender Management Contract v1
 
 Status: accepted design for [#199](https://github.com/Felix-LeeSM/flick-drop/issues/199),
-not implemented. [#200](https://github.com/Felix-LeeSM/flick-drop/issues/200),
-[#201](https://github.com/Felix-LeeSM/flick-drop/issues/201), and
-[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) implement the API,
-cancellation/cleanup, and UI. `openapi.yaml` describes the running API; add the
-endpoints there with their implementation, not in this documentation PR.
+[#200](https://github.com/Felix-LeeSM/flick-drop/issues/200) implements capability
+issuance, status, and bounded metadata retention.
+[#201](https://github.com/Felix-LeeSM/flick-drop/issues/201) implements cancellation
+and recurring object reconciliation. The browser flow in
+[#202](https://github.com/Felix-LeeSM/flick-drop/issues/202) implements the private
+management page and the in-memory recipient-link handoff.
+`openapi.yaml` describes implemented public endpoints; worker acknowledgements
+are defined in [internal API](internal-api.md).
 
 ## Capability and browser custody
 
@@ -54,9 +57,9 @@ original creation session. Use the copy you saved or create a new delivery."
 A management visit must never call the recipient `/open` endpoint. No persistent
 browser history of deliveries is introduced.
 
-## Proposed HTTP surface
+## HTTP surface and cancellation
 
-All field names below belong to proposal v1. Existing create request fields,
+All field names below belong to contract v1. Existing create request fields,
 recipient routes, encryption formats, and finalize request/response stay valid.
 Both inline and staged-S3 create responses add:
 
@@ -69,8 +72,8 @@ Both inline and staged-S3 create responses add:
 
 These are additive fields beside the existing `id`, `expires_at`, and optional
 `upload`. The browser must preserve the fields across PUT/finalize;
-`web/src/lib/api/secrets.ts:createLargeFileSecret` currently discards extra
-fields. Existing CLI decoding in `internal/flickcli/client.go:Client.do` accepts
+`web/src/lib/api/secrets.ts:createLargeFileSecret` preserves the fields until
+the successful handoff. Existing CLI decoding in `internal/flickcli/client.go:Client.do` accepts
 unknown response fields. Existing secrets receive no retroactive token, and
 legacy clients need no new commands or request fields.
 
@@ -88,7 +91,8 @@ recipient URL, or the raw management token again.
 Missing, malformed, wrong-ID, wrong, expired, and unknown tokens/records return
 the same `404` error code `management_unavailable`, with no status fields.
 Authenticated cancellation of `opened`, `locked`, or `unavailable` returns `409`
-code `not_cancellable` plus the same safe status snapshot. Repeated cancellation
+code `not_cancellable` plus the same safe status snapshot, encoded as
+`{"error":{"code":"not_cancellable","message":"Delivery cannot be cancelled"},"status":{...}}`. Repeated cancellation
 of `cancelled` returns `200`; it does not schedule duplicate immediate jobs.
 Malformed JSON returns `400`; rate limits use `429`; transient failures use
 `503` and must not masquerade as a terminal state. Apply the existing

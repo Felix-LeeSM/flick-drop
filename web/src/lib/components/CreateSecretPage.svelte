@@ -15,14 +15,17 @@ import {
 	TypeIcon,
 	XIcon
 } from '@lucide/svelte';
-import { onMount } from 'svelte';
+import { onDestroy, onMount } from 'svelte';
+import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { type ClientLimits, defaultLimits, getConfig } from '$lib/api/config';
+import { createManagementUrl, isManagementToken } from '$lib/api/management';
 import {
 	type CreateSecretResponse,
 	createSecretApiClient,
 	createShareUrl,
 	DEFAULT_API_BASE_URL,
+	type FileUploadProgress,
 	SecretApiError,
 	type TtlSeconds
 } from '$lib/api/secrets';
@@ -55,6 +58,7 @@ import {
 	type AccessVerifierPayload,
 	createAccessVerifier,
 	type EncryptedFilePayload,
+	type EncryptedTextPayload,
 	encryptFile,
 	encryptFileWithKey,
 	encryptText,
@@ -63,9 +67,10 @@ import {
 } from '$lib/crypto/text';
 import { bundleFiles } from '$lib/files/bundle';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
+import { clearCreatedDelivery, handOffCreatedDelivery } from '$lib/state/created-delivery';
 import { cn, formatBytes } from '$lib/utils';
 
-type StatusKind = 'idle' | 'encrypting' | 'uploading' | 'error';
+type StatusKind = 'idle' | 'encrypting' | 'saving' | 'error' | FileUploadProgress['stage'];
 type CreateMode = 'text' | 'file' | CredentialType;
 
 const ttlUnitFactor: Record<'minutes' | 'hours' | 'days', number> = {
@@ -132,14 +137,15 @@ let dragActive = $state(false);
 // mid-zip), so only the latest applyFiles run may commit its result.
 let bundleToken = 0;
 let shareUrl = $state('');
+let managementUrl = $state('');
 let expiresAt = $state('');
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isCreating = $state(false);
-// Aborts the large-file S3 upload while it is in flight (the only long, frozen
-// leg). Null outside a create. ponytail: fetch gives cancel only, not byte
-// progress — a progress bar would require swapping the upload to XMLHttpRequest.
+// One controller identifies the current attempt and suppresses stale callbacks.
 let abortController = $state<AbortController | null>(null);
+let uploadProgress = $state<FileUploadProgress | null>(null);
+onDestroy(() => abortController?.abort());
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
 
@@ -198,12 +204,17 @@ async function createSecret(): Promise<void> {
 	}
 
 	isCreating = true;
-	abortController = new AbortController();
-	status = 'Encrypting';
+	const controller = new AbortController();
+	abortController = controller;
+	uploadProgress = null;
+	status = 'Encrypting in your browser…';
 	statusKind = 'encrypting';
 
 	try {
 		const { created, key } = await createSelectedSecret();
+		if (controller.signal.aborted || abortController !== controller) {
+			return;
+		}
 
 		shareUrl = createShareUrl(window.location.origin, created.id, key);
 		expiresAt = created.expires_at;
@@ -216,11 +227,12 @@ async function createSecret(): Promise<void> {
 		}
 		status = '';
 		statusKind = 'idle';
+		await openManagement(created);
 	} catch (error) {
 		// A user-cancelled upload returns to the idle form, not a red error — the
 		// user chose to stop, nothing failed.
 		if (error instanceof SecretApiError && error.code === 'upload_cancelled') {
-			status = '';
+			status = 'Upload cancelled.';
 			statusKind = 'idle';
 		} else {
 			status =
@@ -230,6 +242,29 @@ async function createSecret(): Promise<void> {
 	} finally {
 		isCreating = false;
 		abortController = null;
+		uploadProgress = null;
+	}
+}
+
+async function openManagement(created: CreateSecretResponse): Promise<void> {
+	if (created.management_token && isManagementToken(created.management_token)) {
+		managementUrl = createManagementUrl(
+			window.location.origin,
+			created.id,
+			created.management_token
+		);
+		handOffCreatedDelivery({
+			id: created.id,
+			token: created.management_token,
+			recipientUrl: shareUrl,
+			usesPassphrase: usePassphrase
+		});
+		try {
+			await goto(managementUrl);
+		} catch {
+			clearCreatedDelivery();
+			// The delivery already exists; keep its links usable if navigation fails.
+		}
 	}
 }
 
@@ -248,11 +283,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 		const access = await createAccessVerifier(passphrase);
 		if (mode === 'text') {
 			return {
-				created: await api.createTextSecret(
-					await encryptText(plaintext, passphrase),
-					ttlSeconds,
-					access
-				)
+				created: await createText(await encryptText(plaintext, passphrase), ttlSeconds, access)
 			};
 		}
 		if (mode === 'file') {
@@ -261,7 +292,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 			};
 		}
 		return {
-			created: await api.createTextSecret(
+			created: await createText(
 				await encryptText(serializeCredential(credentialEnvelope), passphrase),
 				ttlSeconds,
 				access
@@ -273,7 +304,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	const { key, raw } = await generateSecretKey();
 	if (mode === 'text') {
 		return {
-			created: await api.createTextSecret(await encryptTextWithKey(plaintext, key), ttlSeconds),
+			created: await createText(await encryptTextWithKey(plaintext, key), ttlSeconds),
 			key: raw
 		};
 	}
@@ -284,7 +315,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 		};
 	}
 	return {
-		created: await api.createTextSecret(
+		created: await createText(
 			await encryptTextWithKey(serializeCredential(credentialEnvelope), key),
 			ttlSeconds
 		),
@@ -292,20 +323,38 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	};
 }
 
-// Routes a file payload through the API. For the S3 path (payload above the
-// inline threshold) it flips the status to 'Uploading' so the user sees the
-// upload leg as distinct from encryption, and passes the abort signal so the
-// Cancel button can stop the in-flight POST. Inline files finish too fast for
-// either to matter.
+function createText(
+	payload: EncryptedTextPayload,
+	ttl: TtlSeconds,
+	access?: AccessVerifierPayload
+): Promise<CreateSecretResponse> {
+	status = 'Creating link…';
+	statusKind = 'saving';
+	return api.createTextSecret(payload, ttl, access);
+}
+
 function createFile(
 	payload: EncryptedFilePayload,
 	access?: AccessVerifierPayload
 ): Promise<CreateSecretResponse> {
-	if (payload.size_bytes > limits.payloadInlineMaxBytes) {
-		status = 'Uploading';
-		statusKind = 'uploading';
-	}
-	return api.createFileSecret(payload, ttlSeconds, access, abortController?.signal);
+	status = 'Creating link…';
+	statusKind = 'saving';
+	const controller = abortController;
+	return api.createFileSecret(payload, ttlSeconds, access, controller?.signal, (progress) => {
+		if (controller?.signal.aborted || abortController !== controller) {
+			return;
+		}
+		uploadProgress = progress;
+		statusKind = progress.stage;
+		status =
+			progress.stage === 'preparing'
+				? 'Preparing encrypted upload…'
+				: progress.stage === 'finalizing'
+					? 'Finalizing link…'
+					: progress.total !== undefined && progress.loaded !== undefined
+						? `Uploading encrypted file · ${formatBytes(progress.loaded)} of ${formatBytes(progress.total)} (${Math.floor((progress.loaded / progress.total) * 100)}%)`
+						: 'Uploading encrypted file…';
+	});
 }
 
 function switchMode(nextMode: CreateMode): void {
@@ -445,6 +494,7 @@ function requireSelectedFile(): File {
 
 function createAnother(): void {
 	shareUrl = '';
+	managementUrl = '';
 	expiresAt = '';
 	status = '';
 	statusKind = 'idle';
@@ -492,6 +542,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				<span class="font-serif text-lg leading-none">Flick</span>
 			</a>
 			<nav class="flex items-center gap-2">
+				<a href={resolve('/request')} class="px-2 py-3 text-sm underline underline-offset-4">Request a secret</a>
 				<ThemeToggle />
 			</nav>
 		</header>
@@ -524,6 +575,9 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				<div class="grid gap-3">
 					<UrlField value={shareUrl} id="share-url" />
 					<NativeShareButton recipientUrl={shareUrl} />
+					{#if managementUrl}
+						<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
+					{/if}
 					<Button
 						type="button"
 						variant="outline"
@@ -841,9 +895,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							<LockKeyholeIcon class="size-4" aria-hidden="true" />
 							{isCreating ? 'Creating' : 'Create link'}
 						</Button>
-						<!-- Cancel only during the S3 upload leg: abort stops just the
-						     in-flight POST, so it's a no-op (and a confusing flash) during
-						     encryption or a sub-second inline create. -->
+						<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
 						{#if statusKind === 'uploading'}
 							<Button
 								type="button"
@@ -853,6 +905,12 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 							>
 								Cancel
 							</Button>
+							<progress
+								class="h-2 w-full accent-primary"
+								aria-label="Encrypted file upload progress"
+								max={uploadProgress?.total ?? 1}
+								value={uploadProgress?.total ? uploadProgress.loaded : undefined}
+							></progress>
 						{/if}
 						{#if status.length > 0}
 							<p

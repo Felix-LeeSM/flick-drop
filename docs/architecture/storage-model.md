@@ -48,14 +48,39 @@ Object Storage receives browser-encrypted ciphertext only. Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 
-## Planned request storage
+The browser reports ZIP preparation and encryption without a percentage. Large
+uploads use XMLHttpRequest upload events for transferred ciphertext bytes; when
+the transport cannot measure a total, progress remains indeterminate. Uploading
+100 percent means only that the bytes were sent. The link is ready after the
+API's finalize check succeeds. Cancelling the PUT stops that browser attempt
+and prevents a later finalize or share result; any staged upload still follows
+the existing pending-upload expiry and orphan cleanup policy.
+
+## Request storage
 
 M9 [request links](request-links.md) use separate API-owned request metadata
 and inline ciphertext, with the original request deadline bounding both
-submission and retrieval. Large request uploads will use attempt-specific
-objects and a separate `managed/requests/` reconciliation namespace. Request
-storage is not implemented yet; it must not be swept using sender-secret
-live-row checks.
+submission and retrieval. `internal/requests/store.go` stores one inline payload,
+removes the BLOB and encrypted metadata transactionally on open/revoke, and
+retains only owner metadata and the bounded acceptance receipt until that
+deadline. `internal/secrets/reaper.go:ClaimOnce` invokes the bounded request
+purge, which cascades payload deletion. Inline cleanup needs no NATS job.
+
+Large request uploads reserve separate, unique staging and final keys under
+`managed/requests/`. `internal/requests/large.go` verifies the bounded actual GET
+length and SHA-256, then PUTs those same bytes to the stable server-only final
+key before the accepting transaction. A mutable source is never copied after
+verification. Active reservations protect both keys; submitted requests protect
+only the final key. A failed/lost PUT response or losing finalizer never deletes
+the final key. Open loads and verifies the object before its consuming transaction;
+a failed read returns 503 without consuming.
+
+Revoke/open/expiry/abandon enqueue required key-only cleanup transactionally.
+`internal/requests/cleanup.go` owns a separate durable cursor and per-key pending
+claim, scanning one bounded request-prefix page every reaper tick even when expiry
+or sender scanning fails. Terminal worker acknowledgements fence claims by job ID.
+Repeated listing continues after metadata expires, so late PUTs receive new cleanup
+jobs indefinitely. Request objects are never swept using sender-secret live-row checks.
 
 ## Deletion Semantics
 
@@ -73,18 +98,19 @@ Cleanup jobs are idempotent:
 - missing object-storage object: success
 - already consumed/expired: success
 
-## Planned M8 Management Retention and Late Uploads
+## M8 Management Retention and Late-Upload Reconciliation
 
-[Sender management v1](../../contracts/sender-management-v1.md) specifies future
-behavior; the current implementation has not added management records or object
-reconciliation. Management hashes and minimal terminal outcomes expire at the
+[Sender management v1](../../contracts/sender-management-v1.md) defines the
+management lifecycle. #200 implements management records, status, and expiry;
+#201 implements cancellation and object reconciliation. Management hashes and minimal terminal outcomes expire at the
 original secret deadline. Early payload cleanup does not erase that outcome;
-expiry sweeps purge the management record even after open, lockout, or cancellation.
+expiry sweeps purge management records and consumed secret metadata after open
+or lockout. Cancellation removes its live secret and payload in the same transaction
+as any required object-delete job.
 No account history or content-retention extension is introduced.
 
 New managed S3 payloads use the exclusive, never-reused `managed/secrets/{id}` namespace.
-Immediate transactional cleanup jobs remain the first deletion path. Recurring
-API-owned `ListObjectsV2` reconciliation of `managed/secrets/` supplies the second path:
+Immediate transactional cleanup jobs remain the existing deletion path. Recurring API-owned `ListObjectsV2` reconciliation of `managed/secrets/` supplies the second path:
 check live-row protection, enqueue deletion through the outbox, and let workers
 delete. Persisted pagination and bounded per-key pending claims survive restarts.
 Each late reappearance needs a fresh job ID after the preceding job terminates.
@@ -97,5 +123,8 @@ and retention locks remain operator-owned residual risks. Failed listing or
 blocked deletion must stay visible and retryable, not count as successful
 erasure. No new bucket-setting startup gate or automatic policy change is
 introduced. Provider lifecycle is an optional backstop, not an assumed
-configuration or deletion SLA. #201 implements the contract's failure recovery
-and pending-claim acknowledgements.
+configuration or deletion SLA. The API stores a single generation-fenced listing cursor and one pending job ID
+per key. Each tick gives expiry and listing their own bounded batch; a failed
+expiry batch does not prevent listing. Invalid provider cursors restart a pass;
+other listing failures retain the cursor and claims for retry. The worker
+acknowledges terminal receipts through the [internal API](../../contracts/internal-api.md).

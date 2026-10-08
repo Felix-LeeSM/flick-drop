@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,23 @@ type mockObjectStore struct {
 
 func newMockObjectStore() *mockObjectStore {
 	return &mockObjectStore{objects: map[string][]byte{}}
+}
+
+func (m *mockObjectStore) List(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+	keys := []string{}
+	for key := range m.objects {
+		if strings.HasPrefix(key, prefix) && key > cursor {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	page := storage.ObjectPage{}
+	if len(keys) > limit {
+		page.NextCursor = keys[limit-1]
+		keys = keys[:limit]
+	}
+	page.Keys = keys
+	return page, nil
 }
 
 func (m *mockObjectStore) PresignPUT(_ context.Context, key string, size int64, _ time.Duration) (storage.UploadInstruction, error) {
@@ -90,7 +109,7 @@ func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mo
 		t.Fatalf("create large: %v", err)
 	}
 	// Finalize checks the exact staged length: plaintext plus the AEAD tag.
-	mock.objects[res.ID] = make([]byte, 1000+AEADOverheadBytes)
+	mock.objects["managed/secrets/"+res.ID] = make([]byte, 1000+AEADOverheadBytes)
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
@@ -147,14 +166,14 @@ func TestStoreOpenTxLockoutEnqueuesObjectDeleteWithOutbox(t *testing.T) {
 	if job.Kind != events.KindDeleteOCIObject {
 		t.Errorf("job kind = %q, want %q", job.Kind, events.KindDeleteOCIObject)
 	}
-	if job.ObjectKey != id {
+	if job.ObjectKey != "managed/secrets/"+id {
 		t.Errorf("job object key = %q, want %q", job.ObjectKey, id)
 	}
 	if job.Reason != events.ReasonConsumed {
 		t.Errorf("job reason = %q, want %q", job.Reason, events.ReasonConsumed)
 	}
 	// The delete is the worker's job; nothing touched the bucket inline.
-	if _, ok := mock.objects[id]; !ok {
+	if _, ok := mock.objects["managed/secrets/"+id]; !ok {
 		t.Errorf("object deleted inline, want left for the enqueued worker job")
 	}
 }
@@ -172,7 +191,7 @@ func TestStoreOpenTxLockoutDeletesObjectInlineWithoutOutbox(t *testing.T) {
 	id := createFinalizedS3Secret(t, ctx, store, mock)
 	driveToLockout(t, ctx, conn, store, id)
 
-	if _, ok := mock.objects[id]; ok {
+	if _, ok := mock.objects["managed/secrets/"+id]; ok {
 		t.Errorf("object survived lockout, want best-effort inline delete")
 	}
 }
@@ -224,7 +243,7 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	// exact staged length, so the object has to be plaintext + tag long.
 	ciphertext := []byte("ciphertext-bytes")
 	ciphertext = append(ciphertext, make([]byte, 1000+AEADOverheadBytes-len(ciphertext))...)
-	mock.objects[res.ID] = ciphertext
+	mock.objects["managed/secrets/"+res.ID] = ciphertext
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -243,6 +262,26 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if got.StorageBackend != StorageS3 {
 		t.Fatalf("backend = %q, want s3_object", got.StorageBackend)
 	}
+	if status, err := store.Management(ctx, res.ID, res.ManagementToken); err != nil || status.Status != "active" {
+		t.Fatalf("finalized management: %+v %v", status, err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if opened, err := store.OpenTx(ctx, tx, res.ID, "proof-hash"); err != nil || opened.ManagementToken != "" {
+		t.Fatalf("open leaked capability or failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Cleanup(ctx, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := store.Management(ctx, res.ID, res.ManagementToken); err != nil || status.Status != "opened" {
+		t.Fatalf("S3 outcome after cleanup: %+v %v", status, err)
+	}
 }
 
 func TestFinalizeIdempotent(t *testing.T) {
@@ -258,7 +297,7 @@ func TestFinalizeIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.objects[res.ID] = make([]byte, 10+AEADOverheadBytes)
+	mock.objects["managed/secrets/"+res.ID] = make([]byte, 10+AEADOverheadBytes)
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -302,7 +341,7 @@ func TestFinalizeOversized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.objects[res.ID] = make([]byte, 5000) // exceeds the 4096 ciphertext cap
+	mock.objects["managed/secrets/"+res.ID] = make([]byte, 5000) // exceeds the 4096 ciphertext cap
 	if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
 		t.Fatalf("finalize error = %v, want ErrObjectMissing", err)
 	}
@@ -455,7 +494,7 @@ func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 	}
 
 	// Within the object cap, but not the length this secret was staged for.
-	mock.objects[res.ID] = make([]byte, 100+AEADOverheadBytes+1)
+	mock.objects["managed/secrets/"+res.ID] = make([]byte, 100+AEADOverheadBytes+1)
 	if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
 		t.Fatalf("finalize err = %v, want ErrObjectMissing", err)
 	}

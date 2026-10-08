@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,6 +117,36 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil
 }
 
+// AcknowledgeObjectCleanup fences API-owned bookkeeping by both key and job ID.
+func (c *CleanupClient) AcknowledgeObjectCleanup(ctx context.Context, event events.JobEvent) error {
+	if event.Kind != events.KindDeleteOCIObject || event.JobID == "" || !requiresObjectAcknowledgement(event.ObjectKey) {
+		return fmt.Errorf("%w: invalid object cleanup acknowledgement", ErrInvalidJob)
+	}
+	body, err := json.Marshal(struct {
+		JobID     string `json:"job_id"`
+		ObjectKey string `json:"object_key"`
+	}{event.JobID, event.ObjectKey})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/object-reconciliation/ack", bytes.NewReader(body))
+	if err != nil {
+		return errors.New("build object cleanup acknowledgement failed")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Flick-Internal-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return errors.New("object cleanup acknowledgement request failed")
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("object cleanup acknowledgement returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // ObjectDeleter deletes a stored object. storage.ObjectStore implements it.
 type ObjectDeleter interface {
 	Delete(ctx context.Context, key string) error
@@ -167,6 +198,9 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
 	}
 	if h.objects == nil {
+		if requiresObjectAcknowledgement(event.ObjectKey) {
+			return errors.New("managed object deletion requires object storage")
+		}
 		// Object storage is disabled — a stray delete event has no target.
 		return nil
 	}
@@ -202,3 +236,12 @@ func validCleanupReason(reason string) bool {
 
 var _ JobHandler = (*CleanupHandler)(nil)
 var _ CleanupAPI = (*CleanupClient)(nil)
+
+func requiresObjectAcknowledgement(key string) bool {
+	for _, prefix := range []string{"managed/secrets/", "managed/requests/"} {
+		if strings.HasPrefix(key, prefix) && key != prefix {
+			return true
+		}
+	}
+	return false
+}

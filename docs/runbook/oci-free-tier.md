@@ -99,13 +99,13 @@ Recommended bucket boundary:
 - do not use pre-authenticated requests for normal secret delivery
 - align bucket lifecycle cleanup with Flick TTL, cleanup lag, and backup policy
 
-Planned M8 [sender management v1](../../contracts/sender-management-v1.md) adds
+M8 [sender management v1](../../contracts/sender-management-v1.md) adds
 List permission for the exclusive `managed/secrets/` prefix alongside existing
-Get/Put/Delete permissions. #201 must verify pagination and late-PUT cleanup
+Get/Put/Delete permissions. Verify pagination and late-PUT cleanup
 against the configured provider. Existing lifecycle rules do not prove that
 recurring API reconciliation exists or is healthy. The operator retains control
 of historical versions, replicas, and retention/object-lock policies; blocked
-deletion is not successful erasure. This plan changes no private bucket setting
+deletion is not successful erasure. Sender reconciliation changes no private bucket setting
 and adds no automatic bucket-setting gate to existing S3 startup.
 
 Set `FLICK_STORAGE_LARGE_BACKEND=s3` only after the bucket and Customer Secret
@@ -248,7 +248,11 @@ private data.
 
 ## Apply
 
-Apply the private overlay:
+For a fresh install, apply the private overlay. For an existing installation,
+first complete the [worker-first upgrade procedure](k3s-base.md#apply): every old
+worker, including terminating pods, must be gone before applying an API that
+enables managed-object reconciliation. Do not apply the complete overlay before
+that prerequisite is satisfied.
 
 ```sh
 kubectl apply -k <private-overlay>
@@ -339,20 +343,30 @@ passphrase attempts consume and remove the secret.
 
 ## Rollback
 
-Rollback images with Kubernetes rollout history:
+Inspect Kubernetes rollout history before selecting rollback images:
 
 ```sh
 kubectl -n flick rollout history deploy/flick-api
 kubectl -n flick rollout history deploy/flick-worker
 kubectl -n flick rollout history deploy/flick-web
+```
 
-kubectl -n flick rollout undo deploy/flick-api
-kubectl -n flick rollout undo deploy/flick-worker
-kubectl -n flick rollout undo deploy/flick-web
+Keep a worker that acknowledges both managed namespaces whenever object
+reconciliation
+jobs or claims can exist. Rolling back the API does not clear those jobs or
+claims. Never restore an older worker without the acknowledgement protocol;
+select a compatible worker image explicitly instead of an unchecked worker
+`rollout undo`. See the [upgrade and rollback constraints](k3s-base.md#apply).
+
+After checking compatibility, roll back API and web images to selected revisions:
+
+```sh
+kubectl -n flick rollout undo deploy/flick-api --to-revision=<api-revision>
+kubectl -n flick rollout undo deploy/flick-web --to-revision=<web-revision>
 ```
 
 If the issue is caused by configuration, revert the private overlay commit and
-reapply:
+reapply only after ensuring its worker image still supports acknowledgements:
 
 ```sh
 kustomize build <private-overlay> | kubectl apply --dry-run=client --validate=false -f -

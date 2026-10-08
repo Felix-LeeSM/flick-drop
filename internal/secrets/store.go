@@ -80,12 +80,15 @@ type CreateLargeInput struct {
 }
 
 type CreateLargeResult struct {
-	ID        string
-	ExpiresAt time.Time
-	Upload    storage.UploadInstruction
+	ManagementToken string
+	ID              string
+	ExpiresAt       time.Time
+	Upload          storage.UploadInstruction
 }
 
 type Secret struct {
+	// Returned only by Create; never loaded from storage or returned on open.
+	ManagementToken   string `json:"-"`
 	ID                string
 	Kind              string
 	StorageBackend    string
@@ -266,6 +269,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 		return Secret{}, fmt.Errorf("insert secret payload: %w", err)
 	}
 
+	managementToken, err := createManagementTx(ctx, tx, id, expiresAt)
+	if err != nil {
+		return Secret{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return Secret{}, fmt.Errorf("commit create secret: %w", err)
 	}
@@ -273,6 +281,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 	telemetry.SecretCreated.WithLabelValues(input.Kind, StorageSQLite).Inc()
 
 	return Secret{
+		ManagementToken:   managementToken,
 		ID:                id,
 		Kind:              input.Kind,
 		StorageBackend:    StorageSQLite,
@@ -339,7 +348,8 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 
 	// Presign first (pure signing, no DB). A failure returns before any row is
 	// inserted, so no orphan pending_upload row is left for a reaper to clean.
-	upload, err := s.objects.PresignPUT(ctx, id, input.SizeBytes+AEADOverheadBytes, s.presignTTL)
+	storageKey := managedObjectPrefix + id
+	upload, err := s.objects.PresignPUT(ctx, storageKey, input.SizeBytes+AEADOverheadBytes, s.presignTTL)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
 	}
@@ -359,7 +369,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		id,
 		input.Kind,
 		StorageS3,
-		id,
+		storageKey,
 		input.Nonce,
 		kdfAlgorithm,
 		kdfSalt,
@@ -377,6 +387,10 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("insert large secret metadata: %w", err)
 	}
+	managementToken, err := createManagementTx(ctx, tx, id, expiresAt)
+	if err != nil {
+		return CreateLargeResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return CreateLargeResult{}, fmt.Errorf("commit create large secret: %w", err)
 	}
@@ -384,7 +398,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	telemetry.SecretCreated.WithLabelValues(input.Kind, StorageS3).Inc()
 	telemetry.ActiveUploads.Inc()
 
-	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload}, nil
+	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload, ManagementToken: managementToken}, nil
 }
 
 // Finalize confirms a pending_upload secret: it HEADs the object to verify it
@@ -408,10 +422,10 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	}
 	defer rollback(tx)
 
-	var state, storageKey, expiresRaw string
+	var state, storageKey, expiresRaw, createdRaw string
 	var sizeBytes int64
-	err = tx.QueryRowContext(ctx, `select state, storage_key, expires_at, size_bytes from secrets where id = ?`, id).
-		Scan(&state, &storageKey, &expiresRaw, &sizeBytes)
+	err = tx.QueryRowContext(ctx, `select state, storage_key, expires_at, created_at, size_bytes from secrets where id = ?`, id).
+		Scan(&state, &storageKey, &expiresRaw, &createdRaw, &sizeBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -428,7 +442,15 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if err != nil {
 		return fmt.Errorf("parse expires_at: %w", err)
 	}
-	if !s.now().UTC().Before(expiresAt) {
+	createdAt, err := parseTime(createdRaw)
+	if err != nil {
+		return fmt.Errorf("parse upload creation time: %w", err)
+	}
+	deadline := expiresAt
+	if pendingDeadline := createdAt.Add(s.pendingTTL); pendingDeadline.Before(deadline) {
+		deadline = pendingDeadline
+	}
+	if !s.now().UTC().Before(deadline) {
 		return ErrExpired
 	}
 
@@ -445,6 +467,9 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	}
 
 	now := s.now().UTC()
+	if !now.Before(deadline) {
+		return ErrExpired
+	}
 	if err := s.activateSecretTx(ctx, tx, id, now); err != nil {
 		return err
 	}
@@ -607,6 +632,11 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, err
 	}
 
+	now = s.now().UTC()
+	if !now.Before(secret.ExpiresAt) {
+		return Secret{}, ErrExpired
+	}
+
 	result, err := tx.ExecContext(ctx, `update secrets
 		set view_count = view_count + 1,
 			consumed_at = ?,
@@ -625,6 +655,9 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	}
 	if affected != 1 {
 		return Secret{}, ErrConsumed
+	}
+	if err := recordManagementOutcomeTx(ctx, tx, id, "opened"); err != nil {
+		return Secret{}, err
 	}
 	return secret, nil
 }
@@ -677,6 +710,9 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		return fmt.Errorf("load failed secret access count: %w", err)
 	}
 	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
+		if err := recordManagementOutcomeTx(ctx, tx, id, "locked"); err != nil {
+			return err
+		}
 		// Lock reached: purge the payload so it can never be read. S3-backed
 		// secrets have no inline row, so delete the object instead. Enqueue the
 		// delete in this tx (same pattern as the consumed-open path) rather than
@@ -793,7 +829,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 			s.consumed_at, s.failed_access_count
 		from secrets s
 		left join secret_payloads p on p.secret_id = s.id
-		where s.id = ?`,
+		where s.id = ? and s.state = 'active'`,
 		id,
 	).Scan(
 		&secret.ID,

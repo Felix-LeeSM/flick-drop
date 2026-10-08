@@ -23,3 +23,11 @@ Rules:
 - Auth is a static key pair (MinIO dev / OCI Customer Secret Key prod). Instance
   principal is deferred because the AWS SDK cannot speak it directly.
 - Cleanup operations must be idempotent (a missing object on DELETE is not an error).
+
+- `list.go:Client.List` uses `ListObjectsV2` for bounded prefix pages. Listing
+  failures return errors; `ErrInvalidCursor` permits the API reaper to restart
+  a persisted pass. Listing errors must not expose private endpoint URLs.
+
+- `object.go:Client.GetBounded` limits actual streamed bytes for request finalize
+  and open. `Client.Put` writes the already verified ciphertext to a server-only
+  final key; request finalize must not COPY a mutable staging object.

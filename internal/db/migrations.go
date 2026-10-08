@@ -44,6 +44,32 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at datetime not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
+		`create table if not exists object_reconciliation_cursor (
+            id integer primary key check (id = 1),
+            continuation_token text not null default '',
+            generation integer not null default 0
+        )`,
+		`insert or ignore into object_reconciliation_cursor (id) values (1)`,
+		`create table if not exists object_reconciliation_pending (
+            object_key text primary key,
+            job_id text not null unique
+        )`,
+		`create index if not exists idx_secrets_storage_key on secrets(storage_key)`,
+		// No FK: early payload reclamation must preserve the sender outcome.
+		`create table if not exists secret_management (
+			secret_id text primary key,
+			token_hash blob not null check (length(token_hash) = 32),
+			expires_at datetime not null,
+			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
+		)`,
+		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
+		requestsTableSchema,
+		`create index if not exists idx_requests_expires_at on requests(expires_at, id)`,
+		`create table if not exists request_payloads (
+			request_id text primary key,
+			ciphertext blob not null,
+			foreign key (request_id) references requests(id) on delete cascade
+		)`,
 		`create table if not exists outbox_events (
 			id text primary key,
 			subject text not null,
@@ -97,7 +123,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			where reclaim_enqueued_at is null and consumed_at is null`); err != nil {
 		return fmt.Errorf("create reclaim-pending index: %w", err)
 	}
-	return nil
+	return normalizeRequestsSchema(ctx, conn)
 }
 
 // normalizeSecretsSchema rebuilds the secrets table to the current shape when an

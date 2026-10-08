@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -62,4 +64,19 @@ func TestTracingMiddlewareRecordsRouteAndStatus(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Errorf("http.response.status_code = %d, want 404", status)
 	}
+	createdResponse := performJSON(t, router, http.MethodPost, "/api/secrets", validCreateSecretBody())
+	var created createSecretResponse
+	decodeBody(t, createdResponse, &created)
+	resp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID+"/management", nil, map[string]string{"Authorization": "Bearer " + created.ManagementToken})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("management tracing request: %d", resp.Code)
+	}
+	recorded, err := json.Marshal(sr.Ended())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(recorded), created.ManagementToken) || strings.Contains(string(recorded), "Bearer ") {
+		t.Fatal("management bearer leaked into spans")
+	}
+
 }

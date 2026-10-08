@@ -31,6 +31,42 @@ func newTestReaper(t *testing.T, conn *sql.DB, store *Store, outbox outboxEnqueu
 	return reaper
 }
 
+func TestReaperPurgesRequestsAtOriginalDeadline(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
+	now := time.Date(2026, 10, 8, 0, 0, 0, 500000000, time.UTC)
+	reaper.SetNowForTest(func() time.Time { return now })
+	for _, entry := range []struct{ id, state, expires string }{
+		{"waiting", "waiting", "2026-10-08T00:00:00.500000000Z"},
+		{"consumed", "consumed", "2026-10-08T00:00:00.000000000Z"},
+		{"cancelled", "cancelled", "2026-10-08T00:00:00.499999999Z"},
+		{"live", "waiting", "2026-10-08T00:00:00.500000001Z"},
+	} {
+		if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,expires_at) values (?, 'synthetic', 'synthetic', zeroblob(32), zeroblob(32), ?, ?)`, entry.id, entry.state, entry.expires); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values (?, zeroblob(16))`, entry.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []int{2, 1} {
+		if _, err := reaper.ClaimOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		for _, table := range []string{"requests", "request_payloads"} {
+			if err := conn.QueryRow("select count(*) from " + table).Scan(&n); err != nil || n != want {
+				t.Fatalf("%s retained %d rows, want %d: %v", table, n, want, err)
+			}
+		}
+	}
+	if len(readOutboxEvents(t, ctx, conn)) != 0 {
+		t.Fatal("inline purge enqueued an unnecessary worker job")
+	}
+}
+
 type secretFixture struct {
 	id             string
 	kind           string
@@ -308,6 +344,7 @@ func TestReaperSkipsUnexpired(t *testing.T) {
 	})
 	insertSecret(t, ctx, conn, secretFixture{ // pending_upload within PendingTTL
 		id:        "sec_pending_live",
+		expiresAt: now.Add(time.Hour),
 		state:     "pending_upload",
 		createdAt: now.Add(-5 * time.Minute),
 		updatedAt: now.Add(-5 * time.Minute),
@@ -322,6 +359,70 @@ func TestReaperSkipsUnexpired(t *testing.T) {
 	}
 	if got := countSecrets(t, ctx, conn); got != 2 {
 		t.Fatalf("secrets = %d, want 2", got)
+	}
+}
+
+func TestReaperContentExpiryPrecision(t *testing.T) {
+	for _, state := range []string{"active", "pending_upload"} {
+		for _, tc := range []struct {
+			name      string
+			expiresNS int
+			nowNS     int
+		}{
+			{"whole-second cutoff", 123456789, 0},
+			{"shorter cutoff fraction", 123456789, 123000000},
+			{"one nanosecond before", 123456789, 123456788},
+			{"exact fractional expiry", 123456789, 123456789},
+			{"longer cutoff fraction", 123000000, 123456789},
+			{"one nanosecond before whole second", 0, -1},
+			{"exact whole-second expiry", 0, 0},
+			{"after whole-second expiry", 0, 1},
+		} {
+			t.Run(state+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				conn := openTestDB(t, ctx)
+				store := newLargeTestStore(t, conn, newMockObjectStore())
+				base := time.Date(2026, 10, 8, 1, 10, 0, 0, time.UTC)
+				expires := base.Add(time.Duration(tc.expiresNS))
+				now := expires.Add(-10 * time.Minute) // Content expiry precedes the 15-minute pending deadline.
+				store.SetNowForTest(func() time.Time { return now })
+				var id, token string
+				if state == "pending_upload" {
+					filename := "encrypted-name"
+					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: &filename, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, token = created.ID, created.ManagementToken
+				} else {
+					created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: []byte("ciphertext"), Nonce: "nonce", SizeBytes: 10, TTLSeconds: 600})
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, token = created.ID, created.ManagementToken
+				}
+				now = base.Add(time.Duration(tc.nowNS))
+				reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
+				reaper.SetNowForTest(func() time.Time { return now })
+				want := 0
+				if !now.Before(expires) {
+					want = 1
+				}
+				if got, err := reaper.ClaimOnce(ctx); err != nil || got != want {
+					t.Fatalf("at %s with expiry %s: claimed = %d, want %d; error = %v", formatTime(now), formatTime(expires), got, want, err)
+				}
+				if got := countSecrets(t, ctx, conn); got != 1-want {
+					t.Fatalf("remaining secrets = %d, want %d", got, 1-want)
+				}
+				status, err := store.Management(ctx, id, token)
+				if want == 0 && (err != nil || status.Status != state) {
+					t.Fatalf("unexpired management status = %q, want %q; error = %v", status.Status, state, err)
+				}
+				if want == 1 && !errors.Is(err, ErrManagementUnavailable) {
+					t.Fatalf("expired management error = %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -639,5 +740,25 @@ func TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan(t *testing.T) {
 	}
 	if got, want := remainingIDs(t, ctx, conn), []string{"sec_young_orphan"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after tick = %v, want %v (older reclaimable active reaped first)", got, want)
+	}
+}
+
+func TestReaperRollsBackFailedCommit(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Now().UTC()
+	insertSecret(t, ctx, conn, secretFixture{id: "expire", expiresAt: now.Add(-time.Second), createdAt: now.Add(-time.Hour)})
+	_, err := conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_reap after delete on secrets begin insert into fail_commit values (old.id); end;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
+	reaper.SetNowForTest(func() time.Time { return now })
+	if _, err := reaper.ClaimOnce(ctx); err == nil {
+		t.Fatal("failed commit reported successful cleanup")
+	}
+	if countSecrets(t, ctx, conn) != 1 || reclaimEnqueuedAt(t, ctx, conn, "expire").Valid {
+		t.Fatal("failed commit left a partial reclaim")
 	}
 }

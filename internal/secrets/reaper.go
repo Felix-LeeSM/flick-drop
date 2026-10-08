@@ -3,10 +3,12 @@ package secrets
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -21,12 +23,16 @@ const (
 // WHERE guard (reclaim_enqueued_at IS NULL) makes the claim multi-instance and
 // multi-tick safe: only one claimer can flip the timestamp per row. Consumed
 // secrets are excluded because /open already enqueued their cleanup. Reason is
-// derived from state: active → expired, pending_upload → orphan.
+// derived from state: active → expired, pending_upload → orphan. Pending
+// uploads are also reclaimable at content expiry, even before PendingTTL.
+// formatTime stores canonical UTC RFC3339Nano. Removing its final Z preserves
+// exact chronological ordering for expiry, including absent or shorter fractions.
 //
 // Ordering is by a unified "reclaimable-since" timestamp so the two classes
 // compete fairly for a batch slot: an expired-active row is reclaimable since
 // its expires_at, while a pending_upload orphan is reclaimable since
-// created_at + PendingTTL. Without this, a future expires_at on orphans would
+// the earlier of expires_at and created_at + PendingTTL. Without this, a
+// future expires_at on orphans would
 // always sort them behind an active-expiry backlog and starve orphan reclaim.
 // Both branches are wrapped in datetime() so they compare as the same
 // 'YYYY-MM-DD HH:MM:SS' shape — expires_at is stored RFC3339Nano (a 'T'/​'Z'
@@ -38,12 +44,12 @@ const claimReclaimableSQL = `with candidates as (
 	where reclaim_enqueued_at is null
 		and consumed_at is null
 		and (
-			(state = 'active' and expires_at < ?)
-			or (state = 'pending_upload' and created_at < ?)
+			(rtrim(expires_at, 'Z') <= rtrim(?, 'Z'))
+			or (state = 'pending_upload' and rtrim(created_at, 'Z') <= rtrim(?, 'Z'))
 		)
 	order by case state
 			when 'active' then datetime(expires_at)
-			else datetime(created_at, ?)
+			else min(datetime(expires_at), datetime(created_at, ?))
 		end
 	limit ?
 )
@@ -66,9 +72,11 @@ type Reaper struct {
 	now        func() time.Time
 	batchSize  int
 	pendingTTL time.Duration
+	requests   *requests.Store
 }
 
 type ReaperOptions struct {
+	Requests  *requests.Store
 	BatchSize int
 }
 
@@ -101,6 +109,7 @@ func NewReaper(db *sql.DB, store *Store, outbox outboxEnqueuer, opts ReaperOptio
 	}
 	return &Reaper{
 		db:         db,
+		requests:   opts.Requests,
 		store:      store,
 		outbox:     outbox,
 		now:        func() time.Time { return time.Now().UTC() },
@@ -117,7 +126,17 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 // and enqueues an object-delete event for any S3-backed row — all in one
 // transaction. A failure rolls the claim back, leaving reclaim_enqueued_at NULL
 // so the next tick retries. Returns the number of secrets reaped.
-func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
+func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
+	claimed, expiryErr := r.claimExpired(ctx)
+	_, reconciliationErr := r.ReconcileOnce(ctx)
+	var requestErr error
+	if r.requests != nil {
+		_, requestErr = r.requests.ReconcileOnce(ctx, r.batchSize)
+	}
+	return claimed, errors.Join(expiryErr, reconciliationErr, requestErr)
+}
+
+func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 	ctx, span := tracer.Start(ctx, "secrets.Reaper.ClaimOnce")
 	defer func() { telemetry.EndSpan(span, err) }()
 
@@ -127,7 +146,12 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 	// reclaimable; used by the CASE in claimReclaimableSQL for fair ordering.
 	orphanTTLModifier := fmt.Sprintf("+%d seconds", int(r.pendingTTL.Seconds()))
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire reaper connection: %w", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin reaper claim tx: %w", err)
 	}
@@ -165,7 +189,15 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 		}
 	}
 
+	if err := purgeManagementTx(ctx, tx, now, r.batchSize); err != nil {
+		return 0, err
+	}
+	if err := requests.PurgeExpiredTx(ctx, tx, now, r.batchSize, r.outbox); err != nil {
+		return 0, fmt.Errorf("purge expired requests: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
 	}
 	// Record the reclaim after the commit so a rolled-back tick does not bump
@@ -188,6 +220,11 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 }
 
 func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now time.Time) error {
+	if c.state == "pending_upload" {
+		if err := recordManagementOutcomeTx(ctx, tx, c.id, "unavailable"); err != nil {
+			return err
+		}
+	}
 	if err := r.store.ReclaimTx(ctx, tx, c.id); err != nil {
 		return err
 	}
