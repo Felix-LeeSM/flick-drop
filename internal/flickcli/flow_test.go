@@ -426,6 +426,38 @@ func TestSendLargeFileUsesPresignedUploadAndFinalizes(t *testing.T) {
 	}
 }
 
+func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) {
+	for _, size := range []int{1_048_560, 1_048_561} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			fake := newFakeFlick(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/config" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				fake.route(w, r)
+			}))
+			t.Cleanup(server.Close)
+			client := NewClient(server.URL, server.Client())
+			limits := client.Config(context.Background())
+			if limits.PayloadInlineMaxBytes != 1_048_560 || limits.MaxFileBytes != 52_428_800 {
+				t.Fatalf("fallback limits = %+v, want plaintext inline/file limits", limits)
+			}
+			sent, err := Send(context.Background(), client, SendOptions{
+				FileName:  "boundary.bin",
+				FileBytes: make([]byte, size),
+				TTL:       DefaultTTL,
+			})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if want := size > 1_048_560; sent.Uploaded != want {
+				t.Errorf("uploaded = %v, want %v for %d plaintext bytes", sent.Uploaded, want, size)
+			}
+		})
+	}
+}
+
 func TestSendLargeFileFailsClearlyWithoutObjectStorage(t *testing.T) {
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64
