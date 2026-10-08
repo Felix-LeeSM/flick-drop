@@ -600,7 +600,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
 
 					<div
-						class="grid grid-cols-3 gap-1 rounded-xl border border-border bg-card p-1.5 sm:grid-cols-6"
+						class="flex w-fit max-w-full flex-wrap gap-1 rounded-2xl border border-border bg-card p-1.5 md:flex-nowrap md:rounded-full"
 						role="group"
 						aria-label="Secret type"
 						aria-busy={!isHydrated}
@@ -612,7 +612,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 								variant={mode === option.type ? 'toggleActive' : 'ghost'}
 								size="seg"
 								class={cn(
-									'h-11 w-full min-w-0 gap-1.5 rounded-lg border-transparent px-1 text-xs transition-colors active:not-aria-[haspopup]:translate-y-0',
+									'gap-2 rounded-full border-transparent px-2.5 transition-colors active:not-aria-[haspopup]:translate-y-0',
 									mode !== option.type && 'text-muted-foreground'
 								)}
 								aria-pressed={mode === option.type}
