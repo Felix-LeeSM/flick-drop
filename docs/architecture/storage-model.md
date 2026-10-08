@@ -48,7 +48,6 @@ Object Storage receives browser-encrypted ciphertext only. Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 
-<<<<<<< HEAD
 The browser reports ZIP preparation and encryption without a percentage. Large
 uploads use XMLHttpRequest upload events for transferred ciphertext bytes; when
 the transport cannot measure a total, progress remains indeterminate. Uploading
@@ -57,10 +56,7 @@ API's finalize check succeeds. Cancelling the PUT stops that browser attempt
 and prevents a later finalize or share result; any staged upload still follows
 the existing pending-upload expiry and orphan cleanup policy.
 
-## Planned request storage
-=======
 ## Inline request storage
->>>>>>> 75096a7 (feat(httpapi): expose inline request capabilities and publish v1 contract)
 
 M9 [request links](request-links.md) use separate API-owned request metadata
 and inline ciphertext, with the original request deadline bounding both
