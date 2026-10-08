@@ -56,7 +56,7 @@ API's finalize check succeeds. Cancelling the PUT stops that browser attempt
 and prevents a later finalize or share result; any staged upload still follows
 the existing pending-upload expiry and orphan cleanup policy.
 
-## Inline request storage
+## Request storage
 
 M9 [request links](request-links.md) use separate API-owned request metadata
 and inline ciphertext, with the original request deadline bounding both
@@ -66,9 +66,21 @@ retains only owner metadata and the bounded acceptance receipt until that
 deadline. `internal/secrets/reaper.go:ClaimOnce` invokes the bounded request
 purge, which cascades payload deletion. Inline cleanup needs no NATS job.
 
-Large request uploads remain planned in #207 and will use attempt-specific
-objects and a separate `managed/requests/` reconciliation namespace. Request
-objects must not be swept using sender-secret live-row checks.
+Large request uploads reserve separate, unique staging and final keys under
+`managed/requests/`. `internal/requests/large.go` verifies the bounded actual GET
+length and SHA-256, then PUTs those same bytes to the stable server-only final
+key before the accepting transaction. A mutable source is never copied after
+verification. Active reservations protect both keys; submitted requests protect
+only the final key. A failed/lost PUT response or losing finalizer never deletes
+the final key. Open loads and verifies the object before its consuming transaction;
+a failed read returns 503 without consuming.
+
+Revoke/open/expiry/abandon enqueue required key-only cleanup transactionally.
+`internal/requests/cleanup.go` owns a separate durable cursor and per-key pending
+claim, scanning one bounded request-prefix page every reaper tick even when expiry
+or sender scanning fails. Terminal worker acknowledgements fence claims by job ID.
+Repeated listing continues after metadata expires, so late PUTs receive new cleanup
+jobs indefinitely. Request objects are never swept using sender-secret live-row checks.
 
 ## Deletion Semantics
 

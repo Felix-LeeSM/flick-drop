@@ -6,8 +6,9 @@ These packages are code boundaries, not service boundaries.
 - `db`: SQLite connection setup, migrations, transaction helpers.
 - `httpapi`: HTTP routing, handlers, request/response mapping.
 - `secrets`: secret lifecycle domain logic.
-- `requests`: API-owned inline request lifecycle and envelope validation in
-  `internal/requests/store.go` and `internal/requests/validation.go`.
+- `requests`: API-owned request lifecycle, envelope validation, immutable large
+  uploads, and request object reconciliation in `internal/requests/store.go`,
+  `validation.go`, `large.go`, and `cleanup.go`.
 - `storage`: S3-compatible object storage for large payloads (SQLite BLOB lives in `internal/secrets`).
 - `events`: NATS JetStream publishing and consuming contracts.
 - `worker`: worker job execution and retry/idempotency logic.

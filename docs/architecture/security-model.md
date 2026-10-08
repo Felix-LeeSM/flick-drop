@@ -147,7 +147,7 @@ The key must travel only in the fragment. Placing it in the path or query
 string would send it to the API and into access logs, at which point the server
 could decrypt the payload on open — breaking the core invariant.
 
-## One-time inline requests
+## One-time requests
 
 [Request links v1](request-links.md) defines independent submission/retrieval
 tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
@@ -161,7 +161,12 @@ the request ID/kind bindings when encrypting and decrypting. HTTP spans contain
 only method, route template, and status; request bodies and Authorization are
 excluded. The browser flow uses the reviewed request crypto module, validates the
 private key against owner metadata before Open, and keeps decrypted content and
-retry receipts only in memory. Large request storage remains separate M9 work.
+retry receipts only in memory. Large file reservations bind one generation, attempt token, immutable
+envelope, size, and ciphertext SHA-256. Only verified bounded bytes are PUT to a
+pre-reserved server-only final key; a signed staging PUT cannot overwrite accepted
+content. The API rechecks reservation and original expiry at acceptance, and object
+read failures never consume. Generation exhaustion returns unavailable. Recurring
+request-prefix cleanup handles late writes even after capability metadata is gone.
 Existing Model A/Model B formats are unchanged.
 
 ## Structured Credentials

@@ -183,10 +183,58 @@ func writeRequestError(w http.ResponseWriter, err error) {
 	case errors.Is(err, requests.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_request", "input does not match the request contract")
 	case errors.Is(err, requests.ErrTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request payload exceeds the inline limit")
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request payload exceeds the configured limit")
 	case errors.Is(err, requests.ErrConflict):
 		writeError(w, http.StatusConflict, "request_conflict", "request state or attempt conflicts")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "storage_unavailable", "request storage is temporarily unavailable")
 	}
+}
+
+func (s Server) reserveRequest(w http.ResponseWriter, r *http.Request) {
+	body, err := readRequestBody(w, r, 8192)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	var in requests.UploadInput
+	if err := requests.DecodeObject(body, &in, []string{"generation", "attempt_token", "kind", "size_bytes", "envelope", "ciphertext_sha256"}, nil); err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	result, err := s.requests.Reserve(r.Context(), chi.URLParam(r, "id"), requestBearer(r), in)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+func (s Server) finalizeRequest(w http.ResponseWriter, r *http.Request) {
+	s.requestAttemptMutation(w, r, false)
+}
+func (s Server) abandonRequest(w http.ResponseWriter, r *http.Request) {
+	s.requestAttemptMutation(w, r, true)
+}
+func (s Server) requestAttemptMutation(w http.ResponseWriter, r *http.Request, abandon bool) {
+	body, err := readRequestBody(w, r, 1024)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	var in requests.AttemptInput
+	if err := requests.DecodeObject(body, &in, []string{"generation", "attempt_token"}, nil); err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	var result requests.Receipt
+	if abandon {
+		result, err = s.requests.Abandon(r.Context(), chi.URLParam(r, "id"), requestBearer(r), in)
+	} else {
+		result, err = s.requests.Finalize(r.Context(), chi.URLParam(r, "id"), requestBearer(r), in)
+	}
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }

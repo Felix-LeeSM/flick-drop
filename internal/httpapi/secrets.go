@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
@@ -599,8 +600,19 @@ func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid cleanup acknowledgement")
 		return
 	}
-	err := s.secrets.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
-	if errors.Is(err, secrets.ErrInvalidInput) {
+	var err error
+	if strings.HasPrefix(req.ObjectKey, requests.ObjectPrefix) {
+		if s.requests == nil {
+			err = requests.ErrStorage
+		} else {
+			err = s.requests.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
+		}
+	} else if s.secrets == nil {
+		err = requests.ErrStorage
+	} else {
+		err = s.secrets.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
+	}
+	if errors.Is(err, secrets.ErrInvalidInput) || errors.Is(err, requests.ErrInvalid) {
 		writeError(w, http.StatusBadRequest, "invalid_cleanup", "invalid cleanup acknowledgement")
 		return
 	}

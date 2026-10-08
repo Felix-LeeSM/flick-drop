@@ -349,10 +349,10 @@ Inspect Kubernetes rollout history before selecting rollback images:
 kubectl -n flick rollout history deploy/flick-api
 kubectl -n flick rollout history deploy/flick-worker
 kubectl -n flick rollout history deploy/flick-web
-
 ```
 
-Keep an acknowledgement-capable worker whenever managed-object reconciliation
+Keep a worker that acknowledges both managed namespaces whenever object
+reconciliation
 jobs or claims can exist. Rolling back the API does not clear those jobs or
 claims. Never restore an older worker without the acknowledgement protocol;
 select a compatible worker image explicitly instead of an unchecked worker

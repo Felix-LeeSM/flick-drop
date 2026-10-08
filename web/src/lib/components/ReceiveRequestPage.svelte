@@ -79,7 +79,7 @@ const title = $derived(
 								? 'Consumed'
 								: snapshot?.state === 'cancelled'
 									? 'Cancelled'
-									: snapshot?.state === 'waiting'
+									: snapshot?.state === 'waiting' || snapshot?.state === 'uploading'
 										? 'Waiting for a submission'
 										: 'Request status'
 );
@@ -386,7 +386,7 @@ onMount(() => {
 		{#if expired}<p role="status">The deadline passed. The request and any content shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
 		{:else if snapshot}
-			<p role="status">{error ? 'Last known status: ' : ''}{snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? 'A submission is ready. Open releases it once.' : snapshot.state === 'cancelled' ? 'This request was cancelled.' : 'The server released the encrypted content once. This does not confirm that anyone read it.'}</p>
+			<p role="status">{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It is not accepted or available to open yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? 'A submission is ready. Open releases it once.' : snapshot.state === 'cancelled' ? 'This request was cancelled.' : 'The server released the encrypted content once. This does not confirm that anyone read it.'}</p>
 			<p class="text-sm" aria-label="Time remaining">{Math.floor(remaining / 60)}m {remaining % 60}s remaining</p>
 		{:else}<p role="status">{busy ? 'Loading request status…' : 'Request status is unknown.'}</p>{/if}
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}

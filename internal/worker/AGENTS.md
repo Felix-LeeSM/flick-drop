@@ -19,6 +19,6 @@ Rules:
 - Job payloads should contain IDs and safe metadata only.
 
 - `processor.go:Processor.Process` acknowledges terminal `delete_oci_object`
-  receipts for `managed/secrets/` through `CleanupClient.AcknowledgeObjectCleanup`
+  receipts for `managed/secrets/` and `managed/requests/` through `CleanupClient.AcknowledgeObjectCleanup`
   before NATS Ack/Term. Acknowledgement failures retry without re-running a
   terminal handler or spending the handler failure budget.

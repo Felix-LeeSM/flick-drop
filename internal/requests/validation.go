@@ -16,6 +16,7 @@ var (
 	ErrTooLarge    = errors.New("request payload too large")
 	ErrUnavailable = errors.New("request unavailable")
 	ErrConflict    = errors.New("request conflict")
+	ErrStorage     = errors.New("request object storage unavailable")
 )
 
 const (

@@ -140,7 +140,7 @@ func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.
 			t.Fatalf("stale ack changed claim: %d", pending)
 		}
 	}
-	body["object_key"] = "managed/requests/foreign"
+	body["object_key"] = "managed/unowned/foreign"
 	resp = performJSON(t, f.router, http.MethodPost, path, body, headers)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatal("other namespace accepted")

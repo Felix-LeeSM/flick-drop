@@ -102,7 +102,7 @@ async function create(): Promise<void> {
 <RequestFrame>
 	<div class="grid gap-2">
 		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>Request a secret</h1>
-		<p class="text-sm text-muted-foreground">Let someone send you text or one small file. Only your private retrieval link can decrypt it, once.</p>
+		<p class="text-sm text-muted-foreground">Let someone send you text or one file. Only your private retrieval link can decrypt it, once.</p>
 	</div>
 	<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void create(); }}>
 		<div class="grid gap-2">

@@ -1,8 +1,9 @@
 # One-time request links v1
 
 Status: approved v1 contract from #203. #205 implements the inline API and
-SQLite lifecycle. #204 implements browser crypto and #206 implements the inline
-requester/submitter UI. Large-object reservations remain the separate #207 delivery. Existing send-link formats and CLI vectors are
+SQLite lifecycle; #207 implements reserved object uploads and recurring cleanup.
+#204 implements browser crypto and #206 implements the requester/submitter UI.
+Existing send-link formats and CLI vectors are
 unchanged. Sender management follows the separate #199 contract.
 
 ## Product and authority
@@ -142,9 +143,9 @@ it through Playwright's intercepted HTTPS origin, with no listener, API, or
 object store. Native RSA-OAEP/AES-GCM and secure contexts are required; the
 included browser check targets Chromium, with no Firefox or Safari validation.
 
-## Browser flow (#206)
+## Browser flow (#206 and #207)
 
-`/request` creates a request; `/r/{id}` submits text or one inline file;
+`/request` creates a request; `/r/{id}` submits text or one file;
 `/r/{id}/receive` checks requester status, cancels, or opens once. The main send
 page links to request creation. Existing Model A/B send formats are unchanged.
 `web/src/lib/api/requests.ts` sends only the selected capability in Authorization,
@@ -164,16 +165,30 @@ Owner polling starts at ten seconds, runs only while visible, backs off to at mo
 refreshes status before confirmation and reads server status after a 409 race.
 An unknown Open result never triggers another Open. Explicit 429/503 rejections
 allow another user-triggered Open; the API contract says neither consumes content.
-Plaintext and file object URLs are cleared when leaving or reaching known expiry.
+The requester verifies the actual `/api/config` limits before enabling Open;
+failed or malformed configuration cannot silently substitute a smaller default
+and consume a file that the browser would then reject. Plaintext and file object
+URLs are cleared when leaving or reaching known expiry. A persisted `pageshow`
+reloads cleared request pages without replaying Open or submission. The submission
+page explains that its previous in-memory attempt was discarded.
 
-Submitters check the fragment fingerprint before encryption. The current inline
-file ceiling is `min(payloadInlineMaxBytes, maxFileBytes)` from `/api/config`;
-`payloadInlineMaxBytes` is already the plaintext allowance after the GCM tag.
-The UI reports acceptance only from the submit response or matching attempt
-receipt. An unknown response retains the same immutable encrypted body in memory;
-the user checks the attempt and can explicitly retry only that body when waiting.
-Leaving/reloading discards the retry receipt. No private key, plaintext, or filename
-is written to browser storage, Svelte navigation state, HTTP, or error messages.
+Submitters check the fragment fingerprint before encryption and verify configured
+limits before submitting. Files use the advertised `maxFileBytes`, which the API
+already clamps to the inline allowance when object storage is disabled.
+`payloadInlineMaxBytes` is already the plaintext allowance after the GCM tag;
+text and files within that allowance use the inline path. Larger files retain an
+immutable ciphertext/checksum/attempt snapshot in memory, reserve an upload, PUT
+the ciphertext with byte progress, and finalize. A complete PUT is not acceptance.
+Only a successful submit/finalize or matching accepted receipt confirms acceptance.
+
+After an unknown response, the user checks the same attempt and can explicitly
+retry its exact encrypted bytes. Cancellation must abandon that reservation and
+confirm a new generation before offering a new submission. If the reservation
+response was lost, cancellation first resolves the same immutable reservation;
+it cannot assume that aborting an HTTP request removed server state. An expired
+upload instruction must be abandoned before a new attempt. Leaving/reloading
+discards the retry receipt. No private key, plaintext, or filename is written to
+browser storage, Svelte navigation state, HTTP, or error messages.
 
 ## Lifetime and transitions
 
@@ -230,9 +245,8 @@ Open response loss is likewise unrecoverable by design.
 
 ## HTTP contract
 
-The first seven endpoints below are implemented for inline content. The
-`upload`, `finalize`, and `abandon` endpoints remain unavailable until #207.
-`contracts/openapi.yaml` describes only the implemented subset.
+All endpoints below are implemented. `contracts/openapi.yaml` defines the strict
+request and response shapes, including reserved large-file uploads.
 
 All paths below are under `/api/requests`. Authorization failures, unknown IDs,
 and expired requests return the same `404 request_unavailable`; malformed input
@@ -257,7 +271,8 @@ Inline creation accepts omitted `ttl_seconds` as the configured default; an
 explicit zero is invalid. Open and revoke require an empty HTTP body. Query
 parameters, duplicate JSON fields, case aliases, unknown fields, and null values
 are rejected. Successful submit returns `{generation, state: "submitted"}`;
-attempt status returns `{generation, state: "waiting"|"accepted"|"unavailable"}`.
+attempt status returns `{generation, state: "waiting"|"uploading"|"accepted"|"unavailable"}`.
+Only the matching active attempt sees `uploading`; other attempts see `unavailable`.
 Open returns `{kind, size_bytes, envelope, ciphertext}` and revoke returns
 `{state: "cancelled"}`. The accepted receipt survives open/revoke until expiry
 and describes historical acceptance, not present deliverability. Immutable
@@ -280,12 +295,35 @@ a manual refresh. No WebSocket or notification service is added.
 
 ## Large upload and cleanup (#207)
 
-Large upload endpoints remain unavailable until #207; #205 rejects above-inline
-payloads. Reservation lasts at most the existing 15-minute pending-upload TTL
+`/upload` accepts a strict object containing `generation`, `attempt_token`,
+`kind: "file"`, `size_bytes`, `envelope`, and `ciphertext_sha256` (canonical
+standard base64 of the 32-byte SHA-256 digest of the ciphertext). Files must exceed
+the inline ciphertext limit and stay within the configured plaintext file limit.
+The HTTP body is bounded to 8,192 bytes. Disabled S3 returns
+`503 storage_unavailable`; advertised file limits already clamp to the inline
+maximum when S3 is disabled.
+
+A reservation returns `200 {generation, state: "uploading", upload,
+reservation_expires_at}`. `upload` has the existing signed PUT instruction shape;
+its `expires_at` equals `reservation_expires_at`. An already accepted identical
+retry returns `200 {generation, state: "submitted"}` without another instruction.
+`/finalize` and `/abandon` accept only `{generation, attempt_token}` (1,024-byte
+HTTP body bound). Finalize returns the submitted receipt. Abandon returns
+`{generation: <next>, state: "waiting"}`; ending generation 16 returns
+`404 request_unavailable`. Owner status includes `uploading`, but exhaustion
+returns 404 for owner/instructions/attempt rather than a new public state.
+
+Reservation lasts at most the existing 15-minute pending-upload TTL
 and never past request expiry. Only one reservation is active. Inline submitters
 and other large attempts conflict while reserved. The same attempt can recover
 an upload instruction after response loss, without extending either deadline;
-if the instruction expired, the attempt must be abandoned before a new attempt.
+an expired reservation is invalidated and advances the generation atomically
+on the next authenticated operation or reaper tick. An abandon of an older
+generation returns 404. If an aborted reserve response has an unknown outcome,
+a same-generation `waiting` status does not prove the original call cannot still
+reserve: recover the same immutable `/upload` before abandoning it. Do not
+discard attempt material or generate a new attempt until a newer generation or
+terminal result establishes the outcome.
 
 Object keys are unique, never reused, and exclusively under `managed/requests/`.
 Each attempt has its own key. Pin ciphertext length in the signed PUT and store
@@ -331,8 +369,10 @@ inline payload table with cascading deletion. Keep payload-independent owner
 metadata only until the original deadline. The API alone writes these tables;
 the worker continues processing cleanup through existing internal interfaces.
 `internal/db/migrations.go` and `contracts/openapi.yaml` define the implemented
-inline schema and HTTP shapes. Inline records have no external storage reference;
-#207 adds the reservation states and object references when implemented.
+schema and HTTP shapes. `internal/db/requests.go` upgrades older inline-only
+tables by rebuilding the state CHECK on one pinned connection while preserving
+inline payloads and their foreign key. Request storage references, reservation
+deadlines, and independent reconciliation cursor/claims are API-owned.
 
 - #204: browser-only crypto module, immutable synthetic decrypt golden vectors,
   tamper/cross-request vectors and strict validation; no HTTP/UI/storage.

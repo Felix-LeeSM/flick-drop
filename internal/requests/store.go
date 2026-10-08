@@ -13,6 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 // Fixed-width UTC timestamps preserve indexed subsecond deadline ordering.
@@ -24,7 +27,13 @@ type Store struct {
 	now  func() time.Time
 }
 
+type OutboxEnqueuer interface {
+	EnqueueTx(context.Context, *sql.Tx, events.JobEvent) (events.OutboxRecord, error)
+}
+
 type Options struct {
+	Objects               storage.RequestObjectStore
+	Outbox                OutboxEnqueuer
 	PayloadInlineMaxBytes int64
 	MaxFileBytes          int64
 	MinTTLSeconds         int
@@ -33,7 +42,7 @@ type Options struct {
 }
 
 func NewStore(db *sql.DB, opts Options) (*Store, error) {
-	if db == nil || opts.PayloadInlineMaxBytes <= tagBytes || opts.MaxFileBytes <= 0 || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
+	if db == nil || opts.PayloadInlineMaxBytes <= tagBytes || opts.MaxFileBytes <= 0 || opts.MaxFileBytes > (1<<63-1)-tagBytes || (opts.Objects != nil && opts.Outbox == nil) || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
 		return nil, fmt.Errorf("invalid request store configuration")
 	}
 	return &Store{db: db, opts: opts, now: func() time.Time { return time.Now().UTC() }}, nil
@@ -120,6 +129,7 @@ type record struct {
 	publicKey, fingerprint, state string
 	expires                       time.Time
 	generation                    int
+	reservationExpires            time.Time
 }
 
 // Both DB and transactions expose QueryRowContext; the helper keeps read and
@@ -136,8 +146,9 @@ func (s *Store) authorized(ctx context.Context, db rowReader, id string, hash []
 	var row record
 	var storedHash []byte
 	var expiry string
-	err := db.QueryRowContext(ctx, `select public_key, fingerprint, expires_at, state, generation, `+column+` from requests where id = ?`, id).
-		Scan(&row.publicKey, &row.fingerprint, &expiry, &row.state, &row.generation, &storedHash)
+	var reservationExpiry sql.NullString
+	err := db.QueryRowContext(ctx, `select public_key, fingerprint, expires_at, state, generation, reservation_expires_at, `+column+` from requests where id = ?`, id).
+		Scan(&row.publicKey, &row.fingerprint, &expiry, &row.state, &row.generation, &reservationExpiry, &storedHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record{}, ErrUnavailable
 	}
@@ -151,7 +162,13 @@ func (s *Store) authorized(ctx context.Context, db rowReader, id string, hash []
 	if err != nil {
 		return record{}, err
 	}
-	if !s.now().UTC().Before(row.expires) {
+	if reservationExpiry.Valid {
+		row.reservationExpires, err = time.Parse(timeFormat, reservationExpiry.String)
+		if err != nil {
+			return record{}, err
+		}
+	}
+	if row.state == "unavailable" || !s.now().UTC().Before(row.expires) {
 		return record{}, ErrUnavailable
 	}
 	return row, nil
@@ -162,7 +179,19 @@ func (s *Store) read(ctx context.Context, id, token string, owner bool) (record,
 	if err != nil {
 		return record{}, ErrUnavailable
 	}
-	return s.authorized(ctx, s.db, id, hash, owner)
+	row, err := s.authorized(ctx, s.db, id, hash, owner)
+	if err == nil && row.state == "uploading" && !s.now().UTC().Before(row.reservationExpires) {
+		tx, refreshed, refreshErr := s.begin(ctx, id, token, owner)
+		if refreshErr != nil {
+			return record{}, refreshErr
+		}
+		defer tx.close()
+		if err := s.commit(tx, refreshed.expires); err != nil {
+			return record{}, err
+		}
+		return refreshed, nil
+	}
+	return row, err
 }
 
 func (s *Store) Instructions(ctx context.Context, id, token string) (Instructions, error) {
@@ -222,11 +251,23 @@ func (s *Store) begin(ctx context.Context, id, token string, owner bool) (*write
 		tx.close()
 		return nil, record{}, err
 	}
+	if r.state == "uploading" && !s.now().UTC().Before(r.reservationExpires) {
+		if err := endReservationTx(ctx, tx.Tx, s.opts.Outbox, id, r.generation, s.now().UTC()); err != nil {
+			tx.close()
+			return nil, record{}, err
+		}
+		if err := s.commit(tx, r.expires); err != nil {
+			tx.close()
+			return nil, record{}, err
+		}
+		tx.close()
+		return s.begin(ctx, id, token, owner)
+	}
 	return tx, r, nil
 }
 
 func (s *Store) commit(tx *writeTx, expires time.Time) error {
-	if !s.now().UTC().Before(expires) {
+	if !expires.IsZero() && !s.now().UTC().Before(expires) {
 		return ErrUnavailable
 	}
 	err := tx.Commit()
@@ -288,6 +329,9 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	if in.Generation != row.generation {
 		return Receipt{}, ErrUnavailable
 	}
+	if row.state == "uploading" {
+		return Receipt{}, ErrConflict
+	}
 	if row.state != "waiting" {
 		var storedAttempt, storedBody []byte
 		if err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash from requests where id = ?`, id).Scan(&storedAttempt, &storedBody); err != nil {
@@ -325,20 +369,11 @@ func (s *Store) Attempt(ctx context.Context, id, token string, generation int, a
 	if err != nil {
 		return Receipt{}, err
 	}
-	hash, err := tokenHash(token)
-	if err != nil {
-		return Receipt{}, ErrUnavailable
-	}
-	// One read transaction gives the capability, state, and receipt one snapshot.
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, row, err := s.begin(ctx, id, token, false)
 	if err != nil {
 		return Receipt{}, err
 	}
-	defer tx.Rollback()
-	row, err := s.authorized(ctx, tx, id, hash, false)
-	if err != nil {
-		return Receipt{}, err
-	}
+	defer tx.close()
 	if generation != row.generation {
 		return Receipt{}, ErrUnavailable
 	}
@@ -349,11 +384,14 @@ func (s *Store) Attempt(ctx context.Context, id, token string, generation int, a
 	state := "unavailable"
 	if bytes.Equal(attempt, stored) {
 		state = "accepted"
+		if row.state == "uploading" {
+			state = "uploading"
+		}
 	} else if row.state == "waiting" {
 		state = "waiting"
 	}
-	if !s.now().UTC().Before(row.expires) {
-		return Receipt{}, ErrUnavailable
+	if err := s.commit(tx, row.expires); err != nil {
+		return Receipt{}, err
 	}
 	return Receipt{generation, state}, nil
 }
@@ -368,14 +406,49 @@ func (s *Store) Open(ctx context.Context, id, token string) (Payload, error) {
 		return Payload{}, ErrConflict
 	}
 	var payload Payload
-	var envelope string
-	var ciphertext []byte
-	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, p.ciphertext from requests r join request_payloads p on p.request_id = r.id where r.id = ?`, id).Scan(&payload.Kind, &payload.SizeBytes, &envelope, &ciphertext); err != nil {
+	var envelope, backend string
+	var key sql.NullString
+	var ciphertext, digest []byte
+	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, r.storage_backend, r.final_key, r.ciphertext_sha256, p.ciphertext from requests r left join request_payloads p on p.request_id = r.id where r.id = ?`, id).Scan(&payload.Kind, &payload.SizeBytes, &envelope, &backend, &key, &digest, &ciphertext); err != nil {
 		return Payload{}, err
+	}
+	if backend == "s3_object" {
+		// Object I/O must not hold the SQLite writer. Cancellation/another open can
+		// commit during GET; only a later conditional transaction can release bytes.
+		tx.close()
+		if s.opts.Objects == nil || !key.Valid || payload.SizeBytes < 0 || payload.SizeBytes > s.opts.MaxFileBytes {
+			return Payload{}, ErrStorage
+		}
+		ciphertext, err = s.opts.Objects.GetBounded(ctx, key.String, payload.SizeBytes+tagBytes)
+		if err != nil || int64(len(ciphertext)) != payload.SizeBytes+tagBytes {
+			return Payload{}, ErrStorage
+		}
+		actual := sha256.Sum256(ciphertext)
+		if !bytes.Equal(actual[:], digest) {
+			return Payload{}, ErrStorage
+		}
+		tx, row, err = s.begin(ctx, id, token, true)
+		if err != nil {
+			return Payload{}, err
+		}
+		defer tx.close()
+		if row.state != "submitted" {
+			return Payload{}, ErrConflict
+		}
+		var currentKey sql.NullString
+		if err := tx.QueryRowContext(ctx, `select final_key from requests where id = ?`, id).Scan(&currentKey); err != nil {
+			return Payload{}, err
+		}
+		if currentKey != key {
+			return Payload{}, ErrConflict
+		}
+	}
+	if int64(len(ciphertext)) != payload.SizeBytes+tagBytes {
+		return Payload{}, ErrStorage
 	}
 	payload.Envelope = json.RawMessage(envelope)
 	payload.Ciphertext = base64.StdEncoding.EncodeToString(ciphertext)
-	if err := clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed"); err != nil {
+	if err := s.clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed", events.ReasonConsumed); err != nil {
 		return Payload{}, err
 	}
 	if err := s.commit(tx, row.expires); err != nil {
@@ -393,17 +466,20 @@ func (s *Store) Revoke(ctx context.Context, id, token string) error {
 	if row.state == "consumed" {
 		return ErrConflict
 	}
-	if err := clearPayloadTx(ctx, tx.Tx, id, row.state, "cancelled"); err != nil {
+	if err := s.clearPayloadTx(ctx, tx.Tx, id, row.state, "cancelled", events.ReasonManual); err != nil {
 		return err
 	}
 	return s.commit(tx, row.expires)
 }
 
-func clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousState, state string) error {
+func (s *Store) clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousState, state string, reason string) error {
+	if err := enqueueRequestKeysTx(ctx, tx, s.opts.Outbox, id, reason, s.now().UTC()); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = ?`, id); err != nil {
 		return err
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = ?, kind = null, size_bytes = null, envelope_json = null where id = ? and state = ?`, state, id, previousState)
+	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null where id = ? and state = ?`, state, id, previousState)
 	if err != nil {
 		return err
 	}
@@ -419,11 +495,4 @@ func requireTransition(result sql.Result) error {
 		return ErrConflict
 	}
 	return nil
-}
-
-// PurgeExpiredTx runs in the existing API reaper transaction. Inline ciphertext
-// cascades; no worker job is needed because no object remains outside api.db.
-func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
-	_, err := tx.ExecContext(ctx, `delete from requests where id in (select id from requests where expires_at <= ? order by expires_at, id limit ?)`, now.UTC().Format(timeFormat), limit)
-	return err
 }

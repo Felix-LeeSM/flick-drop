@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -104,7 +103,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result Pro
 	// A terminal receipt must outlive API outages and worker crashes. Repeat the
 	// acknowledgement on terminal redelivery, without executing the delete again.
 	defer func() {
-		if err != nil || (!result.Succeeded && !result.DeadLettered) || event.Kind != events.KindDeleteOCIObject || !strings.HasPrefix(event.ObjectKey, "managed/secrets/") {
+		if err != nil || (!result.Succeeded && !result.DeadLettered) || event.Kind != events.KindDeleteOCIObject || !requiresObjectAcknowledgement(event.ObjectKey) {
 			return
 		}
 		if p.acknowledger == nil {

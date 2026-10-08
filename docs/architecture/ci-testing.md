@@ -198,6 +198,60 @@ state. Mocked tests do not prove real lifecycle behavior. Browser launch, a loca
 listener, and a running API/NATS are prerequisites; a build or unit-test pass is
 not browser, mobile-device, OS share-sheet, or real-API evidence.
 
+### Large request uploads
+
+`RequestUpload.browser.mjs` also runs in `test:browser`. It covers inline/large/max
+boundaries, disabled storage, verification before acceptance, owner uploading
+status, lost reserve/finalize responses, exact ciphertext retries, and an aborted
+PUT followed by a lost abandonment response. `request-upload.test.ts` exercises
+the real client orchestration with a native XHR transport double, including 100%
+progress, late callbacks, instruction expiry, and generation recovery. Existing
+sender upload tests use the same exported `uploadToObjectStore` helper unchanged.
+
+`pnpm --dir web test:request-storage` runs `RequestUpload.live.mjs` against a real
+API and MinIO. It expects a deliberately small isolated configuration so maximum
+boundary tests do not upload production-size files. Start the API as in the
+inline request recipe, but use a dedicated local MinIO bucket and these overrides:
+
+```sh
+# With local NATS and MinIO running; provision a dedicated synthetic bucket.
+mc alias set flick-request-tests http://127.0.0.1:9000 minioadmin minioadmin
+mc mb --ignore-existing flick-request-tests/flick-request-tests
+request_storage_dir=$(mktemp -d)
+FLICK_API_DB_PATH="$request_storage_dir/api.db" \
+FLICK_API_ADDR=127.0.0.1:8080 \
+FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
+FLICK_MIN_TTL_SECONDS=1 \
+FLICK_CREATE_RATE_PER_MIN=1000 FLICK_OPEN_RATE_PER_MIN=1000 \
+FLICK_STORAGE_LARGE_BACKEND=s3 \
+FLICK_PAYLOAD_INLINE_MAX_BYTES=65536 FLICK_MAX_FILE_BYTES=131072 \
+FLICK_S3_ENDPOINT=http://127.0.0.1:9000 FLICK_S3_REGION=us-east-1 \
+FLICK_S3_BUCKET=flick-request-tests FLICK_S3_PATH_STYLE=true \
+FLICK_S3_ACCESS_KEY_ID=minioadmin FLICK_S3_SECRET_ACCESS_KEY=minioadmin \
+go run ./cmd/flick-api
+
+# In another terminal, with the web server from the inline recipe still running.
+FLICK_WEB_URL=http://127.0.0.1:5173 FLICK_API_URL=http://127.0.0.1:8080 \
+pnpm --dir web test:request-storage
+```
+
+The suite round-trips files just below and above the inline threshold and at the
+maximum, rejects above-maximum input before upload, and checks that a competing
+inline submission cannot beat an existing reservation. It then aborts, confirms
+a newer generation, deliberately performs the still-valid late PUT, and verifies
+that the old finalize cannot revive the request. Another case loses the committed
+finalize response and recovers acceptance through the attempt receipt without
+another PUT. The object cleanup/reconciliation proof belongs to
+`scripts/ci/storage-integration.sh`, which now runs the request and storage MinIO
+integration packages together. The browser suite does not assert physical deletion.
+
+Restart the same isolated API with `FLICK_STORAGE_LARGE_BACKEND=disabled` and run
+`FLICK_REQUEST_STORAGE_DISABLED=1 pnpm --dir web test:request-storage` to verify
+the advertised inline ceiling and pre-upload rejection with real disabled config.
+Run `test:requests` as well for the complete inline lifecycle. Remove only the
+test API's temporary DB and the dedicated test bucket after stopping the test
+processes; do not remove shared development or production storage.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.
@@ -221,7 +275,7 @@ builds `scripts/ci/Dockerfile.minio` from pinned official MinIO and mc source
 commits with Go 1.25.11; the image override applies only to the test project.
 The cold build is bounded by the `Repo checks` job's 30-minute timeout.
 The script waits for readiness with a 60-second retry window, creates the test bucket, and runs
-`go test -count=1 -timeout 2m -v -tags integration ./internal/storage/`.
+`go test -count=1 -timeout 2m -v -tags integration ./internal/storage/ ./internal/requests/`.
 The script overrides inherited S3 settings with the local test bucket and
 credentials and removes its own containers, network, volumes, and image tag on exit.
 Run the script directly to check presigned uploads, size enforcement, and

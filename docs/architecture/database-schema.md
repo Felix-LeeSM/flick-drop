@@ -114,7 +114,7 @@ payload.
 
 ## Request schema
 
-M9 [request links](request-links.md) use separate API-owned inline storage.
+M9 [request links](request-links.md) use separate API-owned metadata and inline/object storage.
 `internal/db/migrations.go:MigrateAPI` creates the following tables and index
 idempotently, without changing existing send secrets or worker tables:
 
@@ -125,17 +125,24 @@ create table requests (
   fingerprint text not null,
   submission_token_hash blob not null check (length(submission_token_hash) = 32),
   retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
-  state text not null default 'waiting' check (state in ('waiting', 'submitted', 'consumed', 'cancelled')),
+  state text not null default 'waiting' check (state in ('waiting', 'uploading', 'submitted', 'consumed', 'cancelled', 'unavailable')),
   generation integer not null default 1 check (generation between 1 and 16),
   attempt_token_hash blob check (length(attempt_token_hash) = 32),
   attempt_body_hash blob check (length(attempt_body_hash) = 32),
   kind text check (kind in ('text', 'file')),
   size_bytes integer check (size_bytes >= 0),
   envelope_json text,
+  storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object')),
+  upload_key text,
+  final_key text,
+  ciphertext_sha256 blob check (length(ciphertext_sha256) = 32),
+  reservation_expires_at text,
   expires_at text not null,
   check ((attempt_token_hash is null) = (attempt_body_hash is null)),
+  check (state != 'uploading' or (storage_backend = 's3_object' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
+  check (state != 'submitted' or storage_backend != 's3_object' or (final_key is not null and ciphertext_sha256 is not null)),
   check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
-		);
+);
 
 create index idx_requests_expires_at on requests(expires_at, id);
 
@@ -149,12 +156,43 @@ create table request_payloads (
 `expires_at` is fixed-width UTC with nine fractional digits for exact indexed
 comparisons. Only SHA-256 token hashes are stored. The immutable submission
 hash covers canonical envelope, kind, size, and ciphertext; duplicate attempts
-cannot overwrite content or extend the deadline. Generation stays at 1 for
-inline requests, with the 1..16 constraint reserved for the approved #207 flow.
+cannot overwrite content or extend the deadline. For object reservations the
+hash covers the expected ciphertext SHA-256 instead of inline ciphertext. An
+expired/abandoned reservation atomically advances generation; ending generation
+16 stores internal state `unavailable`, exposed as HTTP 404 for both capabilities.
+A cancelled pending reservation clears its attempt hashes; only accepted receipts
+survive open/revoke. Reservation deadlines use the same fixed-width UTC format.
 Open/revoke clear payloads, envelope, kind, and size in the same transaction.
 Public key, token hashes, minimal owner state, and attempt receipt expire at
 the original deadline; the API reaper purges them even after early consumption
 or cancellation. The worker never reads or writes request tables.
+
+
+`internal/db/requests.go:normalizeRequestsSchema` rebuilds the older inline table
+on a pinned connection to extend its state CHECK, copies every existing request,
+and preserves `request_payloads` and its cascading foreign key. Foreign key
+checks run before commit and enforcement is restored before releasing the
+connection. Current schemas skip the rebuild. Indexes cover expiry, pending
+reservation deadlines, and unique non-null staging/final keys.
+
+Request reconciliation has independent API-owned progress, never shared with
+sender-secret cursors or claims:
+
+```sql
+create table request_reconciliation_cursor (
+  id integer primary key check (id = 1),
+  continuation_token text not null default '',
+  generation integer not null default 0
+);
+create table request_reconciliation_pending (
+  object_key text primary key,
+  job_id text not null unique
+);
+```
+
+The cursor singleton is initialized idempotently. Scans commit cursor generation,
+claims and outbox rows together. A worker terminal ACK removes only the matching
+key/job-ID claim, so later PUTs can receive a new cleanup job after metadata is gone.
 
 ## `worker.db`
 
