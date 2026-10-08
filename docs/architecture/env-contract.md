@@ -33,8 +33,8 @@ Local development:
 | `FLICK_API_ADDR` | API listen address. |
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` (Prometheus scrape). Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/metrics` fails closed (401). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
-| `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max payload size stored as SQLite BLOB. |
-| `FLICK_MAX_FILE_BYTES` | Upload hard limit. While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises `FLICK_PAYLOAD_INLINE_MAX_BYTES` minus the 16-byte AES-GCM tag instead of this value. |
+| `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max ciphertext size stored as SQLite BLOB. Must be greater than the 16-byte AES-GCM tag; smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback subtract the tag for plaintext routing. |
+| `FLICK_MAX_FILE_BYTES` | Plaintext upload hard limit (the S3 ciphertext cap adds the 16-byte AES-GCM tag). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises `FLICK_PAYLOAD_INLINE_MAX_BYTES` minus the 16-byte AES-GCM tag instead of this value. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
