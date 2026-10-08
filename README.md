@@ -13,7 +13,7 @@ and removed.
 ## What It Does
 
 - Creates one-time links for encrypted text secrets and files.
-- Creates one-time requests with separate submission and private retrieval links for text or one inline file.
+- Creates one-time requests with separate submission and private retrieval links for text or one encrypted file.
 - Shares recipient links with the device share sheet where supported, with copy and QR available as fallbacks.
 - Provides a private management link to check a delivery or cancel it before it is opened, without an account.
 - Expires secrets automatically after a short TTL.
@@ -51,11 +51,13 @@ cannot recall content already delivered or guarantee physical erasure of copies.
 Older API deployments that do not return management capabilities retain the
 original recipient-link result until the API is upgraded.
 
-Choose **Request a secret** to collect text or one small file. Share the
+Choose **Request a secret** to collect text or one file. Share the
 **submission link** and save the separate **private retrieval link**. The first
 accepted submission wins; only the private retrieval link can open and decrypt
-it once. Request files are limited to the smaller of the configured inline
-plaintext limit and file limit. Large request uploads remain planned.
+it once. Request files use the configured file limit. Files above the inline limit upload
+encrypted bytes to S3-compatible storage when enabled; with storage disabled, the
+advertised file limit stays at the inline allowance. Uploading 100 percent is not
+acceptance: the server must verify and finalize the file first.
 
 The private retrieval link contains the decryption key. Its complete fragment
 supports refresh, browser restart, and another device before expiry; Flick does
@@ -68,7 +70,11 @@ reconstructed from a refreshed retrieval page.
 
 If a submission response is lost, keep the submitter tab open. Check the attempt
 before explicitly retrying the same encrypted content. No automatic retry creates
-a new key or submission attempt. See the
+a new key or submission attempt. Cancelling an upload also requires server
+confirmation; stopping the browser transfer alone does not delete uploaded bytes.
+A confirmed cancellation or expired reservation advances the attempt generation
+before another file can be submitted. Server cleanup handles abandoned and late
+uploads. See the
 [request-link contract](docs/architecture/request-links.md) for authority,
 expiry, and response-loss details.
 

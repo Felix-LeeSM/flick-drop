@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,45 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+var ErrObjectTooLarge = errors.New("object exceeds read limit")
+
+// GetBounded checks actual streamed bytes, not a prior HEAD of a mutable key.
+// The extra byte detects a provider that omits or misreports Content-Length.
+func (c *Client) GetBounded(ctx context.Context, key string, limit int64) ([]byte, error) {
+	if key == "" || limit < 1 || limit == 1<<63-1 {
+		return nil, errors.New("invalid bounded object read")
+	}
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(c.cfg.Bucket), Key: aws.String(key)})
+	if err != nil {
+		return nil, errors.New("object read failed")
+	}
+	defer out.Body.Close()
+	if out.ContentLength != nil && *out.ContentLength > limit {
+		return nil, ErrObjectTooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
+	if err != nil {
+		return nil, errors.New("object body read failed")
+	}
+	if int64(len(body)) > limit {
+		return nil, ErrObjectTooLarge
+	}
+	return body, nil
+}
+
+// Put writes the bytes already verified by the API to a server-only final key.
+// A failed response may follow a successful write; callers must not delete it.
+func (c *Client) Put(ctx context.Context, key string, ciphertext []byte) error {
+	if key == "" || len(ciphertext) == 0 {
+		return errors.New("invalid object write")
+	}
+	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(c.cfg.Bucket), Key: aws.String(key), Body: bytes.NewReader(ciphertext), ContentLength: aws.Int64(int64(len(ciphertext)))})
+	if err != nil {
+		return errors.New("object write failed")
+	}
+	return nil
+}
 
 func (c *Client) Head(ctx context.Context, key string) (ObjectInfo, error) {
 	out, err := c.s3.HeadObject(ctx, &s3.HeadObjectInput{

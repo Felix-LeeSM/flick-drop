@@ -119,7 +119,7 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 
 // AcknowledgeObjectCleanup fences API-owned bookkeeping by both key and job ID.
 func (c *CleanupClient) AcknowledgeObjectCleanup(ctx context.Context, event events.JobEvent) error {
-	if event.Kind != events.KindDeleteOCIObject || event.JobID == "" || !strings.HasPrefix(event.ObjectKey, "managed/secrets/") || event.ObjectKey == "managed/secrets/" {
+	if event.Kind != events.KindDeleteOCIObject || event.JobID == "" || !requiresObjectAcknowledgement(event.ObjectKey) {
 		return fmt.Errorf("%w: invalid object cleanup acknowledgement", ErrInvalidJob)
 	}
 	body, err := json.Marshal(struct {
@@ -198,7 +198,7 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
 	}
 	if h.objects == nil {
-		if strings.HasPrefix(event.ObjectKey, "managed/secrets/") {
+		if requiresObjectAcknowledgement(event.ObjectKey) {
 			return errors.New("managed object deletion requires object storage")
 		}
 		// Object storage is disabled — a stray delete event has no target.
@@ -236,3 +236,12 @@ func validCleanupReason(reason string) bool {
 
 var _ JobHandler = (*CleanupHandler)(nil)
 var _ CleanupAPI = (*CleanupClient)(nil)
+
+func requiresObjectAcknowledgement(key string) bool {
+	for _, prefix := range []string{"managed/secrets/", "managed/requests/"} {
+		if strings.HasPrefix(key, prefix) && key != prefix {
+			return true
+		}
+	}
+	return false
+}

@@ -56,7 +56,7 @@ func main() {
 		log.Fatalf("migrate api database: %v", err)
 	}
 
-	var objectStore storage.ObjectStore
+	var objectStore storage.RequestObjectStore
 	if cfg.S3.Enabled {
 		objClient, err := storage.New(storage.Config{
 			Enabled:         true,
@@ -122,6 +122,8 @@ func main() {
 	}
 
 	requestStore, err := requests.NewStore(conn, requests.Options{
+		Objects:               objectStore,
+		Outbox:                outboxStore,
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxFileBytes:          cfg.MaxFileBytes,
 		MinTTLSeconds:         cfg.MinTTLSeconds,
@@ -159,6 +161,7 @@ func main() {
 	}
 
 	reaper, err := secrets.NewReaper(conn, secretStore, outboxStore, secrets.ReaperOptions{
+		Requests:  requestStore,
 		BatchSize: cfg.ReaperBatchSize,
 	})
 	if err != nil {

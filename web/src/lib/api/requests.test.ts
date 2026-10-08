@@ -130,13 +130,13 @@ describe('request API capability and retry boundary', () => {
 			code: 'invalid_response'
 		});
 	});
-	it('uses already-adjusted plaintext inline limits and caps inline files at the smaller limit', () => {
+	it('uses already-adjusted inline limits and the effective advertised file maximum', () => {
 		expect(requestLimits({ payloadInlineMaxBytes: 1234, maxFileBytes: 100 })).toEqual({
 			maxTextBytes: 1234,
 			maxFileBytes: 100
 		});
 		expect(requestLimits({ payloadInlineMaxBytes: 1234, maxFileBytes: 5678 }).maxFileBytes).toBe(
-			1234
+			5678
 		);
 	});
 });

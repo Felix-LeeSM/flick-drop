@@ -290,7 +290,7 @@ async function createLargeFileSecret(
 // form would fail authentication. Content-Length is not set by hand — the
 // browser forbids it as a header and derives it from the body, which is exactly
 // the signed value.
-async function uploadToObjectStore(
+export async function uploadToObjectStore(
 	fetcher: typeof fetch,
 	upload: PresignedUpload,
 	ciphertextBase64: string,

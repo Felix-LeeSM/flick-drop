@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
+	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
@@ -275,5 +276,61 @@ func TestReconciliationRunsAlongsideExpiryBacklogAndFencesStalePages(t *testing.
 	var cursor string
 	if err := conn.QueryRow(`select continuation_token from object_reconciliation_cursor`).Scan(&cursor); err != nil || cursor != "newer" {
 		t.Fatalf("newer cursor lost: %s %v", cursor, err)
+	}
+}
+
+type requestListingObjects struct {
+	storage.RequestObjectStore
+	list func(context.Context, string, string, int) (storage.ObjectPage, error)
+}
+
+func (o requestListingObjects) List(ctx context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+	return o.list(ctx, prefix, cursor, limit)
+}
+
+func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	outbox := newTestOutbox(t, conn)
+	senderFailure := errors.New("sender listing failed")
+	senderCalled, requestCalled := false, false
+	senderObjects := listingObjects{list: func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+		senderCalled = true
+		if prefix != "managed/secrets/" || limit != 2 {
+			t.Fatal("sender scope changed")
+		}
+		return storage.ObjectPage{}, senderFailure
+	}}
+	senderStore, err := NewStore(conn, StoreOptions{PayloadInlineMaxBytes: 32, MaxObjectBytes: 116, MinTTLSeconds: 300, MaxTTLSeconds: 3600, Objects: senderObjects, Outbox: outbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestObjects := requestListingObjects{list: func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+		requestCalled = true
+		if prefix != requests.ObjectPrefix || limit != 2 {
+			t.Fatal("request scan unbounded or wrong scope")
+		}
+		return storage.ObjectPage{Keys: []string{requests.ObjectPrefix + "orphan"}}, nil
+	}}
+	requestStore, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 32, MaxFileBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600, Objects: requestObjects, Outbox: outbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper, err := NewReaper(conn, senderStore, outbox, ReaperOptions{BatchSize: 2, Requests: requestStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop table secret_management`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reaper.ClaimOnce(ctx); err == nil || !errors.Is(err, senderFailure) {
+		t.Fatal("reaper swallowed expiry/listing error", err)
+	}
+	if !senderCalled || !requestCalled {
+		t.Fatal("failed component starved other scanner")
+	}
+	jobs := readOutboxEvents(t, ctx, conn)
+	if len(jobs) != 1 || jobs[0].ObjectKey != requests.ObjectPrefix+"orphan" {
+		t.Fatal("request scan did not commit independently", jobs)
 	}
 }
