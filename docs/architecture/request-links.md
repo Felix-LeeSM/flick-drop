@@ -110,6 +110,37 @@ algorithms, fields, malformed/noncanonical base64, wrong lengths, negative or
 fractional sizes, kind/filename mismatches, and invalid key material before
 database writes or crypto. Do not reinterpret existing Model A/B envelopes.
 
+## Browser crypto module (#204)
+
+`web/src/lib/crypto/requests.ts` implements this envelope without HTTP, browser
+storage, UI, or crypto dependencies. Callers supply explicit plaintext byte
+bounds through `RequestLimits.maxTextBytes` and `RequestLimits.maxFileBytes`;
+the later API client subtracts the 16-byte GCM tag from its inline ciphertext
+limit to obtain `maxTextBytes`. The module returns base64 ciphertext for the inline
+path; large-upload callers decode those same bytes for the object-store PUT.
+Existing send-link crypto remains separate.
+
+Both key import functions require the expected public-key fingerprint. The
+submitter obtains that value from its shared fragment; the requester obtains
+it from owner status before consuming Open. Imports check native RSA parameters
+and byte-for-byte canonical DER re-export. Private import also verifies a local
+OAEP encrypt/decrypt challenge so structurally accepted but unusable private
+components cannot enable a consuming Open. Keys and challenge bytes stay in
+memory. The module rejects request IDs longer than 256 characters, CR/LF, and
+lossy UTF-8; callers use the server-issued ID unchanged.
+
+`tests/fixtures/request-crypto-v1.json` contains immutable public synthetic
+RSA material and ciphertext produced independently with Node's `node:crypto`.
+Never use these keys for real requests or regenerate the fixture to match a
+changed implementation. Unit tests decrypt those vectors, reject an otherwise
+valid AES-128 downgrade, and cover malformed keys, tampering and request/kind
+replay. Run `pnpm --dir web test` for unit coverage and
+`pnpm --dir web exec node --test src/lib/crypto/requests.browser.mjs` for actual
+Chromium Web Crypto. The browser harness bundles the module with Vite and serves
+it through Playwright's intercepted HTTPS origin, with no listener, API, or
+object store. Native RSA-OAEP/AES-GCM and secure contexts are required; the
+included browser check targets Chromium, with no Firefox or Safari validation.
+
 ## Lifetime and transitions
 
 Use the existing configured min/default/max TTL and size limits. Defaults are
