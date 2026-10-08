@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,8 +36,10 @@ type createSecretRequest struct {
 }
 
 type createSecretResponse struct {
-	ID        string `json:"id"`
-	ExpiresAt string `json:"expires_at"`
+	ManagementToken     string `json:"management_token"`
+	ManagementExpiresAt string `json:"management_expires_at"`
+	ID                  string `json:"id"`
+	ExpiresAt           string `json:"expires_at"`
 }
 
 // presignedUploadResponse hands the client a presigned upload so it sends the
@@ -50,9 +53,11 @@ type presignedUploadResponse struct {
 }
 
 type createSecretLargeResponse struct {
-	ID        string                  `json:"id"`
-	ExpiresAt string                  `json:"expires_at"`
-	Upload    presignedUploadResponse `json:"upload"`
+	ManagementToken     string                  `json:"management_token"`
+	ManagementExpiresAt string                  `json:"management_expires_at"`
+	ID                  string                  `json:"id"`
+	ExpiresAt           string                  `json:"expires_at"`
+	Upload              presignedUploadResponse `json:"upload"`
 }
 
 type accessRequest struct {
@@ -99,6 +104,7 @@ type cleanupSecretResponse struct {
 }
 
 func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	bodyLimit := s.createSecretBodyLimit()
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
@@ -167,8 +173,10 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, createSecretResponse{
-		ID:        created.ID,
-		ExpiresAt: created.ExpiresAt.Format(timeFormat),
+		ManagementToken:     created.ManagementToken,
+		ManagementExpiresAt: created.ExpiresAt.Format(timeFormat),
+		ID:                  created.ID,
+		ExpiresAt:           created.ExpiresAt.Format(timeFormat),
 	})
 }
 
@@ -203,8 +211,10 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 	}
 
 	writeJSON(w, http.StatusCreated, createSecretLargeResponse{
-		ID:        res.ID,
-		ExpiresAt: res.ExpiresAt.Format(timeFormat),
+		ManagementToken:     res.ManagementToken,
+		ManagementExpiresAt: res.ExpiresAt.Format(timeFormat),
+		ID:                  res.ID,
+		ExpiresAt:           res.ExpiresAt.Format(timeFormat),
 		Upload: presignedUploadResponse{
 			URL:       res.Upload.URL,
 			Method:    res.Upload.Method,
@@ -501,4 +511,34 @@ func (s Server) createSecretBodyLimit() int64 {
 	payloadLimit := s.secretsPayloadLimit()
 	base64PayloadLimit := ((payloadLimit + 2) / 3) * 4
 	return base64PayloadLimit + createBodyOverheadLimit
+}
+
+func (s Server) getManagementStatus(w http.ResponseWriter, r *http.Request) {
+	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !strings.EqualFold(scheme, "Bearer") || len(r.Header.Values("Authorization")) != 1 {
+		token = ""
+	}
+	status, err := s.secrets.Management(r.Context(), chi.URLParam(r, "id"), token)
+	if errors.Is(err, secrets.ErrManagementUnavailable) {
+		writeError(w, http.StatusNotFound, "management_unavailable", "management link is unavailable")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "management_status_failed", "management status is temporarily unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		ID                  string `json:"id"`
+		Status              string `json:"status"`
+		ExpiresAt           string `json:"expires_at"`
+		ManagementExpiresAt string `json:"management_expires_at"`
+		CanCancel           bool   `json:"can_cancel"`
+	}{status.ID, status.Status, status.ExpiresAt.Format(timeFormat), status.ExpiresAt.Format(timeFormat), status.CanCancel})
+}
+
+func managementNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }

@@ -28,7 +28,8 @@ object (`CreateLarge`; `StorageS3`, `store.go:21`). Both paths share the same
 `reaper.go` owns expiry and orphan reclaim. `Reaper` (`reaper.go:60`) runs on an
 interval and, per batch, claims reclaimable rows atomically via
 `claimReclaimableSQL` (`reaper.go:33`): an `active` row past `expires_at`
-(active expiry) or a `pending_upload` row past `created_at + PendingTTL`
+(active expiry) or a `pending_upload` row at the earlier of `expires_at` and
+`created_at + PendingTTL`
 (`store.go:431`; orphan reclaim — uploads that never called `/finalize`). The
 claim sets `reclaim_enqueued_at` so multiple instances do not double-claim; rows
 are ordered by a unified "reclaimable-since" timestamp so orphans are not starved
@@ -47,6 +48,10 @@ Directory structure:
 - Keep lifecycle flows readable and close together.
 - `store.go` owns create/open/consume/large-secret SQL and types; `reaper.go`
   owns expiry and orphan reclaim; `errors.go` owns sentinel errors.
+- `management.go` issues independent random capabilities, stores SHA-256 hashes,
+  reads authenticated outcomes without loading payloads, and purges managed
+  metadata at the original expiry. `reaper.go:ClaimOnce` calls the bounded purge
+  even for consumed managed secrets; legacy consumed-row retention is unchanged.
 - Do not create generic utility folders.
 
 Rules:

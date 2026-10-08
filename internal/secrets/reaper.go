@@ -21,12 +21,16 @@ const (
 // WHERE guard (reclaim_enqueued_at IS NULL) makes the claim multi-instance and
 // multi-tick safe: only one claimer can flip the timestamp per row. Consumed
 // secrets are excluded because /open already enqueued their cleanup. Reason is
-// derived from state: active → expired, pending_upload → orphan.
+// derived from state: active → expired, pending_upload → orphan. Pending
+// uploads are also reclaimable at content expiry, even before PendingTTL.
+// formatTime stores canonical UTC RFC3339Nano. Removing its final Z preserves
+// exact chronological ordering for expiry, including absent or shorter fractions.
 //
 // Ordering is by a unified "reclaimable-since" timestamp so the two classes
 // compete fairly for a batch slot: an expired-active row is reclaimable since
 // its expires_at, while a pending_upload orphan is reclaimable since
-// created_at + PendingTTL. Without this, a future expires_at on orphans would
+// the earlier of expires_at and created_at + PendingTTL. Without this, a
+// future expires_at on orphans would
 // always sort them behind an active-expiry backlog and starve orphan reclaim.
 // Both branches are wrapped in datetime() so they compare as the same
 // 'YYYY-MM-DD HH:MM:SS' shape — expires_at is stored RFC3339Nano (a 'T'/​'Z'
@@ -38,12 +42,12 @@ const claimReclaimableSQL = `with candidates as (
 	where reclaim_enqueued_at is null
 		and consumed_at is null
 		and (
-			(state = 'active' and expires_at < ?)
-			or (state = 'pending_upload' and created_at < ?)
+			(rtrim(expires_at, 'Z') <= rtrim(?, 'Z'))
+			or (state = 'pending_upload' and rtrim(created_at, 'Z') <= rtrim(?, 'Z'))
 		)
 	order by case state
 			when 'active' then datetime(expires_at)
-			else datetime(created_at, ?)
+			else min(datetime(expires_at), datetime(created_at, ?))
 		end
 	limit ?
 )
@@ -165,6 +169,10 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 		}
 	}
 
+	if err := purgeManagementTx(ctx, tx, now, r.batchSize); err != nil {
+		return 0, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
 	}
@@ -188,6 +196,11 @@ func (r *Reaper) ClaimOnce(ctx context.Context) (_ int, err error) {
 }
 
 func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now time.Time) error {
+	if c.state == "pending_upload" {
+		if err := recordManagementOutcomeTx(ctx, tx, c.id, "unavailable"); err != nil {
+			return err
+		}
+	}
 	if err := r.store.ReclaimTx(ctx, tx, c.id); err != nil {
 		return err
 	}

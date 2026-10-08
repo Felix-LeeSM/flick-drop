@@ -123,7 +123,12 @@ func (f *fakeFlick) createSecret(w http.ResponseWriter, r *http.Request) {
 		stored.accessKDF = &req.Access.KDF
 	}
 
-	resp := CreateSecretResponse{ID: id, ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339)}
+	// New servers add management fields; the existing CLI must ignore them.
+	resp := struct {
+		CreateSecretResponse
+		ManagementToken     string `json:"management_token"`
+		ManagementExpiresAt string `json:"management_expires_at"`
+	}{CreateSecretResponse{ID: id, ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339)}, "opaque-management-token", time.Now().Add(time.Hour).Format(time.RFC3339)}
 	if req.Ciphertext == "" {
 		if !f.s3Enabled {
 			// A deployment without object storage simply returns no upload,

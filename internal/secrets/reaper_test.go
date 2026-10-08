@@ -308,6 +308,7 @@ func TestReaperSkipsUnexpired(t *testing.T) {
 	})
 	insertSecret(t, ctx, conn, secretFixture{ // pending_upload within PendingTTL
 		id:        "sec_pending_live",
+		expiresAt: now.Add(time.Hour),
 		state:     "pending_upload",
 		createdAt: now.Add(-5 * time.Minute),
 		updatedAt: now.Add(-5 * time.Minute),
@@ -322,6 +323,70 @@ func TestReaperSkipsUnexpired(t *testing.T) {
 	}
 	if got := countSecrets(t, ctx, conn); got != 2 {
 		t.Fatalf("secrets = %d, want 2", got)
+	}
+}
+
+func TestReaperContentExpiryPrecision(t *testing.T) {
+	for _, state := range []string{"active", "pending_upload"} {
+		for _, tc := range []struct {
+			name      string
+			expiresNS int
+			nowNS     int
+		}{
+			{"whole-second cutoff", 123456789, 0},
+			{"shorter cutoff fraction", 123456789, 123000000},
+			{"one nanosecond before", 123456789, 123456788},
+			{"exact fractional expiry", 123456789, 123456789},
+			{"longer cutoff fraction", 123000000, 123456789},
+			{"one nanosecond before whole second", 0, -1},
+			{"exact whole-second expiry", 0, 0},
+			{"after whole-second expiry", 0, 1},
+		} {
+			t.Run(state+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				conn := openTestDB(t, ctx)
+				store := newLargeTestStore(t, conn, newMockObjectStore())
+				base := time.Date(2026, 10, 8, 1, 10, 0, 0, time.UTC)
+				expires := base.Add(time.Duration(tc.expiresNS))
+				now := expires.Add(-10 * time.Minute) // Content expiry precedes the 15-minute pending deadline.
+				store.SetNowForTest(func() time.Time { return now })
+				var id, token string
+				if state == "pending_upload" {
+					filename := "encrypted-name"
+					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: &filename, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, token = created.ID, created.ManagementToken
+				} else {
+					created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: []byte("ciphertext"), Nonce: "nonce", SizeBytes: 10, TTLSeconds: 600})
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, token = created.ID, created.ManagementToken
+				}
+				now = base.Add(time.Duration(tc.nowNS))
+				reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
+				reaper.SetNowForTest(func() time.Time { return now })
+				want := 0
+				if !now.Before(expires) {
+					want = 1
+				}
+				if got, err := reaper.ClaimOnce(ctx); err != nil || got != want {
+					t.Fatalf("at %s with expiry %s: claimed = %d, want %d; error = %v", formatTime(now), formatTime(expires), got, want, err)
+				}
+				if got := countSecrets(t, ctx, conn); got != 1-want {
+					t.Fatalf("remaining secrets = %d, want %d", got, 1-want)
+				}
+				status, err := store.Management(ctx, id, token)
+				if want == 0 && (err != nil || status.Status != state) {
+					t.Fatalf("unexpired management status = %q, want %q; error = %v", status.Status, state, err)
+				}
+				if want == 1 && !errors.Is(err, ErrManagementUnavailable) {
+					t.Fatalf("expired management error = %v", err)
+				}
+			})
+		}
 	}
 }
 

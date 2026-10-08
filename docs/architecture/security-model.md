@@ -285,10 +285,11 @@ rules are defined in [Advertising experiment](advertising-experiment.md).
 - reproducible or signed CLI release artifacts, so a downloader can verify more
   than the `SHA256SUMS` published alongside the binaries
 
-## Planned M8 Sender Management
+## M8 Sender Management
 
 [Sender management v1](../../contracts/sender-management-v1.md) is the accepted
-design, not implemented runtime behavior. New deliveries get an independent
+design. #200 implements issuance and status; cancellation and the browser flow
+remain planned in #201/#202. New deliveries get an independent
 32-byte random management bearer; the API stores only its SHA-256 hash. The
 private management fragment never contains the recipient encryption key. Status
 and cancellation authority end at the original content expiry; neither operation
