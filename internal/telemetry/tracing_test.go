@@ -3,6 +3,9 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -27,25 +30,76 @@ func TestSetupTracingDisabledByDefault(t *testing.T) {
 	}
 }
 
-// SetupTracing with an endpoint must construct the exporter, resource, and
-// provider without error — resource.Merge of Default()+Schemaless is the easy
-// thing to get wrong. The global provider is saved/restored so other tests are
-// unaffected, and no spans are exported (nothing reaches the dummy endpoint).
-func TestSetupTracingEnabledConstructs(t *testing.T) {
-	saved := otel.GetTracerProvider()
-	t.Cleanup(func() { otel.SetTracerProvider(saved) })
+func TestSetupTracingExportsToConfiguredPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "bare origin", want: "/v1/traces"},
+		{name: "explicit root", path: "/", want: "/"},
+		{name: "explicit signal", path: "/v1/traces", want: "/v1/traces"},
+		{name: "custom path", path: "/collector/traces", want: "/collector/traces"},
+		{name: "custom trailing slash", path: "/collector/traces/", want: "/collector/traces/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, propagator := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+			t.Cleanup(func() {
+				otel.SetTracerProvider(provider)
+				otel.SetTextMapPropagator(propagator)
+			})
+			paths := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/x-protobuf" {
+					t.Errorf("unexpected export: method=%s content-type=%q", r.Method, r.Header.Get("Content-Type"))
+				}
+				if n, err := io.Copy(io.Discard, r.Body); err != nil || n == 0 {
+					t.Errorf("export body: bytes=%d error=%v", n, err)
+				}
+				paths <- r.URL.Path
+				w.Header().Set("Content-Type", "application/x-protobuf")
+			}))
+			defer server.Close()
+			// FLICK_OTLP_ENDPOINT takes precedence over both standard OTEL endpoints.
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", server.URL+"/env")
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", server.URL+"/env/traces")
 
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			shutdown, err := SetupTracing(ctx, TracingOptions{
+				ServiceName: "flick-test",
+				Endpoint:    server.URL + tc.path,
+			})
+			if err != nil {
+				t.Fatalf("SetupTracing(endpoint): %v", err)
+			}
+			_, span := otel.Tracer("flick-test").Start(ctx, "export-test")
+			span.End()
+			if err := shutdown(ctx); err != nil {
+				t.Fatalf("shutdown: %v", err)
+			}
+			select {
+			case path := <-paths:
+				if path != tc.want {
+					t.Fatalf("export path = %q, want %q", path, tc.want)
+				}
+			default:
+				t.Fatal("no OTLP export received")
+			}
+		})
+	}
+}
+
+func TestSetupTracingRejectsMalformedEndpoint(t *testing.T) {
 	shutdown, err := SetupTracing(context.Background(), TracingOptions{
 		ServiceName: "flick-test",
-		Endpoint:    "http://127.0.0.1:4318",
+		Endpoint:    "http://collector.invalid/%zz?token=private-test-token",
 	})
-	if err != nil {
-		t.Fatalf("SetupTracing(endpoint): %v", err)
+	if err == nil || err.Error() != "invalid otlp trace endpoint URL" {
+		t.Fatalf("malformed endpoint error = %v, want sanitized parse error", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
+	if shutdown != nil {
+		t.Fatal("malformed endpoint returned a shutdown function")
 	}
 }
 
