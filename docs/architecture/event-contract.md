@@ -110,7 +110,11 @@ Inline [request links](request-links.md) need no worker event: open/revoke
 remove their BLOB and encrypted metadata in the same API SQLite transaction,
 and the API reaper cascades payload deletion when purging expired requests.
 No request capability, public key, envelope, or ciphertext enters the outbox.
-Large request cleanup remains part of #207.
+Large requests reuse `delete_oci_object` and the existing reasons. Request
+open/revoke/expiry/reservation expiry/abandon commit key-only cleanup with their
+state transition. Request scans use reason `orphan` and independent
+`request_reconciliation_cursor`/`request_reconciliation_pending` tables; the
+event JSON shape does not change.
 
 `internal/worker/store.go` claims each attempt for one minute, measured from
 `job_receipts.updated_at`. A delivery during that lease retries without invoking
@@ -157,8 +161,12 @@ A scan never queues deletion of an unexpired live active or pending upload.
 Database/list/enqueue failures cannot be treated as an absent live object or an
 empty successful page. Claims have no lease timeout.
 
-For every `delete_oci_object` in `managed/secrets/`, the worker persists the
-terminal success/dead receipt first, then calls
+The API also scans one independent bounded page of `managed/requests/` each tick,
+protecting active reservation keys and accepted final keys using request-owned
+references. Failures in either scan do not suppress the other scan.
+
+For every `delete_oci_object` in `managed/secrets/` or `managed/requests/`, the
+worker persists the terminal success/dead receipt first, then calls
 `POST /internal/object-reconciliation/ack` with its object key and job ID, before
 NATS Ack/Term. The [internal endpoint contract](../../contracts/internal-api.md)
 defines authentication and idempotency. Immediate cleanup jobs also acknowledge;
@@ -172,14 +180,16 @@ if an object remains or appears later. A stale acknowledgement cannot remove a
 newer claim. A dead-letter receipt still records failure; it does not prove erasure.
 
 For an upgrade, replace **all** workers with the acknowledgement-capable version
-before enabling the new API scanner. Wait for every old worker pod to disappear,
+supporting **both namespaces** before enabling the new API scanner. A #201
+worker supports the sender prefix only and must also be replaced for request
+reconciliation. Wait for every old worker pod to disappear,
 including terminating pods; Deployment rollout readiness alone is insufficient.
 An old worker can DELETE and NATS Ack without releasing the API claim. If a late
 PUT follows, that claim prevents later scans from scheduling another deletion.
 
 During the worker-first rollout, an old API returns HTTP 404 for the acknowledgement
-endpoint. The updated worker retains the NATS delivery for retry until the API is
-upgraded. Never roll back a worker to a version without acknowledgement support
+endpoint (or HTTP 400 for an unsupported request prefix). The updated worker
+retains the NATS delivery for retry until the API is upgraded. Never roll back a worker to a version without acknowledgement support
 while reconciliation jobs or claims can exist, even if the API is rolled back.
 See the [safe upgrade procedure](../runbook/k3s-base.md#apply).
 

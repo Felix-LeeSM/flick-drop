@@ -137,7 +137,7 @@ func TestRequestHTTPFlowAndRoleSeparation(t *testing.T) {
 	}
 }
 
-func TestRequestHTTPRejectsMalformedBodiesAndLargeEndpoints(t *testing.T) {
+func TestRequestHTTPRejectsMalformedBodies(t *testing.T) {
 	router, _, _ := requestFixture(t, 100)
 	c := createHTTPRequest(t, router)
 	path := "/api/requests/" + c.ID
@@ -163,7 +163,7 @@ func TestRequestHTTPRejectsMalformedBodiesAndLargeEndpoints(t *testing.T) {
 	in.Ciphertext = strings.Repeat("A", 70000)
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/submit", in, auth(c.SubmissionToken)), 413, "payload_too_large")
 	for _, endpoint := range []string{"upload", "finalize", "abandon"} {
-		assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/"+endpoint, nil, auth(c.SubmissionToken)), 404, "")
+		assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/"+endpoint, nil, auth(c.SubmissionToken)), 400, "invalid_request")
 	}
 	for _, endpoint := range []string{"open", "revoke"} {
 		assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/"+endpoint, map[string]any{}, auth(c.RetrievalToken)), 400, "invalid_request")

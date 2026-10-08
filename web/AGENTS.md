@@ -43,7 +43,7 @@ Security invariants:
 - Keep passphrases and encryption keys out of localStorage, sessionStorage,
   IndexedDB, `history.state`, telemetry, and error reports. Permitted key-bearing
   fragments are the Model B recipient link defined by
-  `web/src/lib/crypto/fragment.ts` and the planned requester-only retrieval link
+  `web/src/lib/crypto/fragment.ts` and the requester-only retrieval link
   defined by `docs/architecture/request-links.md`; passphrases never enter URLs.
 - `contracts/sender-management-v1.md` defines the M8 management URL
   `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL
@@ -62,12 +62,19 @@ Security invariants:
 Use `PUBLIC_` environment variables only for values safe to ship to the browser.
 Do not expose internal tokens, OCI settings, NATS URLs, or server-only config.
 
-Planned request-link boundary:
+Request-link boundary:
 
-- `docs/architecture/request-links.md` defines M9's proposed RSA-OAEP/AES-GCM
+- `docs/architecture/request-links.md` defines M9's RSA-OAEP/AES-GCM
   envelope and separate submission/retrieval authority; request crypto belongs
   in `src/lib/crypto/requests.ts`, independently of existing `text.ts` formats.
 - `docs/architecture/request-links.md` permits the requester-only PKCS#8 key in
   `/r/{id}/receive#receive=...&key=...` for explicit private-link custody. The
   request key must never enter HTTP, path/query, browser storage, telemetry,
   or `history.state`. A submission link must never contain the requester key.
+- `src/lib/components/ReceiveRequestPage.svelte` validates the private key against
+  owner metadata and requires verified configuration before consuming Open.
+  `src/lib/api/config.ts:getVerifiedConfig` rejects failed or malformed responses
+  instead of substituting advisory creation limits.
+- `src/lib/api/requests.ts` retains exact encrypted attempt bytes in browser
+  memory. `src/lib/components/SubmitRequestPage.svelte` confirms a matching
+  acceptance receipt or an abandoned generation before changing attempts.

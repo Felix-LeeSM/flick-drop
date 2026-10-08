@@ -27,3 +27,7 @@ Rules:
 - `list.go:Client.List` uses `ListObjectsV2` for bounded prefix pages. Listing
   failures return errors; `ErrInvalidCursor` permits the API reaper to restart
   a persisted pass. Listing errors must not expose private endpoint URLs.
+
+- `object.go:Client.GetBounded` limits actual streamed bytes for request finalize
+  and open. `Client.Put` writes the already verified ciphertext to a server-only
+  final key; request finalize must not COPY a mutable staging object.

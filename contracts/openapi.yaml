@@ -323,7 +323,7 @@ paths:
   /api/requests:
     post:
       operationId: createRequest
-      summary: Create a one-time inline request.
+      summary: Create a one-time request.
       description: >
         All responses use Cache-Control no-store. Query parameters are rejected.
         Tokens are returned only on creation; a lost response cannot recover them.
@@ -336,7 +336,7 @@ paths:
               $ref: "#/components/schemas/CreateRequest"
       responses:
         "201":
-          description: Create a one-time inline request.
+          description: Create a one-time request.
           headers:
             Cache-Control:
               $ref: "#/components/headers/RequestNoStore"
@@ -408,6 +408,123 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RequestReceipt"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/upload:
+    post:
+      operationId: reserveRequest
+      summary: Reserve one immutable large file attempt or recover its existing instruction.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestUpload"
+      responses:
+        "200":
+          description: Reserve one immutable large file attempt or recover its existing instruction.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestUploadResult"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/finalize:
+    post:
+      operationId: finalizeRequest
+      summary: Verify stored bytes and accept the active file attempt once.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestAttempt"
+      responses:
+        "200":
+          description: Verify stored bytes and accept the active file attempt once.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestReceipt"
+        "400":
+          $ref: "#/components/responses/RequestInvalid"
+        "404":
+          $ref: "#/components/responses/RequestUnavailable"
+        "409":
+          $ref: "#/components/responses/RequestConflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RequestRateLimited"
+        "503":
+          $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/requests/{id}/abandon:
+    post:
+      operationId: abandonRequest
+      summary: Invalidate only the matching active reservation and advance its generation.
+      description: >
+        All responses use Cache-Control no-store. Query parameters are rejected.
+        Send only the matching canonical 32-byte capability in Authorization.
+        Unknown, expired, and unauthorized requests have the same 404 response.
+      security: [{submissionToken: []}]
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestAttempt"
+      responses:
+        "200":
+          description: Invalidate only the matching active reservation and advance its generation.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/RequestNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestWaiting"
         "400":
           $ref: "#/components/responses/RequestInvalid"
         "404":
@@ -523,7 +640,7 @@ paths:
   /api/requests/{id}/revoke:
     post:
       operationId: revokeRequest
-      summary: Cancel and remove inline bytes; cancelled retries are idempotent.
+      summary: Cancel and remove inline bytes or enqueue object cleanup; cancelled retries are idempotent.
       description: >
         All responses use Cache-Control no-store. Query parameters are rejected.
         Send only the matching canonical 32-byte capability in Authorization.
@@ -534,7 +651,7 @@ paths:
         - $ref: "#/components/parameters/SecretId"
       responses:
         "200":
-          description: Cancel and remove inline bytes; cancelled retries are idempotent.
+          description: Cancel and remove inline bytes or enqueue object cleanup; cancelled retries are idempotent.
           headers:
             Cache-Control:
               $ref: "#/components/headers/RequestNoStore"
@@ -602,7 +719,7 @@ components:
                     properties:
                       code: {const: request_conflict}
     RequestTooLarge:
-      description: HTTP body or ciphertext exceeds the configured inline limit; large request uploads are not available.
+      description: HTTP body exceeds its endpoint bound or content exceeds the configured inline or file-size limit.
       headers:
         Cache-Control:
           $ref: "#/components/headers/RequestNoStore"
@@ -734,7 +851,7 @@ components:
         expires_at: {type: string, format: date-time}
         state:
           type: string
-          enum: [waiting, submitted, consumed, cancelled]
+          enum: [waiting, uploading, submitted, consumed, cancelled]
     RequestEnvelope:
       type: object
       additionalProperties: false
@@ -802,7 +919,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Original content length. Ciphertext must fit the configured inline bound; files also obey the configured file-size limit.
+          description: Original content length. Text fits the configured inline bound; files obey the configured file-size limit and may use object storage.
         envelope:
           $ref: "#/components/schemas/RequestEnvelope"
         ciphertext:
@@ -837,6 +954,62 @@ components:
           type: string
           format: byte
           description: Canonical standard base64 of exactly size_bytes + 16 decoded bytes, within the configured inline limit.
+    RequestUpload:
+      type: object
+      additionalProperties: false
+      required: [generation, attempt_token, kind, size_bytes, envelope, ciphertext_sha256]
+      allOf:
+        - $ref: "#/components/schemas/RequestKindRules"
+      description: >
+        Strict immutable file reservation, bounded to 8192 HTTP body bytes.
+        Ciphertext size must exceed the inline threshold; original file size cannot
+        exceed the configured maximum file size. The attempt digest covers the
+        canonical envelope, kind, size and checksum. Retries never extend either
+        deadline; different metadata or another active attempt conflicts.
+        S3 disabled or signing failures return storage_unavailable.
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        attempt_token:
+          $ref: "#/components/schemas/RequestCapability"
+        kind: {type: string, const: file}
+        size_bytes: {type: integer, format: int64, minimum: 0}
+        envelope:
+          $ref: "#/components/schemas/RequestEnvelope"
+        ciphertext_sha256:
+          type: string
+          format: byte
+          minLength: 44
+          maxLength: 44
+          description: Canonical standard base64 SHA-256 of the exact ciphertext bytes, exactly 32 decoded bytes.
+    RequestUploadResult:
+      oneOf:
+        - $ref: "#/components/schemas/RequestUploading"
+        - $ref: "#/components/schemas/RequestReceipt"
+      description: An already accepted identical attempt returns only the historical submitted receipt, without another upload instruction.
+    RequestUploading:
+      type: object
+      additionalProperties: false
+      required: [generation, state, upload, reservation_expires_at]
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        state: {type: string, const: uploading}
+        upload:
+          $ref: "#/components/schemas/PresignedUpload"
+        reservation_expires_at:
+          type: string
+          format: date-time
+          description: Original reservation deadline, at most 15 minutes and no later than request expiry. Upload expires_at equals this deadline. The server-only final object key is never disclosed.
+    RequestWaiting:
+      type: object
+      additionalProperties: false
+      required: [generation, state]
+      description: Abandon advances the generation atomically. Ending generation 16 instead returns 404 request_unavailable. An old generation is never accepted again, including repeat abandon.
+      properties:
+        generation:
+          $ref: "#/components/schemas/RequestGeneration"
+        state: {type: string, const: waiting}
     RequestAttempt:
       type: object
       additionalProperties: false
@@ -862,7 +1035,7 @@ components:
       properties:
         generation:
           $ref: "#/components/schemas/RequestGeneration"
-        state: {type: string, enum: [waiting, accepted, unavailable]}
+        state: {type: string, enum: [waiting, uploading, accepted, unavailable]}
     RequestCancelled:
       type: object
       additionalProperties: false

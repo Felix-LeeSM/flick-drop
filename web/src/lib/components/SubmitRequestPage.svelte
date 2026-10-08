@@ -1,15 +1,17 @@
 <script lang="ts">
 import { onMount, tick as render } from 'svelte';
-import { defaultLimits, getConfig } from '$lib/api/config';
+import { defaultLimits, getVerifiedConfig } from '$lib/api/config';
 import {
 	createRequestApiClient,
+	prepareLargeSubmission,
 	prepareSubmission,
 	RequestApiError,
 	type RequestInstructions,
+	type ReservedUpload,
 	requestLimits,
 	type Submission
 } from '$lib/api/requests';
-import { DEFAULT_API_BASE_URL } from '$lib/api/secrets';
+import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '$lib/api/secrets';
 import RequestFrame from '$lib/components/RequestFrame.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Input } from '$lib/components/ui/input';
@@ -18,6 +20,13 @@ import { Textarea } from '$lib/components/ui/textarea';
 import { encryptRequestPayload, importRequestPublicKey } from '$lib/crypto/requests';
 import { remainingSecondsFrom } from '$lib/lifetime';
 import { submissionFromFragment } from '$lib/state/request-links';
+import {
+	type AttemptOutcome,
+	cancelRequestUpload,
+	finishRequestUpload,
+	inspectRequestAttempt,
+	uploadExpired
+} from '$lib/state/request-upload';
 
 let { requestId }: { requestId: string } = $props();
 const api = createRequestApiClient();
@@ -40,6 +49,11 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let error = $state('');
 let resumed = $state(false);
 let retryReady = $state(false);
+let notice = $state('');
+let progress = $state<FileUploadProgress | null>(null);
+let reservation = $state<ReservedUpload | null>(null);
+let reservationExpired = $state(false);
+let cancelRequested = $state(false);
 let busy = $state(false);
 let now = $state(Date.now());
 let heading = $state<HTMLHeadingElement | null>(null);
@@ -49,6 +63,7 @@ let publicKey: CryptoKey | null = null;
 let pending = $state<Submission | null>(null);
 let controller: AbortController | null = null;
 let alive = false;
+let configured = false;
 const remaining = $derived(remainingSecondsFrom(instructions?.expires_at ?? '', now));
 const terminal = $derived(['accepted', 'unavailable', 'expired', 'invalid'].includes(phase));
 const title = $derived(
@@ -73,6 +88,10 @@ function clear(): void {
 	pending = null;
 	publicKey = null;
 	retryReady = false;
+	reservation = null;
+	reservationExpired = false;
+	progress = null;
+	cancelRequested = false;
 }
 function clock(): void {
 	now = Date.now();
@@ -81,6 +100,18 @@ function clock(): void {
 		error = '';
 		controller?.abort();
 		clear();
+	}
+	if (reservation && now >= Date.parse(reservation.reservation_expires_at) && !reservationExpired) {
+		reservationExpired = true;
+		retryReady = false;
+		if (phase === 'submitting') {
+			controller?.abort();
+			phase = 'unknown';
+			busy = false;
+		}
+		if (!cancelRequested) {
+			error = 'The upload reservation expired. Check the attempt before choosing another file.';
+		}
 	}
 }
 async function focus(): Promise<void> {
@@ -128,6 +159,10 @@ async function load(): Promise<void> {
 	const request = new AbortController();
 	controller = request;
 	try {
+		if (!configured) {
+			limits = requestLimits(await getVerifiedConfig(DEFAULT_API_BASE_URL, fetch, request.signal));
+			configured = true;
+		}
 		const data = await api.instructions(requestId, token, request.signal);
 		if (!current(request.signal)) {
 			return;
@@ -147,7 +182,7 @@ async function load(): Promise<void> {
 			reportLoad(cause);
 		}
 	} finally {
-		if (alive) {
+		if (alive && controller === request) {
 			busy = false;
 		}
 	}
@@ -160,14 +195,34 @@ function accepted(): void {
 	void focus();
 }
 
-async function sendPending(): Promise<void> {
-	if (!pending) {
+async function sendPending(request: AbortController): Promise<void> {
+	if (!pending || !instructions) {
 		return;
 	}
-	const request = new AbortController();
-	controller = request;
 	try {
-		await api.submit(requestId, token, pending, request.signal);
+		if (pending.ciphertext === undefined) {
+			await api.submit(requestId, token, pending, request.signal);
+		} else {
+			await finishRequestUpload(
+				api,
+				requestId,
+				token,
+				pending,
+				instructions.expires_at,
+				request.signal,
+				(next) => {
+					if (current(request.signal)) {
+						progress = next;
+					}
+				},
+				(next) => {
+					if (current(request.signal)) {
+						reservation = next;
+						reservationExpired = uploadExpired(next);
+					}
+				}
+			);
+		}
 		if (current(request.signal)) {
 			clock();
 			if (!hasExpired()) {
@@ -178,7 +233,7 @@ async function sendPending(): Promise<void> {
 		if (current(request.signal)) {
 			phase = 'unknown';
 			retryReady = false;
-			error = cause instanceof RequestApiError ? cause.message : 'Submission was not confirmed.';
+			error = cause instanceof SecretApiError ? cause.message : 'Submission was not confirmed.';
 			void focus();
 		}
 	}
@@ -192,6 +247,25 @@ function validSize(): boolean {
 		return false;
 	}
 	return true;
+}
+async function encryptSelection(key: CryptoKey) {
+	const content =
+		mode === 'text'
+			? { kind: 'text' as const, text: message }
+			: {
+					kind: 'file' as const,
+					bytes: new Uint8Array(await (selected as File).arrayBuffer()),
+					filename: (selected as File).name
+				};
+	return encryptRequestPayload(requestId, key, content, limits);
+}
+function encryptionFailed(): void {
+	if (!alive || hasExpired()) {
+		return;
+	}
+	phase = 'ready';
+	error =
+		'Could not encrypt the content. Check the file name and size, and use a browser with Web Crypto over HTTPS or localhost.';
 }
 async function submit(): Promise<void> {
 	if (busy || phase !== 'ready' || !publicKey || !instructions) {
@@ -207,90 +281,175 @@ async function submit(): Promise<void> {
 	busy = true;
 	phase = 'submitting';
 	error = '';
+	notice = '';
+	progress = null;
+	const request = new AbortController();
+	controller = request;
 	try {
-		const content =
-			mode === 'text'
-				? { kind: 'text' as const, text: message }
-				: {
-						kind: 'file' as const,
-						bytes: new Uint8Array(await (selected as File).arrayBuffer()),
-						filename: (selected as File).name
-					};
-		const payload = await encryptRequestPayload(requestId, publicKey, content, limits);
-		if (!alive || hasExpired()) {
+		const payload = await encryptSelection(publicKey);
+		if (!current(request.signal) || hasExpired()) {
 			return;
 		}
-		pending = prepareSubmission(payload, instructions.generation);
-		clearInput();
-		await sendPending();
-	} catch {
-		if (alive) {
-			if (hasExpired()) {
-				return;
-			}
-			phase = 'ready';
-			error =
-				'Could not encrypt the content. Check the file name and size, and use a browser with Web Crypto over HTTPS or localhost.';
+		pending =
+			payload.kind === 'file' && payload.size_bytes > limits.maxTextBytes
+				? await prepareLargeSubmission(payload, instructions.generation)
+				: prepareSubmission(payload, instructions.generation);
+		if (!current(request.signal)) {
+			pending = null;
+			return;
 		}
+		clearInput();
+		await sendPending(request);
+	} catch {
+		encryptionFailed();
 	} finally {
-		if (alive) {
+		if (alive && controller === request) {
 			busy = false;
 		}
 	}
 }
 
+async function applyOutcome(outcome: AttemptOutcome, signal: AbortSignal): Promise<void> {
+	if (!current(signal)) {
+		return;
+	}
+	clock();
+	if (hasExpired()) {
+		return;
+	}
+	if (outcome.state === 'accepted') {
+		if (cancelRequested) {
+			notice =
+				'The server accepted the submission before cancellation. Only the requester can cancel accepted content.';
+		}
+		accepted();
+		return;
+	}
+	if (outcome.state === 'renewed') {
+		clear();
+		instructions = outcome.instructions;
+		notice = 'The previous upload attempt ended. Choose a file to start a new attempt.';
+		await pinKey(outcome.instructions, signal);
+		return;
+	}
+	if (outcome.state === 'unavailable') {
+		phase = 'unavailable';
+		clear();
+		return;
+	}
+	retryReady =
+		!cancelRequested && !reservationExpired && (!reservation || !uploadExpired(reservation));
+	if (!retryReady) {
+		notice = cancelRequested
+			? 'Cancellation is not confirmed. Retry cancellation with the same attempt.'
+			: 'The upload instruction expired. Cancel this attempt before choosing another file.';
+	}
+}
 async function checkAttempt(): Promise<void> {
 	if (busy || !pending || phase !== 'unknown') {
 		return;
 	}
 	busy = true;
 	error = '';
+	notice = '';
 	retryReady = false;
 	const request = new AbortController();
 	controller = request;
 	try {
-		const receipt = await api.attempt(requestId, token, pending, request.signal);
-		if (!current(request.signal)) {
-			return;
-		}
-		clock();
-		if (hasExpired()) {
-			return;
-		}
-		if (receipt.state === 'accepted') {
-			accepted();
-		} else if (receipt.state === 'waiting') {
-			retryReady = true;
-		} else {
-			phase = 'unavailable';
-			clear();
-		}
+		await applyOutcome(
+			await inspectRequestAttempt(api, requestId, token, pending, request.signal),
+			request.signal
+		);
 	} catch (cause) {
 		if (current(request.signal)) {
-			error = cause instanceof RequestApiError ? cause.message : 'Could not verify the submission.';
+			reportAttempt(cause);
 		}
 	} finally {
-		if (alive) {
+		if (alive && controller === request) {
 			busy = false;
 		}
 	}
 }
+function reportAttempt(cause: unknown): void {
+	if (cause instanceof RequestApiError && cause.status === 404) {
+		phase = 'unavailable';
+		clear();
+	}
+	error = cause instanceof SecretApiError ? cause.message : 'Could not verify the submission.';
+}
 async function retry(): Promise<void> {
-	if (busy || !retryReady || !pending || phase !== 'unknown') {
+	if (busy || !retryReady || !pending || phase !== 'unknown' || cancelRequested) {
 		return;
 	}
 	clock();
-	if (phase !== 'unknown') {
+	if (phase !== 'unknown' || reservationExpired) {
 		return;
 	}
 	busy = true;
 	retryReady = false;
 	phase = 'submitting';
 	error = '';
-	await sendPending();
-	if (alive) {
+	notice = '';
+	const request = new AbortController();
+	controller = request;
+	await sendPending(request);
+	if (alive && controller === request) {
 		busy = false;
 	}
+}
+async function cancelUpload(): Promise<void> {
+	if (!pending?.ciphertext || !instructions || (cancelRequested && busy)) {
+		return;
+	}
+	controller?.abort();
+	const request = new AbortController();
+	controller = request;
+	busy = true;
+	cancelRequested = true;
+	retryReady = false;
+	phase = 'unknown';
+	error = '';
+	notice = '';
+	try {
+		await applyOutcome(
+			await cancelRequestUpload(
+				api,
+				requestId,
+				token,
+				pending,
+				instructions.expires_at,
+				request.signal
+			),
+			request.signal
+		);
+	} catch (cause) {
+		if (current(request.signal)) {
+			reportAttempt(cause);
+			notice =
+				'Cancellation was not confirmed. Keep this tab open and check the attempt. Stopping a transfer does not delete uploaded bytes.';
+		}
+	} finally {
+		if (alive && controller === request) {
+			busy = false;
+		}
+	}
+}
+function progressText(value: FileUploadProgress | null): string {
+	if (cancelRequested && busy) {
+		return 'Cancelling upload…';
+	}
+	if (value?.stage === 'preparing') {
+		return 'Reserving encrypted upload…';
+	}
+	if (value?.stage === 'finalizing') {
+		return 'Verifying upload… Acceptance is not confirmed yet.';
+	}
+	if (value?.stage === 'uploading' && value.loaded !== undefined && value.total !== undefined) {
+		return `Uploading encrypted file: ${value.loaded.toLocaleString()} of ${value.total.toLocaleString()} bytes (${Math.floor((value.loaded / value.total) * 100)}%). Acceptance requires verification.`;
+	}
+	return value?.stage === 'uploading'
+		? 'Uploading encrypted file…'
+		: 'Submitting encrypted content…';
 }
 
 onMount(() => {
@@ -307,12 +466,7 @@ onMount(() => {
 	if (link) {
 		token = link.token;
 		fingerprint = link.fingerprint;
-		void getConfig(DEFAULT_API_BASE_URL).then((config) => {
-			if (alive) {
-				limits = requestLimits(config);
-				void load();
-			}
-		});
+		void load();
 	} else {
 		phase = 'invalid';
 		error = 'Invalid submission link. Ask the requester for the complete link.';
@@ -349,6 +503,7 @@ onMount(() => {
 		{#if instructions && !terminal}<p class="text-sm" aria-label="Time remaining">{Math.floor(remaining / 60)}m {remaining % 60}s remaining</p>{/if}
 	</div>
 	{#if resumed}<p role="status" class="text-sm text-muted-foreground">The previous in-memory attempt was discarded when you left or reloaded. Its submission may already have been accepted. This page cannot recover or retry that attempt.</p>{/if}
+	{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if phase === 'accepted'}
 		<p role="status">The server confirmed acceptance. This does not confirm that the requester retrieved or read it.</p>
@@ -358,9 +513,11 @@ onMount(() => {
 		<p role="status">This link is no longer accepting submissions. It may already have a submission, have been cancelled, or have expired.</p>
 	{:else if phase === 'unknown' || (phase === 'submitting' && pending)}
 		<section class="grid gap-4 rounded-xl border p-5" aria-label="Submission outcome">
-			<p role="status">{phase === 'submitting' ? 'Submitting encrypted content…' : 'Submission outcome unknown.'}</p>
+			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : 'Submission outcome unknown.'}</p>
 			<p class="text-sm text-muted-foreground">Keep this tab open. Check the attempt before retrying. A retry sends exactly the same encrypted content. Reloading or leaving discards this attempt; Flick cannot recover it for you.</p>
+			{#if reservation}<p class="text-sm">Upload reservation: {Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60)}m {remainingSecondsFrom(reservation.reservation_expires_at, now) % 60}s remaining.</p>{/if}
 			<Button variant="outline" disabled={busy} onclick={() => { void checkAttempt(); }}>Check submission</Button>
+			{#if pending?.ciphertext}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? 'Retry cancellation' : 'Cancel upload'}</Button><p class="text-sm text-muted-foreground">Cancellation must be confirmed by the server before another attempt. Stopping the transfer does not delete uploaded bytes; server cleanup handles them.</p>{/if}
 			{#if retryReady}<p role="status">The server has not accepted this attempt. You can retry the same submission.</p><Button disabled={busy} onclick={() => { void retry(); }}>Retry same submission</Button>{/if}
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
@@ -375,7 +532,7 @@ onMount(() => {
 			{:else}
 				<div class="grid gap-2"><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
 			{/if}
-			<p class="text-sm text-muted-foreground">{(mode === 'text' ? limits.maxTextBytes : limits.maxFileBytes).toLocaleString()} bytes maximum. One file per request; larger files are not supported yet. File names are encrypted too.</p>
+			<p class="text-sm text-muted-foreground">{(mode === 'text' ? limits.maxTextBytes : limits.maxFileBytes).toLocaleString()} bytes maximum. One file per request. File names are encrypted too. {limits.maxFileBytes > limits.maxTextBytes ? 'Larger files use an encrypted upload and require server verification.' : 'Large-file storage is unavailable; only inline files are supported.'}</p>
 			<Button type="submit" class="h-11" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
 		</form>
 	{:else if phase === 'loading'}

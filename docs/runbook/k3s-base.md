@@ -121,7 +121,8 @@ kubectl -n flick rollout status deploy/flick-web
 ```
 
 For an **existing installation** upgrading to managed-object reconciliation, all
-workers must support `POST /internal/object-reconciliation/ack` before the new API
+workers must support `POST /internal/object-reconciliation/ack` for **both**
+`managed/secrets/` and `managed/requests/` before the new API
 scanner starts. Applying the complete overlay first is unsafe: an old worker can
 acknowledge a deletion in NATS without releasing the API claim, permanently
 preventing cleanup of a later PUT to the same key.
@@ -147,12 +148,14 @@ preventing cleanup of a later PUT to the same key.
 3. After all old workers are gone, apply the prepared base or private overlay and
    wait for API, worker, and web readiness using the commands for a fresh install.
    The updated worker can run against the old API during this interval: an HTTP
-   404 from the missing acknowledgement endpoint keeps the NATS delivery pending
+   404 from a missing acknowledgement endpoint (or 400 for the request prefix
+   on an older API) keeps the NATS delivery pending
    for retry after the API upgrade.
 
 Never roll a worker back to a version without the acknowledgement protocol while
 reconciliation jobs or claims can exist. An API rollback does not remove those
-jobs or claims. Select an acknowledgement-capable worker version for rollback;
+jobs or claims. Select a worker version that acknowledges both managed namespaces
+for rollback;
 do not use an unchecked `kubectl rollout undo` or reapply an older overlay that
 restores a worker without acknowledgement support.
 

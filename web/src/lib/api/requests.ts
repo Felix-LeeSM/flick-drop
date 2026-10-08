@@ -1,10 +1,16 @@
 import type { RequestPayload } from '$lib/crypto/requests';
-import { bytesToBase64 } from '$lib/crypto/text';
+import { base64ToBytes, bytesToBase64 } from '$lib/crypto/text';
 import type { ClientLimits } from './config';
 import { isManagementToken } from './management';
-import { DEFAULT_API_BASE_URL, SecretApiError } from './secrets';
+import {
+	DEFAULT_API_BASE_URL,
+	type FileUploadProgress,
+	type PresignedUpload,
+	SecretApiError,
+	uploadToObjectStore
+} from './secrets';
 
-export type RequestState = 'waiting' | 'submitted' | 'consumed' | 'cancelled';
+export type RequestState = 'waiting' | 'uploading' | 'submitted' | 'consumed' | 'cancelled';
 export type RequestCreated = {
 	id: string;
 	expires_at: string;
@@ -21,23 +27,29 @@ export type RequestInstructions = Omit<RequestOwner, 'state'> & {
 	generation: number;
 	can_submit: boolean;
 };
-export type Submission = Readonly<{ generation: number; attemptToken: string; body: string }>;
-export type AttemptReceipt = { generation: number; state: 'waiting' | 'accepted' | 'unavailable' };
+export type Submission = Readonly<{
+	generation: number;
+	attemptToken: string;
+	body: string;
+	ciphertext?: string;
+}>;
+export type AttemptReceipt = {
+	generation: number;
+	state: 'waiting' | 'uploading' | 'accepted' | 'unavailable';
+};
 export class RequestApiError extends SecretApiError {}
 
 export function requestLimits(config: ClientLimits) {
 	return {
 		maxTextBytes: config.payloadInlineMaxBytes,
-		maxFileBytes: Math.min(config.payloadInlineMaxBytes, config.maxFileBytes)
+		// The API clamps the advertised max to inline while S3 is disabled.
+		maxFileBytes: config.maxFileBytes
 	};
 }
 
 // Snapshot the exact encrypted body once. An unknown outcome may retry only these bytes.
 export function prepareSubmission(payload: RequestPayload, generation: number): Submission {
-	const attemptToken = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))
-		.replace(/\+/g, '-')
-		.replace(/\//g, '_')
-		.replace(/=+$/, '');
+	const attemptToken = newAttemptToken();
 	return Object.freeze({
 		generation,
 		attemptToken,
@@ -50,6 +62,99 @@ export function prepareSubmission(payload: RequestPayload, generation: number): 
 			ciphertext: payload.ciphertext
 		})
 	});
+}
+
+function newAttemptToken(): string {
+	return bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_')
+		.replace(/=+$/, '');
+}
+export async function prepareLargeSubmission(
+	payload: RequestPayload,
+	generation: number
+): Promise<Submission> {
+	if (payload.kind !== 'file') {
+		throw new Error('Large uploads require a file.');
+	}
+	const attemptToken = newAttemptToken();
+	const bytes = new Uint8Array(base64ToBytes(payload.ciphertext));
+	const checksum = bytesToBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+	return Object.freeze({
+		generation,
+		attemptToken,
+		ciphertext: payload.ciphertext,
+		body: JSON.stringify({
+			generation,
+			attempt_token: attemptToken,
+			kind: payload.kind,
+			size_bytes: payload.size_bytes,
+			envelope: payload.envelope,
+			ciphertext_sha256: checksum
+		})
+	});
+}
+export type ReservedUpload = {
+	generation: number;
+	state: 'uploading';
+	upload: PresignedUpload;
+	reservation_expires_at: string;
+};
+export type Reservation = ReservedUpload | { generation: number; state: 'submitted' };
+function attemptBody(attempt: Submission): string {
+	return JSON.stringify({ generation: attempt.generation, attempt_token: attempt.attemptToken });
+}
+function reservation(value: unknown, attempt: Submission, expiresAt: string): Reservation {
+	const data = record(value);
+	if (data.generation !== attempt.generation) {
+		invalidResponse();
+	}
+	if (data.state === 'submitted') {
+		return { generation: attempt.generation, state: 'submitted' };
+	}
+	const upload = record(data.upload);
+	const headers = record(upload.headers);
+	if (
+		data.state !== 'uploading' ||
+		typeof data.reservation_expires_at !== 'string' ||
+		typeof upload.expires_at !== 'string' ||
+		typeof upload.url !== 'string' ||
+		upload.method !== 'PUT' ||
+		Object.values(headers).some((header) => typeof header !== 'string')
+	) {
+		invalidResponse();
+	}
+	const reservationDeadline = Date.parse(data.reservation_expires_at);
+	const uploadDeadline = Date.parse(upload.expires_at);
+	if (
+		!Number.isFinite(Date.parse(expiresAt)) ||
+		!Number.isFinite(reservationDeadline) ||
+		!Number.isFinite(uploadDeadline) ||
+		reservationDeadline > Date.parse(expiresAt) ||
+		uploadDeadline > reservationDeadline
+	) {
+		invalidResponse();
+	}
+	let url: URL;
+	try {
+		url = new URL(upload.url);
+	} catch {
+		invalidResponse();
+	}
+	if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
+		invalidResponse();
+	}
+	return {
+		generation: attempt.generation,
+		state: 'uploading',
+		reservation_expires_at: data.reservation_expires_at,
+		upload: {
+			url: url.toString(),
+			method: 'PUT',
+			expires_at: upload.expires_at,
+			headers: headers as Record<string, string>
+		}
+	};
 }
 
 function invalidResponse(): never {
@@ -194,7 +299,9 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 		},
 		async owner(id: string, token: string, signal?: AbortSignal): Promise<RequestOwner> {
 			const data = record(await request(path(id, '/owner'), 'GET', token, undefined, signal));
-			if (!['waiting', 'submitted', 'consumed', 'cancelled'].includes(String(data.state))) {
+			if (
+				!['waiting', 'uploading', 'submitted', 'consumed', 'cancelled'].includes(String(data.state))
+			) {
 				invalidResponse();
 			}
 			return { ...metadata(data), state: data.state as RequestState };
@@ -217,21 +324,65 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			signal?: AbortSignal
 		): Promise<AttemptReceipt> {
 			const data = record(
-				await request(
-					path(id, '/attempt'),
-					'POST',
-					token,
-					JSON.stringify({ generation: attempt.generation, attempt_token: attempt.attemptToken }),
-					signal
-				)
+				await request(path(id, '/attempt'), 'POST', token, attemptBody(attempt), signal)
 			);
 			if (
 				data.generation !== attempt.generation ||
-				!['waiting', 'accepted', 'unavailable'].includes(String(data.state))
+				!['waiting', 'uploading', 'accepted', 'unavailable'].includes(String(data.state))
 			) {
 				invalidResponse();
 			}
 			return { generation: attempt.generation, state: data.state as AttemptReceipt['state'] };
+		},
+		async reserve(
+			id: string,
+			token: string,
+			attempt: Submission,
+			expiresAt: string,
+			signal?: AbortSignal
+		): Promise<Reservation> {
+			if (attempt.ciphertext === undefined) {
+				throw new Error('A large-file attempt is required.');
+			}
+			return reservation(
+				await request(path(id, '/upload'), 'POST', token, attempt.body, signal),
+				attempt,
+				expiresAt
+			);
+		},
+		put: (
+			upload: PresignedUpload,
+			ciphertext: string,
+			signal?: AbortSignal,
+			onProgress?: (progress: FileUploadProgress) => void
+		) => uploadToObjectStore(fetcher, upload, ciphertext, signal, onProgress),
+		async finalize(
+			id: string,
+			token: string,
+			attempt: Submission,
+			signal?: AbortSignal
+		): Promise<void> {
+			const data = record(
+				await request(path(id, '/finalize'), 'POST', token, attemptBody(attempt), signal)
+			);
+			if (data.generation !== attempt.generation || data.state !== 'submitted') {
+				invalidResponse();
+			}
+		},
+		async abandon(
+			id: string,
+			token: string,
+			attempt: Submission,
+			signal?: AbortSignal
+		): Promise<number> {
+			const data = record(
+				await request(path(id, '/abandon'), 'POST', token, attemptBody(attempt), signal)
+			);
+			const next = generation(data.generation);
+			if (next !== attempt.generation + 1 || data.state !== 'waiting') {
+				invalidResponse();
+			}
+			return next;
 		},
 		// The crypto module validates the entire payload before decryption. These operations have NO body.
 		open: (id: string, token: string, signal?: AbortSignal) =>

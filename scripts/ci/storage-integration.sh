@@ -67,4 +67,4 @@ curl --fail --silent --show-error --output /dev/null --max-time 2 \
   mc mb --ignore-existing flick/flick-dev
 '
 
-"$go_binary" test -count=1 -timeout 2m -v -tags integration ./internal/storage/
+"$go_binary" test -count=1 -timeout 2m -v -tags integration ./internal/storage/ ./internal/requests/

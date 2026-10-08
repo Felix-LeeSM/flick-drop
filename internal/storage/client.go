@@ -54,6 +54,14 @@ type ObjectStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// RequestObjectStore adds bounded reads and server-only final writes. Existing
+// send-link storage behavior continues using ObjectStore unchanged.
+type RequestObjectStore interface {
+	ObjectStore
+	GetBounded(context.Context, string, int64) ([]byte, error)
+	Put(context.Context, string, []byte) error
+}
+
 type Client struct {
 	cfg Config
 	s3  *s3.Client
@@ -95,3 +103,4 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) SetNowForTest(now func() time.Time) { c.now = now }
 
 var _ ObjectStore = (*Client)(nil)
+var _ RequestObjectStore = (*Client)(nil)

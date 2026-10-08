@@ -131,3 +131,62 @@ func TestCleanupClientAcknowledgementContract(t *testing.T) {
 		t.Fatal("disabled storage reported successful managed deletion")
 	}
 }
+
+func TestRequestObjectTerminalAcknowledgementRetainsNATSOnFailure(t *testing.T) {
+	for _, dead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "dead"}[dead], func(t *testing.T) {
+			ctx := context.Background()
+			store := openRecoveryStore(t, filepath.Join(t.TempDir(), "worker.db"))
+			handler := &fakeJobHandler{}
+			if dead {
+				handler.err = errors.New("delete failed")
+			}
+			calls := 0
+			client, err := NewCleanupClient(CleanupClientOptions{BaseURL: "http://api.example", InternalToken: "internal-test", HTTPClient: &http.Client{Transport: acknowledgementTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var in map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+					t.Fatal(err)
+				}
+				if in["object_key"] != "managed/requests/final" || in["job_id"] != "request-job" {
+					t.Fatal("wrong namespace ACK")
+				}
+				receipt, err := store.Receipt(ctx, "request-job")
+				if err != nil || receipt.State == StateProcessing {
+					t.Fatal("ACK before persisted terminal receipt", err)
+				}
+				status := 204
+				if calls == 1 {
+					status = 404
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			processor, err := NewProcessor(store, handler, ProcessorOptions{MaxAttempts: 1, Acknowledger: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := (events.JobEvent{JobID: "request-job", Kind: events.KindDeleteOCIObject, ObjectKey: "managed/requests/final", RequestedAt: time.Now().UTC()}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := &runnerMessage{data: payload}
+			if _, err := events.ConsumeMessages(ctx, []events.Message{msg}, processor); err != nil {
+				t.Fatal(err)
+			}
+			if msg.acked || msg.terminated || !msg.naked {
+				t.Fatal("missing request ACK dropped NATS delivery")
+			}
+			action, err := processor.ProcessMessage(ctx, payload)
+			want := events.MessageAck
+			if dead {
+				want = events.MessageTerminate
+			}
+			if err != nil || action != want || len(handler.calls) != 1 || calls != 2 {
+				t.Fatal("terminal redelivery repeated DELETE or skipped ACK", action, err)
+			}
+		})
+	}
+}

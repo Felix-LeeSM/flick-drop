@@ -63,23 +63,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
 		)`,
 		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
-		`create table if not exists requests (
-			id text primary key,
-			public_key text not null,
-			fingerprint text not null,
-			submission_token_hash blob not null check (length(submission_token_hash) = 32),
-			retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
-			state text not null default 'waiting' check (state in ('waiting', 'submitted', 'consumed', 'cancelled')),
-			generation integer not null default 1 check (generation between 1 and 16),
-			attempt_token_hash blob check (length(attempt_token_hash) = 32),
-			attempt_body_hash blob check (length(attempt_body_hash) = 32),
-			kind text check (kind in ('text', 'file')),
-			size_bytes integer check (size_bytes >= 0),
-			envelope_json text,
-			expires_at text not null,
-			check ((attempt_token_hash is null) = (attempt_body_hash is null)),
-			check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
-		)`,
+		requestsTableSchema,
 		`create index if not exists idx_requests_expires_at on requests(expires_at, id)`,
 		`create table if not exists request_payloads (
 			request_id text primary key,
@@ -139,7 +123,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			where reclaim_enqueued_at is null and consumed_at is null`); err != nil {
 		return fmt.Errorf("create reclaim-pending index: %w", err)
 	}
-	return nil
+	return normalizeRequestsSchema(ctx, conn)
 }
 
 // normalizeSecretsSchema rebuilds the secrets table to the current shape when an

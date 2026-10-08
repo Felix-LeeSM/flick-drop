@@ -72,9 +72,11 @@ type Reaper struct {
 	now        func() time.Time
 	batchSize  int
 	pendingTTL time.Duration
+	requests   *requests.Store
 }
 
 type ReaperOptions struct {
+	Requests  *requests.Store
 	BatchSize int
 }
 
@@ -107,6 +109,7 @@ func NewReaper(db *sql.DB, store *Store, outbox outboxEnqueuer, opts ReaperOptio
 	}
 	return &Reaper{
 		db:         db,
+		requests:   opts.Requests,
 		store:      store,
 		outbox:     outbox,
 		now:        func() time.Time { return time.Now().UTC() },
@@ -126,7 +129,11 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 	claimed, expiryErr := r.claimExpired(ctx)
 	_, reconciliationErr := r.ReconcileOnce(ctx)
-	return claimed, errors.Join(expiryErr, reconciliationErr)
+	var requestErr error
+	if r.requests != nil {
+		_, requestErr = r.requests.ReconcileOnce(ctx, r.batchSize)
+	}
+	return claimed, errors.Join(expiryErr, reconciliationErr, requestErr)
 }
 
 func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
@@ -185,7 +192,7 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 	if err := purgeManagementTx(ctx, tx, now, r.batchSize); err != nil {
 		return 0, err
 	}
-	if err := requests.PurgeExpiredTx(ctx, tx, now, r.batchSize); err != nil {
+	if err := requests.PurgeExpiredTx(ctx, tx, now, r.batchSize, r.outbox); err != nil {
 		return 0, fmt.Errorf("purge expired requests: %w", err)
 	}
 
