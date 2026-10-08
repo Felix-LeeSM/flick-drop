@@ -24,11 +24,12 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// Default limits mirror internal/config/defaults.go and web/src/lib/api/config.ts.
+// Default plaintext limits mirror web/src/lib/api/config.ts. The inline
+// ciphertext ceiling reserves 16 bytes for the AES-GCM authentication tag.
 // They are the fallback when GET /api/config is unreachable; the server
 // re-enforces both, so these are advisory.
 const (
-	DefaultPayloadInlineMaxBytes = 1_048_576  // 1 MiB
+	DefaultPayloadInlineMaxBytes = 1_048_576 - 16
 	DefaultMaxFileBytes          = 52_428_800 // 50 MiB
 )
 

@@ -20,10 +20,13 @@ describe('getConfig', () => {
 		expect(limits).toEqual({ payloadInlineMaxBytes: 2048, maxFileBytes: 999_999 });
 	});
 
-	it('falls back to defaults when the fetch fails', async () => {
+	it('reserves the inline AES-GCM tag but preserves the plaintext file limit when offline', async () => {
 		const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('offline'));
 
-		await expect(getConfig('http://api.local/', fetcher)).resolves.toEqual(defaultLimits());
+		await expect(getConfig('http://api.local/', fetcher)).resolves.toEqual({
+			payloadInlineMaxBytes: 1_048_560,
+			maxFileBytes: 52_428_800
+		});
 	});
 
 	it('falls back to defaults on a non-200 response', async () => {
