@@ -251,6 +251,83 @@ async function editorVisible(page, name) {
 	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
 }
 
+async function indicatorAligned(page) {
+	await page.waitForFunction(
+		() => {
+			const group = document.querySelector('[aria-label="Secret type"]');
+			const indicator = group?.querySelector('.selection-indicator');
+			const selected = group?.querySelector('button[aria-pressed="true"]');
+			if (!indicator || !selected || getComputedStyle(indicator).visibility !== 'visible') {
+				return false;
+			}
+			const actual = indicator.getBoundingClientRect();
+			const expected = selected.getBoundingClientRect();
+			return ['x', 'y', 'width', 'height'].every(
+				(key) => Math.abs(actual[key] - expected[key]) < 1
+			);
+		},
+		undefined,
+		{ timeout: 3000 }
+	);
+}
+
+for (const reducedMotion of ['no-preference', 'reduce']) {
+	test(`selection background follows rapid choices and viewport wrapping with motion ${reducedMotion}`, async () => {
+		const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion });
+		try {
+			await fixture(page);
+			await openForm(page, forms[0]);
+			const group = page.getByRole('group', { name: 'Secret type', exact: true });
+			const indicator = group.locator('.selection-indicator');
+			await indicatorAligned(page);
+			assert.equal(
+				await indicator.evaluate((node) => getComputedStyle(node).transitionDuration),
+				'0s'
+			);
+			for (const width of [375, 544, 1280]) {
+				await page.setViewportSize({ width, height: 1000 });
+				await indicatorAligned(page);
+				const initial = await boxes(group);
+				// No wait for the background between clicks: the final choice must win.
+				for (const name of ['Custom', 'File', 'Identity']) {
+					await group.getByRole('button', { name, exact: true }).click();
+					stable(await boxes(group), initial);
+				}
+				assert.equal(
+					await group
+						.getByRole('button', { name: 'Identity', exact: true })
+						.getAttribute('aria-pressed'),
+					'true'
+				);
+				await editorVisible(page, 'Identity');
+				await indicatorAligned(page);
+				stable(await boxes(group), initial);
+				const durations = await indicator.evaluate((node) =>
+					getComputedStyle(node).transitionDuration.split(',').map(Number.parseFloat)
+				);
+				assert.equal(
+					durations.some((duration) => duration > 0),
+					reducedMotion !== 'reduce'
+				);
+				if (reducedMotion === 'reduce') {
+					assert.equal(
+						await group.getByRole('button').evaluateAll((buttons) =>
+							buttons.every((button) =>
+								getComputedStyle(button)
+									.transitionDuration.split(',')
+									.every((duration) => Number.parseFloat(duration) === 0)
+							)
+						),
+						true
+					);
+				}
+			}
+		} finally {
+			await page.close();
+		}
+	});
+}
+
 test('type buttons stay disabled until hydration attaches their handlers', async () => {
 	const page = await browser.newPage();
 	let releaseScripts;
