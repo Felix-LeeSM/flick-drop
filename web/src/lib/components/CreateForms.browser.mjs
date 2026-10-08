@@ -74,12 +74,17 @@ async function fixture(page, hold = false) {
 }
 
 async function openForm(page, form, content = false) {
+	const hydrated =
+		form.name === 'sender'
+			? page.waitForResponse((response) => new URL(response.url()).pathname === '/api/config')
+			: undefined;
 	await page.goto(`${baseUrl}${form.path}`);
+	await hydrated;
+	// SvelteKit emits this element only after its root onMount has completed.
+	await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await page.getByRole('group', { name: form.group, exact: true }).waitFor();
 	await page.evaluate(() => document.fonts.ready);
-	if (form.name === 'request') {
-		await page.waitForFunction(() => document.activeElement === document.querySelector('h1'));
-	} else if (content) {
+	if (form.name === 'sender' && content) {
 		await page.getByLabel('Message', { exact: true }).fill('Synthetic lifetime regression');
 		await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
 	}
