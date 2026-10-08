@@ -134,8 +134,9 @@ Goal: improve the free one-time sharing flow without accounts.
 Goal: one request → one accepted text/file submission → one requester retrieval
 → expiry/cleanup, without a persistent inbox.
 
-- Resolve cryptography, public submission versus private retrieval authority,
-  key custody, and retention before API/browser implementation.
+- Follow [request links v1](architecture/request-links.md) for cryptography,
+  public submission versus private retrieval authority, key custody, and
+  retention before API/browser implementation (#203–#207).
 - Implement inline delivery and then large-object upload/finalization/cleanup;
   S3 verification is required before declaring the milestone complete.
 - Reuse reviewed M8 capability/lifecycle decisions, never an encryption key as

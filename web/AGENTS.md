@@ -41,9 +41,10 @@ Security invariants:
   filenames to the API.
 - Encrypt text and files with Web Crypto before upload.
 - Keep passphrases and encryption keys out of localStorage, sessionStorage,
-  IndexedDB, `history.state`, telemetry, and error reports. The sole key-bearing
-  URL exception is the Model B recipient fragment defined by
-  `web/src/lib/crypto/fragment.ts`; passphrases never enter URLs.
+  IndexedDB, `history.state`, telemetry, and error reports. Permitted key-bearing
+  fragments are the Model B recipient link defined by
+  `web/src/lib/crypto/fragment.ts` and the planned requester-only retrieval link
+  defined by `docs/architecture/request-links.md`; passphrases never enter URLs.
 - `contracts/sender-management-v1.md` defines the planned M8 management URL
   `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL
   from create to management only in browser memory; a refreshed or new-device
