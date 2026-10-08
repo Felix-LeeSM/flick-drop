@@ -15,7 +15,7 @@
 		"lint:fix": "biome check --write .",
 		"test:unit": "vitest",
 		"test": "vitest --run",
-		"test:browser": "node --test src/lib/components/OpenSecretPage.browser.mjs"
+		"test:browser": "node --test src/lib/components/*.browser.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.0",
