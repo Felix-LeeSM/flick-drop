@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
@@ -245,6 +246,29 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 			}
 			if got := cfg.EffectiveMaxFileBytes(aeadOverhead); got != c.want {
 				t.Fatalf("EffectiveMaxFileBytes() = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+func TestLoadInlineThresholdLeavesRoomForAEADTag(t *testing.T) {
+	for _, threshold := range []int64{secrets.AEADOverheadBytes - 1, secrets.AEADOverheadBytes, secrets.AEADOverheadBytes + 1} {
+		t.Run(fmt.Sprint(threshold), func(t *testing.T) {
+			clearFlickEnv(t)
+			t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", fmt.Sprint(threshold))
+			cfg, err := Load()
+			if threshold <= secrets.AEADOverheadBytes {
+				want := fmt.Sprintf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be greater than %d bytes (AES-GCM tag)", secrets.AEADOverheadBytes)
+				if err == nil || err.Error() != want {
+					t.Fatalf("Load() error = %v, want %q", err, want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			if got := cfg.EffectivePayloadInlineMaxBytes(secrets.AEADOverheadBytes); got != 1 {
+				t.Fatalf("EffectivePayloadInlineMaxBytes() = %d, want 1", got)
 			}
 		})
 	}

@@ -12,8 +12,11 @@ import (
 const (
 	DefaultConsumerDurable = "flick-worker"
 	DefaultConsumerBatch   = 8
-	DefaultMaxDeliver      = 3
-	DefaultFetchWait       = 2 * time.Second
+	// The worker owns the failure budget and durable dead letters. Broker
+	// deliveries include crashes and active duplicates, which are not failures.
+	DefaultMaxDeliver = -1
+	DefaultFetchWait  = 2 * time.Second
+	DefaultRetryDelay = 5 * time.Second
 )
 
 type MessageAction string
@@ -72,7 +75,7 @@ func (c *NATSJetStreamConsumer) EnsureConsumer(ctx context.Context, stream, subj
 	if durable == "" {
 		return fmt.Errorf("nats durable consumer is required")
 	}
-	if maxDeliver <= 0 {
+	if maxDeliver == 0 {
 		maxDeliver = DefaultMaxDeliver
 	}
 
@@ -235,7 +238,7 @@ func (m natsMessage) Ack() error {
 }
 
 func (m natsMessage) Nak() error {
-	return m.msg.Nak()
+	return m.msg.NakWithDelay(DefaultRetryDelay)
 }
 
 func (m natsMessage) Term() error {

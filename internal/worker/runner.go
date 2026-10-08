@@ -75,7 +75,7 @@ func NewConsumerRunner(consumer MessageConsumer, processor events.MessageProcess
 	if opts.Durable == "" {
 		opts.Durable = events.DefaultConsumerDurable
 	}
-	if opts.MaxDeliver <= 0 {
+	if opts.MaxDeliver == 0 {
 		opts.MaxDeliver = events.DefaultMaxDeliver
 	}
 	if opts.BatchSize <= 0 {
