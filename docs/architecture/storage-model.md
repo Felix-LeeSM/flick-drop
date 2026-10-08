@@ -48,6 +48,14 @@ Object Storage receives browser-encrypted ciphertext only. Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 
+The browser reports ZIP preparation and encryption without a percentage. Large
+uploads use XMLHttpRequest upload events for transferred ciphertext bytes; when
+the transport cannot measure a total, progress remains indeterminate. Uploading
+100 percent means only that the bytes were sent. The link is ready after the
+API's finalize check succeeds. Cancelling the PUT stops that browser attempt
+and prevents a later finalize or share result; any staged upload still follows
+the existing pending-upload expiry and orphan cleanup policy.
+
 ## Deletion Semantics
 
 Deleting a secret means Flick no longer serves the ciphertext and no server

@@ -123,6 +123,20 @@ pnpm --dir web test:browser
 This focused check is separate from the default Node unit suite; it does not
 replace the complete create/open/file browser scenarios listed above.
 
+The create-page upload regression additionally requires a live API with the
+S3 backend, MinIO, and the default 1 MiB inline / 50 MiB maximum limits. Run it
+against an isolated local stack (it creates and consumes dummy file secrets):
+
+```sh
+FLICK_WEB_URL=http://127.0.0.1:5173 pnpm --dir web exec node --test src/lib/components/CreateSecretPage.browser.mjs
+```
+
+The check round-trips an inline file and a 2 MiB encrypted file, compares the
+downloaded bytes, observes real XHR upload events, holds the finalize request to
+verify that 100 percent uploaded does not publish a link, and cancels a throttled
+upload. Deterministic API-client tests cover unknown totals, transport failures,
+late callbacks, and cancellation/failure around finalize.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.
