@@ -75,7 +75,7 @@ Revenue and costs use the same currency and billing period.
 | Measure | Source and boundary |
 | --- | --- |
 | Eligible guide page views | First-party daily counts keyed only by a fixed allowlist of guide names; absent today, report unmeasured until deployed |
-| Successful app creations | Existing `flick_secret_created_total`, summed by day; creation is not a unique user or a guide conversion |
+| App creations | Existing `flick_secret_created_total`, summed by day; S3 counts include staged uploads, so creation is not upload completion, a unique user, or a guide conversion |
 | Request and upload errors | Daily counts by fixed route template and status class, unmeasured until a privacy-safe counter is verified; no individual traces or URLs copied into the experiment |
 | Actual revenue | Sponsor invoice/payment or provider report; distinguish estimated from settled revenue |
 | Transfer, object storage, hosting spend | Provider aggregate billing; include free-tier credits separately |
