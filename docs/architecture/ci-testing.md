@@ -123,6 +123,13 @@ pnpm --dir web test:browser
 This focused check is separate from the default Node unit suite; it does not
 replace the complete create/open/file browser scenarios listed above.
 
+`NativeShareButton.browser.mjs` runs through the create page with real browser
+encryption and mocked API/Web Share responses. It checks both link models,
+exact recipient URLs, unsupported browsers, cancellation, rejected shares,
+copy/QR fallbacks, and narrow-screen keyboard/touch controls. `test:browser`
+runs both component suites. These checks do not open a native OS share sheet;
+verify the share sheet and selected target app on a real device separately.
+
 ## Contracts
 
 Shared contracts live in `contracts/`.
