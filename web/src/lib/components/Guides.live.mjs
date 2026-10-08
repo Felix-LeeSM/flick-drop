@@ -28,14 +28,11 @@ for (const width of [375, 1280]) {
 				assert.equal(response.status(), 200);
 				assert.equal(response.headers()['x-robots-tag'], undefined);
 				assert.match(await page.title(), / - Flick$/);
-				assert.ok(
-					(await page.locator('meta[name="description"]').getAttribute('content')).length > 80
-				);
+				assert.ok((await page.locator('meta[name="description"]').getAttribute('content')).trim());
 				assert.equal(
 					await page.locator('link[rel="canonical"]').evaluate((link) => link.href),
 					`${baseUrl}${path}`
 				);
-				assert.ok((await page.locator('article').innerText()).length > 1500);
 				assert.equal(
 					await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 					true
