@@ -238,9 +238,74 @@ function stable(actual, expected) {
 	});
 }
 
+async function editorVisible(page, name) {
+	const editors = {
+		Text: page.getByLabel('Message', { exact: true }),
+		File: page.getByLabel('Add files to upload', { exact: true }),
+		Login: page.getByLabel('Username', { exact: true }),
+		Card: page.getByLabel('Card number', { exact: true }),
+		Identity: page.getByLabel('Full name', { exact: true }),
+		Custom: page.getByRole('button', { name: 'Add field', exact: true })
+	};
+	await editors[name].waitFor({ state: 'visible' });
+	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
+}
+
+test('type buttons stay disabled until hydration attaches their handlers', async () => {
+	const page = await browser.newPage();
+	let releaseScripts;
+	let scriptRequested;
+	const held = new Promise((resolve) => {
+		releaseScripts = resolve;
+	});
+	const requested = new Promise((resolve) => {
+		scriptRequested = resolve;
+	});
+	try {
+		await fixture(page);
+		await page.route('**/*', async (route) => {
+			if (route.request().resourceType() !== 'script') {
+				return route.fallback();
+			}
+			scriptRequested();
+			await held;
+			return route.continue();
+		});
+		await page.goto(baseUrl, { waitUntil: 'commit' });
+		const group = page.getByRole('group', { name: 'Secret type', exact: true });
+		await group.waitFor();
+		await requested;
+		assert.equal(await page.locator('#svelte-announcer').count(), 0);
+		assert.deepEqual(
+			await group
+				.getByRole('button')
+				.evaluateAll((buttons) => buttons.map((button) => button.disabled)),
+			typeNames.map(() => true)
+		);
+		releaseScripts();
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		assert.deepEqual(
+			await group
+				.getByRole('button')
+				.evaluateAll((buttons) => buttons.map((button) => button.disabled)),
+			typeNames.map(() => false)
+		);
+		await group.getByRole('button', { name: 'File', exact: true }).click();
+		await editorVisible(page, 'File');
+	} finally {
+		releaseScripts();
+		await page.unrouteAll({ behavior: 'wait' });
+		await page.close();
+	}
+});
+
 for (const width of [375, 1280]) {
 	test(`${width}px type targets stay visible and stationary on hover, focus, and selection`, async () => {
-		const page = await browser.newPage({ viewport: { width, height: 1000 } });
+		const page = await browser.newPage({
+			viewport: { width, height: 1000 },
+			isMobile: width === 375,
+			hasTouch: width === 375
+		});
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
@@ -264,27 +329,35 @@ for (const width of [375, 1280]) {
 				);
 				stable(await boxes(group), initial);
 			}
-			for (const name of typeNames) {
-				const button = group.getByRole('button', { name, exact: true });
-				assert.equal(
-					await button
-						.locator('span')
-						.evaluate(
-							(label) =>
-								label.getBoundingClientRect().width > 0 && getComputedStyle(label).opacity === '1'
-						),
-					true
-				);
-				await button.focus();
-				await page.waitForTimeout(400);
-				stable(await boxes(group), initial);
-				await page.keyboard.press('Enter');
-				assert.equal(await button.getAttribute('aria-pressed'), 'true');
-				stable(await boxes(group), initial);
-				assert.equal(
-					await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-					true
-				);
+			const pointerAction = width === 375 ? 'tap' : 'click';
+			for (const input of ['pointer', 'keyboard']) {
+				for (const name of typeNames) {
+					const button = group.getByRole('button', { name, exact: true });
+					assert.equal(
+						await button
+							.locator('span')
+							.evaluate(
+								(label) =>
+									label.getBoundingClientRect().width > 0 && getComputedStyle(label).opacity === '1'
+							),
+						true
+					);
+					if (input === 'keyboard') {
+						await button.focus();
+						await page.waitForTimeout(400);
+						stable(await boxes(group), initial);
+						await page.keyboard.press('Enter');
+					} else {
+						await button[pointerAction]();
+					}
+					assert.equal(await button.getAttribute('aria-pressed'), 'true');
+					await editorVisible(page, name);
+					stable(await boxes(group), initial);
+					assert.equal(
+						await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+						true
+					);
+				}
 			}
 		} finally {
 			await page.close();

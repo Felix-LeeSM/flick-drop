@@ -69,12 +69,15 @@ import { cn, formatBytes } from '$lib/utils';
 type StatusKind = 'idle' | 'encrypting' | 'saving' | 'error' | FileUploadProgress['stage'];
 type CreateMode = 'text' | 'file' | CredentialType;
 
+let isHydrated = $state(false);
+
 // File size limits come from the server at boot (GET /api/config). They start at
 // the built-in defaults so the create flow is usable immediately, then settle
 // once the fetch resolves. The server re-enforces both limits, so a stale
 // default cannot let an oversized file through.
 let limits = $state<ClientLimits>(defaultLimits());
 onMount(() => {
+	isHydrated = true;
 	void getConfig(DEFAULT_API_BASE_URL).then((resolved) => {
 		limits = resolved;
 	});
@@ -600,6 +603,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 						class="grid grid-cols-3 gap-1 rounded-xl border border-border bg-card p-1.5 sm:grid-cols-6"
 						role="group"
 						aria-label="Secret type"
+						aria-busy={!isHydrated}
 					>
 						{#each modeOptions as option (option.type)}
 							{@const Icon = option.icon}
@@ -612,7 +616,7 @@ function credentialIcon(icon: string): typeof ListPlusIcon {
 									mode !== option.type && 'text-muted-foreground'
 								)}
 								aria-pressed={mode === option.type}
-								disabled={isCreating}
+								disabled={!isHydrated || isCreating}
 								onclick={() => {
 									switchMode(option.type);
 								}}
