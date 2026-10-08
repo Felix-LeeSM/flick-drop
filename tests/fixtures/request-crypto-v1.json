@@ -1,0 +1,52 @@
+{
+  "note": "Immutable synthetic request-v1 decrypt vectors. Generated independently with node:crypto RSA-OAEP/SHA-256 and AES-256-GCM; this private key and patterned AES key are PUBLIC TEST DATA and must never be used for real requests. Do not regenerate to satisfy implementation changes.",
+  "request_id": "req_synthetic_golden_v1",
+  "public_key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzGzTd5kaZGrkDKtUJT1W8WDt3QriTfbu9ulrnUoOlohyV1gi8YSokdaQOmkDugYC48Oi2iMhh0dKUrKo87OENyxK/GQltdsi6g0ODTNBuIxuGKaoNemo9yg0cu9i5NZLjQhxFL0NQ87XuhoENgvzurYNK0AD26L+N4lHjJ/E183Jg/laSm1QWytCSFM/htY6msb++sAYBOfHfDx0W6FfjMdnmL+Azu6FCLteshku1LpbZJJPMEsY1jU4NolrDa6i5FsXNcfE8zc5f+vn/WXq12QbClY8re/86KpD0J9MAYhcUu5wxqbPiUhJZiSFv3seSDzRiv2wR6AWheWYqDQZ7QIDAQAB",
+  "fingerprint": "y5PywWx6cZ-hBpCodWeeVgvui3A_cFba4pcArGmcxxk",
+  "private_key": "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDMbNN3mRpkauQMq1QlPVbxYO3dCuJN9u726WudSg6WiHJXWCLxhKiR1pA6aQO6BgLjw6LaIyGHR0pSsqjzs4Q3LEr8ZCW12yLqDQ4NM0G4jG4Ypqg16aj3KDRy72Lk1kuNCHEUvQ1Dzte6GgQ2C_O6tg0rQAPbov43iUeMn8TXzcmD-VpKbVBbK0JIUz-G1jqaxv76wBgE58d8PHRboV-Mx2eYv4DO7oUIu16yGS7Uultkkk8wSxjWNTg2iWsNrqLkWxc1x8TzNzl_6-f9ZerXZBsKVjyt7_zoqkPQn0wBiFxS7nDGps-JSElmJIW_ex5IPNGK_bBHoBaF5ZioNBntAgMBAAECggEAA7bogsWn6pzcnEmoA5iL52KU_-K46PoXLn-1omExnFT0tZdBj0o99o8ZBiQEBXx4JKOt5lvOuf1hdtjjOVu7h8seE7Gi08fxvaH-GDRPDzznVTsArHYcnrJpfZB8UgnTdp0UJ5slzg5zR2DopFjEQCdwXCb-IEljvXuY7rpfzRyvqfN152MaOzMhpVgDYYJXCstnAEWvniHjueWDw6pwj6Zqw4YL2F-4EDyXlnZQF2d2woIurmagrfDWFVb7yfCueEIIC02htnp8T3rrwUuMNL70-No4jvOD5qayY_TZznVbX1E1TpHG3Np5Fyw7C8x4hx5n2qjuOUyMVknN5fiAKwKBgQDqco0f0LkXzZsXUBfAzhzcCfJG_-CmcXLSBQvdj_Z1n7D_FN2HxISg5TAX-9eaWx7F6NycXDE2gKWDy6WT-3NoSvxEF3sNw0PM1TG9I72-zIuhg1CjvXHBNfnR3x56uuS8VwDaUm4VfXSupd7V_YJeRaA-rKxQqb8kUv5-LCEwQwKBgQDfN7u6mQRz9u5AuSyvX3Y237P6lbjzbKb4l8dJwnzAtAQnY-2S6JzjwRZwXqOiFE563jeAwdVcf0yOOLb0SdhAhiE9rJyKKX6qn3-t5yvO921MY0I0L7dE8SeIVut14XVDL0o3KP98dqs8qv4ETvTGQtT5inzlLLUP1DYjdFtCDwKBgEpcqRyFRKAjK-UaF16lQYwdb4ZLlMLWSxgIV7of9olabHaL9LQihfrOlxGUZM9lxX36nTbPGyDxbw49orgsUm-rERa75-D2pWOr34nhc0a4dDV3hDVbWmBxMVr7DRzaeMCwS-nzqU0RrNfUbrirHxWtueUHOeSf4quv017Lun8nAoGAe2KRUIm4nmlGNVymSKJZ8-cf00njnBrZCNzM-gaZcuOO0D86WVRfNL3Mq3yEstjKsLwYrgF28NQk-xB6gPo4oSIDSdYaCXz6WVIk_3mjC5pVPj43oCUoBuHOWlzBdr2TVfnT6j2tS51E9hoGo1cJknXqx603cG6P_xnsexicQR0CgYApbuNilgY9pGTqkUINBWp7DNLw5kBUUtkyu5w8neasnun4eHagw4a5owL30Hub5vWBPn7_wsYIDaoKtQ8I8yvxru3dGv4q2olJSACkMbdekUfwPnGy494KqpgjJ2LCJAXnnmQD_fOO7JBnANfNnPMYDUEe6knXZIbT3CJfcvg5NA",
+  "text": {
+    "plaintext": "request golden text: 안녕하세요",
+    "payload": {
+      "kind": "text",
+      "size_bytes": 36,
+      "envelope": {
+        "version": 1,
+        "algorithm": "RSA-OAEP-256+A256GCM",
+        "wrapped_key": "wECSCYNoxxfTbAgaD3Zf2IT5V81QQAqnOoGS70bC4ecGKxMoFdJigq1uCJRQcWWtH4xhI/KiBU/EdW0f4SF7SVEy7jkxbBbyjCcH1yVpl4OHVpyQwvKKzjZvVEA0VxWISsMTdJQZ+TC1q+DMq8hECXPpaoE6Kal3ShCTQvwjnvSTyuQpqr9mh2EPQa2v1cGj4MyCd59r+2wEbWZC7ra6deVTodl10/hn5y7czdvUNINHknEaycILhFOJvAWOcSZAgsBA/IOiDdW68ecJ5+jRLvV0aYFT7oO/XD/T9uv2qNtV18CI/x17XSeZcliobPe6+mKaSRj0La83pKHGeuOu1w==",
+        "nonce": "EBESExQVFhcYGRob"
+      },
+      "ciphertext": "D5vpYyy6TpOtGmR5ahdJJ7IoOjQ7LsI5DHx3isvMuF/oBc2X8KpgXWBFy9WDyTzcx7ITIA=="
+    }
+  },
+  "file": {
+    "plaintext": "request golden file bytes\u0000ÿ",
+    "filename": "보고서.txt",
+    "payload": {
+      "kind": "file",
+      "size_bytes": 28,
+      "envelope": {
+        "version": 1,
+        "algorithm": "RSA-OAEP-256+A256GCM",
+        "wrapped_key": "HFXwtjWdPHSY066aBs0WthbWFeVU5U2sKEX4qpAwcmLspSGuZVaWs83A/krRVnObapHfNqBa/RNkEh0rABXB60vSKjbByeJrCCF9kOjpWrxwVdYF71xhtw6aDWpSTCiCZMAhNN5R5L7J0n5y4eVTUeAujnNyEg0CV3K8Q8sEFQjPsH4ubsz1+2oRnrkNL374DH6FfbyUHqJH5jFkDaE7BU+T4ythg/NbMDsqqz9J8WMDL3cSvsGgxde6ml4A4OEuWIxC3yp82F+fpwRt1r/FQMNVaYfJsIFX06oxyh1jR+MMTBMKlVbLAKBlpy4S3OO/fLJUGOc4jBhYHdUl7ytLMg==",
+        "nonce": "ICEiIyQlJicoKSor",
+        "encrypted_filename": {
+          "nonce": "QEFCQ0RFRkdISUpL",
+          "ciphertext": "CQoayZWca4dR6mNO76NbdK2XMJDilbm1Kz3jb6g="
+        }
+      },
+      "ciphertext": "oF/XBQnrbi59Ey6qpHbUn7klibzl+ReLH/avrRzYtgXJdwazdG90GJIwgeU="
+    }
+  },
+  "cross_request_id": "req_other_synthetic_v1",
+  "invalid_aes128_payload": {
+    "kind": "text",
+    "size_bytes": 36,
+    "envelope": {
+      "version": 1,
+      "algorithm": "RSA-OAEP-256+A256GCM",
+      "wrapped_key": "wRwYPVdDIaLL3JeiGWqUioNsrb8/xvvtHysE3lrMeOn9wv3lGUNG4C5lPwtFvhhzNuMypoLCnfU4HBUJtw2gH8JUtLbfKNdwVoKo1re0OgykRVbnTnsMI541olTvcmTiD91l6WHrlOKE1Sez869WVR9TQQ2gxl3SLtFneBqRRV7cM/Lb/JLX81tQaBZ6LR3wf62/ISWAL7epfRBHn1aXPo02ejCx6sGbUgZVCFD5OiaPyK0FETHR4/2McwdXe65UCbBfUOoaHNOJEcu58KiOi9Z+N9fV8G59xrEd42gGIgDfbgw9tMl7LDfByB8zE7Wi8b37XKAsQ6WGBBv+Lzna5g==",
+      "nonce": "EBESExQVFhcYGRob"
+    },
+    "ciphertext": "tkty2mo8ws9wsjGRoknLSl/EAL0WGP43bk68/PKd/SlqNburY2Xx17PQfMijdYQJq2rOrg=="
+  }
+}
