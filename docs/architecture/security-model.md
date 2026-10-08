@@ -13,8 +13,8 @@ Model A, or from a random key in Model B — and encrypts payloads before
 upload. The API, worker, NATS, SQLite, S3-compatible object storage, logs, and
 metrics handle ciphertext and safe metadata only.
 
-The browser also derives a separate access proof from the same user input with
-separate KDF parameters. The API stores only a hash of that proof. The proof
+For Model A, the browser also derives a separate access proof from the same
+user input with separate KDF parameters. The API stores only a hash of that proof. The proof
 cannot decrypt the payload; it only gates the one-time open operation.
 
 ## Assets
@@ -136,8 +136,9 @@ Security properties:
 - The server still never sees the key or plaintext: the key lives only in the
   fragment, which browsers do not transmit, and decryption happens in the
   browser.
-- One-time open (`max_views = 1`) bounds replay: a captured key can authorize
-  at most a single open, after which the payload is deleted.
+- One-time open (`max_views = 1`) bounds ciphertext release. The API accepts
+  the ID without checking the fragment key; the browser needs the key to
+  decrypt. Possession of an ID alone can therefore consume a Model B delivery.
 - Requires an honest-server assumption: a server that serves malicious client
   code could exfiltrate the fragment key from the browser. This is the
   web-E2EE limit shared with Model A; see Residual Risk.
@@ -274,3 +275,20 @@ rules are defined in [Advertising experiment](advertising-experiment.md).
 - optional notification without revealing secret contents
 - reproducible or signed CLI release artifacts, so a downloader can verify more
   than the `SHA256SUMS` published alongside the binaries
+
+## Planned M8 Sender Management
+
+[Sender management v1](../../contracts/sender-management-v1.md) is the accepted
+design, not implemented runtime behavior. New deliveries get an independent
+32-byte random management bearer; the API stores only its SHA-256 hash. The
+private management fragment never contains the recipient encryption key. Status
+and cancellation authority end at the original content expiry; neither operation
+returns content or grants decryption. Initial recipient-link sharing uses a
+browser-memory handoff. Refresh or a different device offers status/cancellation
+only, with no recipient-link recovery.
+
+A committed one-time open is a release decision, not evidence of a human read.
+Management distinguishes that outcome from invalid-proof lockout and sender
+cancellation. Raw management tokens belong only in the private browser fragment,
+the creation response, and the management Authorization header; exclude them
+from persistent browser storage, logs, telemetry, and worker messages.
