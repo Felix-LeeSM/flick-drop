@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -34,14 +35,20 @@ func (f JobHandlerFunc) HandleJob(ctx context.Context, event events.JobEvent) er
 	return f(ctx, event)
 }
 
+type ObjectCleanupAcknowledger interface {
+	AcknowledgeObjectCleanup(context.Context, events.JobEvent) error
+}
+
 type Processor struct {
-	store       *ReceiptStore
-	handler     JobHandler
-	maxAttempts int
+	store        *ReceiptStore
+	handler      JobHandler
+	maxAttempts  int
+	acknowledger ObjectCleanupAcknowledger
 }
 
 type ProcessorOptions struct {
-	MaxAttempts int
+	Acknowledger ObjectCleanupAcknowledger
+	MaxAttempts  int
 }
 
 type ProcessResult struct {
@@ -70,13 +77,14 @@ func NewProcessor(store *ReceiptStore, handler JobHandler, opts ProcessorOptions
 		return nil, fmt.Errorf("max attempts must be positive")
 	}
 	return &Processor{
-		store:       store,
-		handler:     handler,
-		maxAttempts: maxAttempts,
+		store:        store,
+		handler:      handler,
+		maxAttempts:  maxAttempts,
+		acknowledger: opts.Acknowledger,
 	}, nil
 }
 
-func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessResult, err error) {
+func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result ProcessResult, err error) {
 	event, decodeErr := events.DecodeJobEvent(payloadJSON)
 	if decodeErr != nil {
 		// Malformed message: no kind or trace context to attach. Return pre-span
@@ -93,6 +101,20 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 		trace.WithAttributes(attribute.String("job.kind", event.Kind)),
 	)
 	defer func() { telemetry.EndSpan(span, err) }()
+	// A terminal receipt must outlive API outages and worker crashes. Repeat the
+	// acknowledgement on terminal redelivery, without executing the delete again.
+	defer func() {
+		if err != nil || (!result.Succeeded && !result.DeadLettered) || event.Kind != events.KindDeleteOCIObject || !strings.HasPrefix(event.ObjectKey, "managed/secrets/") {
+			return
+		}
+		if p.acknowledger == nil {
+			err = errors.New("managed object cleanup acknowledger is required")
+			return
+		}
+		ackCtx, cancel := context.WithTimeout(ctx, defaultCleanupClientTimeout)
+		defer cancel()
+		err = p.acknowledger.AcknowledgeObjectCleanup(ackCtx, event)
+	}()
 
 	canonicalPayload, err := event.JSON()
 	if err != nil {
@@ -114,7 +136,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (_ ProcessR
 		return ProcessResult{AlreadySucceeded: true, Succeeded: true}, nil
 	}
 
-	result := ProcessResult{
+	result = ProcessResult{
 		Attempt: started.Attempt.Attempt,
 		Started: true,
 	}

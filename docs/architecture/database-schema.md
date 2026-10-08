@@ -62,6 +62,17 @@ create table secret_management (
 create index idx_secret_management_expires_at
   on secret_management(expires_at, secret_id);
 
+create table object_reconciliation_cursor (
+  id integer primary key check (id = 1),
+  continuation_token text not null default '',
+  generation integer not null default 0
+);
+
+create table object_reconciliation_pending (
+  object_key text primary key,
+  job_id text not null unique
+);
+
 create table audit_events (
   id integer primary key autoincrement,
   secret_id text,
@@ -184,6 +195,11 @@ secrets receive no retroactive credential.
 the reaper records orphan `unavailable` before deleting its secret row. Bounded
 reaper sweeps purge expired management rows and their consumed secret metadata,
 without changing legacy consumed-row retention. Public management reads enforce
-the deadline even while cleanup is delayed. `cancelled` is reserved by the
-[approved contract](../../contracts/sender-management-v1.md); #201 implements
-cancellation and the separate object-reconciliation bookkeeping.
+the deadline even while cleanup is delayed. Cancellation deletes its live row and inline payload after committing the
+`cancelled` outcome and required object-delete outbox record in the same
+transaction. `object_reconciliation_cursor` has one row (`id = 1`); its generation
+fences concurrent listing results, and the continuation token advances only with
+the page's outbox jobs. `object_reconciliation_pending` permits one outstanding
+job per object key. A terminal worker acknowledgement deletes only the matching
+key/job-ID pair. These tables have no foreign key to delivery or management rows,
+so late-object cleanup survives their expiry; completed claims leave no tombstone.

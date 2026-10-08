@@ -159,6 +159,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/secrets/{id}/revoke:
+    post:
+      operationId: revokeSecret
+      summary: Cancel an unopened delivery using its independent management capability.
+      description: >
+        Irreversible. Authorization ends at the original expiry. A repeated cancellation
+        returns the same cancelled snapshot. All responses use Cache-Control no-store.
+        Status and cancellation share the management client/delivery rate limit.
+      security:
+        - managementToken: []
+      parameters:
+        - $ref: "#/components/parameters/SecretId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              maxProperties: 0
+      responses:
+        "200":
+          description: Cancelled snapshot; includes repeat cancellations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementStatusResponse"
+        "400":
+          description: Authenticated request body is not an empty JSON object.
+        "404":
+          description: Uniform management_unavailable for invalid or expired capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: not_cancellable with the authenticated opened, locked, or unavailable snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [error, status]
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required: [code, message]
+                    properties:
+                      code:
+                        type: string
+                        const: not_cancellable
+                      message:
+                        type: string
+                  status:
+                    $ref: "#/components/schemas/ManagementStatusResponse"
+        "429":
+          description: Shared management rate limit exceeded.
+        "503":
+          description: Cancellation is temporarily unavailable; no cancellation success is implied.
   /api/secrets/{id}/finalize:
     post:
       operationId: finalizeSecret
@@ -399,7 +459,7 @@ components:
           type: string
         status:
           type: string
-          enum: [pending_upload, active, opened, locked, unavailable]
+          enum: [pending_upload, active, opened, locked, cancelled, unavailable]
         expires_at:
           type: string
           format: date-time
@@ -408,7 +468,7 @@ components:
           format: date-time
         can_cancel:
           type: boolean
-          description: Whether the domain state is eligible for cancellation; the revoke API is a separate planned operation.
+          description: Whether the current delivery is eligible for cancellation.
     PresignedUpload:
       type: object
       additionalProperties: false

@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,23 @@ type mockObjectStore struct {
 
 func newMockObjectStore() *mockObjectStore {
 	return &mockObjectStore{objects: map[string][]byte{}}
+}
+
+func (m *mockObjectStore) List(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+	keys := []string{}
+	for key := range m.objects {
+		if strings.HasPrefix(key, prefix) && key > cursor {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	page := storage.ObjectPage{}
+	if len(keys) > limit {
+		page.NextCursor = keys[limit-1]
+		keys = keys[:limit]
+	}
+	page.Keys = keys
+	return page, nil
 }
 
 func (m *mockObjectStore) PresignPUT(_ context.Context, key string, size int64, _ time.Duration) (storage.UploadInstruction, error) {

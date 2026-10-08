@@ -86,3 +86,10 @@ Secret Key in prod — because the AWS SDK cannot speak OCI instance principal.
 | `FLICK_S3_ACCESS_KEY_ID` | Static access key ID (MinIO `minioadmin`; OCI Customer Secret Key). |
 | `FLICK_S3_SECRET_ACCESS_KEY` | Static secret access key. |
 | `FLICK_S3_PATH_STYLE` | `true` (default) for MinIO/OCI path-style; `false` for virtual-host. |
+
+The API's existing S3 credentials also require `ListObjectsV2` permission for the
+exclusive `managed/secrets/` prefix. The worker retains its existing object-delete
+permission. No new environment variable or startup permission probe is introduced:
+listing failures are reported by the reaper and retried without disabling existing
+S3 upload/open operation. Provider versions, retention locks, replicas, and backups
+remain operator-owned; listing only reconciles current objects.

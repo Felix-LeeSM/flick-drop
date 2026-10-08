@@ -71,6 +71,9 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 			if status, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil || status.Status != outcome || status.CanCancel {
 				t.Fatalf("cleaned: %+v, %v", status, err)
 			}
+			if status, err := store.Revoke(ctx, created.ID, created.ManagementToken); !errors.Is(err, ErrNotCancellable) || status.Status != outcome {
+				t.Fatalf("terminal cancellation: %v %v", status, err)
+			}
 			// Capability reads remain valid until the exact original deadline.
 			now = created.ExpiresAt.Add(-time.Nanosecond)
 			if _, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil {

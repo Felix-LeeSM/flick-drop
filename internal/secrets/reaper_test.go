@@ -706,3 +706,23 @@ func TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan(t *testing.T) {
 		t.Fatalf("after tick = %v, want %v (older reclaimable active reaped first)", got, want)
 	}
 }
+
+func TestReaperRollsBackFailedCommit(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	now := time.Now().UTC()
+	insertSecret(t, ctx, conn, secretFixture{id: "expire", expiresAt: now.Add(-time.Second), createdAt: now.Add(-time.Hour)})
+	_, err := conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_reap after delete on secrets begin insert into fail_commit values (old.id); end;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
+	reaper.SetNowForTest(func() time.Time { return now })
+	if _, err := reaper.ClaimOnce(ctx); err == nil {
+		t.Fatal("failed commit reported successful cleanup")
+	}
+	if countSecrets(t, ctx, conn) != 1 || reclaimEnqueuedAt(t, ctx, conn, "expire").Valid {
+		t.Fatal("failed commit left a partial reclaim")
+	}
+}

@@ -240,3 +240,43 @@ func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
 		t.Fatalf("outcome lost on migration/payload reclamation: %d %v", count, err)
 	}
 }
+
+func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(`drop table object_reconciliation_cursor; drop table object_reconciliation_pending`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(`update object_reconciliation_cursor set continuation_token='page-two',generation=4; insert into object_reconciliation_pending values ('managed/secrets/key','job')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var cursor, job string
+	var generation int
+	if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor`).Scan(&cursor, &generation); err != nil || cursor != "page-two" || generation != 4 {
+		t.Fatalf("migration reset cursor: %s %d %v", cursor, generation, err)
+	}
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending`).Scan(&job); err != nil || job != "job" {
+		t.Fatalf("migration lost pending claim: %s %v", job, err)
+	}
+	if _, err := conn.Exec(`insert into object_reconciliation_pending values ('managed/secrets/key','other')`); err == nil {
+		t.Fatal("duplicate pending key accepted")
+	}
+	if _, err := conn.Exec(`insert into object_reconciliation_pending values ('managed/secrets/other','job')`); err == nil {
+		t.Fatal("duplicate job fence accepted")
+	}
+}

@@ -109,7 +109,8 @@ generic base.
 
 ## Apply
 
-Apply only after replacing images and secrets:
+Replace placeholder images and secrets before applying. For a **fresh install**,
+with no existing workers or queued jobs, apply the complete base or private overlay:
 
 ```sh
 kubectl apply -k deploy/base
@@ -118,6 +119,42 @@ kubectl -n flick rollout status deploy/flick-api
 kubectl -n flick rollout status deploy/flick-worker
 kubectl -n flick rollout status deploy/flick-web
 ```
+
+For an **existing installation** upgrading to managed-object reconciliation, all
+workers must support `POST /internal/object-reconciliation/ack` before the new API
+scanner starts. Applying the complete overlay first is unsafe: an old worker can
+acknowledge a deletion in NATS without releasing the API claim, permanently
+preventing cleanup of a later PUT to the same key.
+
+1. Record the existing worker pod names and update the private overlay to the
+   intended immutable image versions. Do not apply the complete overlay yet.
+
+   ```sh
+   kubectl -n flick get pods -l app.kubernetes.io/name=flick-worker -o wide
+   kubectl -n flick set image deployment/flick-worker worker=<new-worker-image-by-digest>
+   kubectl -n flick rollout status deployment/flick-worker --timeout=180s
+   ```
+
+2. Wait until **every old worker pod is deleted**, including terminating pods.
+   Inspect the complete pod list again; rollout readiness alone does not establish
+   that old processes have stopped. Also replace any worker consumers outside
+   `Deployment/flick-worker`. Stop the upgrade if any old worker remains.
+
+   ```sh
+   kubectl -n flick get pods -l app.kubernetes.io/name=flick-worker -o wide
+   ```
+
+3. After all old workers are gone, apply the prepared base or private overlay and
+   wait for API, worker, and web readiness using the commands for a fresh install.
+   The updated worker can run against the old API during this interval: an HTTP
+   404 from the missing acknowledgement endpoint keeps the NATS delivery pending
+   for retry after the API upgrade.
+
+Never roll a worker back to a version without the acknowledgement protocol while
+reconciliation jobs or claims can exist. An API rollback does not remove those
+jobs or claims. Select an acknowledgement-capable worker version for rollback;
+do not use an unchecked `kubectl rollout undo` or reapply an older overlay that
+restores a worker without acknowledgement support.
 
 Production deployments require HTTPS at the ingress. The sample
 `flick.localhost` host is for local or tutorial use only.

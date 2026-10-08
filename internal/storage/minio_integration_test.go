@@ -127,3 +127,56 @@ func TestMinIORejectsOversized(t *testing.T) {
 		t.Fatal("oversized object should not have landed in the bucket")
 	}
 }
+
+func TestMinIOListsLatePUTAfterDeletion(t *testing.T) {
+	c := testClient(t)
+	ctx := context.Background()
+	prefix := "managed/secrets/it-reconcile-" + nowSuffix(t) + "/"
+	payload := []byte("integration ciphertext")
+	uploads := make([]UploadInstruction, 2)
+	for i, suffix := range []string{"a", "b"} {
+		key := prefix + suffix
+		t.Cleanup(func() { _ = c.Delete(context.Background(), key) })
+		upload, err := c.PresignPUT(ctx, key, int64(len(payload)), 5*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploads[i] = upload
+		resp := uploadViaPUT(t, upload, payload)
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			t.Fatalf("upload status %d", resp.StatusCode)
+		}
+	}
+	first, err := c.List(ctx, prefix, "", 1)
+	if err != nil || len(first.Keys) != 1 || first.NextCursor == "" {
+		t.Fatalf("first page %v %v", first, err)
+	}
+	second, err := c.List(ctx, prefix, first.NextCursor, 1)
+	if err != nil || len(second.Keys) != 1 || second.Keys[0] == first.Keys[0] || second.NextCursor != "" {
+		t.Fatalf("second page %v %v", second, err)
+	}
+	for _, key := range []string{prefix + "a", prefix + "b"} {
+		if err := c.Delete(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The same still-authorized PUT can recreate ciphertext after an immediate
+	// cleanup. A later complete ListObjectsV2 pass must discover it again.
+	resp := uploadViaPUT(t, uploads[0], payload)
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("late upload status %d", resp.StatusCode)
+	}
+	late, err := c.List(ctx, prefix, "", 1)
+	if err != nil || len(late.Keys) != 1 || late.Keys[0] != prefix+"a" {
+		t.Fatalf("late object not listed %v %v", late, err)
+	}
+	if err := c.Delete(ctx, late.Keys[0]); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := c.List(ctx, prefix, "", 1)
+	if err != nil || len(empty.Keys) != 0 {
+		t.Fatalf("late object retained %v %v", empty, err)
+	}
+}

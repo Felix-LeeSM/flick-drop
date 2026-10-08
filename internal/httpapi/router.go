@@ -111,11 +111,13 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
-	r.With(managementNoStore, server.managementLimiter.middleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
+	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
+	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
 		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)
+		r.Post("/internal/object-reconciliation/ack", server.acknowledgeObjectCleanup)
 	})
 	return r
 }
