@@ -1,3 +1,7 @@
-# allow crawling everything by default
+# Public guides and home can be discovered through ordinary navigation.
+# Private delivery routes are never included in a sitemap.
 User-agent: *
-Disallow:
+Disallow: /s/
+Disallow: /m/
+Disallow: /r/
+Disallow: /api/
