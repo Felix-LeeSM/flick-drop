@@ -51,7 +51,7 @@ cannot recall content already delivered or guarantee physical erasure of copies.
 Older API deployments that do not return management capabilities retain the
 original recipient-link result until the API is upgraded.
 
-Choose **Request a secret** to collect text or one file. Share the
+Choose **Request a secret** to collect text, one file, or credentials. Share the
 **submission link** and save the separate **private retrieval link**. The first
 accepted submission wins; only the private retrieval link can open and decrypt
 it once. Request files use the configured file limit. Files above the inline limit upload

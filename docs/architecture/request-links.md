@@ -145,7 +145,8 @@ included browser check targets Chromium, with no Firefox or Safari validation.
 
 ## Browser flow (#206 and #207)
 
-`/request` creates a request; `/r/{id}` submits text or one file;
+`/request` creates a request; `/r/{id}` submits text, one file, or a structured
+credential (serialized as `FLCR1:` text, so its request kind stays `text`);
 `/r/{id}/receive` checks requester status, cancels, or opens once. The main send
 page links to request creation. Existing Model A/B send formats are unchanged.
 `web/src/lib/api/requests.ts` sends only the selected capability in Authorization,

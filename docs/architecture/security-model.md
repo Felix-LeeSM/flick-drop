@@ -176,9 +176,10 @@ secret kind.
 
 The create page serializes credential templates as `FLCR1:` followed by JSON
 matching `contracts/credential-payload.schema.json`, then encrypts that string
-through the existing text-secret path. The API stores and returns the encrypted
-payload as `kind:"text"` and never sees field labels, values, notes, titles, or
-which fields were marked secret.
+through the existing text-secret path. The request submission page uses the same
+encoding and submits it as a `kind:"text"` request payload. The API stores and
+returns the encrypted payload as `kind:"text"` and never sees field labels,
+values, notes, titles, or which fields were marked secret.
 
 The `secret` field in the credential payload is a UI rendering hint. It tells
 the browser to mask a value before encryption and after decryption, but it is
