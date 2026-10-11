@@ -38,7 +38,7 @@ export const buttonVariants = tv({
 			'icon-lg': 'size-10',
 			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
 			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs',
-			cta: 'h-12 w-full gap-2 rounded-[10px] px-4 text-[15px] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.14),0_10px_22px_-12px_color-mix(in_srgb,var(--primary)_75%,transparent)] disabled:shadow-none'
+			cta: 'h-12 w-full gap-2 rounded-[10px] px-4 text-[0.9375rem] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.14),0_10px_22px_-12px_color-mix(in_srgb,var(--primary)_75%,transparent)] disabled:shadow-none'
 		}
 	},
 	defaultVariants: {

@@ -16,9 +16,9 @@ let { link }: { link?: HeaderLink } = $props();
 <header class="flex min-h-10 items-center justify-between gap-3">
 	<a class="flex items-center gap-2.5 rounded-sm focus-visible:outline-2" href={resolve('/')}>
 		<span class="grid size-8 place-items-center rounded-[9px] bg-primary text-primary-foreground">
-			<LockKeyholeIcon class="size-[17px]" aria-hidden="true" />
+			<LockKeyholeIcon class="size-[1.0625rem]" aria-hidden="true" />
 		</span>
-		<span class="font-serif text-[27px] leading-none tracking-[-0.005em]">Flick</span>
+		<span class="font-serif text-[1.6875rem] leading-none tracking-[-0.005em]">Flick</span>
 	</a>
 	<div class="flex items-center gap-2">
 		{#if link}

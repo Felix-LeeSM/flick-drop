@@ -606,6 +606,10 @@ for (const theme of ['light', 'dark']) {
 			await openForm(page, forms[0]);
 			const button = page.getByRole('button', { name: 'Create link', exact: true });
 			assert.equal(await button.isDisabled(), true);
+			assert.equal(
+				await page.evaluate(() => document.documentElement.classList.contains('dark')),
+				theme === 'dark'
+			);
 			// 50% opacity made it faded teal in light and nearly enabled-looking in dark.
 			const style = await button.evaluate((element) => {
 				const probe = document.createElement('span');
