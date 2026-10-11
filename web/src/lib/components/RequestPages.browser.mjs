@@ -251,6 +251,53 @@ for (const outcome of ['waiting', 'accepted']) {
 	});
 }
 
+test('credential templates submit as FLCR1 text and open in the credential view', async () => {
+	// en-US pins the thousands separator in the "1,024 bytes" limit message.
+	const senderContext = await browser.newContext({
+		viewport: { width: 375, height: 812 },
+		locale: 'en-US'
+	});
+	const ownerContext = await browser.newContext();
+	try {
+		const mock = fixture();
+		await mock.attach(senderContext);
+		await mock.attach(ownerContext);
+		const sender = await senderContext.newPage();
+		await sender.goto(`${baseUrl}${submitPath}`);
+		await sender.getByRole('button', { name: 'Login', exact: true }).click();
+		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+		await sender.getByText('Fill in at least one field.', { exact: true }).waitFor();
+		assert.equal(mock.bodies.length, 0);
+		// The serialized credential counts against the text limit (1,024 bytes in this fixture).
+		await sender.getByLabel('Password', { exact: true }).fill('x'.repeat(1100));
+		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+		await sender.getByText('Choose content between 1 and 1,024 bytes.', { exact: true }).waitFor();
+		assert.equal(mock.bodies.length, 0);
+		await sender.getByLabel('Username', { exact: true }).fill('synthetic-request-user');
+		await sender.getByLabel('Password', { exact: true }).fill('synthetic-request-password');
+		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+		await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
+		assert.equal(JSON.parse(mock.bodies[0]).kind, 'text');
+		const owner = await ownerContext.newPage();
+		await owner.goto(`${baseUrl}${ownerPath}`);
+		await readyOwner(owner);
+		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
+		await owner.getByText('synthetic-request-user', { exact: true }).waitFor();
+		assert.equal(await owner.getByText('synthetic-request-password', { exact: true }).count(), 0);
+		await owner.getByRole('button', { name: 'Show Password', exact: true }).click();
+		await owner.getByText('synthetic-request-password', { exact: true }).waitFor();
+		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
+		for (const value of ['synthetic-request-user', 'synthetic-request-password']) {
+			await privacy(owner, mock.calls, vectors.private_key, value);
+			await privacy(sender, mock.calls, vectors.private_key, value);
+			assert.equal(owner.url().includes(value) || sender.url().includes(value), false);
+		}
+	} finally {
+		await senderContext.close();
+		await ownerContext.close();
+	}
+});
+
 for (const fragment of [`#receive=${receiveToken}`, `#receive=${receiveToken}&key=invalid`]) {
 	test(`missing or invalid private key cannot consume: ${fragment.endsWith('invalid') ? 'invalid' : 'missing'}`, async () => {
 		const context = await browser.newContext();
@@ -342,7 +389,7 @@ test('pin mismatch, size ceiling, and 429 status remain actionable without consu
 		await page.getByText('The request key does not match this link.', { exact: false }).waitFor();
 		assert.equal(await page.getByLabel('Message', { exact: true }).count(), 0);
 		await page.goto(`${baseUrl}${submitPath}`);
-		await page.getByRole('radio', { name: 'File', exact: true }).check();
+		await page.getByRole('button', { name: 'File', exact: true }).click();
 		await page.locator('input[type="file"]').setInputFiles({
 			name: 'synthetic.bin',
 			mimeType: 'application/octet-stream',
@@ -442,7 +489,7 @@ test('failed runtime config cannot consume a custom 2 MiB inline request before 
 		assert.equal(await owner.getByRole('button', { name: 'Open once', exact: true }).count(), 0);
 		assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 		await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
-		await sender.getByRole('radio', { name: 'File', exact: true }).check();
+		await sender.getByRole('button', { name: 'File', exact: true }).click();
 		await sender.locator('input[type="file"]').setInputFiles({
 			name: 'synthetic-2m.bin',
 			mimeType: 'application/octet-stream',

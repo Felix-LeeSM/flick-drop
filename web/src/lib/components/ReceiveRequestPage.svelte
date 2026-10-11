@@ -10,12 +10,14 @@ import {
 	requestLimits
 } from '$lib/api/requests';
 import { DEFAULT_API_BASE_URL } from '$lib/api/secrets';
+import CredentialView from '$lib/components/CredentialView.svelte';
 import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
 import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
 import UrlField from '$lib/components/UrlField.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Textarea } from '$lib/components/ui/textarea';
+import { parseCredential } from '$lib/credentials';
 import {
 	decryptRequestPayload,
 	importRequestPrivateKey,
@@ -45,6 +47,8 @@ let opened = $state(false);
 let openLost = $state(false);
 let decryptFailed = $state(false);
 let content = $state<RequestContent | null>(null);
+// Submitters can choose credential templates; they arrive as FLCR1 text like credential secrets.
+const credential = $derived(content?.kind === 'text' ? parseCredential(content.text) : null);
 let downloadUrl = $state('');
 let qrOpen = $state(false);
 let heading = $state<HTMLHeadingElement | null>(null);
@@ -396,7 +400,9 @@ onMount(() => {
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
 	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content. Flick cannot recover a lost open response. This page will not retry opening.</p>{/if}
 	{#if decryptFailed}<p role="alert" class="text-sm text-destructive">The content was released, but decryption failed. It cannot be opened again. Ask the sender to use a new request.</p>{/if}
-	{#if content?.kind === 'text'}
+	{#if credential}
+		<CredentialView {credential} />
+	{:else if content?.kind === 'text'}
 		<Textarea aria-label="Decrypted secret" value={content.text} readonly rows={8} />
 	{:else if content?.kind === 'file'}
 		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">Download {content.filename}</a>

@@ -161,3 +161,19 @@ cost and usability; revenue and approval remain unknown until measured.
 - Sponsor placement stays disabled without reviewed creative/configuration.
   Exclude third-party scripts on sensitive pages, profiling, mandatory ad
   interactions, provider enrollment, paid acquisition, and paid account features.
+
+### M11: Mobile Sharing UX
+
+Goal: make the create, request, submit, and retrieval pages comfortable on
+phones, and let request submitters send the same secret types as the create page.
+
+- [#235](https://github.com/Felix-LeeSM/flick-drop/issues/235): request
+  submission with the shared secret-type selector and structured credentials,
+  using the existing `FLCR1:` text encoding.
+- [#236](https://github.com/Felix-LeeSM/flick-drop/issues/236): phone layouts
+  for the type selector, lifetime picker, and private pages; concise request-page
+  copy with a visible waiting state.
+- Verify browser create/request/submit/receive flows at phone and desktop widths,
+  reduced motion, and the deployed frontend.
+- Exclude API, worker, crypto, or request-contract changes; new secret types;
+  file-limit changes; accounts, inboxes, or repeat collection.

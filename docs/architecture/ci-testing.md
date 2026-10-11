@@ -159,7 +159,8 @@ tests do not replace the real API lifecycle checks.
 `RequestPages.browser.mjs` joins `pnpm --dir web test:browser`. It uses real browser
 crypto with mocked API responses for separate sharing/private custody, missing or
 malformed keys, fingerprint pinning, exact retries after response loss, lost Open,
-cancellation races, file decryption, known-expiry cleanup, 429, and inline limits.
+cancellation races, file decryption, credential templates sent as `FLCR1:` text,
+known-expiry cleanup, 429, and inline limits.
 The API-client and fragment/handoff checks run in `pnpm --dir web test` alongside
 unchanged Model A/B and request crypto vectors.
 
