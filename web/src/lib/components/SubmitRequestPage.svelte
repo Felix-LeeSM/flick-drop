@@ -530,10 +530,10 @@ onMount(() => {
 <DeliveryFrame>
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-muted-foreground">
-			<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
+			<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 			end-to-end encrypted · one-time request
 		</p>
-		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 		{#if !terminal}<p class="text-sm text-muted-foreground">Only the requester can open what you send.</p>{/if}
 		{#if instructions && !terminal}<p class="text-sm" aria-label="Time remaining">{formatRemaining(remaining)} remaining</p>{/if}
 	</div>
@@ -566,7 +566,7 @@ onMount(() => {
 				<div class="grid gap-2.5"><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
 			{/if}
 			{#if mode === 'file'}<p class="text-sm text-muted-foreground">One file, up to {formatBytes(limits.maxFileBytes)}.</p>{/if}
-			<Button type="submit" class="h-11" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
+			<Button type="submit" size="cta" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
 		</form>
 	{:else if phase === 'loading'}
 		<p role="status">{busy ? 'Loading request…' : 'Request status is unknown.'}</p>

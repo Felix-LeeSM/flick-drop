@@ -384,7 +384,7 @@ onMount(() => {
 <DeliveryFrame>
 	<div class="grid gap-1.5">
 		<p class="micro text-muted-foreground">private requester page</p>
-		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
 	<section class="grid gap-3 rounded-xl border p-5" aria-label="Request status">
 		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>

@@ -105,10 +105,10 @@ async function create(): Promise<void> {
 <DeliveryFrame link={{ href: resolve('/'), label: 'Send a secret' }}>
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-muted-foreground">
-			<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
+			<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 			end-to-end encrypted · one-time request
 		</p>
-		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>Request a secret</h1>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>Request a secret</h1>
 		<p class="text-sm text-muted-foreground">Get a link for someone to send you text, a file, or credentials, once.</p>
 	</div>
 	<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void create(); }}>
@@ -117,6 +117,6 @@ async function create(): Promise<void> {
 			<p class="text-sm text-muted-foreground">Starts when you create the link. Submitting does not extend it.</p>
 		</div>
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
-		<Button type="submit" class="h-11 w-full shadow-lg shadow-primary/25" disabled={busy || !validTtl}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
+		<Button type="submit" size="cta" disabled={busy || !validTtl}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
 	</form>
 </DeliveryFrame>

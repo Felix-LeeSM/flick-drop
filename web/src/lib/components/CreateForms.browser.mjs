@@ -596,3 +596,41 @@ test('320px shared header keeps the link beside the theme toggle without overflo
 		await page.close();
 	}
 });
+
+for (const theme of ['light', 'dark']) {
+	test(`disabled Create link reads as disabled in the ${theme} theme`, async () => {
+		const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+		try {
+			await page.addInitScript((value) => localStorage.setItem('flick-theme', value), theme);
+			await fixture(page);
+			await openForm(page, forms[0]);
+			const button = page.getByRole('button', { name: 'Create link', exact: true });
+			assert.equal(await button.isDisabled(), true);
+			// 50% opacity made it faded teal in light and nearly enabled-looking in dark.
+			const style = await button.evaluate((element) => {
+				const probe = document.createElement('span');
+				probe.style.backgroundColor = 'var(--muted)';
+				document.body.append(probe);
+				const muted = getComputedStyle(probe).backgroundColor;
+				probe.remove();
+				const computed = getComputedStyle(element);
+				const layers =
+					computed.boxShadow === 'none' ? [] : computed.boxShadow.split(/,(?![^(]*\))/);
+				return {
+					muted,
+					background: computed.backgroundColor,
+					opacity: computed.opacity,
+					shadow: layers.some((layer) => !layer.includes('rgba(0, 0, 0, 0)'))
+				};
+			});
+			assert.deepEqual(style, {
+				muted: style.muted,
+				background: style.muted,
+				opacity: '1',
+				shadow: false
+			});
+		} finally {
+			await page.close();
+		}
+	});
+}

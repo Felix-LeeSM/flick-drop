@@ -277,7 +277,7 @@ function revokeDownloadUrl(): void {
 						decrypted · burns after read
 					</p>
 					<h1
-						class="font-serif text-3xl sm:text-4xl"
+						class="page-title"
 						tabindex="-1"
 						bind:this={secretHeading}
 					>
@@ -348,7 +348,7 @@ function revokeDownloadUrl(): void {
 									</p>
 								</div>
 								<a
-									class={`${buttonVariants({ variant: 'default' })} h-11 w-full shadow-lg shadow-primary/25`}
+									class={buttonVariants({ size: 'cta' })}
 									href={downloadUrl}
 									download={downloadFilename}
 									rel="external"
@@ -389,7 +389,7 @@ function revokeDownloadUrl(): void {
 						<FlameIcon class="size-3.5" aria-hidden="true" />
 						one-time link
 					</p>
-					<h1 class="font-serif text-3xl sm:text-4xl">Open a secret</h1>
+					<h1 class="page-title">Open a secret</h1>
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitOpen}>
@@ -440,7 +440,7 @@ function revokeDownloadUrl(): void {
 						</div>
 					{/if}
 
-					<Button type="submit" class="h-11 w-full" disabled={!canOpen}>
+					<Button type="submit" size="cta" disabled={!canOpen}>
 						{#if hasOpened}
 							<CheckIcon class="size-4" aria-hidden="true" />
 							Opened
