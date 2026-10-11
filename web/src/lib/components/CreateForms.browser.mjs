@@ -537,13 +537,21 @@ for (const width of [375, 1280]) {
 				}
 				await valueInput(page).focus();
 				stable(await boxes(lifetime), initial);
-				// iOS Safari zooms into focused fields under 16px, so phones keep 16px and scale it down.
-				if (width < 640) {
-					assert.equal(
-						await valueInput(page).evaluate((input) => getComputedStyle(input).fontSize),
-						'16px'
-					);
-				}
+				// iOS Safari zooms into focused fields under 16px, so the field keeps 16px at every
+				// width and is scaled down to the preset chips' text size.
+				const sizes = await valueInput(page).evaluate((input) => {
+					const scale = getComputedStyle(input.parentElement).scale;
+					const factor =
+						scale === 'none' ? 1 : Number.parseFloat(scale) / (scale.endsWith('%') ? 100 : 1);
+					const preset = input.closest('[role="group"]').querySelector('button');
+					return {
+						field: getComputedStyle(input).fontSize,
+						rendered: Number.parseFloat(getComputedStyle(input).fontSize) * factor,
+						preset: Number.parseFloat(getComputedStyle(preset).fontSize)
+					};
+				});
+				assert.equal(sizes.field, '16px');
+				assert.equal(sizes.rendered, sizes.preset);
 				// Tapping the chip beside the digits still focuses the value field.
 				const edge = await valueInput(page).evaluate((input) => {
 					input.blur();
@@ -677,3 +685,18 @@ for (const theme of ['light', 'dark']) {
 		}
 	});
 }
+
+test('passphrase field shows its own label without a placeholder', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		const field = page.getByLabel('Passphrase', { exact: true });
+		assert.equal(await field.getAttribute('placeholder'), null);
+		// A screen-reader-only label is a 1px box, which Playwright still reports as visible.
+		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
+		assert.ok(label.width > 40 && label.height > 10);
+	} finally {
+		await page.close();
+	}
+});

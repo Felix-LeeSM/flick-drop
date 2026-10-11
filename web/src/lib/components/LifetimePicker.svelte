@@ -85,8 +85,8 @@ function updateCustom(): void {
 		>
 			<!-- An empty label covers the pill, so tapping anywhere but the unit focuses the value; a label may hold only one control. -->
 			<label for={`${id}-custom-value`} class="absolute inset-0 cursor-text"></label>
-			<!-- iOS Safari zooms into focused fields under 16px: render at 16px, then scale to the 12px pill text on phones. -->
-			<span class="pointer-events-none relative flex items-center gap-1.5 max-sm:-mx-2 max-sm:scale-75">
+			<!-- iOS Safari zooms into focused fields under 16px: render at 16px, then scale to the 12px pill text at every width. -->
+			<span class="pointer-events-none relative -mx-2 flex scale-75 items-center gap-1.5">
 				<input
 					id={`${id}-custom-value`}
 					type="text"
@@ -97,7 +97,7 @@ function updateCustom(): void {
 					placeholder="2"
 					value={customValue}
 					size={Math.min(Math.max(customValue.length, 1), 5)}
-					class="pointer-events-auto min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					class="pointer-events-auto min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 					{disabled}
 					onfocus={selectCustom}
 					oninput={(event) => {
@@ -109,7 +109,7 @@ function updateCustom(): void {
 				<select
 					value={customUnit}
 					aria-label="Custom lifetime unit"
-					class="pointer-events-auto field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					class="pointer-events-auto field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 					{disabled}
 					onchange={(event) => {
 						customUnit = event.currentTarget.value as Unit;
