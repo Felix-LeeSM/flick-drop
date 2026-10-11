@@ -489,10 +489,7 @@ function modeLabel(value: CreateMode): string {
 	<title>Create secret - Flick</title>
 </svelte:head>
 
-<DeliveryFrame>
-	{#snippet navigation()}
-		<a href={resolve('/request')} class="px-2 py-3 text-sm underline underline-offset-4">Request a secret</a>
-	{/snippet}
+<DeliveryFrame link={{ href: resolve('/request'), label: 'Request a secret' }}>
 
 		{#if hasResult}
 			<section class="grid gap-7">

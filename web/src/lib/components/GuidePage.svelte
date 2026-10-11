@@ -1,9 +1,8 @@
 <script lang="ts">
-import { LockKeyholeIcon } from '@lucide/svelte';
 import type { Snippet } from 'svelte';
 import { base, resolve } from '$app/paths';
+import SiteHeader from '$lib/components/SiteHeader.svelte';
 import SponsorSlot from '$lib/components/SponsorSlot.svelte';
-import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 
 let {
 	title,
@@ -25,15 +24,7 @@ let {
 </svelte:head>
 
 <div class="mx-auto max-w-3xl px-5 py-6 text-foreground sm:px-8 sm:py-10">
-	<header class="flex items-center justify-between gap-4">
-		<a href={resolve('/')} class="flex items-center gap-2.5 rounded-sm focus-visible:outline-2">
-			<span class="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-				<LockKeyholeIcon class="size-4" aria-hidden="true" />
-			</span>
-			<span class="font-serif text-xl">Flick</span>
-		</a>
-		<ThemeToggle />
-	</header>
+	<SiteHeader />
 	<main class="py-12 sm:py-20">
 		<h1 class="max-w-2xl font-serif text-5xl leading-[1.06] sm:text-6xl">{title}</h1>
 		<p class="mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground">{description}</p>

@@ -7,7 +7,6 @@ import {
 	EyeOffIcon,
 	FileIcon,
 	FlameIcon,
-	LockKeyholeIcon,
 	LockKeyholeOpenIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
@@ -19,7 +18,7 @@ import {
 	type SecretKind
 } from '$lib/api/secrets';
 import CredentialView from '$lib/components/CredentialView.svelte';
-import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+import SiteHeader from '$lib/components/SiteHeader.svelte';
 import { Button, buttonVariants } from '$lib/components/ui/button';
 import * as Card from '$lib/components/ui/card';
 import { Input } from '$lib/components/ui/input';
@@ -268,18 +267,7 @@ function revokeDownloadUrl(): void {
 
 <main class="min-h-screen px-3 py-4 text-foreground sm:px-5 sm:py-6">
 	<div class="mx-auto grid w-full max-w-xl gap-8">
-		<header class="flex items-center justify-between gap-3">
-			<a class="flex items-center gap-2.5" href={resolve('/')}>
-				<span class="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-					<LockKeyholeIcon class="size-4" aria-hidden="true" />
-				</span>
-				<span class="font-serif text-lg leading-none">Flick</span>
-			</a>
-			<nav class="flex items-center gap-2">
-				<ThemeToggle />
-				<a class={buttonVariants({ variant: 'toggle', size: 'seg' })} href={resolve('/')}>Create</a>
-			</nav>
-		</header>
+		<SiteHeader link={{ href: resolve('/'), label: 'Create' }} />
 
 		{#if hasOpened}
 			<section class="grid gap-6">

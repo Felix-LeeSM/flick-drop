@@ -22,7 +22,8 @@ onMount(() => {
 <Button
 	type="button"
 	variant="outline"
-	size="icon-sm"
+	size="icon"
+	class="rounded-lg bg-card"
 	aria-label={isDark ? 'Use light theme' : 'Use dark theme'}
 	title={isDark ? 'Use light theme' : 'Use dark theme'}
 	onclick={toggleResolvedTheme}

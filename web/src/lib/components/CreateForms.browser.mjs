@@ -506,13 +506,23 @@ for (const width of [375, 1280]) {
 							return { x, y, width, height };
 						};
 						const font = getComputedStyle(heading);
+						const [badge, wordmark] = header.querySelector('a').children;
 						return {
 							header: box(header),
 							heading: box(heading),
-							font: [font.fontFamily, font.fontSize, font.lineHeight]
+							font: [font.fontFamily, font.fontSize, font.lineHeight],
+							badge: box(badge),
+							wordmark: getComputedStyle(wordmark).fontSize,
+							link: box(header.querySelector('div > a')),
+							toggle: box(header.querySelector('button'))
 						};
 					})
 				);
+				// The wordmark shrank twice in page-level edits; the shared header pins it and the link placement.
+				const frame = frames.at(-1);
+				assert.deepEqual([frame.badge.width, frame.badge.height, frame.wordmark], [32, 32, '27px']);
+				assert.deepEqual([frame.link.height, frame.toggle.height], [36, 36]);
+				assert.ok(frame.link.x + frame.link.width <= frame.toggle.x);
 				if (screenshotDir) {
 					await page.screenshot({
 						path: join(screenshotDir, `${form.name}-${width}.png`),
@@ -560,3 +570,29 @@ for (const width of [375, 1280]) {
 		}
 	});
 }
+
+test('320px shared header keeps the link beside the theme toggle without overflow', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+	try {
+		await fixture(page);
+		for (const form of forms) {
+			await openForm(page, form);
+			const header = await page.evaluate(() => {
+				const box = (element) => element.getBoundingClientRect().toJSON();
+				const root = document.querySelector('header');
+				return {
+					brand: box(root.querySelector('a')),
+					link: box(root.querySelector('div > a')),
+					toggle: box(root.querySelector('button')),
+					overflow: document.documentElement.scrollWidth > innerWidth
+				};
+			});
+			assert.equal(header.overflow, false);
+			assert.ok(header.brand.right < header.link.left);
+			assert.ok(header.link.right <= header.toggle.left);
+			assert.equal(header.link.top, header.toggle.top);
+		}
+	} finally {
+		await page.close();
+	}
+});
