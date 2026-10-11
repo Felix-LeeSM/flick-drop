@@ -12,11 +12,22 @@ import {
 	type Submission
 } from '$lib/api/requests';
 import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '$lib/api/secrets';
+import CredentialForm from '$lib/components/CredentialForm.svelte';
 import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
+import SecretTypeSelector from '$lib/components/SecretTypeSelector.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
 import { Textarea } from '$lib/components/ui/textarea';
+import {
+	buildEnvelope,
+	type CredentialEnvelope,
+	type CredentialType,
+	getCredentialTemplate,
+	hasCredentialContent,
+	isCredentialType,
+	serializeCredential
+} from '$lib/credentials';
 import { encryptRequestPayload, importRequestPublicKey } from '$lib/crypto/requests';
 import { remainingSecondsFrom } from '$lib/lifetime';
 import { submissionFromFragment } from '$lib/state/request-links';
@@ -42,8 +53,9 @@ let phase = $state<
 	| 'expired'
 	| 'invalid'
 >('loading');
-let mode = $state<'text' | 'file'>('text');
+let mode = $state<'text' | 'file' | CredentialType>('text');
 let message = $state('');
+let credential = $state<CredentialEnvelope>(buildEnvelope('login'));
 let selected = $state<File | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
 let error = $state('');
@@ -82,6 +94,20 @@ function clearInput(): void {
 	if (fileInput) {
 		fileInput.value = '';
 	}
+	if (isCredentialType(mode)) {
+		credential = buildEnvelope(mode);
+	}
+}
+function switchMode(next: typeof mode): void {
+	if (next !== mode) {
+		mode = next;
+		error = '';
+		clearInput();
+	}
+}
+// Credential templates travel as FLCR1 text, exactly like credential secrets on the create page.
+function textContent(): string {
+	return mode === 'text' ? message : serializeCredential(credential);
 }
 function clear(): void {
 	clearInput();
@@ -240,8 +266,12 @@ async function sendPending(request: AbortController): Promise<void> {
 }
 
 function validSize(): boolean {
-	const size = mode === 'text' ? new TextEncoder().encode(message).length : selected?.size;
-	const max = mode === 'text' ? limits.maxTextBytes : limits.maxFileBytes;
+	if (isCredentialType(mode) && !hasCredentialContent(credential)) {
+		error = 'Fill in at least one field.';
+		return false;
+	}
+	const size = mode === 'file' ? selected?.size : new TextEncoder().encode(textContent()).length;
+	const max = mode === 'file' ? limits.maxFileBytes : limits.maxTextBytes;
 	if (size === undefined || size === 0 || size > max) {
 		error = `Choose content between 1 and ${max.toLocaleString()} bytes.`;
 		return false;
@@ -250,13 +280,13 @@ function validSize(): boolean {
 }
 async function encryptSelection(key: CryptoKey) {
 	const content =
-		mode === 'text'
-			? { kind: 'text' as const, text: message }
-			: {
+		mode === 'file'
+			? {
 					kind: 'file' as const,
 					bytes: new Uint8Array(await (selected as File).arrayBuffer()),
 					filename: (selected as File).name
-				};
+				}
+			: { kind: 'text' as const, text: textContent() };
 	return encryptRequestPayload(requestId, key, content, limits);
 }
 function encryptionFailed(): void {
@@ -522,17 +552,15 @@ onMount(() => {
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
 		<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
-			<fieldset class="flex gap-5" disabled={busy}>
-				<legend class="mb-2 text-sm font-medium">Content type</legend>
-				<label class="flex items-center gap-2"><input type="radio" bind:group={mode} value="text" onchange={clearInput} />Text</label>
-				<label class="flex items-center gap-2"><input type="radio" bind:group={mode} value="file" onchange={clearInput} />File</label>
-			</fieldset>
+			<SecretTypeSelector value={mode} disabled={busy} onSelect={switchMode} />
 			{#if mode === 'text'}
 				<div class="grid gap-2"><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} bind:value={message} disabled={busy} required autocomplete="off" /></div>
-			{:else}
+			{:else if mode === 'file'}
 				<div class="grid gap-2"><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
+			{:else}
+				<div class="grid gap-2.5"><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
 			{/if}
-			<p class="text-sm text-muted-foreground">{(mode === 'text' ? limits.maxTextBytes : limits.maxFileBytes).toLocaleString()} bytes maximum. One file per request. File names are encrypted too. {limits.maxFileBytes > limits.maxTextBytes ? 'Larger files use an encrypted upload and require server verification.' : 'Large-file storage is unavailable; only inline files are supported.'}</p>
+			<p class="text-sm text-muted-foreground">{(mode === 'file' ? limits.maxFileBytes : limits.maxTextBytes).toLocaleString()} bytes maximum. One file per request. File names are encrypted too. {limits.maxFileBytes > limits.maxTextBytes ? 'Larger files use an encrypted upload and require server verification.' : 'Large-file storage is unavailable; only inline files are supported.'}</p>
 			<Button type="submit" class="h-11" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
 		</form>
 	{:else if phase === 'loading'}

@@ -106,7 +106,7 @@ for (const kind of ['text', 'file']) {
 			if (kind === 'text') {
 				await sender.getByLabel('Message', { exact: true }).fill(plaintext);
 			} else {
-				await sender.getByRole('radio', { name: 'File', exact: true }).check();
+				await sender.getByRole('button', { name: 'File', exact: true }).click();
 				await sender.locator('input[type="file"]').setInputFiles({
 					name: 'synthetic-private-filename.txt',
 					mimeType: 'text/plain',

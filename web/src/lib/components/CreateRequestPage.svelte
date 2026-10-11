@@ -112,7 +112,7 @@ async function create(): Promise<void> {
 			end-to-end encrypted · one-time request
 		</p>
 		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>Request a secret</h1>
-		<p class="text-sm text-muted-foreground">Get a link for someone to send you text or a file, once.</p>
+		<p class="text-sm text-muted-foreground">Get a link for someone to send you text, a file, or credentials, once.</p>
 	</div>
 	<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void create(); }}>
 		<div class="grid gap-2.5">

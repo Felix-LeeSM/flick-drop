@@ -183,7 +183,7 @@ async function pages(context) {
 	await owner.goto(`${baseUrl}/request`);
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
-	await sender.getByRole('radio', { name: 'File', exact: true }).check();
+	await sender.getByRole('button', { name: 'File', exact: true }).click();
 	return { owner, sender };
 }
 async function submitFile(sender, size = 65) {
