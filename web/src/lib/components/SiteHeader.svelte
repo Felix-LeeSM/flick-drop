@@ -22,7 +22,9 @@ let { link }: { link?: HeaderLink } = $props();
 	</a>
 	<div class="flex items-center gap-2">
 		{#if link}
-			<a class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card')} href={link.href}>{link.label}</a>
+			<nav aria-label="Site" class="flex">
+				<a class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card')} href={link.href}>{link.label}</a>
+			</nav>
 		{/if}
 		<ThemeToggle />
 	</div>

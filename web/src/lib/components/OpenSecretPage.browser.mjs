@@ -17,6 +17,35 @@ after(async () => {
 	await browser?.close();
 });
 
+test('open page shares the header: Create sits in the site navigation before the theme toggle', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 800 } });
+	try {
+		await page.route(`**${secretPath}`, (route) =>
+			route.fulfill({ status: 404, json: { error: { code: 'not_found' } } })
+		);
+		await page.goto(`${baseUrl}/s/metadata-retry`);
+		await page
+			.getByRole('navigation', { name: 'Site' })
+			.getByRole('link', { name: 'Create', exact: true })
+			.waitFor();
+		const header = await page.evaluate(() => {
+			const box = (element) => element.getBoundingClientRect().toJSON();
+			const root = document.querySelector('header');
+			const [badge, wordmark] = root.querySelector('a').children;
+			return {
+				badge: box(badge),
+				wordmark: getComputedStyle(wordmark).fontSize,
+				link: box(root.querySelector('nav a')),
+				toggle: box(root.querySelector('button'))
+			};
+		});
+		assert.deepEqual([header.badge.width, header.badge.height, header.wordmark], [32, 32, '27px']);
+		assert.ok(header.link.right <= header.toggle.left);
+	} finally {
+		await page.close();
+	}
+});
+
 for (const model of ['a', 'b']) {
 	for (const failure of ['network', 503, 429]) {
 		test(`Model ${model.toUpperCase()} recovers from ${failure} without a reload`, async () => {

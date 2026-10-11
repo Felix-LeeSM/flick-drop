@@ -513,7 +513,7 @@ for (const width of [375, 1280]) {
 							font: [font.fontFamily, font.fontSize, font.lineHeight],
 							badge: box(badge),
 							wordmark: getComputedStyle(wordmark).fontSize,
-							link: box(header.querySelector('div > a')),
+							link: box(header.querySelector('nav a')),
 							toggle: box(header.querySelector('button'))
 						};
 					})
@@ -582,7 +582,7 @@ test('320px shared header keeps the link beside the theme toggle without overflo
 				const root = document.querySelector('header');
 				return {
 					brand: box(root.querySelector('a')),
-					link: box(root.querySelector('div > a')),
+					link: box(root.querySelector('nav a')),
 					toggle: box(root.querySelector('button')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
