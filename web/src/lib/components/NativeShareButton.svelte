@@ -2,8 +2,9 @@
 import { Share2Icon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { Button } from '$lib/components/ui/button';
+import { cn } from '$lib/utils';
 
-let { recipientUrl }: { recipientUrl: string } = $props();
+let { recipientUrl, class: className }: { recipientUrl: string; class?: string } = $props();
 let supported = $state(false);
 let sharing = $state(false);
 let failed = $state(false);
@@ -39,7 +40,7 @@ async function share(): Promise<void> {
 
 {#if canShare}
 	<div class="grid gap-1.5">
-		<Button type="button" variant="outline" class="h-11 w-full" disabled={sharing} onclick={share}>
+		<Button type="button" variant="outline" class={cn('h-11 w-full', className)} disabled={sharing} onclick={share}>
 			<Share2Icon class="size-4" aria-hidden="true" />
 			Share link
 		</Button>

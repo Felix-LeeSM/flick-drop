@@ -174,6 +174,20 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
 		await owner.getByText('Checking automatically', { exact: true }).waitFor();
+		// Copy is the one primary action; Refresh, Share, QR and Cancel stay compact at phone width.
+		assert.equal(
+			(
+				await owner.getByRole('button', { name: 'Copy submission link', exact: true }).textContent()
+			).trim(),
+			'Copy'
+		);
+		const card = await owner.getByRole('region', { name: 'Request status' }).boundingBox();
+		const compact = {};
+		for (const name of ['Refresh status', 'Share link', 'Show submission QR', 'Cancel request']) {
+			compact[name] = await owner.getByRole('button', { name, exact: true }).boundingBox();
+			assert.ok(compact[name].width < card.width * 0.6, name);
+		}
+		assert.equal(compact['Share link'].y, compact['Show submission QR'].y);
 		const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 		const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
 		const privateKey = new URLSearchParams(new URL(receive).hash.slice(1)).get('key');
@@ -268,6 +282,9 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		await mock.attach(ownerContext);
 		const sender = await senderContext.newPage();
 		await sender.goto(`${baseUrl}${submitPath}`);
+		// field-sizing-content ignores rows={7}; the message field keeps the create page's height.
+		const message = await sender.getByLabel('Message', { exact: true }).boundingBox();
+		assert.ok(message.height >= 176, `message field is ${message.height}px tall`);
 		await sender.getByRole('button', { name: 'Login', exact: true }).click();
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByText('Fill in at least one field.', { exact: true }).waitFor();

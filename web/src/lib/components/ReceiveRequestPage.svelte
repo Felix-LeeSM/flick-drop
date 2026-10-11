@@ -14,6 +14,7 @@ import CredentialView from '$lib/components/CredentialView.svelte';
 import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
 import NativeShareButton from '$lib/components/NativeShareButton.svelte';
 import QrModal from '$lib/components/QrModal.svelte';
+import RemainingTime from '$lib/components/RemainingTime.svelte';
 import UrlField from '$lib/components/UrlField.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Textarea } from '$lib/components/ui/textarea';
@@ -23,7 +24,7 @@ import {
 	importRequestPrivateKey,
 	type RequestContent
 } from '$lib/crypto/requests';
-import { formatRemaining, remainingSecondsFrom } from '$lib/lifetime';
+import { remainingSecondsFrom } from '$lib/lifetime';
 import {
 	clearRequestHandoff,
 	retrievalFromFragment,
@@ -386,14 +387,15 @@ onMount(() => {
 		<p class="micro text-muted-foreground">private requester page</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
-	<section class="grid gap-3 rounded-xl border p-5" aria-label="Request status">
+	<section class="grid grid-cols-[1fr_auto] items-start gap-x-3 rounded-[14px] border bg-card px-5 py-[18px]" aria-label="Request status">
+		<div class="grid gap-1">
 		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
 		{:else if snapshot}
 			<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
 			<p role="status" class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}>{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It cannot be opened yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? (openLost || keyProblem ? 'A submission was accepted.' : 'You can open it once.') : snapshot.state === 'cancelled' ? 'Nothing more can be submitted or opened.' : content ? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.' : 'It was released once and cannot be opened again.'}</p>
 			{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
-				<p class="flex items-center gap-2.5">
+				<p class="flex items-center gap-2.5 text-sm">
 					<span class="relative flex size-2" aria-hidden="true">
 						<span class="absolute inline-flex size-full rounded-full bg-primary opacity-60 motion-safe:animate-ping"></span>
 						<span class="relative inline-flex size-2 rounded-full bg-primary"></span>
@@ -401,11 +403,12 @@ onMount(() => {
 					Checking automatically
 				</p>
 			{/if}
-			{#if !terminal || content}<p class="text-sm" aria-label="Time remaining">{formatRemaining(remaining)} remaining</p>{/if}
+			{#if !terminal || content}<RemainingTime seconds={remaining} aria-label="Time remaining" class="mt-1.5" />{/if}
 		{:else}<p role="status">{busy ? 'Loading request status…' : 'Request status is unknown.'}</p>{/if}
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
-		{#if !terminal}<Button variant="outline" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
+		</div>
+		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 text-[13px] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
 	</section>
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
 	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
@@ -418,25 +421,27 @@ onMount(() => {
 		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">Download {content.filename}</a>
 	{/if}
 	{#if snapshot?.state === 'submitted' && !terminal && !opened}
-		<Button class="h-11" disabled={busy || !privateKey} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
+		<Button size="cta" disabled={busy || !privateKey} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
 	{/if}
 	{#if submission && !terminal}
-		<section class="grid gap-3" aria-labelledby="submission-link-heading">
-			<h2 id="submission-link-heading" class="font-medium">Share the submission link</h2>
-			<p class="text-sm text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
-			<UrlField value={submission} label="Submission link" copyLabel="Copy submission link" />
-			<NativeShareButton recipientUrl={submission} />
-			<Button variant="outline" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show submission QR</Button>
+		<section class="grid gap-2.5" aria-labelledby="submission-link-heading">
+			<h2 id="submission-link-heading" class="text-[15px] font-medium">Share the submission link</h2>
+			<p class="text-[13px] text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
+			<UrlField value={submission} label="Submission link" copyLabel="Copy submission link" prominent />
+			<div class="flex flex-wrap items-start gap-2">
+				<NativeShareButton recipientUrl={submission} class="h-9 w-auto rounded-lg px-3 text-[13px]" />
+				<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show submission QR</Button>
+			</div>
 		</section>
 	{:else if !terminal}<p class="text-sm text-muted-foreground">Use the submission link you saved; it cannot be shown here again.</p>{/if}
 	{#if privateLink && !terminal}
-		<section class="grid gap-3 rounded-xl bg-muted/40 p-5" aria-labelledby="retrieval-link-heading">
-			<h2 id="retrieval-link-heading" class="font-medium">Keep your retrieval link private</h2>
-			<p class="text-sm text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
+		<section class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-[18px]" aria-labelledby="retrieval-link-heading">
+			<h2 id="retrieval-link-heading" class="text-[15px] font-medium">Keep your retrieval link private</h2>
+			<p class="text-[13px] leading-[1.55] text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
 			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
 		</section>
 	{/if}
-	{#if snapshot && !terminal}<Button variant="destructive" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
-	<a href={resolve('/request')} class="py-3 text-center text-sm underline underline-offset-4">Create another request</a>
+	{#if snapshot && !terminal}<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-[18px] dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
+	<a href={resolve('/request')} class="pb-3 text-center text-[13px] text-muted-foreground underline underline-offset-4">Create another request</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />

@@ -10,6 +10,8 @@ type Props = {
 	class?: string;
 	label?: string;
 	copyLabel?: string;
+	// The link the page exists to hand over gets a labeled primary copy button.
+	prominent?: boolean;
 };
 
 let {
@@ -17,7 +19,8 @@ let {
 	id,
 	class: className = '',
 	label = 'Share URL',
-	copyLabel = 'Copy to clipboard'
+	copyLabel = 'Copy to clipboard',
+	prominent = false
 }: Props = $props();
 
 let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -47,7 +50,7 @@ async function copy(): Promise<void> {
 	<div class={cn('relative flex items-center', className)}>
 		<Input
 			{id}
-			class="h-11 w-full truncate pr-12 font-mono text-sm"
+			class={cn('h-12 w-full truncate pr-12 font-mono text-sm', prominent && 'pr-24')}
 			value={value}
 			readonly
 			aria-label={label}
@@ -55,11 +58,13 @@ async function copy(): Promise<void> {
 		/>
 		<Button
 			type="button"
-			variant="ghost"
-			size="icon"
+			variant={prominent ? 'default' : 'ghost'}
+			size={prominent ? 'sm' : 'icon'}
 			class={cn(
-				'absolute right-1 size-9 text-muted-foreground hover:text-foreground',
-				copyState === 'copied' && 'bg-success/15 text-success'
+				prominent
+					? 'absolute right-1.5 h-9 gap-1.5 rounded-lg px-3 text-[13px]'
+					: 'absolute right-1.5 size-9 text-muted-foreground hover:text-foreground',
+				!prominent && copyState === 'copied' && 'bg-success/15 text-success'
 			)}
 			aria-label={copyLabel}
 			title="Copy"
@@ -68,6 +73,7 @@ async function copy(): Promise<void> {
 			}}
 		>
 			<CopyIcon class="size-4" aria-hidden="true" />
+			{#if prominent}Copy{/if}
 		</Button>
 	</div>
 	<p
