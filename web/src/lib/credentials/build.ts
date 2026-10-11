@@ -34,6 +34,15 @@ export function buildEnvelope(
 	};
 }
 
+// A credential worth sending has at least one non-blank title, note, or field value.
+export function hasCredentialContent(envelope: CredentialEnvelope): boolean {
+	return (
+		(envelope.title ?? '').trim().length > 0 ||
+		(envelope.notes ?? '').trim().length > 0 ||
+		envelope.fields.some((field) => field.value.trim().length > 0)
+	);
+}
+
 export function setFieldValue(
 	envelope: CredentialEnvelope,
 	fieldId: string,

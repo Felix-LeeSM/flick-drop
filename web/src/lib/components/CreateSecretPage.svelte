@@ -44,6 +44,7 @@ import {
 	CREDENTIAL_TYPES,
 	type CredentialEnvelope,
 	type CredentialType,
+	hasCredentialContent,
 	serializeCredential
 } from '$lib/credentials';
 import {
@@ -133,11 +134,7 @@ const selectedFileTooLarge = $derived(
 	// rejected before the slow zip runs. The server re-enforces the exact size.
 	pickedFiles.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes
 );
-const hasCredentialPayload = $derived(
-	(credentialEnvelope.title ?? '').trim().length > 0 ||
-		(credentialEnvelope.notes ?? '').trim().length > 0 ||
-		credentialEnvelope.fields.some((field) => field.value.trim().length > 0)
-);
+const hasCredentialPayload = $derived(hasCredentialContent(credentialEnvelope));
 const hasCreatePayload = $derived(
 	mode === 'text'
 		? plaintext.trim().length > 0

@@ -6,6 +6,7 @@ import {
 	CREDENTIAL_TEMPLATES,
 	CREDENTIAL_TYPES,
 	getCredentialTemplate,
+	hasCredentialContent,
 	parseCredential,
 	removeField,
 	serializeCredential,
@@ -190,5 +191,18 @@ describe('credential envelope builders', () => {
 		expect(updated.fields).not.toBe(envelope.fields);
 		expect(envelope.fields).toHaveLength(2);
 		expect(updated.fields).toEqual([{ id: 'custom-2', label: 'Second', value: '', secret: false }]);
+	});
+});
+
+describe('hasCredentialContent', () => {
+	it('rejects a blank template and accepts any filled title, note, or field', () => {
+		expect.assertions(4);
+
+		expect(hasCredentialContent(buildEnvelope('login'))).toBe(false);
+		expect(hasCredentialContent(buildEnvelope('login', { values: { password: '  ' } }))).toBe(
+			false
+		);
+		expect(hasCredentialContent(buildEnvelope('login', { values: { password: 'x' } }))).toBe(true);
+		expect(hasCredentialContent(buildEnvelope('custom', { notes: 'n' }))).toBe(true);
 	});
 });
