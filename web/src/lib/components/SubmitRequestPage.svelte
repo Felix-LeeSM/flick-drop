@@ -15,6 +15,7 @@ import {
 import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '$lib/api/secrets';
 import CredentialForm from '$lib/components/CredentialForm.svelte';
 import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
+import RemainingTime from '$lib/components/RemainingTime.svelte';
 import SecretTypeSelector from '$lib/components/SecretTypeSelector.svelte';
 import { Button } from '$lib/components/ui/button';
 import { Input } from '$lib/components/ui/input';
@@ -30,7 +31,7 @@ import {
 	serializeCredential
 } from '$lib/credentials';
 import { encryptRequestPayload, importRequestPublicKey } from '$lib/crypto/requests';
-import { formatRemaining, remainingSecondsFrom } from '$lib/lifetime';
+import { remainingSecondsFrom } from '$lib/lifetime';
 import { submissionFromFragment } from '$lib/state/request-links';
 import {
 	type AttemptOutcome,
@@ -535,7 +536,7 @@ onMount(() => {
 		</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 		{#if !terminal}<p class="text-sm text-muted-foreground">Only the requester can open what you send.</p>{/if}
-		{#if instructions && !terminal}<p class="text-sm" aria-label="Time remaining">{formatRemaining(remaining)} remaining</p>{/if}
+		{#if instructions && !terminal}<RemainingTime seconds={remaining} aria-label="Time remaining" class="mt-1" />{/if}
 	</div>
 	{#if resumed}<p role="status" class="text-sm text-muted-foreground">The previous in-memory attempt was discarded when you left or reloaded. It may already have been accepted.</p>{/if}
 	{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
@@ -547,7 +548,7 @@ onMount(() => {
 	{:else if phase === 'unavailable'}
 		<p role="status">This link no longer accepts submissions. If you still need to send something, ask the requester for a new link.</p>
 	{:else if phase === 'unknown' || (phase === 'submitting' && pending)}
-		<section class="grid gap-4 rounded-xl border p-5" aria-label="Submission outcome">
+		<section class="grid gap-4 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Submission outcome">
 			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : 'Submission outcome unknown.'}</p>
 			<p class="text-sm text-muted-foreground">Keep this tab open and check the submission before retrying. A retry resends the same encrypted content; leaving or reloading discards it.</p>
 			{#if reservation}<p class="text-sm">Upload reservation: {Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60)}m {remainingSecondsFrom(reservation.reservation_expires_at, now) % 60}s remaining.</p>{/if}
@@ -556,10 +557,10 @@ onMount(() => {
 			{#if retryReady}<p role="status">The server has not accepted this attempt. You can retry the same submission.</p><Button disabled={busy} onclick={() => { void retry(); }}>Retry same submission</Button>{/if}
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
-		<form class="grid gap-5" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+		<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
 			<SecretTypeSelector value={mode} disabled={busy} onSelect={switchMode} />
 			{#if mode === 'text'}
-				<div class="grid gap-2"><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} bind:value={message} disabled={busy} required autocomplete="off" /></div>
+				<div class="grid gap-2"><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} class="min-h-44 resize-y px-3.5 py-3" bind:value={message} disabled={busy} required autocomplete="off" /></div>
 			{:else if mode === 'file'}
 				<div class="grid gap-2"><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
 			{:else}
