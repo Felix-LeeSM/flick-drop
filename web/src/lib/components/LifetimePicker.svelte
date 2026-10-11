@@ -79,42 +79,47 @@ function updateCustom(): void {
 				{option.label}
 			</Button>
 		{/each}
-		<div
-			class={`${buttonVariants({ variant: customActive ? 'toggleActive' : 'toggle', size: 'pill' })} px-1.5`}
+		<!-- The whole pill focuses the value field, so the touch target is not just the digits. -->
+		<label
+			class={`${buttonVariants({ variant: customActive ? 'toggleActive' : 'toggle', size: 'pill' })} cursor-text`}
 			class:opacity-50={disabled}
 		>
-			<input
-				type="text"
-				inputmode="numeric"
-				aria-label="Custom lifetime value"
-				aria-invalid={invalid}
-				aria-describedby={invalid ? `${id}-error` : undefined}
-				placeholder="2"
-				value={customValue}
-				class="w-12 min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-xs leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
-				{disabled}
-				onfocus={selectCustom}
-				oninput={(event) => {
-					customValue = event.currentTarget.value.replace(/\D/g, '');
-					event.currentTarget.value = customValue;
-					updateCustom();
-				}}
-			/>
-			<select
-				value={customUnit}
-				aria-label="Custom lifetime unit"
-				class="cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-xs leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
-				{disabled}
-				onchange={(event) => {
-					customUnit = event.currentTarget.value as Unit;
-					updateCustom();
-				}}
-			>
-				<option value="minutes">min</option>
-				<option value="hours">hours</option>
-				<option value="days">days</option>
-			</select>
-		</div>
+			<!-- iOS Safari zooms into focused fields under 16px: render at 16px, then scale to the 12px pill text on phones. -->
+			<span class="flex items-center gap-1.5 max-sm:-mx-2 max-sm:scale-75">
+				<input
+					type="text"
+					inputmode="numeric"
+					aria-label="Custom lifetime value"
+					aria-invalid={invalid}
+					aria-describedby={invalid ? `${id}-error` : undefined}
+					placeholder="2"
+					value={customValue}
+					size={Math.max(customValue.length, 1)}
+					class="min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					{disabled}
+					onfocus={selectCustom}
+					oninput={(event) => {
+						customValue = event.currentTarget.value.replace(/\D/g, '');
+						event.currentTarget.value = customValue;
+						updateCustom();
+					}}
+				/>
+				<select
+					value={customUnit}
+					aria-label="Custom lifetime unit"
+					class="field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					{disabled}
+					onchange={(event) => {
+						customUnit = event.currentTarget.value as Unit;
+						updateCustom();
+					}}
+				>
+					<option value="minutes">min</option>
+					<option value="hours">hours</option>
+					<option value="days">days</option>
+				</select>
+			</span>
+		</label>
 	</div>
 	{#if invalid}
 		<p id={`${id}-error`} class="text-sm text-destructive" role="alert" aria-live="assertive">
