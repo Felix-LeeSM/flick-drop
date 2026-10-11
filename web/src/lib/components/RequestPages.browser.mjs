@@ -530,3 +530,44 @@ test('failed runtime config cannot consume a custom 2 MiB inline request before 
 		await senderContext.close();
 	}
 });
+
+test('private requester status card keeps the refresh button clear of status text when text is enlarged', async () => {
+	const context = await browser.newContext({ viewport: { width: 360, height: 700 } });
+	try {
+		const mock = fixture({ state: 'submitted' });
+		await mock.attach(context);
+		const page = await context.newPage();
+		await page.goto(`${baseUrl}${ownerPath}`);
+		await readyOwner(page);
+		await page.evaluate(() => {
+			document.documentElement.style.fontSize = '150%';
+		});
+		// The status text and button animate their new size (transition-all); measure once it settles.
+		await page.waitForFunction(
+			() =>
+				document.querySelector('[aria-label="Request status"]').getAnimations({ subtree: true })
+					.length === 0
+		);
+		const boxes = await page.evaluate(() => {
+			const box = (element) => element.getBoundingClientRect().toJSON();
+			const status = document.querySelector('[aria-label="Request status"] p[role="status"]');
+			const refresh = [...document.querySelectorAll('button')].find(
+				(button) => button.textContent.trim() === 'Refresh status'
+			);
+			return {
+				status: box(status),
+				refresh: box(refresh),
+				overflow: document.documentElement.scrollWidth > innerWidth
+			};
+		});
+		assert.equal(boxes.overflow, false);
+		const overlaps =
+			boxes.status.left < boxes.refresh.right &&
+			boxes.refresh.left < boxes.status.right &&
+			boxes.status.top < boxes.refresh.bottom &&
+			boxes.refresh.top < boxes.status.bottom;
+		assert.equal(overlaps, false);
+	} finally {
+		await context.close();
+	}
+});

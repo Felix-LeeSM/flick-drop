@@ -221,16 +221,16 @@ onMount(() => {
 		<p role="status" class="rounded-[14px] border bg-card px-5 py-4.5">{expired ? 'Management link expired.' : 'Management link unavailable.'}</p>
 	{:else}
 		<section aria-label="Delivery status" class="grid gap-1 rounded-[14px] border bg-card px-5 py-4.5">
-			<div class="flex items-center justify-between gap-3">
+			<div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
 				{#if snapshot}
-					<h2 class="flex items-center gap-2.5 text-[1.0625rem] font-medium">
+					<h2 class="flex grow basis-32 items-center gap-2.5 text-[1.0625rem] font-medium">
 						<span class={cn('size-2 shrink-0 rounded-full', statusDot(snapshot.status))} aria-hidden="true"></span>
 						{errorMessage ? 'Last known status: ' : ''}{statusCopy[snapshot.status].title}
 					</h2>
 				{:else}
 					<p role="status">{busy ? 'Loading delivery status…' : 'Delivery status is unknown.'}</p>
 				{/if}
-				<Button variant="ghost" size="sm" class="text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>
+				<Button variant="ghost" size="sm" class="ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>
 			</div>
 			{#if snapshot}
 				<p class="pl-4.5 text-sm text-muted-foreground">{statusCopy[snapshot.status].detail}</p>

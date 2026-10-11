@@ -387,8 +387,8 @@ onMount(() => {
 		<p class="micro text-muted-foreground">private requester page</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
-	<section class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Request status">
-		<div class="grid gap-1">
+	<section class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Request status">
+		<div class="grid grow basis-32 gap-1">
 		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
 		{:else if snapshot}
@@ -408,7 +408,7 @@ onMount(() => {
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</div>
-		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
+		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
 	</section>
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
 	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
