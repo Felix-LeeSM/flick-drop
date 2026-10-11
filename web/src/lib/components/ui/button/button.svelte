@@ -7,7 +7,9 @@ export const buttonVariants = tv({
 	base: "focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 rounded-md border border-transparent bg-clip-padding text-sm font-medium focus-visible:ring-3 active:not-aria-[haspopup]:translate-y-px aria-invalid:ring-3 [&_svg:not([class*='size-'])]:size-4 group/button inline-flex shrink-0 items-center justify-center whitespace-nowrap transition-all outline-none select-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
 	variants: {
 		variant: {
-			default: 'bg-primary text-primary-foreground hover:bg-primary/80',
+			// Disabled reads as "not yet": muted at full opacity, never a faded primary.
+			default:
+				'bg-primary text-primary-foreground hover:bg-primary/80 disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
 			outline:
 				'border-border bg-background hover:bg-muted hover:text-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 aria-expanded:bg-muted aria-expanded:text-foreground shadow-xs',
 			secondary:
@@ -35,7 +37,8 @@ export const buttonVariants = tv({
 				'size-8 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-md',
 			'icon-lg': 'size-10',
 			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
-			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs'
+			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs',
+			cta: 'h-12 w-full gap-2 rounded-[10px] px-4 text-[0.9375rem] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.14),0_10px_22px_-12px_color-mix(in_srgb,var(--primary)_75%,transparent)] disabled:shadow-none'
 		}
 	},
 	defaultVariants: {

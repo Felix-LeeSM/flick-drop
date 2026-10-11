@@ -501,7 +501,7 @@ function modeLabel(value: CreateMode): string {
 							one-time link
 						</p>
 						<h1
-							class="font-serif text-3xl sm:text-4xl"
+							class="page-title"
 							tabindex="-1"
 							bind:this={successHeading}
 						>
@@ -561,10 +561,10 @@ function modeLabel(value: CreateMode): string {
 			<section class="grid gap-7">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-muted-foreground">
-						<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
+						<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 						end-to-end encrypted · burns after read
 					</p>
-					<h1 class="font-serif text-3xl sm:text-4xl">Create a secret</h1>
+					<h1 class="page-title">Create a secret</h1>
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
@@ -741,11 +741,7 @@ function modeLabel(value: CreateMode): string {
 					<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" />
 
 					<div class="grid gap-3">
-						<Button
-							type="submit"
-							class="h-11 w-full shadow-lg shadow-primary/25"
-							disabled={!canCreate}
-						>
+						<Button type="submit" size="cta" disabled={!canCreate}>
 							<LockKeyholeIcon class="size-4" aria-hidden="true" />
 							{isCreating ? 'Creating' : 'Create link'}
 						</Button>

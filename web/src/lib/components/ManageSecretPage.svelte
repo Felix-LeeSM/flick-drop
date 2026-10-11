@@ -205,7 +205,7 @@ onMount(() => {
 <DeliveryFrame>
 	<div class="grid gap-1.5">
 		<p class="micro text-muted-foreground">private sender page</p>
-		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>{recipientUrl ? 'Link created' : 'Manage delivery'}</h1>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{recipientUrl ? 'Link created' : 'Manage delivery'}</h1>
 		<p class="text-sm text-muted-foreground">Check one delivery and cancel it before it is opened.</p>
 	</div>
 	{#if expired || unavailable}

@@ -45,7 +45,7 @@
 	--sidebar-border: oklch(0.9 0.012 240);
 	--sidebar-ring: oklch(0.5 0.11 195);
 	/* Atmospheric layer tuning: subtle on light, deeper on dark. */
-	--glow: 7%;
+	--glow: 5%;
 	--noise-op: 0.022;
 }
 
@@ -134,14 +134,26 @@
 	--radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Mono micro-label: small, wide-tracked uppercase caption used for section hints. */
+/* Mono micro-label: small uppercase caption used for section hints. */
 @utility micro {
 	font-family: var(--font-mono);
 	font-size: 0.625rem;
 	line-height: 1rem;
-	letter-spacing: 0.16em;
+	letter-spacing: 0.06em;
 	text-transform: uppercase;
 	font-weight: 500;
+}
+
+/* Page heading: one serif size for every app page title. */
+@utility page-title {
+	@apply font-serif;
+	font-size: 2.375rem;
+	line-height: 1.02;
+	letter-spacing: -0.01em;
+
+	@media (width >= 40rem) {
+		font-size: 2.875rem;
+	}
 }
 
 @layer base {

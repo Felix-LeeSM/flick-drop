@@ -571,6 +571,45 @@ for (const width of [375, 1280]) {
 	});
 }
 
+for (const width of [320, 375]) {
+	test(`shared header wraps within a ${width}px viewport instead of widening the page when text is enlarged`, async () => {
+		const page = await browser.newPage({ viewport: { width, height: 700 } });
+		try {
+			await fixture(page);
+			// Both directions: the home page's link label ("Request a secret") is longer than the
+			// request page's ("Send a secret"), and the longer one is the one that used to overflow.
+			for (const form of forms) {
+				await openForm(page, form);
+				// Header sizes are in rem, so a larger text setting widens the wordmark and the link.
+				await page.evaluate(() => {
+					document.documentElement.style.fontSize = '150%';
+				});
+				// The buttons animate their new size (transition-all); measure once it settles.
+				await page.waitForFunction(
+					() => document.querySelector('header').getAnimations({ subtree: true }).length === 0
+				);
+				// Scoped to the header's own elements, not document.documentElement.scrollWidth: the
+				// create page has a pre-existing, unrelated type-selector overflow at large text sizes
+				// (main, before this PR stack) that would otherwise make this test flaky for forms[0].
+				const header = await page.evaluate(() => {
+					const box = (element) => element.getBoundingClientRect().toJSON();
+					const root = document.querySelector('header');
+					return {
+						brand: box(root.querySelector('a')),
+						link: box(root.querySelector('nav a')),
+						toggle: box(root.querySelector('button'))
+					};
+				});
+				assert.ok(header.link.right <= width, form.path);
+				assert.ok(header.toggle.right <= width, form.path);
+				assert.ok(header.toggle.top >= header.brand.bottom, form.path);
+			}
+		} finally {
+			await page.close();
+		}
+	});
+}
+
 test('320px shared header keeps the link beside the theme toggle without overflow', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
@@ -596,3 +635,45 @@ test('320px shared header keeps the link beside the theme toggle without overflo
 		await page.close();
 	}
 });
+
+for (const theme of ['light', 'dark']) {
+	test(`disabled Create link reads as disabled in the ${theme} theme`, async () => {
+		const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+		try {
+			await page.addInitScript((value) => localStorage.setItem('flick-theme', value), theme);
+			await fixture(page);
+			await openForm(page, forms[0]);
+			const button = page.getByRole('button', { name: 'Create link', exact: true });
+			assert.equal(await button.isDisabled(), true);
+			assert.equal(
+				await page.evaluate(() => document.documentElement.classList.contains('dark')),
+				theme === 'dark'
+			);
+			// 50% opacity made it faded teal in light and nearly enabled-looking in dark.
+			const style = await button.evaluate((element) => {
+				const probe = document.createElement('span');
+				probe.style.backgroundColor = 'var(--muted)';
+				document.body.append(probe);
+				const muted = getComputedStyle(probe).backgroundColor;
+				probe.remove();
+				const computed = getComputedStyle(element);
+				const layers =
+					computed.boxShadow === 'none' ? [] : computed.boxShadow.split(/,(?![^(]*\))/);
+				return {
+					muted,
+					background: computed.backgroundColor,
+					opacity: computed.opacity,
+					shadow: layers.some((layer) => !layer.includes('rgba(0, 0, 0, 0)'))
+				};
+			});
+			assert.deepEqual(style, {
+				muted: style.muted,
+				background: style.muted,
+				opacity: '1',
+				shadow: false
+			});
+		} finally {
+			await page.close();
+		}
+	});
+}
