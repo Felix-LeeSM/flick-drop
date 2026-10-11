@@ -196,7 +196,7 @@ describe('credential envelope builders', () => {
 
 describe('hasCredentialContent', () => {
 	it('rejects a blank template and accepts any filled title, note, or field', () => {
-		expect.assertions(4);
+		expect.assertions(5);
 
 		expect(hasCredentialContent(buildEnvelope('login'))).toBe(false);
 		expect(hasCredentialContent(buildEnvelope('login', { values: { password: '  ' } }))).toBe(
@@ -204,5 +204,6 @@ describe('hasCredentialContent', () => {
 		);
 		expect(hasCredentialContent(buildEnvelope('login', { values: { password: 'x' } }))).toBe(true);
 		expect(hasCredentialContent(buildEnvelope('custom', { notes: 'n' }))).toBe(true);
+		expect(hasCredentialContent(buildEnvelope('custom', { title: 't' }))).toBe(true);
 	});
 });

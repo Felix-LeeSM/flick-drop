@@ -94,9 +94,8 @@ function clearInput(): void {
 	if (fileInput) {
 		fileInput.value = '';
 	}
-	if (isCredentialType(mode)) {
-		credential = buildEnvelope(mode);
-	}
+	// Reset even in Text or File mode, so credentials typed before switching do not stay in memory.
+	credential = buildEnvelope(isCredentialType(mode) ? mode : 'login');
 }
 function switchMode(next: typeof mode): void {
 	if (next !== mode) {

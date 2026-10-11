@@ -264,6 +264,11 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByText('Fill in at least one field.', { exact: true }).waitFor();
 		assert.equal(mock.bodies.length, 0);
+		// The serialized credential counts against the text limit (1,024 bytes in this fixture).
+		await sender.getByLabel('Password', { exact: true }).fill('x'.repeat(1100));
+		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+		await sender.getByText('Choose content between 1 and 1,024 bytes.', { exact: true }).waitFor();
+		assert.equal(mock.bodies.length, 0);
 		await sender.getByLabel('Username', { exact: true }).fill('synthetic-request-user');
 		await sender.getByLabel('Password', { exact: true }).fill('synthetic-request-password');
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
@@ -278,8 +283,11 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		await owner.getByRole('button', { name: 'Show Password', exact: true }).click();
 		await owner.getByText('synthetic-request-password', { exact: true }).waitFor();
 		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
-		await privacy(owner, mock.calls, vectors.private_key, 'synthetic-request-password');
-		await privacy(sender, mock.calls, vectors.private_key, 'synthetic-request-password');
+		for (const value of ['synthetic-request-user', 'synthetic-request-password']) {
+			await privacy(owner, mock.calls, vectors.private_key, value);
+			await privacy(sender, mock.calls, vectors.private_key, value);
+			assert.equal(owner.url().includes(value) || sender.url().includes(value), false);
+		}
 	} finally {
 		await senderContext.close();
 		await ownerContext.close();
