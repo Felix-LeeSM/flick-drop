@@ -567,7 +567,7 @@ function modeLabel(value: CreateMode): string {
 					<h1 class="page-title">Create a secret</h1>
 				</div>
 
-				<form class="grid gap-5" autocomplete="off" onsubmit={submitCreate}>
+				<form class="grid gap-6" autocomplete="off" onsubmit={submitCreate}>
 
 					<SecretTypeSelector value={mode} disabled={!isHydrated || isCreating} onSelect={switchMode} />
 
@@ -576,7 +576,7 @@ function modeLabel(value: CreateMode): string {
 							<Label for="secret-text" class="text-sm font-medium">Message</Label>
 							<Textarea
 								id="secret-text"
-								class="min-h-48 resize-y"
+								class="min-h-44 resize-y px-3.5 py-3"
 								placeholder="Paste text"
 								bind:value={plaintext}
 								disabled={isCreating}
@@ -688,10 +688,8 @@ function modeLabel(value: CreateMode): string {
 							</Label>
 						</div>
 						{#if usePassphrase}
-							<!-- The checkbox above carries the only visible passphrase wording, so
-							     the field itself needs its own associated label to have an
-							     accessible name (root AGENTS.md). -->
-							<Label for="secret-passphrase" class="sr-only">Passphrase</Label>
+							<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
+							<Label for="secret-passphrase" class="mt-0.5 -mb-1 text-[0.8125rem]/[1] font-medium text-muted-foreground">Passphrase</Label>
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
@@ -704,7 +702,6 @@ function modeLabel(value: CreateMode): string {
 									data-bwignore="true"
 									data-lpignore="true"
 									class="h-11 pr-11"
-									placeholder="Required"
 									bind:value={passphrase}
 									disabled={isCreating}
 									required
@@ -727,11 +724,11 @@ function modeLabel(value: CreateMode): string {
 									{/if}
 								</Button>
 							</div>
-							<p class="text-sm text-muted-foreground">
+							<p class="text-[0.8125rem] text-muted-foreground">
 								Your recipient will need this passphrase. Send it separately from the link.
 							</p>
 						{:else}
-							<p class="text-sm text-muted-foreground">
+							<p class="text-[0.8125rem] text-muted-foreground">
 								Anyone with the link can open this once. The decryption key is embedded in the URL
 								fragment.
 							</p>
@@ -784,9 +781,9 @@ function modeLabel(value: CreateMode): string {
 				</form>
 			</section>
 		{/if}
-		<nav aria-label="Sharing guides" class="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm text-muted-foreground">
-			<a href={resolve('/guides/password-sharing/')} class="py-2 underline underline-offset-4">Sharing passwords</a>
-			<a href={resolve('/guides/temporary-file-sharing/')} class="py-2 underline underline-offset-4">Sharing temporary files</a>
+		<nav aria-label="Sharing guides" class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground">
+			<a href={resolve('/guides/password-sharing/')} class="py-2 underline-offset-4 hover:underline">Sharing passwords</a>
+			<a href={resolve('/guides/temporary-file-sharing/')} class="py-2 underline-offset-4 hover:underline">Sharing temporary files</a>
 		</nav>
 </DeliveryFrame>
 
