@@ -79,14 +79,16 @@ function updateCustom(): void {
 				{option.label}
 			</Button>
 		{/each}
-		<!-- The whole pill focuses the value field, so the touch target is not just the digits. -->
-		<label
-			class={`${buttonVariants({ variant: customActive ? 'toggleActive' : 'toggle', size: 'pill' })} cursor-text`}
+		<div
+			class={`${buttonVariants({ variant: customActive ? 'toggleActive' : 'toggle', size: 'pill' })} relative`}
 			class:opacity-50={disabled}
 		>
+			<!-- An empty label covers the pill, so tapping anywhere but the unit focuses the value; a label may hold only one control. -->
+			<label for={`${id}-custom-value`} class="absolute inset-0 cursor-text"></label>
 			<!-- iOS Safari zooms into focused fields under 16px: render at 16px, then scale to the 12px pill text on phones. -->
-			<span class="flex items-center gap-1.5 max-sm:-mx-2 max-sm:scale-75">
+			<span class="pointer-events-none relative flex items-center gap-1.5 max-sm:-mx-2 max-sm:scale-75">
 				<input
+					id={`${id}-custom-value`}
 					type="text"
 					inputmode="numeric"
 					aria-label="Custom lifetime value"
@@ -94,8 +96,8 @@ function updateCustom(): void {
 					aria-describedby={invalid ? `${id}-error` : undefined}
 					placeholder="2"
 					value={customValue}
-					size={Math.max(customValue.length, 1)}
-					class="min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					size={Math.min(Math.max(customValue.length, 1), 5)}
+					class="pointer-events-auto min-w-0 rounded-sm border-0 bg-transparent p-0 text-center font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
 					{disabled}
 					onfocus={selectCustom}
 					oninput={(event) => {
@@ -107,7 +109,7 @@ function updateCustom(): void {
 				<select
 					value={customUnit}
 					aria-label="Custom lifetime unit"
-					class="field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
+					class="pointer-events-auto field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-sm"
 					{disabled}
 					onchange={(event) => {
 						customUnit = event.currentTarget.value as Unit;
@@ -119,7 +121,7 @@ function updateCustom(): void {
 					<option value="days">days</option>
 				</select>
 			</span>
-		</label>
+		</div>
 	</div>
 	{#if invalid}
 		<p id={`${id}-error`} class="text-sm text-destructive" role="alert" aria-live="assertive">

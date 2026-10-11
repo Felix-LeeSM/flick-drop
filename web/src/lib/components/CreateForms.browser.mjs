@@ -261,6 +261,20 @@ async function phoneRow(page, group, selected) {
 		await labelsShown(group),
 		typeNames.map((name) => name === selected)
 	);
+	assert.equal(
+		await group.evaluate((pill) => {
+			const outer = pill.getBoundingClientRect();
+			return (
+				outer.right <= innerWidth &&
+				[...pill.querySelectorAll('button')].every((button) => {
+					const box = button.getBoundingClientRect();
+					return box.left >= outer.left && box.right <= outer.right;
+				})
+			);
+		}),
+		true,
+		'type buttons overflow the selector'
+	);
 }
 
 async function editorVisible(page, name) {
@@ -309,7 +323,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 				await indicator.evaluate((node) => getComputedStyle(node).transitionDuration),
 				'0s'
 			);
-			for (const width of [375, 544, 1280]) {
+			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
 				await indicatorAligned(page);
 				const initial = await boxes(group);
@@ -332,6 +346,9 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 					stable(await boxes(group), initial);
 				} else {
 					await phoneRow(page, group, 'Identity');
+					// Custom has the widest name, so it is the tightest fit on the narrowest phone.
+					await group.getByRole('button', { name: 'Custom', exact: true }).click();
+					await phoneRow(page, group, 'Custom');
 				}
 				const durations = await indicator.evaluate((node) =>
 					getComputedStyle(node).transitionDuration.split(',').map(Number.parseFloat)
@@ -510,6 +527,26 @@ for (const width of [375, 1280]) {
 				}
 				await valueInput(page).focus();
 				stable(await boxes(lifetime), initial);
+				// iOS Safari zooms into focused fields under 16px, so phones keep 16px and scale it down.
+				if (width < 640) {
+					assert.equal(
+						await valueInput(page).evaluate((input) => getComputedStyle(input).fontSize),
+						'16px'
+					);
+				}
+				// Tapping the chip beside the digits still focuses the value field.
+				const edge = await valueInput(page).evaluate((input) => {
+					input.blur();
+					const chip = input.closest('div').getBoundingClientRect();
+					const point = { x: chip.left + 3, y: chip.top + chip.height / 2 };
+					return { ...point, target: document.elementFromPoint(point.x, point.y).tagName };
+				});
+				assert.equal(edge.target, 'LABEL');
+				await page.mouse.click(edge.x, edge.y);
+				assert.equal(
+					await valueInput(page).evaluate((input) => input === document.activeElement),
+					true
+				);
 				assert.equal(
 					await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 					true

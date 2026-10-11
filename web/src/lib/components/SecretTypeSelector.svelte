@@ -109,7 +109,7 @@ $effect(() => {
 				'relative z-10 gap-2 rounded-full border-transparent bg-transparent px-2.5 hover:bg-transparent active:not-aria-[haspopup]:translate-y-0 dark:hover:bg-transparent',
 				selected
 					? 'text-background hover:text-background max-md:shrink-0 max-md:px-3'
-					: 'text-muted-foreground max-md:min-w-9 max-md:flex-1 max-md:px-0',
+					: 'text-muted-foreground max-md:min-w-7 max-md:flex-1 max-md:px-0',
 				!ready && selected && 'bg-foreground'
 			)}
 			data-type={option.type}
