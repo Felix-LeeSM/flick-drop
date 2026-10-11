@@ -689,7 +689,7 @@ function modeLabel(value: CreateMode): string {
 						</div>
 						{#if usePassphrase}
 							<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
-							<Label for="secret-passphrase" class="-mb-1 text-[13px] font-medium text-muted-foreground">Passphrase</Label>
+							<Label for="secret-passphrase" class="-mb-1 text-[13px]/[1] font-medium text-muted-foreground">Passphrase</Label>
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
@@ -724,11 +724,11 @@ function modeLabel(value: CreateMode): string {
 									{/if}
 								</Button>
 							</div>
-							<p class="text-sm text-muted-foreground">
+							<p class="text-[13px] text-muted-foreground">
 								Your recipient will need this passphrase. Send it separately from the link.
 							</p>
 						{:else}
-							<p class="text-sm text-muted-foreground">
+							<p class="text-[13px] text-muted-foreground">
 								Anyone with the link can open this once. The decryption key is embedded in the URL
 								fragment.
 							</p>

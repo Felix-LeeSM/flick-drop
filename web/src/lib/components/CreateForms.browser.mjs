@@ -537,8 +537,8 @@ for (const width of [375, 1280]) {
 				}
 				await valueInput(page).focus();
 				stable(await boxes(lifetime), initial);
-				// iOS Safari zooms into focused fields under 16px, so the field keeps 16px at every
-				// width and is scaled down to the preset chips' text size.
+				// iOS Safari zooms into focused fields under 16px, so the value and unit fields keep
+				// 16px at every width and are scaled down to the preset chips' text size.
 				const sizes = await valueInput(page).evaluate((input) => {
 					const scale = getComputedStyle(input.parentElement).scale;
 					const factor =
@@ -546,11 +546,12 @@ for (const width of [375, 1280]) {
 					const preset = input.closest('[role="group"]').querySelector('button');
 					return {
 						field: getComputedStyle(input).fontSize,
+						unit: getComputedStyle(input.parentElement.querySelector('select')).fontSize,
 						rendered: Number.parseFloat(getComputedStyle(input).fontSize) * factor,
 						preset: Number.parseFloat(getComputedStyle(preset).fontSize)
 					};
 				});
-				assert.equal(sizes.field, '16px');
+				assert.deepEqual([sizes.field, sizes.unit], ['16px', '16px']);
 				assert.equal(sizes.rendered, sizes.preset);
 				// Tapping the chip beside the digits still focuses the value field.
 				const edge = await valueInput(page).evaluate((input) => {
@@ -696,6 +697,8 @@ test('passphrase field shows its own label without a placeholder', async () => {
 		// A screen-reader-only label is a 1px box, which Playwright still reports as visible.
 		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
 		assert.ok(label.width > 40 && label.height > 10);
+		// The label and field start at the form's left edge, not indented under the checkbox.
+		assert.equal(label.x, (await field.boundingBox()).x);
 	} finally {
 		await page.close();
 	}
