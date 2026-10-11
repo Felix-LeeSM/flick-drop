@@ -13,3 +13,15 @@ export function remainingSecondsFrom(expiresAt: string, nowMs: number): number {
 	}
 	return Math.max(0, Math.round((expiresMs - nowMs) / 1000));
 }
+
+// Countdown label shared by delivery and request pages: two largest units, so a
+// seven-day lifetime reads "6d 23h" rather than "10079m 59s".
+export function formatRemaining(seconds: number): string {
+	if (seconds >= 86_400) {
+		return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3600)}h`;
+	}
+	if (seconds >= 3600) {
+		return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+	}
+	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
