@@ -252,7 +252,11 @@ for (const outcome of ['waiting', 'accepted']) {
 }
 
 test('credential templates submit as FLCR1 text and open in the credential view', async () => {
-	const senderContext = await browser.newContext({ viewport: { width: 375, height: 812 } });
+	// en-US pins the thousands separator in the "1,024 bytes" limit message.
+	const senderContext = await browser.newContext({
+		viewport: { width: 375, height: 812 },
+		locale: 'en-US'
+	});
 	const ownerContext = await browser.newContext();
 	try {
 		const mock = fixture();
