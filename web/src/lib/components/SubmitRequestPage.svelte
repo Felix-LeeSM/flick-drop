@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ShieldCheckIcon } from '@lucide/svelte';
 import { onMount, tick as render } from 'svelte';
 import { defaultLimits, getVerifiedConfig } from '$lib/api/config';
 import {
@@ -29,7 +30,7 @@ import {
 	serializeCredential
 } from '$lib/credentials';
 import { encryptRequestPayload, importRequestPublicKey } from '$lib/crypto/requests';
-import { remainingSecondsFrom } from '$lib/lifetime';
+import { formatRemaining, remainingSecondsFrom } from '$lib/lifetime';
 import { submissionFromFragment } from '$lib/state/request-links';
 import {
 	type AttemptOutcome,
@@ -38,6 +39,7 @@ import {
 	inspectRequestAttempt,
 	uploadExpired
 } from '$lib/state/request-upload';
+import { formatBytes } from '$lib/utils';
 
 let { requestId }: { requestId: string } = $props();
 const api = createRequestApiClient();
@@ -526,24 +528,28 @@ onMount(() => {
 
 <svelte:head><title>Submit a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
 <DeliveryFrame>
-	<div class="grid gap-2">
-		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
-		<p class="text-sm text-muted-foreground">Your browser encrypts the content for the requester. The first accepted submission wins.</p>
-		{#if instructions && !terminal}<p class="text-sm" aria-label="Time remaining">{Math.floor(remaining / 60)}m {remaining % 60}s remaining</p>{/if}
+	<div class="grid gap-1.5">
+		<p class="micro flex items-center gap-1.5 text-muted-foreground">
+			<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
+			end-to-end encrypted · one-time request
+		</p>
+		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
+		{#if !terminal}<p class="text-sm text-muted-foreground">Only the requester can open what you send.</p>{/if}
+		{#if instructions && !terminal}<p class="text-sm" aria-label="Time remaining">{formatRemaining(remaining)} remaining</p>{/if}
 	</div>
-	{#if resumed}<p role="status" class="text-sm text-muted-foreground">The previous in-memory attempt was discarded when you left or reloaded. Its submission may already have been accepted. This page cannot recover or retry that attempt.</p>{/if}
+	{#if resumed}<p role="status" class="text-sm text-muted-foreground">The previous in-memory attempt was discarded when you left or reloaded. It may already have been accepted.</p>{/if}
 	{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if phase === 'accepted'}
-		<p role="status">The server confirmed acceptance. This does not confirm that the requester retrieved or read it.</p>
+		<p role="status">Only the requester can open it.</p>
 	{:else if hasExpired()}
-		<p role="status">The deadline passed. Ask the requester to create a new request.</p>
+		<p role="status">Ask the requester for a new link.</p>
 	{:else if phase === 'unavailable'}
-		<p role="status">This link is no longer accepting submissions. It may already have a submission, have been cancelled, or have expired.</p>
+		<p role="status">This link no longer accepts submissions. If you still need to send something, ask the requester for a new link.</p>
 	{:else if phase === 'unknown' || (phase === 'submitting' && pending)}
 		<section class="grid gap-4 rounded-xl border p-5" aria-label="Submission outcome">
 			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : 'Submission outcome unknown.'}</p>
-			<p class="text-sm text-muted-foreground">Keep this tab open. Check the attempt before retrying. A retry sends exactly the same encrypted content. Reloading or leaving discards this attempt; Flick cannot recover it for you.</p>
+			<p class="text-sm text-muted-foreground">Keep this tab open and check the submission before retrying. A retry resends the same encrypted content; leaving or reloading discards it.</p>
 			{#if reservation}<p class="text-sm">Upload reservation: {Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60)}m {remainingSecondsFrom(reservation.reservation_expires_at, now) % 60}s remaining.</p>{/if}
 			<Button variant="outline" disabled={busy} onclick={() => { void checkAttempt(); }}>Check submission</Button>
 			{#if pending?.ciphertext}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? 'Retry cancellation' : 'Cancel upload'}</Button><p class="text-sm text-muted-foreground">Cancellation must be confirmed by the server before another attempt. Stopping the transfer does not delete uploaded bytes; server cleanup handles them.</p>{/if}
@@ -559,7 +565,7 @@ onMount(() => {
 			{:else}
 				<div class="grid gap-2.5"><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
 			{/if}
-			<p class="text-sm text-muted-foreground">{(mode === 'file' ? limits.maxFileBytes : limits.maxTextBytes).toLocaleString()} bytes maximum. One file per request. File names are encrypted too. {limits.maxFileBytes > limits.maxTextBytes ? 'Larger files use an encrypted upload and require server verification.' : 'Large-file storage is unavailable; only inline files are supported.'}</p>
+			{#if mode === 'file'}<p class="text-sm text-muted-foreground">One file, up to {formatBytes(limits.maxFileBytes)}.</p>{/if}
 			<Button type="submit" class="h-11" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
 		</form>
 	{:else if phase === 'loading'}

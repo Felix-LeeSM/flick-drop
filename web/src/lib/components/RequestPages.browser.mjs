@@ -173,6 +173,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
+		await owner.getByText('Checking automatically', { exact: true }).waitFor();
 		const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 		const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
 		const privateKey = new URLSearchParams(new URL(receive).hash.slice(1)).get('key');
@@ -201,6 +202,9 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
 		await owner.getByRole('button', { name: 'Refresh status', exact: true }).click();
+		await owner.getByRole('button', { name: 'Open once', exact: true }).waitFor();
+		// A ready submission is no longer something to wait for.
+		assert.equal(await owner.getByText('Checking automatically', { exact: true }).count(), 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
 		assert.equal(
 			await owner.getByLabel('Decrypted secret').inputValue(),
@@ -313,6 +317,8 @@ for (const fragment of [`#receive=${receiveToken}`, `#receive=${receiveToken}&ke
 			);
 			assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 			await page.getByRole('alert').waitFor();
+			// Without a usable key the status reports the submission instead of offering to open it.
+			await page.getByText('A submission was accepted.', { exact: true }).waitFor();
 		} finally {
 			await context.close();
 		}
@@ -338,6 +344,7 @@ test('lost open is never replayed; server conflict wins a cancellation race', as
 				await page.getByRole('button', { name: 'Open once', exact: true }).click();
 				await page.getByRole('heading', { name: 'Open outcome unknown', exact: true }).waitFor();
 				assert.equal(await page.getByRole('button', { name: 'Open once', exact: true }).count(), 0);
+				assert.equal(await page.getByText('You can open it once.', { exact: true }).count(), 0);
 				await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
 				assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 1);
 			}

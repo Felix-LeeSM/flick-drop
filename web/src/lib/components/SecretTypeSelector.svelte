@@ -81,9 +81,10 @@ $effect(() => {
 });
 </script>
 
+<!-- Phones get one row of icons; only the selected type shows its name, so all six fit at 360px. -->
 <div
 	bind:this={selector}
-	class="selector relative isolate flex w-fit max-w-full flex-wrap gap-1 rounded-full border border-border bg-card p-1.5 md:flex-nowrap"
+	class="selector relative isolate flex w-full gap-1 rounded-full border border-border bg-card p-1.5 md:w-fit md:max-w-full"
 	role="group"
 	aria-label="Secret type"
 	aria-busy={!ready}
@@ -99,17 +100,20 @@ $effect(() => {
 	></span>
 	{#each options as option (option.type)}
 		{@const Icon = option.icon}
+		{@const selected = value === option.type}
 		<Button
 			type="button"
 			size="seg"
 			variant="ghost"
 			class={cn(
 				'relative z-10 gap-2 rounded-full border-transparent bg-transparent px-2.5 hover:bg-transparent active:not-aria-[haspopup]:translate-y-0 dark:hover:bg-transparent',
-				value === option.type ? 'text-background hover:text-background' : 'text-muted-foreground',
-				!ready && value === option.type && 'bg-foreground'
+				selected
+					? 'text-background hover:text-background max-md:shrink-0 max-md:px-3'
+					: 'text-muted-foreground max-md:min-w-7 max-md:flex-1 max-md:px-0',
+				!ready && selected && 'bg-foreground'
 			)}
 			data-type={option.type}
-			aria-pressed={value === option.type}
+			aria-pressed={selected}
 			disabled={!ready || disabled}
 			onclick={() => {
 				animate = true;
@@ -117,7 +121,7 @@ $effect(() => {
 			}}
 		>
 			<Icon class="size-4" aria-hidden="true" />
-			<span>{option.label}</span>
+			<span class={selected ? undefined : 'max-md:sr-only'}>{option.label}</span>
 		</Button>
 	{/each}
 </div>

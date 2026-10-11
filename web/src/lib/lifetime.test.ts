@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { remainingSecondsFrom } from './lifetime';
+import { formatRemaining, remainingSecondsFrom } from './lifetime';
 
 describe('remainingSecondsFrom', () => {
 	it('returns 0 for empty expiresAt', () => {
@@ -22,5 +22,16 @@ describe('remainingSecondsFrom', () => {
 	it('returns 0 for an unparseable expiresAt instead of NaN (#88)', () => {
 		expect(remainingSecondsFrom('not-a-date', 1_000_000)).toBe(0);
 		expect(remainingSecondsFrom('2026-13-99T00:00:00Z', 1_000_000)).toBe(0);
+	});
+});
+
+describe('formatRemaining', () => {
+	it('uses the two largest units', () => {
+		expect(formatRemaining(604_799)).toBe('6d 23h');
+		expect(formatRemaining(86_400)).toBe('1d 0h');
+		expect(formatRemaining(86_399)).toBe('23h 59m');
+		expect(formatRemaining(3599)).toBe('59m 59s');
+		expect(formatRemaining(3600)).toBe('1h 0m');
+		expect(formatRemaining(0)).toBe('0m 0s');
 	});
 });
