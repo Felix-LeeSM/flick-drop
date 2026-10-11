@@ -698,7 +698,10 @@ test('passphrase field shows its own label without a placeholder', async () => {
 		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
 		assert.ok(label.width > 40 && label.height > 10);
 		// The label and field start at the form's left edge, not indented under the checkbox.
-		assert.equal(label.x, (await field.boundingBox()).x);
+		const edge = (await page.locator('label[for="secret-text"]').boundingBox()).x;
+		assert.deepEqual([label.x, (await field.boundingBox()).x], [edge, edge]);
+		// A 13px line box keeps the label 6px above the field, as in direction A.
+		assert.equal(label.height, 13);
 	} finally {
 		await page.close();
 	}

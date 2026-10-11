@@ -689,7 +689,7 @@ function modeLabel(value: CreateMode): string {
 						</div>
 						{#if usePassphrase}
 							<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
-							<Label for="secret-passphrase" class="-mb-1 text-[0.8125rem]/[1] font-medium text-muted-foreground">Passphrase</Label>
+							<Label for="secret-passphrase" class="mt-0.5 -mb-1 text-[0.8125rem]/[1] font-medium text-muted-foreground">Passphrase</Label>
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
