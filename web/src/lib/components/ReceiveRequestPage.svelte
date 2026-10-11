@@ -23,7 +23,7 @@ import {
 	importRequestPrivateKey,
 	type RequestContent
 } from '$lib/crypto/requests';
-import { remainingSecondsFrom } from '$lib/lifetime';
+import { formatRemaining, remainingSecondsFrom } from '$lib/lifetime';
 import {
 	clearRequestHandoff,
 	retrievalFromFragment,
@@ -225,7 +225,7 @@ async function refresh(cancel = false): Promise<void> {
 async function cancelFresh(signal: AbortSignal): Promise<void> {
 	if (
 		!window.confirm(
-			'Cancel this request permanently? It will stop accepting submissions and the requester will not be able to open any stored content. Already released copies cannot be recalled.'
+			'Cancel this request permanently? Nothing more can be submitted or opened. Already released copies cannot be recalled.'
 		)
 	) {
 		return;
@@ -382,23 +382,33 @@ onMount(() => {
 
 <svelte:head><title>Private retrieval - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
 <DeliveryFrame>
-	<div class="grid gap-2">
-		<h1 class="font-serif text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
-		<p class="text-sm text-muted-foreground">Private requester page. Checking status does not open the content.</p>
+	<div class="grid gap-1.5">
+		<p class="micro text-muted-foreground">private requester page</p>
+		<h1 class="font-serif text-3xl outline-none sm:text-4xl" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
 	<section class="grid gap-3 rounded-xl border p-5" aria-label="Request status">
-		{#if expired}<p role="status">The deadline passed. The request and any content shown here are no longer available.</p>
+		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
 		{:else if snapshot}
-			<p role="status">{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It is not accepted or available to open yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? 'A submission is ready. Open releases it once.' : snapshot.state === 'cancelled' ? 'This request was cancelled.' : 'The server released the encrypted content once. This does not confirm that anyone read it.'}</p>
-			<p class="text-sm" aria-label="Time remaining">{Math.floor(remaining / 60)}m {remaining % 60}s remaining</p>
+			<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
+			<p role="status" class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}>{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It cannot be opened yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? 'You can open it once.' : snapshot.state === 'cancelled' ? 'Nothing more can be submitted or opened.' : content ? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.' : 'It was released once and cannot be opened again.'}</p>
+			{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
+				<p class="flex items-center gap-2.5">
+					<span class="relative flex size-2" aria-hidden="true">
+						<span class="absolute inline-flex size-full rounded-full bg-primary opacity-60 motion-safe:animate-ping"></span>
+						<span class="relative inline-flex size-2 rounded-full bg-primary"></span>
+					</span>
+					Checking automatically
+				</p>
+			{/if}
+			{#if !terminal || content}<p class="text-sm" aria-label="Time remaining">{formatRemaining(remaining)} remaining</p>{/if}
 		{:else}<p role="status">{busy ? 'Loading request status…' : 'Request status is unknown.'}</p>{/if}
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		{#if !terminal}<Button variant="outline" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
 	</section>
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
-	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content. Flick cannot recover a lost open response. This page will not retry opening.</p>{/if}
+	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
 	{#if decryptFailed}<p role="alert" class="text-sm text-destructive">The content was released, but decryption failed. It cannot be opened again. Ask the sender to use a new request.</p>{/if}
 	{#if credential}
 		<CredentialView {credential} />
@@ -407,24 +417,22 @@ onMount(() => {
 	{:else if content?.kind === 'file'}
 		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">Download {content.filename}</a>
 	{/if}
-	{#if content}<p class="text-sm text-muted-foreground">Save it now. Leaving, refreshing, or reaching the deadline clears this copy; the server cannot release it again.</p>{/if}
 	{#if snapshot?.state === 'submitted' && !terminal && !opened}
 		<Button class="h-11" disabled={busy || !privateKey} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
 	{/if}
 	{#if submission && !terminal}
 		<section class="grid gap-3" aria-labelledby="submission-link-heading">
 			<h2 id="submission-link-heading" class="font-medium">Share the submission link</h2>
-			<p class="text-sm text-muted-foreground">Anyone with this link can submit once. It cannot retrieve, decrypt, or cancel the request.</p>
+			<p class="text-sm text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
 			<UrlField value={submission} label="Submission link" copyLabel="Copy submission link" />
 			<NativeShareButton recipientUrl={submission} />
 			<Button variant="outline" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show submission QR</Button>
 		</section>
-	{:else if !terminal}<p class="text-sm text-muted-foreground">The submission link is available only in the original creation session. Use the copy you saved; this private link cannot reconstruct it.</p>{/if}
+	{:else if !terminal}<p class="text-sm text-muted-foreground">Use the submission link you saved; it cannot be shown here again.</p>{/if}
 	{#if privateLink && !terminal}
 		<section class="grid gap-3 rounded-xl bg-muted/40 p-5" aria-labelledby="retrieval-link-heading">
 			<h2 id="retrieval-link-heading" class="font-medium">Keep your retrieval link private</h2>
-			<p class="text-sm text-muted-foreground">This link contains your decryption key. Anyone with it can retrieve or cancel the request. Save the complete link to resume here or on another device. Losing the key is irreversible; Flick cannot recover it.</p>
-			<p class="text-sm text-muted-foreground">Browser history and sync, clipboard managers, and screenshots may retain the key. Share only the separate submission link.</p>
+			<p class="text-sm text-muted-foreground">This link holds your decryption key. Anyone with it can open or cancel the request, and a lost link cannot be recovered. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
 			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
 		</section>
 	{/if}

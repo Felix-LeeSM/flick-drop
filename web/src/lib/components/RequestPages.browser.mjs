@@ -173,6 +173,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
+		await owner.getByText('Checking automatically', { exact: true }).waitFor();
 		const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 		const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
 		const privateKey = new URLSearchParams(new URL(receive).hash.slice(1)).get('key');
@@ -201,6 +202,9 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
 		await owner.getByRole('button', { name: 'Refresh status', exact: true }).click();
+		await owner.getByRole('button', { name: 'Open once', exact: true }).waitFor();
+		// A ready submission is no longer something to wait for.
+		assert.equal(await owner.getByText('Checking automatically', { exact: true }).count(), 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
 		assert.equal(
 			await owner.getByLabel('Decrypted secret').inputValue(),
