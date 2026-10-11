@@ -571,6 +571,36 @@ for (const width of [375, 1280]) {
 	});
 }
 
+test('shared header wraps instead of widening the page when text is enlarged', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 700 } });
+	try {
+		await fixture(page);
+		await openForm(page, forms[1]);
+		// Header sizes are in rem, so a larger text setting widens the wordmark and the link.
+		await page.evaluate(() => {
+			document.documentElement.style.fontSize = '150%';
+		});
+		// The buttons animate their new size (transition-all); measure once it settles.
+		await page.waitForFunction(
+			() => document.querySelector('header').getAnimations({ subtree: true }).length === 0
+		);
+		const header = await page.evaluate(() => {
+			const box = (element) => element.getBoundingClientRect().toJSON();
+			const root = document.querySelector('header');
+			return {
+				brand: box(root.querySelector('a')),
+				toggle: box(root.querySelector('button')),
+				overflow: document.documentElement.scrollWidth > innerWidth
+			};
+		});
+		assert.equal(header.overflow, false);
+		assert.ok(header.toggle.right <= 375);
+		assert.ok(header.toggle.top >= header.brand.bottom);
+	} finally {
+		await page.close();
+	}
+});
+
 test('320px shared header keeps the link beside the theme toggle without overflow', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
