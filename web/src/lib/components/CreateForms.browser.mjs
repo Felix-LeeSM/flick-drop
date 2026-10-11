@@ -238,6 +238,31 @@ function stable(actual, expected) {
 	});
 }
 
+// A name counts as shown when it renders wider than the 1px screen-reader-only box.
+function labelsShown(group) {
+	return group.getByRole('button').evaluateAll((buttons) =>
+		buttons.map((button) => {
+			const label = button.querySelector('span');
+			return label.getBoundingClientRect().width > 1 && getComputedStyle(label).opacity === '1';
+		})
+	);
+}
+
+// Below 768px the selector is one row of icons; only the selected type shows its name,
+// so selecting reflows the row instead of keeping every cell fixed.
+async function phoneRow(page, group, selected) {
+	await indicatorAligned(page);
+	const row = await boxes(group);
+	assert.ok(
+		row.every((box) => Math.abs(box.y - row[0].y) < 1),
+		'type buttons wrapped'
+	);
+	assert.deepEqual(
+		await labelsShown(group),
+		typeNames.map((name) => name === selected)
+	);
+}
+
 async function editorVisible(page, name) {
 	const editors = {
 		Text: page.getByLabel('Message', { exact: true }),
@@ -272,7 +297,7 @@ async function indicatorAligned(page) {
 }
 
 for (const reducedMotion of ['no-preference', 'reduce']) {
-	test(`selection background follows rapid choices and viewport wrapping with motion ${reducedMotion}`, async () => {
+	test(`selection background follows rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
 		const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion });
 		try {
 			await fixture(page);
@@ -291,7 +316,9 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 				// No wait for the background between clicks: the final choice must win.
 				for (const name of ['Custom', 'File', 'Identity']) {
 					await group.getByRole('button', { name, exact: true }).click();
-					stable(await boxes(group), initial);
+					if (width >= 768) {
+						stable(await boxes(group), initial);
+					}
 				}
 				assert.equal(
 					await group
@@ -300,8 +327,12 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 					'true'
 				);
 				await editorVisible(page, 'Identity');
-				await indicatorAligned(page);
-				stable(await boxes(group), initial);
+				if (width >= 768) {
+					await indicatorAligned(page);
+					stable(await boxes(group), initial);
+				} else {
+					await phoneRow(page, group, 'Identity');
+				}
 				const durations = await indicator.evaluate((node) =>
 					getComputedStyle(node).transitionDuration.split(',').map(Number.parseFloat)
 				);
@@ -377,7 +408,8 @@ test('type buttons stay disabled until hydration attaches their handlers', async
 });
 
 for (const width of [375, 1280]) {
-	test(`${width}px type targets stay visible and stationary on hover, focus, and selection`, async () => {
+	const phone = width < 768;
+	test(`${width}px type targets stay stationary on hover and focus, and ${phone ? 'stay in one row' : 'on selection'}`, async () => {
 		const page = await browser.newPage({
 			viewport: { width, height: 1000 },
 			isMobile: width === 375,
@@ -406,30 +438,30 @@ for (const width of [375, 1280]) {
 				);
 				stable(await boxes(group), initial);
 			}
-			const pointerAction = width === 375 ? 'tap' : 'click';
+			const pointerAction = phone ? 'tap' : 'click';
 			for (const input of ['pointer', 'keyboard']) {
 				for (const name of typeNames) {
 					const button = group.getByRole('button', { name, exact: true });
-					assert.equal(
-						await button
-							.locator('span')
-							.evaluate(
-								(label) =>
-									label.getBoundingClientRect().width > 0 && getComputedStyle(label).opacity === '1'
-							),
-						true
-					);
 					if (input === 'keyboard') {
+						const current = await boxes(group);
 						await button.focus();
 						await page.waitForTimeout(400);
-						stable(await boxes(group), initial);
+						stable(await boxes(group), current);
 						await page.keyboard.press('Enter');
 					} else {
 						await button[pointerAction]();
 					}
 					assert.equal(await button.getAttribute('aria-pressed'), 'true');
 					await editorVisible(page, name);
-					stable(await boxes(group), initial);
+					if (phone) {
+						await phoneRow(page, group, name);
+					} else {
+						stable(await boxes(group), initial);
+						assert.deepEqual(
+							await labelsShown(group),
+							typeNames.map(() => true)
+						);
+					}
 					assert.equal(
 						await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 						true
