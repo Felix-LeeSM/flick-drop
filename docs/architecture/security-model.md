@@ -183,9 +183,9 @@ values, notes, titles, or which fields were marked secret.
 
 The `secret` field in the credential payload is a UI rendering hint. It tells
 the browser to mask a value before encryption and after decryption, but it is
-not a security boundary. All credential fields, notes, and titles rely on the
-same browser-side encryption, access proof gate, one-time open, and TTL cleanup
-as ordinary text secrets.
+not a security boundary. All credential fields, notes, and titles get the same
+browser-side encryption, open requirements, one-time open, and TTL cleanup as an
+ordinary text payload on the same path, whether a secret link or a request.
 
 ## Deletion and Residual Risk
 
