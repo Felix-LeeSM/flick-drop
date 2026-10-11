@@ -28,6 +28,8 @@ describe('remainingSecondsFrom', () => {
 describe('formatRemaining', () => {
 	it('uses the two largest units', () => {
 		expect(formatRemaining(604_799)).toBe('6d 23h');
+		expect(formatRemaining(86_400)).toBe('1d 0h');
+		expect(formatRemaining(86_399)).toBe('23h 59m');
 		expect(formatRemaining(3599)).toBe('59m 59s');
 		expect(formatRemaining(3600)).toBe('1h 0m');
 		expect(formatRemaining(0)).toBe('0m 0s');

@@ -541,11 +541,11 @@ onMount(() => {
 	{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if phase === 'accepted'}
-		<p role="status">The requester can open it once before the request expires.</p>
+		<p role="status">Only the requester can open it.</p>
 	{:else if hasExpired()}
 		<p role="status">Ask the requester for a new link.</p>
 	{:else if phase === 'unavailable'}
-		<p role="status">This link no longer accepts submissions.</p>
+		<p role="status">This link no longer accepts submissions. If you still need to send something, ask the requester for a new link.</p>
 	{:else if phase === 'unknown' || (phase === 'submitting' && pending)}
 		<section class="grid gap-4 rounded-xl border p-5" aria-label="Submission outcome">
 			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : 'Submission outcome unknown.'}</p>

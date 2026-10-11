@@ -391,7 +391,7 @@ onMount(() => {
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
 		{:else if snapshot}
 			<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
-			<p role="status" class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}>{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It cannot be opened yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? 'You can open it once.' : snapshot.state === 'cancelled' ? 'Nothing more can be submitted or opened.' : content ? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.' : 'It was released once and cannot be opened again.'}</p>
+			<p role="status" class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}>{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It cannot be opened yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? (openLost || keyProblem ? 'A submission was accepted.' : 'You can open it once.') : snapshot.state === 'cancelled' ? 'Nothing more can be submitted or opened.' : content ? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.' : 'It was released once and cannot be opened again.'}</p>
 			{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
 				<p class="flex items-center gap-2.5">
 					<span class="relative flex size-2" aria-hidden="true">
@@ -432,7 +432,7 @@ onMount(() => {
 	{#if privateLink && !terminal}
 		<section class="grid gap-3 rounded-xl bg-muted/40 p-5" aria-labelledby="retrieval-link-heading">
 			<h2 id="retrieval-link-heading" class="font-medium">Keep your retrieval link private</h2>
-			<p class="text-sm text-muted-foreground">This link holds your decryption key. Anyone with it can open or cancel the request, and a lost link cannot be recovered. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
+			<p class="text-sm text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
 			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
 		</section>
 	{/if}

@@ -317,6 +317,8 @@ for (const fragment of [`#receive=${receiveToken}`, `#receive=${receiveToken}&ke
 			);
 			assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 			await page.getByRole('alert').waitFor();
+			// Without a usable key the status reports the submission instead of offering to open it.
+			await page.getByText('A submission was accepted.', { exact: true }).waitFor();
 		} finally {
 			await context.close();
 		}
@@ -342,6 +344,7 @@ test('lost open is never replayed; server conflict wins a cancellation race', as
 				await page.getByRole('button', { name: 'Open once', exact: true }).click();
 				await page.getByRole('heading', { name: 'Open outcome unknown', exact: true }).waitFor();
 				assert.equal(await page.getByRole('button', { name: 'Open once', exact: true }).count(), 0);
+				assert.equal(await page.getByText('You can open it once.', { exact: true }).count(), 0);
 				await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
 				assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 1);
 			}
