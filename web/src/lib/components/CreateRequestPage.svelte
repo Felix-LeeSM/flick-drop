@@ -102,10 +102,7 @@ async function create(): Promise<void> {
 </script>
 
 <svelte:head><title>Request a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
-<DeliveryFrame>
-	{#snippet navigation()}
-		<a href={resolve('/')} class="px-2 py-3 text-sm underline underline-offset-4">Send a secret</a>
-	{/snippet}
+<DeliveryFrame link={{ href: resolve('/'), label: 'Send a secret' }}>
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-muted-foreground">
 			<ShieldCheckIcon class="size-3.5" aria-hidden="true" />

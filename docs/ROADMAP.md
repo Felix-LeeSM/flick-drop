@@ -177,3 +177,26 @@ phones, and let request submitters send the same secret types as the create page
   reduced motion, and the deployed frontend.
 - Exclude API, worker, crypto, or request-contract changes; new secret types;
   file-limit changes; accounts, inboxes, or repeat collection.
+
+### M12: Visual Polish
+
+Goal: apply the chosen design direction, which keeps the teal and serif
+identity, and fix the size, hierarchy, and consistency problems found in the
+2026-10-11 design review.
+
+- [#239](https://github.com/Felix-LeeSM/flick-drop/issues/239): one shared
+  header with a larger wordmark and one header-link style, including the guide
+  pages.
+- [#240](https://github.com/Felix-LeeSM/flick-drop/issues/240): calmer eyebrow
+  labels, larger page titles, a 48px primary button, and a disabled primary
+  button that reads as disabled in both themes.
+- [#241](https://github.com/Felix-LeeSM/flick-drop/issues/241): a visible
+  passphrase label, lifetime chips at one size, and quieter guide links on the
+  create form.
+- [#242](https://github.com/Felix-LeeSM/flick-drop/issues/242): a clear button
+  hierarchy, one container rule, and one remaining-time style on the
+  management, requester, and submit pages.
+- Verify the changed pages at phone and desktop widths in light and dark
+  themes, and the deployed frontend.
+- Exclude page flows, security-warning wording, API, worker, crypto, or
+  contract changes, and a new palette or typeface.
