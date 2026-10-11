@@ -62,7 +62,7 @@ async function copy(): Promise<void> {
 			size={prominent ? 'sm' : 'icon'}
 			class={cn(
 				prominent
-					? 'absolute right-1.5 h-9 gap-1.5 rounded-lg px-3 text-[13px]'
+					? 'absolute right-1.5 h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem]'
 					: 'absolute right-1.5 size-9 text-muted-foreground hover:text-foreground',
 				!prominent && copyState === 'copied' && 'bg-success/15 text-success'
 			)}

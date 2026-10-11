@@ -11,6 +11,6 @@ let {
 }: { seconds: number } & HTMLAttributes<HTMLParagraphElement> = $props();
 </script>
 
-<p class={cn('justify-self-start rounded-full bg-muted px-2.5 py-0.5 font-mono text-xs leading-5', className)} {...rest}>
+<p class={cn('justify-self-start whitespace-nowrap rounded-full bg-muted px-2.5 py-0.5 font-mono text-xs leading-5', className)} {...rest}>
 	{formatRemaining(seconds)} remaining
 </p>

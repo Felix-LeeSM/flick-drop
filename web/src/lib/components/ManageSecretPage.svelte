@@ -218,51 +218,51 @@ onMount(() => {
 		<p class="text-sm text-muted-foreground">Check one delivery and cancel it before it is opened.</p>
 	</div>
 	{#if expired || unavailable}
-		<p role="status" class="rounded-[14px] border bg-card px-5 py-[18px]">{expired ? 'Management link expired.' : 'Management link unavailable.'}</p>
+		<p role="status" class="rounded-[14px] border bg-card px-5 py-4.5">{expired ? 'Management link expired.' : 'Management link unavailable.'}</p>
 	{:else}
-		<section aria-label="Delivery status" class="grid gap-1 rounded-[14px] border bg-card px-5 py-[18px]">
+		<section aria-label="Delivery status" class="grid gap-1 rounded-[14px] border bg-card px-5 py-4.5">
 			<div class="flex items-center justify-between gap-3">
 				{#if snapshot}
-					<h2 class="flex items-center gap-2.5 text-[17px] font-medium">
+					<h2 class="flex items-center gap-2.5 text-[1.0625rem] font-medium">
 						<span class={cn('size-2 shrink-0 rounded-full', statusDot(snapshot.status))} aria-hidden="true"></span>
 						{errorMessage ? 'Last known status: ' : ''}{statusCopy[snapshot.status].title}
 					</h2>
 				{:else}
 					<p role="status">{busy ? 'Loading delivery status…' : 'Delivery status is unknown.'}</p>
 				{/if}
-				<Button variant="ghost" size="sm" class="text-[13px] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>
+				<Button variant="ghost" size="sm" class="text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>
 			</div>
 			{#if snapshot}
-				<p class="pl-[18px] text-sm text-muted-foreground">{statusCopy[snapshot.status].detail}</p>
-				<RemainingTime seconds={remaining} class="mt-1.5 ml-[18px]" />
+				<p class="pl-4.5 text-sm text-muted-foreground">{statusCopy[snapshot.status].detail}</p>
+				<RemainingTime seconds={remaining} class="mt-1.5 ml-4.5" />
 			{/if}
 			{#if errorMessage}<p role="alert" class="text-sm text-destructive">{errorMessage}</p>{/if}
 			{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</section>
 		{#if recipientUrl}
 			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5">
-				<h2 id="recipient-link-heading" class="text-[15px] font-medium">Send to your recipient</h2>
+				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">Send to your recipient</h2>
 				<UrlField value={recipientUrl} id="share-url" copyLabel="Copy recipient link" prominent />
 				<div class="flex flex-wrap items-start gap-2">
-					<NativeShareButton recipientUrl={recipientUrl} class="h-9 w-auto rounded-lg px-3 text-[13px]" />
+					<NativeShareButton recipientUrl={recipientUrl} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
 					<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show QR</Button>
 				</div>
-				<p class="text-[13px] text-muted-foreground">{usesPassphrase ? 'Send the passphrase separately. The recipient needs both the link and the passphrase.' : 'Anyone with this full link can open it once. Share only with your recipient.'}</p>
+				<p class="text-[0.8125rem] text-muted-foreground">{usesPassphrase ? 'Send the passphrase separately. The recipient needs both the link and the passphrase.' : 'Anyone with this full link can open it once. Share only with your recipient.'}</p>
 			</section>
 		{:else if !snapshot || snapshot.can_cancel}
 			<p class="text-sm text-muted-foreground">The recipient link is available only in the original creation session. Use the copy you saved or create a new delivery.</p>
 		{/if}
 		{#if managementUrl}
-			<section aria-labelledby="private-link-heading" class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-[18px]">
-				<h2 id="private-link-heading" class="text-[15px] font-medium">Keep this management link private</h2>
-				<p class="text-[13px] leading-[1.55] text-muted-foreground">Anyone with this link can check or cancel this delivery until it expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.</p>
+			<section aria-labelledby="private-link-heading" class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-4.5">
+				<h2 id="private-link-heading" class="text-[0.9375rem] font-medium">Keep this management link private</h2>
+				<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">Anyone with this link can check or cancel this delivery until it expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.</p>
 				<UrlField value={managementUrl} id="management-url" label="Private management link" copyLabel="Copy management link" />
 			</section>
 		{/if}
 		{#if snapshot?.can_cancel}
-			<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-[18px] dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel delivery</Button>
+			<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel delivery</Button>
 		{/if}
 	{/if}
-	<a href={resolve('/')} class="pb-3 text-center text-[13px] text-muted-foreground underline underline-offset-4">Create another</a>
+	<a href={resolve('/')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">Create another</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={recipientUrl} />

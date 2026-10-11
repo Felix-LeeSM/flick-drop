@@ -387,7 +387,7 @@ onMount(() => {
 		<p class="micro text-muted-foreground">private requester page</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
-	<section class="grid grid-cols-[1fr_auto] items-start gap-x-3 rounded-[14px] border bg-card px-5 py-[18px]" aria-label="Request status">
+	<section class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Request status">
 		<div class="grid gap-1">
 		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
@@ -408,7 +408,7 @@ onMount(() => {
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</div>
-		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 text-[13px] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
+		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
 	</section>
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
 	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
@@ -425,23 +425,23 @@ onMount(() => {
 	{/if}
 	{#if submission && !terminal}
 		<section class="grid gap-2.5" aria-labelledby="submission-link-heading">
-			<h2 id="submission-link-heading" class="text-[15px] font-medium">Share the submission link</h2>
-			<p class="text-[13px] text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
+			<h2 id="submission-link-heading" class="text-[0.9375rem] font-medium">Share the submission link</h2>
+			<p class="text-[0.8125rem] text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
 			<UrlField value={submission} label="Submission link" copyLabel="Copy submission link" prominent />
 			<div class="flex flex-wrap items-start gap-2">
-				<NativeShareButton recipientUrl={submission} class="h-9 w-auto rounded-lg px-3 text-[13px]" />
+				<NativeShareButton recipientUrl={submission} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
 				<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show submission QR</Button>
 			</div>
 		</section>
 	{:else if !terminal}<p class="text-sm text-muted-foreground">Use the submission link you saved; it cannot be shown here again.</p>{/if}
 	{#if privateLink && !terminal}
-		<section class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-[18px]" aria-labelledby="retrieval-link-heading">
-			<h2 id="retrieval-link-heading" class="text-[15px] font-medium">Keep your retrieval link private</h2>
-			<p class="text-[13px] leading-[1.55] text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
+		<section class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-4.5" aria-labelledby="retrieval-link-heading">
+			<h2 id="retrieval-link-heading" class="text-[0.9375rem] font-medium">Keep your retrieval link private</h2>
+			<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
 			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
 		</section>
 	{/if}
-	{#if snapshot && !terminal}<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-[18px] dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
-	<a href={resolve('/request')} class="pb-3 text-center text-[13px] text-muted-foreground underline underline-offset-4">Create another request</a>
+	{#if snapshot && !terminal}<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
+	<a href={resolve('/request')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">Create another request</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />
