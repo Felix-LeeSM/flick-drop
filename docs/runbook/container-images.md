@@ -17,7 +17,9 @@ Published images are multi-arch manifests for `linux/amd64` and `linux/arm64`,
 so the same tag runs on x86 nodes and on arm64 nodes such as OCI Ampere A1.
 The Go and web build stages run on the build platform and cross-compile; only
 the short runtime-stage `RUN` steps use emulation. To check both platforms
-locally without pushing:
+locally without pushing (the default `docker` driver cannot build several
+platforms at once, so use a docker-container builder from
+`docker buildx create --use` or enable the containerd image store):
 
 ```sh
 docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile.api .
