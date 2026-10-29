@@ -13,11 +13,7 @@ import {
 	MAX_TTL_SECONDS,
 	MIN_TTL_SECONDS
 } from '$lib/config/ttl';
-import {
-	exportRequestPrivateKey,
-	exportRequestPublicKey,
-	generateRequestKeys
-} from '$lib/crypto/requests';
+import { generateRequestKeys } from '$lib/crypto/requests';
 import {
 	clearRequestHandoff,
 	handOffRequest,
@@ -64,17 +60,20 @@ async function create(): Promise<void> {
 	controller = request;
 	try {
 		const keys = await generateRequestKeys();
-		const publicKey = await exportRequestPublicKey(keys.publicKey);
-		const privateKey = await exportRequestPrivateKey(keys.privateKey);
 		if (!alive) {
 			return;
 		}
 		sent = true;
-		const created = await api.create(publicKey.public_key, seconds, request.signal);
+		const created = await api.create(keys.public_key, seconds, request.signal);
 		if (!alive) {
 			return;
 		}
-		const receive = retrievalUrl(location.origin, created.id, created.retrieval_token, privateKey);
+		const receive = retrievalUrl(
+			location.origin,
+			created.id,
+			created.retrieval_token,
+			keys.identity
+		);
 		handOffRequest({
 			id: created.id,
 			token: created.retrieval_token,
@@ -82,7 +81,7 @@ async function create(): Promise<void> {
 				location.origin,
 				created.id,
 				created.submission_token,
-				publicKey.fingerprint
+				keys.fingerprint
 			)
 		});
 		await goto(receive);
@@ -91,7 +90,7 @@ async function create(): Promise<void> {
 			unknown = sent;
 			error = sent
 				? 'Creation was not confirmed. An unused request may exist and will expire. Its links cannot be recovered. Nothing is retried automatically.'
-				: 'Request encryption is unavailable. Use a browser with Web Crypto over HTTPS or localhost.';
+				: 'Request encryption is unavailable. Use a current browser over HTTPS or localhost.';
 		}
 	} finally {
 		if (alive) {

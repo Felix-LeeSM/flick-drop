@@ -11,14 +11,16 @@ export function submissionFromFragment(
 
 export function retrievalFromFragment(
 	fragment: string
-): { token: string; privateKey: string } | null {
-	// Bound input before parsing/decoding. Key import performs canonical DER validation.
-	if (fragment.length > 4200) {
+): { token: string; identity: string } | null {
+	// Bound input before parsing. A key of the right alphabet is returned as
+	// is, so the page can tell a damaged key from a missing one; identity
+	// import (importRequestIdentity) checks it against the request.
+	if (fragment.length > 256) {
 		return null;
 	}
-	const match = /^#receive=([A-Za-z0-9_-]{43})(?:&key=([A-Za-z0-9_-]{1,4096}))?$/.exec(fragment);
+	const match = /^#receive=([A-Za-z0-9_-]{43})(?:&key=([A-Za-z0-9-]{1,128}))?$/.exec(fragment);
 	return match && isManagementToken(match[1])
-		? { token: match[1], privateKey: match[2] ?? '' }
+		? { token: match[1], identity: match[2] ?? '' }
 		: null;
 }
 
@@ -36,15 +38,10 @@ export function submissionUrl(
 	return url.toString();
 }
 
-export function retrievalUrl(
-	origin: string,
-	id: string,
-	token: string,
-	privateKey: string
-): string {
+export function retrievalUrl(origin: string, id: string, token: string, identity: string): string {
 	const url = new URL(`/r/${encodeURIComponent(id)}/receive`, origin);
-	url.hash = `receive=${token}&key=${privateKey}`;
-	if (!privateKey || !retrievalFromFragment(url.hash)) {
+	url.hash = `receive=${token}&key=${identity}`;
+	if (!identity || !retrievalFromFragment(url.hash)) {
 		throw new Error('Invalid private retrieval link.');
 	}
 	return url.toString();

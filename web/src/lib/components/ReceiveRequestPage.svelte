@@ -21,8 +21,9 @@ import { Textarea } from '$lib/components/ui/textarea';
 import { parseCredential } from '$lib/credentials';
 import {
 	decryptRequestPayload,
-	importRequestPrivateKey,
-	type RequestContent
+	importRequestIdentity,
+	type OpenedRequestBody,
+	type OpenedRequestContent
 } from '$lib/crypto/requests';
 import { remainingSecondsFrom } from '$lib/lifetime';
 import {
@@ -37,7 +38,7 @@ const api = createRequestApiClient();
 let snapshot = $state<RequestOwner | null>(null);
 let submission = $state('');
 let privateLink = $state('');
-let privateKey = $state<CryptoKey | null>(null);
+let privateKey = $state<string | null>(null);
 let keyProblem = $state('');
 let busy = $state(false);
 let error = $state('');
@@ -47,7 +48,7 @@ let unavailable = $state(false);
 let opened = $state(false);
 let openLost = $state(false);
 let decryptFailed = $state(false);
-let content = $state<RequestContent | null>(null);
+let content = $state<OpenedRequestContent | null>(null);
 // Submitters can choose credential templates; they arrive as FLCR1 text like credential secrets.
 const credential = $derived(content?.kind === 'text' ? parseCredential(content.text) : null);
 let downloadUrl = $state('');
@@ -90,9 +91,6 @@ const title = $derived(
 );
 
 function clearContent(): void {
-	if (content?.kind === 'file') {
-		content.bytes.fill(0);
-	}
 	content = null;
 	if (downloadUrl) {
 		URL.revokeObjectURL(downloadUrl);
@@ -144,7 +142,7 @@ async function accept(data: RequestOwner): Promise<void> {
 	}
 	privateKey = null;
 	try {
-		const key = await importRequestPrivateKey(keyFragment, data.fingerprint);
+		const key = await importRequestIdentity(keyFragment, data.fingerprint);
 		if (alive && !expired && !controller?.signal.aborted) {
 			privateKey = key;
 			verifiedFingerprint = data.fingerprint;
@@ -252,24 +250,19 @@ async function cancelFresh(signal: AbortSignal): Promise<void> {
 function current(signal: AbortSignal): boolean {
 	return alive && !signal.aborted;
 }
-async function reveal(payload: unknown, key: CryptoKey, signal: AbortSignal): Promise<void> {
+async function reveal(payload: OpenedRequestBody, key: string, signal: AbortSignal): Promise<void> {
 	if (!current(signal) || !snapshot) {
 		return;
 	}
 	snapshot = { ...snapshot, state: 'consumed' };
-	const decrypted = await decryptRequestPayload(requestId, key, payload, limits);
+	const decrypted = await decryptRequestPayload(key, payload, limits);
 	clock();
 	if (!current(signal) || expired) {
-		if (decrypted.kind === 'file') {
-			decrypted.bytes.fill(0);
-		}
 		return;
 	}
 	content = decrypted;
 	if (decrypted.kind === 'file') {
-		downloadUrl = URL.createObjectURL(
-			new Blob([decrypted.bytes], { type: 'application/octet-stream' })
-		);
+		downloadUrl = URL.createObjectURL(decrypted.blob);
 	}
 	clearLinks();
 }
@@ -337,7 +330,7 @@ onMount(() => {
 	const link = retrievalFromFragment(location.hash);
 	if (link) {
 		token = link.token;
-		keyFragment = link.privateKey;
+		keyFragment = link.identity;
 		if (keyFragment) {
 			privateLink = retrievalUrl(location.origin, requestId, token, keyFragment);
 		}

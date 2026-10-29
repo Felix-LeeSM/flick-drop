@@ -1,10 +1,16 @@
-// Request v1 only: docs/architecture/request-links.md. No I/O or key persistence.
+// Request links on age: docs/architecture/request-links.md. No I/O or key
+// persistence. The requester's identity decrypts; submitters hold only its
+// recipient. Everything is a standard age file (contracts/age-format-v1.md).
+import { decryptWith, encryptToRecipient, generateSecretIdentity, recipientOf } from './age';
 import { base64ToBytes, bytesToBase64 } from './encoding';
+import { decodeKeyFragment } from './fragment';
 
-const RSA = { name: 'RSA-OAEP', hash: 'SHA-256' } as const;
-const ALGORITHM = 'RSA-OAEP-256+A256GCM';
-const ENVELOPE_MAX_BYTES = 4096;
-const KEY_MAX_CHARS = 4096;
+const ENVELOPE_VERSION = 2;
+// The hybrid recipient is about 1,960 characters; the API caps it at 2,400.
+const RECIPIENT_PATTERN = /^age1pq1[02-9ac-hj-np-z]+$/;
+const RECIPIENT_MAX_CHARS = 2400;
+// The API's cap on the filename age file.
+const FILENAME_MAX_BYTES = 4096;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', {
 	fatal: true,
@@ -13,375 +19,184 @@ const decoder = new TextDecoder('utf-8', {
 });
 
 export type RequestKind = 'text' | 'file';
-// Plaintext byte limits; callers subtract the GCM tag from the inline ciphertext limit.
+// Plaintext byte limits, as /api/config advertises them.
 export type RequestLimits = { maxTextBytes: number; maxFileBytes: number };
-export type RequestEnvelope = {
-	version: 1;
-	algorithm: typeof ALGORITHM;
-	wrapped_key: string;
-	nonce: string;
-	encrypted_filename?: { nonce: string; ciphertext: string };
-};
-export type RequestPayload = {
+export type RequestEnvelope = { version: 2; encrypted_filename?: string };
+// An encrypted submission. size_bytes is the exact age file length the API
+// checks; plaintextBytes is what the limits are expressed in.
+export type SealedRequest = {
 	kind: RequestKind;
 	size_bytes: number;
+	plaintextBytes: number;
 	envelope: RequestEnvelope;
-	ciphertext: string;
+	body: Blob;
 };
-export type RequestContent =
+export type RequestContent = { kind: 'text'; text: string } | { kind: 'file'; file: File };
+export type OpenedRequestContent =
 	| { kind: 'text'; text: string }
-	| { kind: 'file'; bytes: Uint8Array<ArrayBuffer>; filename: string };
-
-function subtle(): SubtleCrypto {
-	if (!globalThis.crypto?.subtle) {
-		throw new Error('Request encryption requires Web Crypto in a secure context.');
-	}
-	return globalThis.crypto.subtle;
-}
+	| { kind: 'file'; blob: Blob; filename: string };
+export type OpenedRequestBody = {
+	kind: RequestKind;
+	encryptedFilename?: Uint8Array;
+	body: ReadableStream<Uint8Array>;
+};
 
 function invalid(): never {
 	throw new Error('Invalid request encryption data.');
-}
-
-function base64(value: unknown, min: number, max = min): Uint8Array<ArrayBuffer> {
-	if (typeof value !== 'string' || value.length > 4 * Math.ceil(max / 3)) {
-		invalid();
-	}
-	const bytes = base64ToBytes(value);
-	if (bytes.length < min || bytes.length > max || bytesToBase64(bytes) !== value) {
-		invalid();
-	}
-	return bytes as Uint8Array<ArrayBuffer>;
 }
 
 function base64url(bytes: Uint8Array): string {
 	return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function decodeUrl(value: unknown, maxChars: number): Uint8Array<ArrayBuffer> {
-	if (
-		typeof value !== 'string' ||
-		!value.length ||
-		value.length > maxChars ||
-		!/^[A-Za-z0-9_-]+$/.test(value)
-	) {
-		invalid();
-	}
-	const standard = value.replace(/-/g, '+').replace(/_/g, '/');
-	const bytes = base64ToBytes(standard + '='.repeat((4 - (standard.length % 4)) % 4));
-	if (base64url(bytes) !== value) {
-		invalid();
-	}
-	return bytes as Uint8Array<ArrayBuffer>;
-}
-
-function assertKey(key: CryptoKey, type: 'public' | 'private'): void {
-	const algorithm = key.algorithm as RsaHashedKeyAlgorithm;
-	if (
-		key.type !== type ||
-		algorithm.name !== RSA.name ||
-		algorithm.hash?.name !== RSA.hash ||
-		algorithm.modulusLength !== 2048 ||
-		bytesToBase64(algorithm.publicExponent) !== 'AQAB'
-	) {
-		invalid();
-	}
-}
-
-async function fingerprint(spki: ArrayBuffer): Promise<string> {
-	return base64url(new Uint8Array(await subtle().digest('SHA-256', spki)));
-}
-
-async function assertFingerprint(spki: ArrayBuffer, expected: unknown): Promise<void> {
-	if (decodeUrl(expected, 43).length !== 32 || (await fingerprint(spki)) !== expected) {
-		invalid();
-	}
-}
-
-export async function generateRequestKeys(): Promise<CryptoKeyPair> {
-	return await subtle().generateKey(
-		{ ...RSA, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
-		true,
-		['encrypt', 'decrypt']
+// SHA-256 over the exact recipient string, unpadded base64url, as the API stores it.
+export async function requestFingerprint(recipient: string): Promise<string> {
+	return base64url(
+		new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(recipient)))
 	);
 }
 
-export async function exportRequestPublicKey(
-	key: CryptoKey
-): Promise<{ public_key: string; fingerprint: string }> {
-	assertKey(key, 'public');
-	const spki = await subtle().exportKey('spki', key);
-	return { public_key: bytesToBase64(new Uint8Array(spki)), fingerprint: await fingerprint(spki) };
+export async function generateRequestKeys(): Promise<{
+	identity: string;
+	public_key: string;
+	fingerprint: string;
+}> {
+	const identity = await generateSecretIdentity();
+	const recipient = await recipientOf(identity);
+	return { identity, public_key: recipient, fingerprint: await requestFingerprint(recipient) };
 }
 
-export async function exportRequestPrivateKey(key: CryptoKey): Promise<string> {
-	assertKey(key, 'private');
-	return base64url(new Uint8Array(await subtle().exportKey('pkcs8', key)));
-}
-
+// The submitter pins the server's recipient to the fingerprint in its link.
 export async function importRequestPublicKey(
 	value: unknown,
 	expectedFingerprint: unknown
-): Promise<CryptoKey> {
-	const bytes = base64(value, 1, 3072);
-	const key = await subtle().importKey('spki', bytes, RSA, true, ['encrypt']);
-	assertKey(key, 'public');
-	const canonical = await subtle().exportKey('spki', key);
-	if (bytesToBase64(new Uint8Array(canonical)) !== value) {
+): Promise<string> {
+	if (
+		typeof value !== 'string' ||
+		value.length > RECIPIENT_MAX_CHARS ||
+		!RECIPIENT_PATTERN.test(value) ||
+		typeof expectedFingerprint !== 'string' ||
+		(await requestFingerprint(value)) !== expectedFingerprint
+	) {
 		invalid();
 	}
-	await assertFingerprint(canonical, expectedFingerprint);
-	return key;
+	return value;
 }
 
-export async function importRequestPrivateKey(
+// The requester checks that the link's identity belongs to this request before
+// a consuming open: its recipient must have the stored fingerprint.
+export async function importRequestIdentity(
 	value: unknown,
 	expectedFingerprint: unknown
-): Promise<CryptoKey> {
-	const bytes = decodeUrl(value, KEY_MAX_CHARS);
-	const key = await subtle().importKey('pkcs8', bytes, RSA, true, ['decrypt']);
-	assertKey(key, 'private');
-	if ((await exportRequestPrivateKey(key)) !== value) {
+): Promise<string> {
+	const identity = typeof value === 'string' ? decodeKeyFragment(`key=${value}`) : null;
+	if (!identity) {
 		invalid();
 	}
-	// Export only n/e into a fresh public JWK; never pass private JWK fields on.
-	const { n, e } = await subtle().exportKey('jwk', key);
-	const publicKey = await subtle().importKey('jwk', { kty: 'RSA', n, e }, RSA, true, ['encrypt']);
-	await assertFingerprint(await subtle().exportKey('spki', publicKey), expectedFingerprint);
-	// Native DER import may accept inconsistent RSA private components. Prove
-	// the private half works before a caller consumes the one-time response.
-	const challenge = crypto.getRandomValues(new Uint8Array(32));
-	const sealed = await subtle().encrypt(RSA, publicKey, challenge);
-	const opened = new Uint8Array(await subtle().decrypt(RSA, key, sealed));
-	if (bytesToBase64(opened) !== bytesToBase64(challenge)) {
+	let recipient: string;
+	try {
+		recipient = await recipientOf(identity);
+	} catch {
 		invalid();
 	}
-	return key;
+	if ((await requestFingerprint(recipient)) !== expectedFingerprint) {
+		invalid();
+	}
+	return identity;
 }
 
-function object(value: unknown, fields: string[]): Record<string, unknown> {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+function assertLimit(size: number, kind: RequestKind, limits: RequestLimits): void {
+	const max = kind === 'text' ? limits.maxTextBytes : limits.maxFileBytes;
+	if (!Number.isSafeInteger(max) || max < 0 || size > max) {
 		invalid();
 	}
-	const record = value as Record<string, unknown>;
-	const keys = Object.keys(record);
-	if (keys.length !== fields.length || keys.some((key) => !fields.includes(key))) {
-		invalid();
-	}
-	return record;
 }
 
-function kind(value: unknown): RequestKind {
-	if (value !== 'text' && value !== 'file') {
-		invalid();
-	}
-	return value;
-}
-
-export function parseRequestEnvelope(value: unknown, payloadKind: RequestKind): RequestEnvelope {
-	kind(payloadKind);
-	let parsed = value;
-	if (typeof value === 'string') {
-		if (value.length > ENVELOPE_MAX_BYTES || encoder.encode(value).length > ENVELOPE_MAX_BYTES) {
-			invalid();
-		}
-		parsed = JSON.parse(value);
-	}
-	const fields = ['version', 'algorithm', 'wrapped_key', 'nonce'];
-	if (payloadKind === 'file') {
-		fields.push('encrypted_filename');
-	}
-	const record = object(parsed, fields);
-	if (record.version !== 1 || record.algorithm !== ALGORITHM) {
-		invalid();
-	}
-	base64(record.wrapped_key, 256);
-	base64(record.nonce, 12);
-	const envelope: RequestEnvelope = {
-		version: 1,
-		algorithm: ALGORITHM,
-		wrapped_key: record.wrapped_key as string,
-		nonce: record.nonce as string
-	};
-	if (payloadKind === 'file') {
-		const filename = object(record.encrypted_filename, ['nonce', 'ciphertext']);
-		base64(filename.nonce, 12);
-		base64(filename.ciphertext, 17, 1040);
-		if (filename.nonce === record.nonce) {
-			invalid();
-		}
-		envelope.encrypted_filename = {
-			nonce: filename.nonce as string,
-			ciphertext: filename.ciphertext as string
-		};
-	}
-	if (encoder.encode(JSON.stringify(envelope)).length > ENVELOPE_MAX_BYTES) {
-		invalid();
-	}
-	return envelope;
-}
-
-export function serializeRequestEnvelope(value: unknown, payloadKind: RequestKind): string {
-	return JSON.stringify(parseRequestEnvelope(value, payloadKind));
-}
-
-function binding(
-	requestId: string,
-	payloadKind: RequestKind,
-	purpose: 'key' | 'payload' | 'filename'
-): Uint8Array<ArrayBuffer> {
-	// API-issued identifiers are bounded; reject LF/CR and lossy UTF-8 input.
-	if (
-		typeof requestId !== 'string' ||
-		!requestId.length ||
-		requestId.length > 256 ||
-		/[\r\n]/.test(requestId) ||
-		decoder.decode(encoder.encode(requestId)) !== requestId
-	) {
-		invalid();
-	}
-	kind(payloadKind);
-	return encoder.encode(`Flick request v1\n${requestId}\n${payloadKind}\n${purpose}`);
-}
-
-function assertSize(value: unknown, payloadKind: RequestKind, limits: RequestLimits): number {
-	for (const limit of [limits.maxTextBytes, limits.maxFileBytes]) {
-		if (!Number.isSafeInteger(limit) || limit < 0 || limit > Number.MAX_SAFE_INTEGER - 16) {
-			invalid();
-		}
-	}
-	const max = payloadKind === 'text' ? limits.maxTextBytes : limits.maxFileBytes;
-	if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > max) {
-		invalid();
-	}
-	return value;
-}
-
+// Encrypts to the request's recipient. A file is encrypted as it is read,
+// 64 KiB at a time, into a Blob the browser may keep on disk.
 export async function encryptRequestPayload(
-	requestId: string,
-	publicKey: CryptoKey,
+	recipient: string,
 	content: RequestContent,
 	limits: RequestLimits
-): Promise<RequestPayload> {
-	const payloadKind = kind(content.kind);
-	const label = binding(requestId, payloadKind, 'key');
-	assertKey(publicKey, 'public');
-	const bytes = content.kind === 'text' ? encoder.encode(content.text) : content.bytes;
-	if (content.kind === 'text' && decoder.decode(bytes) !== content.text) {
-		invalid();
-	}
-	const size = assertSize(bytes.byteLength, payloadKind, limits);
-	const filename = content.kind === 'file' ? encoder.encode(content.filename) : undefined;
-	if (
-		filename &&
-		(filename.length < 1 ||
-			filename.length > 1024 ||
-			(content.kind === 'file' && decoder.decode(filename) !== content.filename))
-	) {
-		invalid();
-	}
-	subtle();
-	const rawKey = crypto.getRandomValues(new Uint8Array(32));
-	const nonce = crypto.getRandomValues(new Uint8Array(12));
-	const filenameNonce = filename ? crypto.getRandomValues(new Uint8Array(12)) : undefined;
-	if (filenameNonce && bytesToBase64(filenameNonce) === bytesToBase64(nonce)) {
-		invalid();
-	}
-	const key = await subtle().importKey('raw', rawKey, 'AES-GCM', false, ['encrypt']);
-	const wrapped = await subtle().encrypt({ name: RSA.name, label }, publicKey, rawKey);
-	const envelope: RequestEnvelope = {
-		version: 1,
-		algorithm: ALGORITHM,
-		wrapped_key: bytesToBase64(new Uint8Array(wrapped)),
-		nonce: bytesToBase64(nonce)
-	};
-	const ciphertext = await subtle().encrypt(
-		{
-			name: 'AES-GCM',
-			iv: nonce,
-			additionalData: binding(requestId, payloadKind, 'payload'),
-			tagLength: 128
-		},
-		key,
-		bytes
-	);
-	if (filename && filenameNonce) {
-		const encrypted = await subtle().encrypt(
-			{
-				name: 'AES-GCM',
-				iv: filenameNonce,
-				additionalData: binding(requestId, payloadKind, 'filename'),
-				tagLength: 128
-			},
-			key,
-			filename
-		);
-		envelope.encrypted_filename = {
-			nonce: bytesToBase64(filenameNonce),
-			ciphertext: bytesToBase64(new Uint8Array(encrypted))
+): Promise<SealedRequest> {
+	if (content.kind === 'text') {
+		const bytes = encoder.encode(content.text);
+		if (decoder.decode(bytes) !== content.text) {
+			invalid();
+		}
+		assertLimit(bytes.length, 'text', limits);
+		const body = await encryptToRecipient(recipient, bytes);
+		return {
+			kind: 'text',
+			size_bytes: body.length,
+			plaintextBytes: bytes.length,
+			envelope: { version: ENVELOPE_VERSION },
+			body: new Blob([body as Uint8Array<ArrayBuffer>])
 		};
 	}
+	if (content.kind !== 'file') {
+		invalid();
+	}
+	const { file } = content;
+	const filename = encoder.encode(file.name);
+	if (filename.length < 1 || filename.length > 1024 || decoder.decode(filename) !== file.name) {
+		invalid();
+	}
+	assertLimit(file.size, 'file', limits);
+	const name = await encryptToRecipient(recipient, filename);
+	if (name.length > FILENAME_MAX_BYTES) {
+		invalid();
+	}
+	const body = await new Response(await encryptToRecipient(recipient, file.stream())).blob();
 	return {
-		kind: payloadKind,
-		size_bytes: size,
-		envelope,
-		ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+		kind: 'file',
+		size_bytes: body.size,
+		plaintextBytes: file.size,
+		envelope: { version: ENVELOPE_VERSION, encrypted_filename: bytesToBase64(name) },
+		body
 	};
 }
 
+// Resolves only after the final chunk has been authenticated, so a truncated
+// or altered body rejects instead of yielding partial content. A file Blob is
+// always application/octet-stream, so it cannot render in the Flick origin.
 export async function decryptRequestPayload(
-	requestId: string,
-	privateKey: CryptoKey,
-	value: unknown,
+	identity: string,
+	opened: OpenedRequestBody,
 	limits: RequestLimits
-): Promise<RequestContent> {
-	const record = object(value, ['kind', 'size_bytes', 'envelope', 'ciphertext']);
-	const payloadKind = kind(record.kind);
-	const label = binding(requestId, payloadKind, 'key');
-	const size = assertSize(record.size_bytes, payloadKind, limits);
-	const envelope = parseRequestEnvelope(record.envelope, payloadKind);
-	const ciphertext = base64(record.ciphertext, size + 16);
-	assertKey(privateKey, 'private');
-	const rawKey = await subtle().decrypt(
-		{ name: RSA.name, label },
-		privateKey,
-		base64(envelope.wrapped_key, 256)
-	);
-	if (rawKey.byteLength !== 32) {
+): Promise<OpenedRequestContent> {
+	if (opened.kind === 'text') {
+		if (opened.encryptedFilename) {
+			invalid();
+		}
+		const plaintext = new Uint8Array(
+			await new Response(await decryptWith(identity, opened.body)).arrayBuffer()
+		);
+		assertLimit(plaintext.length, 'text', limits);
+		return { kind: 'text', text: decoder.decode(plaintext) };
+	}
+	if (opened.kind !== 'file' || !opened.encryptedFilename) {
 		invalid();
 	}
-	const key = await subtle().importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
-	const bytes = new Uint8Array(
-		await subtle().decrypt(
-			{
-				name: 'AES-GCM',
-				iv: base64(envelope.nonce, 12),
-				additionalData: binding(requestId, payloadKind, 'payload'),
-				tagLength: 128
-			},
-			key,
-			ciphertext
-		)
-	);
-	if (bytes.length !== size) {
-		invalid();
+	const decrypted = await new Response(await decryptWith(identity, opened.body)).blob();
+	assertLimit(decrypted.size, 'file', limits);
+	const filename = decoder.decode(await decryptWith(identity, opened.encryptedFilename));
+	return {
+		kind: 'file',
+		blob: decrypted.slice(0, decrypted.size, 'application/octet-stream'),
+		filename
+	};
+}
+
+// Decodes the Flick-Encrypted-Filename header value.
+export function encryptedFilenameFromHeader(value: string): Uint8Array {
+	try {
+		const bytes = base64ToBytes(value);
+		if (bytes.length > 0 && bytes.length <= FILENAME_MAX_BYTES && bytesToBase64(bytes) === value) {
+			return bytes;
+		}
+	} catch {
+		// Falls through to the same rejection as a wrong length.
 	}
-	if (payloadKind === 'text') {
-		return { kind: 'text', text: decoder.decode(bytes) };
-	}
-	const filename = envelope.encrypted_filename;
-	if (!filename) {
-		invalid();
-	}
-	const name = await subtle().decrypt(
-		{
-			name: 'AES-GCM',
-			iv: base64(filename.nonce, 12),
-			additionalData: binding(requestId, payloadKind, 'filename'),
-			tagLength: 128
-		},
-		key,
-		base64(filename.ciphertext, 17, 1040)
-	);
-	return { kind: 'file', bytes, filename: decoder.decode(name) };
+	invalid();
 }
