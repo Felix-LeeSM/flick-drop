@@ -147,6 +147,7 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	router := NewRouter(conn, store, Options{})
 	body := validCreateSecretBody()
 	delete(body, "ciphertext")
+	body["kind"], body["encrypted_filename"] = "file", ageField(120)
 	body["size_bytes"] = 2048
 	resp := performJSON(t, router, http.MethodPost, "/api/secrets", body)
 	var created createSecretLargeResponse
@@ -157,5 +158,12 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	status, err := store.Management(ctx, created.ID, created.ManagementToken)
 	if err != nil || status.Status != "pending_upload" {
 		t.Fatalf("large status: %+v %v", status, err)
+	}
+	// Text is always inline: without ciphertext it is refused, not presigned.
+	text := validCreateSecretBody()
+	delete(text, "ciphertext")
+	text["size_bytes"] = 2048
+	if resp := performJSON(t, router, http.MethodPost, "/api/secrets", text); resp.Code != http.StatusBadRequest {
+		t.Fatalf("large text create status = %d, want 400", resp.Code)
 	}
 }

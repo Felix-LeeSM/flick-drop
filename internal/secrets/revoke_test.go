@@ -38,7 +38,7 @@ func TestRevokeRemovesAccessAndPreservesOutcome(t *testing.T) {
 					}
 					id, token = created.ID, created.ManagementToken
 				} else {
-					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: input.Kind, AccessKDF: input.AccessKDF, WrappedIdentity: input.WrappedIdentity, AccessProofHash: proof, SizeBytes: 2048, TTLSeconds: 600})
+					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), AccessKDF: input.AccessKDF, WrappedIdentity: input.WrappedIdentity, AccessProofHash: proof, SizeBytes: 2048, TTLSeconds: 600})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -102,7 +102,7 @@ func TestRevokeRollsBackOutboxAndCommitFailures(t *testing.T) {
 			conn := openTestDB(t, ctx)
 			store := newLargeTestStore(t, conn, newMockObjectStore())
 			store.outbox = newTestOutbox(t, conn)
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 600})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +181,7 @@ func TestRevokeWinsAgainstInFlightObjectRead(t *testing.T) {
 			store := newLargeTestStore(t, first, objects)
 			revoker := newLargeTestStore(t, second, objects)
 			revoker.outbox = newTestOutbox(t, second)
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 600})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +302,7 @@ func TestRevokeHonorsPendingAndContentDeadlines(t *testing.T) {
 	store.outbox = newTestOutbox(t, conn)
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123456789, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
-	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 3600})
+	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
