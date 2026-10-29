@@ -8,8 +8,8 @@ Directory structure principles:
 - Expected structure after scaffold:
   - `src/routes/`: pages and route-level load/actions.
   - `src/lib/api/`: typed API client and response mapping.
-  - `src/lib/crypto/`: age (`age-encryption`) secret sealing, the PBKDF2 access
-    proof, and request-link Web Crypto helpers.
+  - `src/lib/crypto/`: age (`age-encryption`) sealing for secrets and request
+    links, and the PBKDF2 access proof.
   - `src/lib/credentials/`: browser-only credential envelope build/parse/serialize (templates, schema).
   - `src/lib/components/`: reusable UI components.
   - `src/lib/state/`: browser-only state that does not persist passphrases or

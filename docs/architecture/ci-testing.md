@@ -162,7 +162,8 @@ malformed keys, fingerprint pinning, exact retries after response loss, lost Ope
 cancellation races, file decryption, credential templates sent as `FLCR1:` text,
 known-expiry cleanup, 429, and inline limits.
 The API-client and fragment/handoff checks run in `pnpm --dir web test` alongside
-unchanged Model A/B and request crypto vectors.
+the Model A/B vectors and request crypto round trips (request material is
+generated per run by `web/src/lib/components/request-vectors.mjs`).
 
 `pnpm --dir web test:requests` runs `RequestPages.live.mjs` against a real API and
 separate browser contexts. It covers text/file round trips, private-link refresh
