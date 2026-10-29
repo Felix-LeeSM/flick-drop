@@ -1,29 +1,33 @@
 package clientcrypto
 
 import (
-	"encoding/base64"
 	"errors"
+	"regexp"
 	"strings"
+
+	"filippo.io/age"
 )
 
-// FragmentKeyPrefix marks the Model B key inside a share URL fragment.
-// Mirrors web/src/lib/crypto/fragment.ts.
+// FragmentKeyPrefix marks the Model B identity inside a share URL fragment
+// (`#key=AGE-SECRET-KEY-PQ-1...`). Mirrors web/src/lib/crypto/fragment.ts.
 const FragmentKeyPrefix = "key="
 
-// maxKeyFragmentChars bounds decoding before it allocates. A 256-bit key is 43
-// base64url chars; anything past this ceiling is a spoofed fragment, not a key
-// (DoS guard, #89).
-const maxKeyFragmentChars = 86
+// maxKeyFragmentChars bounds parsing. A hybrid identity is 77 characters;
+// anything much longer is a spoofed fragment, not a key (DoS guard, #89).
+const maxKeyFragmentChars = 128
+
+// identityPattern is uppercase bech32 after the prefix, as in the browser.
+var identityPattern = regexp.MustCompile(`^` + IdentityPrefix + `[02-9AC-HJ-NP-Z]+$`)
 
 // EncodeKeyFragment returns the fragment body without the leading '#', so the
 // caller assigns it to URL.Fragment.
-func EncodeKeyFragment(key []byte) string {
-	return FragmentKeyPrefix + base64.RawURLEncoding.EncodeToString(key)
+func EncodeKeyFragment(id *age.HybridIdentity) string {
+	return FragmentKeyPrefix + id.String()
 }
 
-// DecodeKeyFragment reads the key back out of a share URL fragment. It accepts
-// the fragment with or without its leading '#'.
-func DecodeKeyFragment(fragment string) ([]byte, error) {
+// DecodeKeyFragment reads the identity back out of a share URL fragment. It
+// accepts the fragment with or without its leading '#'.
+func DecodeKeyFragment(fragment string) (*age.HybridIdentity, error) {
 	stripped := strings.TrimPrefix(fragment, "#")
 	encoded, found := strings.CutPrefix(stripped, FragmentKeyPrefix)
 	if !found {
@@ -32,9 +36,12 @@ func DecodeKeyFragment(fragment string) ([]byte, error) {
 	if encoded == "" || len(encoded) > maxKeyFragmentChars {
 		return nil, errors.New("link fragment key has an implausible length")
 	}
-	key, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, errors.New("link fragment key is not valid base64url")
+	if !identityPattern.MatchString(encoded) {
+		return nil, errors.New("link fragment key is not an age identity")
 	}
-	return key, nil
+	id, err := ParseIdentity(encoded)
+	if err != nil {
+		return nil, errors.New("link fragment key is not a valid age identity")
+	}
+	return id, nil
 }

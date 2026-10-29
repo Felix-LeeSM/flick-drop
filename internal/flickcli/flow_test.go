@@ -1,6 +1,7 @@
 package flickcli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -44,8 +45,7 @@ type fakeFlick struct {
 type storedSecret struct {
 	kind              string
 	ciphertext        string
-	nonce             string
-	kdf               *clientcrypto.KDFParams
+	wrappedIdentity   string
 	accessProofHash   string
 	accessKDF         *clientcrypto.KDFParams
 	encryptedFilename string
@@ -109,11 +109,25 @@ func (f *fakeFlick) createSecret(w http.ResponseWriter, r *http.Request) {
 	f.nextID++
 	id := fmt.Sprintf("secret%d", f.nextID)
 
+	// The real API checks an inline body's exact length and age header the
+	// same way (internal/secrets/store.go validateCreate).
+	if req.Ciphertext != "" {
+		body, err := base64.StdEncoding.DecodeString(req.Ciphertext)
+		if err != nil || len(body) != req.SizeBytes || !strings.HasPrefix(string(body), "age-encryption.org/v1\n") {
+			writeError(w, http.StatusBadRequest, "invalid_ciphertext")
+			return
+		}
+		// The server's default inline cap on the age file, which the
+		// client's plaintext fallback limit has to respect.
+		if len(body) > 1_048_576 {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large")
+			return
+		}
+	}
 	stored := &storedSecret{
 		kind:              req.Kind,
 		ciphertext:        req.Ciphertext,
-		nonce:             req.Nonce,
-		kdf:               req.KDF,
+		wrappedIdentity:   req.WrappedIdentity,
 		encryptedFilename: req.EncryptedFilename,
 		contentType:       req.ContentType,
 		sizeBytes:         req.SizeBytes,
@@ -138,14 +152,14 @@ func (f *fakeFlick) createSecret(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stored.pendingUpload = true
-		// Content-Length is signed and equals plaintext size plus the 16-byte
-		// AEAD tag; the fake bucket enforces it the way a real one would.
+		// Content-Length is signed and equals size_bytes, the exact age file
+		// length; the fake bucket enforces it the way a real one would.
 		resp.Upload = &PresignedUpload{
 			URL:       f.server.URL + "/bucket/" + id,
 			Method:    http.MethodPut,
 			ExpiresAt: time.Now().Add(10 * time.Minute).Format(time.RFC3339),
 			Headers: map[string]string{
-				"Content-Length": fmt.Sprint(req.SizeBytes + 16),
+				"Content-Length": fmt.Sprint(req.SizeBytes),
 				"X-Flick-Signed": "yes",
 			},
 		}
@@ -172,7 +186,7 @@ func (f *fakeFlick) putObject(w http.ResponseWriter, r *http.Request, id string)
 		writeError(w, http.StatusBadRequest, "read_failed")
 		return
 	}
-	if int(r.ContentLength) != stored.sizeBytes+16 {
+	if int(r.ContentLength) != stored.sizeBytes {
 		writeError(w, http.StatusForbidden, "signature_mismatch")
 		return
 	}
@@ -247,18 +261,24 @@ func (f *fakeFlick) open(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	stored.consumed = true
 
-	resp := OpenSecretResponse{
-		ID:                id,
-		Kind:              stored.kind,
-		Ciphertext:        stored.ciphertext,
-		Nonce:             stored.nonce,
-		KDF:               stored.kdf,
-		EncryptedFilename: stored.encryptedFilename,
-		ContentType:       stored.contentType,
-		SizeBytes:         stored.sizeBytes,
-		ExpiresAt:         time.Now().Add(time.Hour).Format(time.RFC3339),
+	// The open answers with the raw age body and Flick-* headers
+	// (contracts/openapi.yaml openSecret).
+	body, _ := base64.StdEncoding.DecodeString(stored.ciphertext)
+	header := w.Header()
+	header.Set("Content-Type", "application/octet-stream")
+	header.Set("Flick-Kind", stored.kind)
+	header.Set("Flick-Expires-At", time.Now().Add(time.Hour).Format(time.RFC3339))
+	if stored.contentType != "" {
+		header.Set("Flick-Content-Type", stored.contentType)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	if stored.encryptedFilename != "" {
+		header.Set("Flick-Encrypted-Filename", stored.encryptedFilename)
+	}
+	if stored.wrappedIdentity != "" {
+		header.Set("Flick-Wrapped-Identity", stored.wrappedIdentity)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -349,31 +369,42 @@ func TestServerNeverReceivesPlaintextOrPassphrase(t *testing.T) {
 
 	const plaintext = "correct-horse-plaintext-marker"
 	const passphrase = "passphrase-marker-value"
-	if _, err := Send(context.Background(), fake.client(), SendOptions{
-		Text:       plaintext,
-		Passphrase: passphrase,
-		TTL:        DefaultTTL,
-	}); err != nil {
-		t.Fatalf("send: %v", err)
+	for _, opts := range []SendOptions{
+		{Text: plaintext, Passphrase: passphrase, TTL: DefaultTTL},
+		{Text: plaintext, TTL: DefaultTTL},
+	} {
+		if _, err := Send(context.Background(), fake.client(), opts); err != nil {
+			t.Fatalf("send: %v", err)
+		}
 	}
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.createBodies) != 1 {
-		t.Fatalf("create calls = %d, want 1", len(fake.createBodies))
+	if len(fake.createBodies) != 2 {
+		t.Fatalf("create calls = %d, want 2", len(fake.createBodies))
 	}
-	body := fake.createBodies[0]
-	for _, forbidden := range []string{plaintext, passphrase} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("create request leaked %q", forbidden)
+	for i, body := range fake.createBodies {
+		// The identity, in the clear, would let the server decrypt the body.
+		for _, forbidden := range []string{plaintext, passphrase, clientcrypto.IdentityPrefix} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("create request %d leaked %q", i, forbidden)
+			}
+		}
+		// The server-side guard also rejects these field names outright
+		// (hasSensitiveField in internal/httpapi/secrets.go); nonce and kdf
+		// belonged to the removed AES-GCM format.
+		for _, field := range []string{`"passphrase"`, `"plaintext"`, `"key"`, `"nonce"`, `"kdf":`} {
+			if strings.Contains(strings.Replace(body, `"access":{"kdf":`, "", 1), field) {
+				t.Errorf("create request %d carries a %s field", i, field)
+			}
 		}
 	}
-	// The server-side guard also rejects these field names outright
-	// (hasSensitiveField in internal/httpapi/secrets.go).
-	for _, field := range []string{`"passphrase"`, `"plaintext"`, `"key"`} {
-		if strings.Contains(body, field) {
-			t.Errorf("create request carries a %s field", field)
-		}
+	// Model A sends the wrapped identity; Model B must not.
+	if !strings.Contains(fake.createBodies[0], `"wrapped_identity":`) {
+		t.Error("model A create request carries no wrapped identity")
+	}
+	if strings.Contains(fake.createBodies[1], `"wrapped_identity":`) || strings.Contains(fake.createBodies[1], `"access":`) {
+		t.Error("model B create request carries Model A fields")
 	}
 }
 
@@ -381,11 +412,13 @@ func TestSendLargeFileUsesPresignedUploadAndFinalizes(t *testing.T) {
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64 // force the large path without building a 1 MiB fixture
 
-	payload := []byte(strings.Repeat("large file body. ", 64))
+	// Several 64 KiB age chunks, so the streamed encrypt and decrypt cross
+	// chunk boundaries.
+	payload := []byte(strings.Repeat("large file body. ", 12_000))
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "report.pdf",
-		FileBytes: payload,
-		TTL:       DefaultTTL,
+		FileName: "report.pdf",
+		File:     bytes.NewReader(payload),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -432,7 +465,7 @@ func TestSendLargeFileUsesPresignedUploadAndFinalizes(t *testing.T) {
 }
 
 func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) {
-	for _, size := range []int{1_048_560, 1_048_561} {
+	for _, size := range []int{1_044_208, 1_044_209} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			fake := newFakeFlick(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -445,18 +478,18 @@ func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) 
 			t.Cleanup(server.Close)
 			client := NewClient(server.URL, server.Client())
 			limits := client.Config(context.Background())
-			if limits.PayloadInlineMaxBytes != 1_048_560 || limits.MaxFileBytes != 52_428_800 {
+			if limits.PayloadInlineMaxBytes != 1_044_208 || limits.MaxFileBytes != 52_428_800 {
 				t.Fatalf("fallback limits = %+v, want plaintext inline/file limits", limits)
 			}
 			sent, err := Send(context.Background(), client, SendOptions{
-				FileName:  "boundary.bin",
-				FileBytes: make([]byte, size),
-				TTL:       DefaultTTL,
+				FileName: "boundary.bin",
+				File:     bytes.NewReader(make([]byte, size)),
+				TTL:      DefaultTTL,
 			})
 			if err != nil {
 				t.Fatalf("send: %v", err)
 			}
-			if want := size > 1_048_560; sent.Uploaded != want {
+			if want := size > 1_044_208; sent.Uploaded != want {
 				t.Errorf("uploaded = %v, want %v for %d plaintext bytes", sent.Uploaded, want, size)
 			}
 		})
@@ -469,9 +502,9 @@ func TestSendLargeFileFailsClearlyWithoutObjectStorage(t *testing.T) {
 	fake.s3Enabled = false
 
 	_, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "report.pdf",
-		FileBytes: []byte(strings.Repeat("x", 256)),
-		TTL:       DefaultTTL,
+		FileName: "report.pdf",
+		File:     bytes.NewReader([]byte(strings.Repeat("x", 256))),
+		TTL:      DefaultTTL,
 	})
 	if err == nil {
 		t.Fatal("expected an error when the server returns no presigned upload")
@@ -486,9 +519,9 @@ func TestSendRejectsFilesOverTheDeploymentLimit(t *testing.T) {
 	fake.maxFile = 100
 
 	_, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "big.bin",
-		FileBytes: make([]byte, 200),
-		TTL:       DefaultTTL,
+		FileName: "big.bin",
+		File:     bytes.NewReader(make([]byte, 200)),
+		TTL:      DefaultTTL,
 	})
 	if err == nil {
 		t.Fatal("expected an oversized file to be rejected")
@@ -508,9 +541,9 @@ func TestOpenConfinesSenderSuppliedFilename(t *testing.T) {
 	dir := t.TempDir()
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "../../escaped.txt",
-		FileBytes: []byte("payload"),
-		TTL:       DefaultTTL,
+		FileName: "../../escaped.txt",
+		File:     bytes.NewReader([]byte("payload")),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -544,9 +577,9 @@ func TestOpenNeverOverwritesAnExistingFile(t *testing.T) {
 	}
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "notes.txt",
-		FileBytes: []byte("the secret payload"),
-		TTL:       DefaultTTL,
+		FileName: "notes.txt",
+		File:     bytes.NewReader([]byte("the secret payload")),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -598,9 +631,9 @@ func TestOpenReportsTheUnwritablePayloadInsteadOfLosingIt(t *testing.T) {
 	}
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "notes.txt",
-		FileBytes: []byte("the secret payload"),
-		TTL:       DefaultTTL,
+		FileName: "notes.txt",
+		File:     bytes.NewReader([]byte("the secret payload")),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -614,8 +647,17 @@ func TestOpenReportsTheUnwritablePayloadInsteadOfLosingIt(t *testing.T) {
 	if !errors.Is(err, ErrWriteAfterConsume) {
 		t.Fatalf("err = %v, want it to wrap ErrWriteAfterConsume", err)
 	}
-	if string(result.Plaintext) != "the secret payload" {
-		t.Errorf("payload was lost with the error: %q", result.Plaintext)
+	// The file was streamed to disk, so the rescue is the fully decrypted
+	// staging file, named in the result.
+	rescued, err := os.ReadFile(result.RescuedPath)
+	if err != nil {
+		t.Fatalf("payload was lost with the error: read rescued path %q: %v", result.RescuedPath, err)
+	}
+	if string(rescued) != "the secret payload" {
+		t.Errorf("rescued payload = %q", rescued)
+	}
+	if filepath.Dir(result.RescuedPath) != dir {
+		t.Errorf("rescued %s outside the output directory %s", result.RescuedPath, dir)
 	}
 }
 
@@ -756,9 +798,9 @@ func TestOpenChecksTheOutputDirectoryBeforeConsuming(t *testing.T) {
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "report.pdf",
-		FileBytes: []byte("payload"),
-		TTL:       DefaultTTL,
+		FileName: "report.pdf",
+		File:     bytes.NewReader([]byte("payload")),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -861,8 +903,9 @@ func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
 // handed back as an error over a secret that no longer exists anywhere else.
 func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
 	for name, envelope := range map[string]string{
-		"malformed": `{"nonce":"","ciphertext":""}`,
-		"absent":    "",
+		"malformed":  base64.StdEncoding.EncodeToString([]byte("not an age file")),
+		"not base64": "%%%",
+		"absent":     "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			// A name that was sent and failed is a tampering or corruption
@@ -874,9 +917,9 @@ func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
 			dir := t.TempDir()
 
 			sent, err := Send(context.Background(), fake.client(), SendOptions{
-				FileName:  "report.pdf",
-				FileBytes: []byte("body survives a broken name"),
-				TTL:       DefaultTTL,
+				FileName: "report.pdf",
+				File:     bytes.NewReader([]byte("body survives a broken name")),
+				TTL:      DefaultTTL,
 			})
 			if err != nil {
 				t.Fatalf("send: %v", err)
@@ -918,15 +961,15 @@ func TestOpenWithOutputPathIgnoresAnUndecryptableFilename(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "report.pdf")
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
-		FileName:  "report.pdf",
-		FileBytes: []byte("payload"),
-		TTL:       DefaultTTL,
+		FileName: "report.pdf",
+		File:     bytes.NewReader([]byte("payload")),
+		TTL:      DefaultTTL,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	fake.mu.Lock()
-	fake.secrets[sent.ID].encryptedFilename = `{"nonce":"","ciphertext":""}`
+	fake.secrets[sent.ID].encryptedFilename = base64.StdEncoding.EncodeToString([]byte("not an age file"))
 	fake.mu.Unlock()
 
 	link, err := ParseShareLink(sent.Link)
@@ -950,12 +993,137 @@ func TestOpenWithOutputPathIgnoresAnUndecryptableFilename(t *testing.T) {
 }
 
 // A decryption failure after the open must not leave the reserved -output path
-// behind as an empty file where the user asked for a secret.
+// behind as an empty file where the user asked for a secret, nor write any part
+// of a body that fails to authenticate.
 func TestOpenRemovesTheReservedFileWhenDecryptionFails(t *testing.T) {
-	fake := newFakeFlick(t)
-	target := filepath.Join(t.TempDir(), "secret.txt")
+	for name, break_ := range map[string]func(t *testing.T, fake *fakeFlick, id string, link *ShareLink){
+		"wrong identity": func(t *testing.T, _ *fakeFlick, _ string, link *ShareLink) {
+			other, err := clientcrypto.NewIdentity()
+			if err != nil {
+				t.Fatalf("identity: %v", err)
+			}
+			link.Identity = other
+		},
+		"altered final chunk": func(_ *testing.T, fake *fakeFlick, id string, _ *ShareLink) {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			body, _ := base64.StdEncoding.DecodeString(fake.secrets[id].ciphertext)
+			body[len(body)-1] ^= 0x01
+			fake.secrets[id].ciphertext = base64.StdEncoding.EncodeToString(body)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			target := filepath.Join(t.TempDir(), "secret.txt")
 
-	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+			sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			link, err := ParseShareLink(sent.Link)
+			if err != nil {
+				t.Fatalf("parse link: %v", err)
+			}
+			break_(t, fake, sent.ID, &link)
+
+			result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target})
+			if err == nil {
+				t.Fatal("expected decryption to fail")
+			}
+			if len(result.Plaintext) != 0 {
+				t.Errorf("returned %d plaintext bytes from a body that failed to decrypt", len(result.Plaintext))
+			}
+			if _, err := os.Stat(target); !os.IsNotExist(err) {
+				t.Errorf("a failed decryption left %s behind", target)
+			}
+		})
+	}
+}
+
+// A file secret is decrypted into a staging file and moved into place only
+// after age authenticates the final chunk. A body that fails must leave
+// nothing in the output directory: no partial file, no staging file.
+func TestOpenFileLeavesNothingWhenTheBodyFailsToAuthenticate(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 64
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName: "report.pdf",
+		File:     bytes.NewReader(bytes.Repeat([]byte("chunked body "), 20_000)),
+		TTL:      DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	fake.mu.Lock()
+	body, _ := base64.StdEncoding.DecodeString(fake.secrets[sent.ID].ciphertext)
+	body[len(body)-1] ^= 0x01
+	fake.secrets[sent.ID].ciphertext = base64.StdEncoding.EncodeToString(body)
+	fake.mu.Unlock()
+
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	dir := t.TempDir()
+	result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if err == nil {
+		t.Fatal("an altered body opened")
+	}
+	if errors.Is(err, ErrWriteAfterConsume) || result.RescuedPath != "" {
+		t.Errorf("a decryption failure was reported as a rescuable write failure: %v", err)
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("read dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a failed open left %v in the output directory", entries)
+	}
+}
+
+// The open body must be exactly the size_bytes the metadata reported; a
+// substituted body of another length is refused.
+func TestOpenRefusesABodyOfTheWrongLength(t *testing.T) {
+	for name, change := range map[string]func([]byte) []byte{
+		"longer":  func(b []byte) []byte { return append(b, 0) },
+		"shorter": func(b []byte) []byte { return b[:len(b)-1] },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			fake.mu.Lock()
+			body, _ := base64.StdEncoding.DecodeString(fake.secrets[sent.ID].ciphertext)
+			fake.secrets[sent.ID].ciphertext = base64.StdEncoding.EncodeToString(change(body))
+			fake.mu.Unlock()
+
+			link, err := ParseShareLink(sent.Link)
+			if err != nil {
+				t.Fatalf("parse link: %v", err)
+			}
+			result, err := Open(context.Background(), fake.client(), OpenOptions{Link: link})
+			if err == nil {
+				t.Fatal("a body of the wrong length opened")
+			}
+			if len(result.Plaintext) != 0 {
+				t.Errorf("returned plaintext %q from a body of the wrong length", result.Plaintext)
+			}
+		})
+	}
+}
+
+func TestSendAndOpenModelAFile(t *testing.T) {
+	fake := newFakeFlick(t)
+	payload := bytes.Repeat([]byte{0, 1, 2, 250}, 40_000)
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName:   "keys.bin",
+		File:       bytes.NewReader(payload),
+		Passphrase: "correct horse battery staple",
+		TTL:        DefaultTTL,
+	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -963,13 +1131,107 @@ func TestOpenRemovesTheReservedFileWhenDecryptionFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse link: %v", err)
 	}
-	// A link whose fragment key is not the key the payload was sealed with.
-	link.Key = make([]byte, clientcrypto.RawKeyBytes)
-
-	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target}); err == nil {
-		t.Fatal("expected decryption to fail with the wrong key")
+	dir := t.TempDir()
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{
+		Link:       link,
+		OutputDir:  dir,
+		Passphrase: func() (string, error) { return "correct horse battery staple", nil },
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Errorf("a failed decryption left %s behind", target)
+	if want := filepath.Join(dir, "keys.bin"); opened.WrittenPath != want {
+		t.Errorf("WrittenPath = %q, want %q", opened.WrittenPath, want)
+	}
+	written, err := os.ReadFile(opened.WrittenPath)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if !bytes.Equal(written, payload) {
+		t.Error("file contents did not survive the round trip")
+	}
+}
+
+// A server reporting an impossible size must be refused before the consuming
+// open: a negative size used to reach a slice bound after consumption.
+func TestOpenRefusesAnImpossibleReportedSize(t *testing.T) {
+	for name, size := range map[string]int{"negative": -1, "zero": 0, "text over inline": 1 << 30} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			fake.mu.Lock()
+			fake.secrets[sent.ID].sizeBytes = size
+			fake.mu.Unlock()
+			link, err := ParseShareLink(sent.Link)
+			if err != nil {
+				t.Fatalf("parse link: %v", err)
+			}
+			if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link}); err == nil {
+				t.Fatal("opened a secret with an impossible reported size")
+			}
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if fake.openCalls != 0 {
+				t.Errorf("open calls = %d, want the secret left unconsumed", fake.openCalls)
+			}
+		})
+	}
+}
+
+// A placed file secret is 0600 and leaves no staging file behind.
+func TestOpenFilePlacesAPrivateFileAndCleansUp(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 64
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName: "report.pdf",
+		File:     bytes.NewReader(bytes.Repeat([]byte("x"), 70_000)),
+		TTL:      DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	dir := t.TempDir()
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	info, err := os.Stat(opened.WrittenPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "report.pdf" {
+		t.Errorf("output directory holds %v, want only report.pdf", entries)
+	}
+}
+
+func TestCopyExclusiveNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyExclusive(src, dst); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "payload" {
+		t.Errorf("copied %q", got)
+	}
+	if err := copyExclusive(src, dst); !errors.Is(err, os.ErrExist) {
+		t.Errorf("second copy err = %v, want os.ErrExist", err)
 	}
 }

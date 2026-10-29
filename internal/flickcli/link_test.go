@@ -4,15 +4,23 @@ import (
 	"strings"
 	"testing"
 
+	"filippo.io/age"
+
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-func TestParseShareLinkModelB(t *testing.T) {
-	key := make([]byte, clientcrypto.RawKeyBytes)
-	for i := range key {
-		key[i] = byte(i)
+func newTestIdentity(t *testing.T) *age.HybridIdentity {
+	t.Helper()
+	id, err := clientcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity: %v", err)
 	}
-	raw := "https://flick.example.com/s/abc123#" + clientcrypto.EncodeKeyFragment(key)
+	return id
+}
+
+func TestParseShareLinkModelB(t *testing.T) {
+	id := newTestIdentity(t)
+	raw := "https://flick.example.com/s/abc123#" + clientcrypto.EncodeKeyFragment(id)
 
 	link, err := ParseShareLink(raw)
 	if err != nil {
@@ -24,8 +32,8 @@ func TestParseShareLinkModelB(t *testing.T) {
 	if link.ID != "abc123" {
 		t.Errorf("id = %q", link.ID)
 	}
-	if string(link.Key) != string(key) {
-		t.Error("fragment key did not survive parsing")
+	if link.Identity == nil || link.Identity.String() != id.String() {
+		t.Error("fragment identity did not survive parsing")
 	}
 }
 
@@ -34,7 +42,7 @@ func TestParseShareLinkModelACarriesNoKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if link.Key != nil {
+	if link.Identity != nil {
 		t.Error("a link without a fragment produced a key")
 	}
 }
@@ -74,6 +82,7 @@ func TestParseShareLinkRejectsBadInput(t *testing.T) {
 		"no host":          "https:///s/abc123",
 		"path but no host": "/s/abc123",
 		"bad fragment":     "https://flick.example.com/s/abc123#key=!!!",
+		"old raw key":      "https://flick.example.com/s/abc123#key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseShareLink(raw); err == nil {
@@ -84,8 +93,8 @@ func TestParseShareLinkRejectsBadInput(t *testing.T) {
 }
 
 func TestBuildShareLinkRoundTrips(t *testing.T) {
-	key := make([]byte, clientcrypto.RawKeyBytes)
-	built := BuildShareLink("https://flick.example.com/", "abc123", key)
+	id := newTestIdentity(t)
+	built := BuildShareLink("https://flick.example.com/", "abc123", id)
 
 	if strings.Count(built, "//") != 1 {
 		t.Errorf("link %q has a doubled slash", built)
@@ -94,7 +103,7 @@ func TestBuildShareLinkRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
-	if link.ID != "abc123" || string(link.Key) != string(key) {
+	if link.ID != "abc123" || link.Identity == nil || link.Identity.String() != id.String() {
 		t.Errorf("round trip lost data: %+v", link)
 	}
 }

@@ -1,14 +1,19 @@
 package flickcli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
@@ -29,13 +34,14 @@ type SendOptions struct {
 	// FileName is the original filename for a file secret; it is encrypted
 	// alongside the body and never sent in the clear.
 	FileName string
-	// FileBytes is the file payload. A non-empty FileName selects a file secret.
-	FileBytes []byte
+	// File is read once and encrypted as it is read, so the CLI never holds a
+	// whole file in memory. A non-empty FileName selects a file secret.
+	File io.Reader
 	// ContentType overrides the type guessed from the file extension.
 	ContentType string
-	// Passphrase selects Model A when non-empty: the key is derived from it and
-	// the recipient must type it. Empty selects Model B, where a random key
-	// travels in the link fragment.
+	// Passphrase selects Model A when non-empty: it wraps the secret's age
+	// identity and the recipient must type it. Empty selects Model B, where the
+	// identity travels in the link fragment.
 	Passphrase string
 	// TTL is the secret's lifetime.
 	TTL time.Duration
@@ -45,8 +51,8 @@ type SendOptions struct {
 	ShareOrigin string
 }
 
-// SendResult is what the caller prints. Link already carries the Model B key in
-// its fragment when there is one.
+// SendResult is what the caller prints. Link already carries the Model B
+// identity in its fragment when there is one.
 type SendResult struct {
 	ID        string
 	ExpiresAt string
@@ -58,63 +64,70 @@ type SendResult struct {
 	Uploaded bool
 }
 
-// Send encrypts locally and creates the secret. The server receives ciphertext,
-// a nonce, and metadata — never the passphrase, the key, or the plaintext.
+// Send encrypts locally and creates the secret. Every secret gets a fresh age
+// identity (contracts/age-format-v1.md). The server receives age files and
+// metadata — never the passphrase, the identity in the clear, or the plaintext.
 func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, error) {
 	if err := validateSendOptions(opts); err != nil {
 		return SendResult{}, err
 	}
 
-	plaintext := []byte(opts.Text)
-	isFile := opts.FileName != ""
-	if isFile {
-		plaintext = opts.FileBytes
-	}
-
-	key, kdf, access, err := deriveSendKey(opts.Passphrase)
+	limits := client.Config(ctx)
+	identity, err := clientcrypto.NewIdentity()
 	if err != nil {
 		return SendResult{}, err
 	}
 
-	payload, err := clientcrypto.Encrypt(plaintext, key, kdf)
-	if err != nil {
+	isFile := opts.FileName != ""
+	var body []byte
+	var sealed *sealedFile
+	if isFile {
+		// Limits from /api/config count bytes before encryption; the server's
+		// caps on the age file already include the age overhead.
+		sealed, err = sealFile(identity, opts.File, limits.MaxFileBytes)
+		if err != nil {
+			return SendResult{}, err
+		}
+		defer sealed.remove()
+	} else if body, err = seal(identity, []byte(opts.Text)); err != nil {
 		return SendResult{}, fmt.Errorf("encrypt payload: %w", err)
 	}
 
 	req := CreateSecretRequest{
 		Kind:       "text",
-		Ciphertext: payload.Ciphertext,
-		Nonce:      payload.Nonce,
-		SizeBytes:  payload.SizeBytes,
+		Ciphertext: base64.StdEncoding.EncodeToString(body),
+		SizeBytes:  len(body),
 		TTLSeconds: int(opts.TTL.Seconds()),
 		MaxViews:   1,
 	}
-	if access != nil {
-		req.KDF = &payload.KDF
-		req.Access = access
+	if opts.Passphrase != "" {
+		if err := addPassphrase(&req, identity, opts.Passphrase); err != nil {
+			return SendResult{}, err
+		}
 	}
 
-	limits := client.Config(ctx)
 	large := false
 	if isFile {
 		req.Kind = "file"
 		req.ContentType = resolveContentType(opts.FileName, opts.ContentType)
-		req.EncryptedFilename, err = clientcrypto.EncryptFilename(opts.FileName, key)
+		filename, err := seal(identity, []byte(opts.FileName))
 		if err != nil {
 			return SendResult{}, fmt.Errorf("encrypt filename: %w", err)
 		}
-		if int64(payload.SizeBytes) > limits.MaxFileBytes {
-			return SendResult{}, fmt.Errorf(
-				"file is %d bytes; this deployment accepts at most %d",
-				payload.SizeBytes, limits.MaxFileBytes,
-			)
-		}
-		// Above the inline threshold the ciphertext goes straight to object
+		req.EncryptedFilename = base64.StdEncoding.EncodeToString(filename)
+		req.SizeBytes = int(sealed.size)
+		// Above the inline threshold the body goes straight to object
 		// storage, so it is omitted here — that omission is what asks the
-		// server for a presigned upload.
-		if int64(payload.SizeBytes) > limits.PayloadInlineMaxBytes {
+		// server for a presigned upload. The presigned PUT is signed at
+		// exactly sealed.size, so the raw bytes are uploaded, not base64.
+		if sealed.plaintextBytes > limits.PayloadInlineMaxBytes {
 			large = true
 			req.Ciphertext = ""
+		} else {
+			if body, err = sealed.bytes(); err != nil {
+				return SendResult{}, err
+			}
+			req.Ciphertext = base64.StdEncoding.EncodeToString(body)
 		}
 	}
 
@@ -130,11 +143,7 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 					"this deployment may not have object storage enabled",
 			)
 		}
-		ciphertext, err := decodeCiphertext(payload.Ciphertext)
-		if err != nil {
-			return SendResult{}, err
-		}
-		if err := client.Upload(ctx, *created.Upload, ciphertext); err != nil {
+		if err := client.Upload(ctx, *created.Upload, sealed.file, sealed.size); err != nil {
 			return SendResult{}, err
 		}
 		// Until finalize succeeds the secret stays pending and cannot be
@@ -149,17 +158,112 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 	if origin == "" {
 		origin = client.BaseURL()
 	}
-	model := "link-key"
-	if access != nil {
-		model = "passphrase"
-	}
-	return SendResult{
+	result := SendResult{
 		ID:        created.ID,
 		ExpiresAt: created.ExpiresAt,
-		Link:      BuildShareLink(origin, created.ID, linkKey(opts.Passphrase, key)),
-		Model:     model,
+		Model:     "link-key",
 		Uploaded:  large,
-	}, nil
+	}
+	// Model A keeps the identity out of the link: in the fragment it would
+	// defeat the passphrase entirely.
+	if opts.Passphrase != "" {
+		result.Model = "passphrase"
+		result.Link = BuildShareLink(origin, created.ID, nil)
+	} else {
+		result.Link = BuildShareLink(origin, created.ID, identity)
+	}
+	return result, nil
+}
+
+// addPassphrase sets the Model A fields: the PBKDF2 access proof that gates the
+// open, and the identity wrapped in an age scrypt file under the same
+// passphrase.
+func addPassphrase(req *CreateSecretRequest, identity *age.HybridIdentity, passphrase string) error {
+	verifier, err := clientcrypto.NewAccessVerifier(passphrase)
+	if err != nil {
+		return err
+	}
+	wrapped, err := clientcrypto.WrapIdentity(identity, passphrase)
+	if err != nil {
+		return fmt.Errorf("wrap identity: %w", err)
+	}
+	req.Access = &verifier
+	req.WrappedIdentity = base64.StdEncoding.EncodeToString(wrapped)
+	return nil
+}
+
+// sealedFile is a file secret's age file, staged in a temporary file so a large
+// upload streams from disk. It holds only ciphertext.
+type sealedFile struct {
+	file           *os.File
+	size           int64
+	plaintextBytes int64
+}
+
+// sealFile encrypts src to identity, 64 KiB at a time, and refuses more than
+// limit bytes of input.
+func sealFile(identity *age.HybridIdentity, src io.Reader, limit int64) (*sealedFile, error) {
+	staged, err := os.CreateTemp("", "flick-send-*.age")
+	if err != nil {
+		return nil, fmt.Errorf("stage encrypted file: %w", err)
+	}
+	sealed := &sealedFile{file: staged}
+	if err := sealed.fill(identity, src, limit); err != nil {
+		sealed.remove()
+		return nil, err
+	}
+	return sealed, nil
+}
+
+func (s *sealedFile) fill(identity *age.HybridIdentity, src io.Reader, limit int64) error {
+	w, err := clientcrypto.EncryptTo(s.file, identity)
+	if err != nil {
+		return err
+	}
+	if s.plaintextBytes, err = io.Copy(w, io.LimitReader(src, limit+1)); err != nil {
+		return fmt.Errorf("encrypt file: %w", err)
+	}
+	if s.plaintextBytes > limit {
+		return fmt.Errorf("file is larger than %d bytes, the most this deployment accepts", limit)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("encrypt file: %w", err)
+	}
+	if s.size, err = s.file.Seek(0, io.SeekCurrent); err != nil {
+		return err
+	}
+	_, err = s.file.Seek(0, io.SeekStart)
+	return err
+}
+
+// bytes reads the staged age file for an inline create, which only happens
+// below the inline limit.
+func (s *sealedFile) bytes() ([]byte, error) {
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(s.file)
+}
+
+func (s *sealedFile) remove() {
+	s.file.Close()
+	os.Remove(s.file.Name())
+}
+
+// seal returns plaintext as an age file encrypted to identity.
+func seal(identity *age.HybridIdentity, plaintext []byte) ([]byte, error) {
+	var out bytes.Buffer
+	w, err := clientcrypto.EncryptTo(&out, identity)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func validateSendOptions(opts SendOptions) error {
@@ -168,56 +272,14 @@ func validateSendOptions(opts SendOptions) error {
 		return errors.New("nothing to send: provide text or a file")
 	case opts.Text != "" && opts.FileName != "":
 		return errors.New("send text or a file, not both")
+	case opts.FileName != "" && opts.File == nil:
+		return errors.New("no file contents to send")
 	case opts.TTL < MinTTL:
 		return fmt.Errorf("TTL %s is below the minimum %s", opts.TTL, MinTTL)
 	case opts.TTL > MaxTTL:
 		return fmt.Errorf("TTL %s is above the maximum %s", opts.TTL, MaxTTL)
 	}
 	return nil
-}
-
-// deriveSendKey returns the encryption key plus, for Model A, the KDF block and
-// access verifier the server stores. Model B returns a zero KDF and no
-// verifier, which the request then omits.
-func deriveSendKey(passphrase string) ([]byte, clientcrypto.KDFParams, *clientcrypto.AccessVerifier, error) {
-	if passphrase == "" {
-		key, err := clientcrypto.NewRandomKey()
-		if err != nil {
-			return nil, clientcrypto.KDFParams{}, nil, err
-		}
-		return key, clientcrypto.KDFParams{}, nil, nil
-	}
-
-	key, kdf, err := clientcrypto.NewKDF(passphrase)
-	if err != nil {
-		return nil, clientcrypto.KDFParams{}, nil, err
-	}
-	verifier, err := clientcrypto.NewAccessVerifier(passphrase)
-	if err != nil {
-		return nil, clientcrypto.KDFParams{}, nil, err
-	}
-	return key, kdf, &verifier, nil
-}
-
-// linkKey keeps the Model A key out of the share link. A passphrase-derived
-// key in the fragment would defeat the passphrase entirely.
-func linkKey(passphrase string, key []byte) []byte {
-	if passphrase != "" {
-		return nil
-	}
-	return key
-}
-
-// decodeCiphertext converts the base64 payload back to bytes for the presigned
-// PUT. The signed Content-Length covers the raw ciphertext, and base64 is a
-// third longer, so uploading the encoded form fails authentication at the
-// bucket rather than anywhere useful.
-func decodeCiphertext(encoded string) ([]byte, error) {
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("encode ciphertext for upload: %w", err)
-	}
-	return raw, nil
 }
 
 func resolveContentType(filename, override string) string {

@@ -6,29 +6,31 @@ import (
 	"net/url"
 	"strings"
 
+	"filippo.io/age"
+
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
 // SharePath is the web route a share link points at.
 const SharePath = "/s/"
 
-// ShareLink is a parsed share URL. Key is nil for Model A links, where the
+// ShareLink is a parsed share URL. Identity is nil for Model A links, where the
 // recipient supplies a passphrase instead.
 type ShareLink struct {
 	// Origin is the scheme://host the link was served from. In a deployed
 	// Flick this is also the API base URL — the ingress serves /api and / on
 	// the same host (deploy/base/ingress.yaml), and the web image is built with
 	// PUBLIC_FLICK_API_BASE_URL=/. A split dev setup needs --url to override it.
-	Origin string
-	ID     string
-	Key    []byte
+	Origin   string
+	ID       string
+	Identity *age.HybridIdentity
 }
 
 // ParseShareLink accepts a full share URL or a bare secret ID. A bare ID has no
 // origin, so the caller must supply one.
 //
-// The fragment key is parsed here and never sent anywhere: it is the Model B
-// decryption key, and putting it in a request would hand the server the ability
+// The fragment identity is parsed here and never sent anywhere: it is the
+// Model B decryption key, and putting it in a request would hand the server the ability
 // to decrypt the payload it stores.
 func ParseShareLink(raw string) (ShareLink, error) {
 	trimmed := strings.TrimSpace(raw)
@@ -72,26 +74,27 @@ func ParseShareLink(raw string) (ShareLink, error) {
 	}
 	if parsed.Fragment != "" {
 		// url.Parse percent-decodes into Fragment; RawFragment holds the
-		// original when they differ. The key is base64url, which never needs
-		// escaping, so either form decodes — prefer the raw one.
+		// original when they differ. The identity is uppercase bech32, which
+		// never needs escaping, so either form parses — prefer the raw one.
 		fragment := parsed.RawFragment
 		if fragment == "" {
 			fragment = parsed.Fragment
 		}
-		key, err := clientcrypto.DecodeKeyFragment(fragment)
+		identity, err := clientcrypto.DecodeKeyFragment(fragment)
 		if err != nil {
 			return ShareLink{}, err
 		}
-		link.Key = key
+		link.Identity = identity
 	}
 	return link, nil
 }
 
-// BuildShareLink renders the URL to hand to a recipient. key is nil for Model A.
-func BuildShareLink(origin, id string, key []byte) string {
+// BuildShareLink renders the URL to hand to a recipient. identity is nil for
+// Model A.
+func BuildShareLink(origin, id string, identity *age.HybridIdentity) string {
 	link := strings.TrimRight(origin, "/") + SharePath + url.PathEscape(id)
-	if key != nil {
-		link += "#" + clientcrypto.EncodeKeyFragment(key)
+	if identity != nil {
+		link += "#" + clientcrypto.EncodeKeyFragment(identity)
 	}
 	return link
 }
