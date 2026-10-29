@@ -33,7 +33,7 @@ import (
 // re-enforces both, so these are advisory.
 const (
 	DefaultPayloadInlineMaxBytes = 1_044_208
-	DefaultMaxFileBytes          = 52_428_800 // 50 MiB
+	DefaultMaxFileBytes          = 268_435_456 // 256 MiB
 )
 
 // Client talks to one Flick deployment.
@@ -46,9 +46,10 @@ type Client struct {
 // trimmed so path joining stays predictable.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		// Generous but bounded: a 50 MiB upload on a slow link needs room, and
-		// no timeout at all turns a hung bucket into a hung terminal.
-		httpClient = &http.Client{Timeout: 10 * time.Minute}
+		// Generous but bounded: a 256 MiB transfer on a slow link needs room,
+		// and no timeout at all turns a hung bucket into a hung terminal. It
+		// matches the API's 30-minute open stream limit.
+		httpClient = &http.Client{Timeout: 30 * time.Minute}
 	}
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
 }

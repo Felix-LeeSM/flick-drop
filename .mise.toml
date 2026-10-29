@@ -46,7 +46,7 @@ FLICK_WORKER_DB_PATH = "./var/worker.db"
 # backend is disabled the server clamps the advertised ceiling down to the
 # inline threshold, so /api/config never promises more than it will accept.
 FLICK_PAYLOAD_INLINE_MAX_BYTES = "1048576" # 1 MiB
-FLICK_MAX_FILE_BYTES = "52428800"          # 50 MiB
+FLICK_MAX_FILE_BYTES = "268435456"         # 256 MiB
 
 # FLICK_STORAGE_LARGE_BACKEND is deliberately absent. scripts/dev/up.sh defaults
 # it to "s3" and starts MinIO; pinning it here would win over that default

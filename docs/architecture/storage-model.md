@@ -28,11 +28,20 @@ Initial thresholds:
 text secret: api.db BLOB
 file <= 1 MiB: api.db BLOB
 file > 1 MiB: S3-compatible object storage when enabled
-max file size: 50 MiB
+max file size: 256 MiB
 ```
 
 The local web flow accepts files only up to the SQLite inline threshold while
 large-object storage is disabled.
+
+Large bodies stream end to end, so the 256 MiB ceiling is bounded by time, not
+API memory. A sender's PUT must finish inside the 15-minute upload window (the
+secret pending-upload TTL and `requests.ReservationTTL`), and an open must
+finish inside the 30-minute stream limit (`secrets.OpenStreamTimeout`,
+`requests.OpenStreamTimeout`). For a 256 MiB file that means about 300 KB/s
+upload and 150 KB/s download at least. The CLI's HTTP timeout is 30 minutes for
+the same reason. Request finalize spools one object at a time per call to the
+API container's `/tmp`.
 
 Filesystem storage is not a persistent backend. It is allowed only for temporary
 upload files, local scratch, and test fixtures.

@@ -124,7 +124,7 @@ This focused check is separate from the default Node unit suite; it does not
 replace the complete create/open/file browser scenarios listed above.
 
 The create-page upload regression additionally requires a live API with the
-S3 backend, MinIO, and the default 1 MiB inline / 50 MiB maximum limits. Run it
+S3 backend, MinIO, and the default 1 MiB inline / 256 MiB maximum limits. Run it
 against an isolated local stack (it creates and consumes dummy file secrets):
 
 ```sh

@@ -478,7 +478,7 @@ func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) 
 			t.Cleanup(server.Close)
 			client := NewClient(server.URL, server.Client())
 			limits := client.Config(context.Background())
-			if limits.PayloadInlineMaxBytes != 1_044_208 || limits.MaxFileBytes != 52_428_800 {
+			if limits.PayloadInlineMaxBytes != 1_044_208 || limits.MaxFileBytes != 268_435_456 {
 				t.Fatalf("fallback limits = %+v, want plaintext inline/file limits", limits)
 			}
 			sent, err := Send(context.Background(), client, SendOptions{
