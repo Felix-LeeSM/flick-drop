@@ -176,8 +176,10 @@ page explains that its previous in-memory attempt was discarded.
 Submitters check the fragment fingerprint before encryption and verify configured
 limits before submitting. Files use the advertised `maxFileBytes`, which the API
 already clamps to the inline allowance when object storage is disabled.
-`payloadInlineMaxBytes` is already the plaintext allowance after the GCM tag;
-text and files within that allowance use the inline path. Larger files retain an
+`payloadInlineMaxBytes` is the plaintext allowance after the secrets' age
+overhead (1,044,208 by default), below the 1,048,560 that this format's
+16-byte tag would allow; text and files within it use the inline path. The API accepts a large upload of any file
+size, so that gap cannot strand a file. Larger files retain an
 immutable ciphertext/checksum/attempt snapshot in memory, reserve an upload, PUT
 the ciphertext with byte progress, and finalize. A complete PUT is not acceptance.
 Only a successful submit/finalize or matching accepted receipt confirms acceptance.

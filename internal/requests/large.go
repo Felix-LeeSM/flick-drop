@@ -69,9 +69,10 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if in.SizeBytes > s.opts.MaxFileBytes {
 		return UploadResult{}, ErrTooLarge
 	}
-	if in.SizeBytes+tagBytes <= s.opts.PayloadInlineMaxBytes {
-		return UploadResult{}, ErrInvalid
-	}
+	// Any file may take the large path. The browser routes on the
+	// age-adjusted inline limit from /api/config, which sits below this
+	// store's AES-GCM inline limit, so a lower bound here refused files between
+	// the two.
 	envelope, err := validateEnvelope(in.Envelope, in.Kind)
 	if err != nil {
 		return UploadResult{}, err
