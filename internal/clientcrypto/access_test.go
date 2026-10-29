@@ -54,6 +54,7 @@ func TestValidateKDFRejectsDowngrades(t *testing.T) {
 
 	tests := map[string]func(KDFParams) KDFParams{
 		"lowered iterations": func(k KDFParams) KDFParams { k.Iterations = 1000; return k },
+		"raised iterations":  func(k KDFParams) KDFParams { k.Iterations = KDFMaxIterations + 1; return k },
 		"other algorithm":    func(k KDFParams) KDFParams { k.Algorithm = "PBKDF2-SHA-1"; return k },
 		"shorter key":        func(k KDFParams) KDFParams { k.KeyLengthBits = 128; return k },
 		"missing salt":       func(k KDFParams) KDFParams { k.Salt = ""; return k },

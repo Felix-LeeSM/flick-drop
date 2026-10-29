@@ -516,6 +516,7 @@ func TestStoreCreateValidatesAgeFields(t *testing.T) {
 	add("proof without access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF = KDFParams{} })
 	add("access kdf without proof", modelA(KindText), func(in *CreateInput) { in.AccessProofHash = "" })
 	add("weak access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF.Iterations = 10 })
+	add("excessive access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF.Iterations = 6000001 })
 	add("file without encrypted filename", modelB(KindFile), func(in *CreateInput) { in.EncryptedFilename = nil })
 	add("text with encrypted filename", modelB(KindText), func(in *CreateInput) { in.EncryptedFilename = ageField(200) })
 	add("filename not an age file", modelB(KindFile), func(in *CreateInput) {

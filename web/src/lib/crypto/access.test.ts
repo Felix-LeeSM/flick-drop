@@ -11,6 +11,7 @@ import {
 	createAccessVerifier,
 	deriveAccessProof,
 	KDF_ITERATIONS,
+	KDF_MAX_ITERATIONS,
 	type KdfParams
 } from './access';
 import { base64ToBytes } from './encoding';
@@ -45,6 +46,9 @@ describe('access proof', () => {
 	it.each([
 		['another algorithm', { algorithm: 'PBKDF2-SHA-1' }],
 		['fewer iterations', { iterations: KDF_ITERATIONS - 1 }],
+		['more iterations than the cap', { iterations: KDF_MAX_ITERATIONS + 1 }],
+		['a fractional iteration count', { iterations: KDF_ITERATIONS + 0.5 }],
+		['a missing iteration count', { iterations: undefined }],
 		['a shorter key', { key_length_bits: 128 }],
 		['an empty salt', { salt: '' }]
 	])('rejects %s', async (_, change) => {

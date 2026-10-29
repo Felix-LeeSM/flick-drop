@@ -107,11 +107,41 @@ export async function importRequestIdentity(
 	return identity;
 }
 
-function assertLimit(size: number, kind: RequestKind, limits: RequestLimits): void {
+function limitOf(kind: RequestKind, limits: RequestLimits): number {
 	const max = kind === 'text' ? limits.maxTextBytes : limits.maxFileBytes;
-	if (!Number.isSafeInteger(max) || max < 0 || size > max) {
+	if (!Number.isSafeInteger(max) || max < 0) {
 		invalid();
 	}
+	return max;
+}
+
+function assertLimit(size: number, kind: RequestKind, limits: RequestLimits): void {
+	if (size > limitOf(kind, limits)) {
+		invalid();
+	}
+}
+
+// Fails the decrypted stream, and so cancels the response body, as soon as the
+// plaintext passes the limit instead of after buffering all of it.
+function capped(
+	stream: ReadableStream<Uint8Array>,
+	kind: RequestKind,
+	limits: RequestLimits
+): ReadableStream<Uint8Array> {
+	const max = limitOf(kind, limits);
+	let seen = 0;
+	return stream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				seen += chunk.length;
+				if (seen > max) {
+					controller.error(new Error('Invalid request encryption data.'));
+					return;
+				}
+				controller.enqueue(chunk);
+			}
+		})
+	);
 }
 
 // Encrypts to the request's recipient. A file is encrypted as it is read,
@@ -176,16 +206,18 @@ export async function decryptRequestPayload(
 			invalid();
 		}
 		const plaintext = new Uint8Array(
-			await new Response(await decryptWith(identity, opened.body)).arrayBuffer()
+			await new Response(
+				capped(await decryptWith(identity, opened.body), 'text', limits)
+			).arrayBuffer()
 		);
-		assertLimit(plaintext.length, 'text', limits);
 		return { kind: 'text', text: decoder.decode(plaintext) };
 	}
 	if (opened.kind !== 'file' || !opened.encryptedFilename) {
 		invalid();
 	}
-	const decrypted = await new Response(await decryptWith(identity, opened.body)).blob();
-	assertLimit(decrypted.size, 'file', limits);
+	const decrypted = await new Response(
+		capped(await decryptWith(identity, opened.body), 'file', limits)
+	).blob();
 	const name = await decryptWith(identity, opened.encryptedFilename);
 	if (name.length < 1 || name.length > NAME_MAX_BYTES) {
 		invalid();

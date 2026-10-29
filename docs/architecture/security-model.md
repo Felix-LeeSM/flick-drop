@@ -101,8 +101,8 @@ Secrets use standard age files ([age format v1](../../contracts/age-format-v1.md
 The API stores the age body, the age-encrypted filename, and for Model A the
 wrapped identity. None of these is secret without the passphrase or the link.
 
-The Model A access proof stays PBKDF2-HMAC-SHA256 (600,000 iterations or more,
-random 128-bit salt), stored separately from the wrapped identity. It lets the
+The Model A access proof stays PBKDF2-HMAC-SHA256 (600,000 to 6,000,000
+iterations, random 128-bit salt), stored separately from the wrapped identity. It lets the
 browser prove the passphrase before the API returns the body. The API compares
 proof hashes and never receives the passphrase or the identity in the clear.
 

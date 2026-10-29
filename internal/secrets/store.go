@@ -903,7 +903,7 @@ func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF 
 		return ErrInvalidInput
 	}
 	if hasProof {
-		if accessKDF.Algorithm != KDFPBKDF2SHA256 || accessKDF.Salt == "" || accessKDF.Iterations < 600000 || accessKDF.KeyLengthBits != 256 {
+		if accessKDF.Algorithm != KDFPBKDF2SHA256 || accessKDF.Salt == "" || accessKDF.Iterations < 600000 || accessKDF.Iterations > 6000000 || accessKDF.KeyLengthBits != 256 {
 			return ErrInvalidInput
 		}
 		if _, err := decodeAgeField(*wrappedIdentity, maxWrappedIdentityBytes); err != nil {

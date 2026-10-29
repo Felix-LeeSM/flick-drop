@@ -26,8 +26,11 @@ const (
 	KDFAlgorithm = "PBKDF2-SHA-256"
 	// KDFIterations is both the default and the server-enforced minimum.
 	KDFIterations = 600_000
-	KeyLengthBits = 256
-	SaltBytes     = 16
+	// KDFMaxIterations bounds the work a stored KDF block can force on an
+	// opener: ten times the default, a few seconds rather than hours.
+	KDFMaxIterations = 6_000_000
+	KeyLengthBits    = 256
+	SaltBytes        = 16
 	// AccessVerifierPurpose domain-separates the access proof from anything
 	// else derived from the passphrase.
 	AccessVerifierPurpose = "Flick access verifier v1"
@@ -106,6 +109,8 @@ func ValidateKDF(kdf KDFParams) error {
 		return fmt.Errorf("unsupported KDF algorithm %q", kdf.Algorithm)
 	case kdf.Iterations < KDFIterations:
 		return fmt.Errorf("KDF iterations %d below the minimum %d", kdf.Iterations, KDFIterations)
+	case kdf.Iterations > KDFMaxIterations:
+		return fmt.Errorf("KDF iterations %d above the maximum %d", kdf.Iterations, KDFMaxIterations)
 	case kdf.KeyLengthBits != KeyLengthBits:
 		return fmt.Errorf("unsupported KDF key length %d", kdf.KeyLengthBits)
 	case kdf.Salt == "":
