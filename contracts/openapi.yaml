@@ -1300,6 +1300,7 @@ components:
         iterations:
           type: integer
           minimum: 600000
+          maximum: 6000000
         key_length_bits:
           type: integer
           enum: [256]

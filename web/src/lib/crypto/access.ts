@@ -8,6 +8,8 @@ import { base64ToBytes, bytesToBase64 } from './encoding';
 
 export const KDF_ALGORITHM = 'PBKDF2-SHA-256';
 export const KDF_ITERATIONS = 600_000;
+// Bounds the work a stored KDF block can force on an opener: ten times the default.
+export const KDF_MAX_ITERATIONS = 6_000_000;
 export const KEY_LENGTH_BITS = 256;
 export const SALT_BYTES = 16;
 export const ACCESS_VERIFIER_PURPOSE = 'Flick access verifier v1';
@@ -63,7 +65,9 @@ export async function deriveAccessProof(passphrase: string, kdf: KdfParams): Pro
 export function assertKdf(kdf: KdfParams): void {
 	if (
 		kdf.algorithm !== KDF_ALGORITHM ||
+		!Number.isSafeInteger(kdf.iterations) ||
 		kdf.iterations < KDF_ITERATIONS ||
+		kdf.iterations > KDF_MAX_ITERATIONS ||
 		kdf.key_length_bits !== KEY_LENGTH_BITS ||
 		kdf.salt.length === 0
 	) {
@@ -79,8 +83,12 @@ async function derivePbkdf2Bits(
 	if (material.byteLength === 0) {
 		throw new Error('Passphrase is required');
 	}
-	if (iterations < KDF_ITERATIONS) {
-		throw new Error('PBKDF2 iterations are below the minimum');
+	if (
+		!Number.isSafeInteger(iterations) ||
+		iterations < KDF_ITERATIONS ||
+		iterations > KDF_MAX_ITERATIONS
+	) {
+		throw new Error('PBKDF2 iterations are outside the allowed range');
 	}
 
 	const passphraseKey = await importPbkdf2Material(material);
