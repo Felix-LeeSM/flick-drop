@@ -28,6 +28,7 @@ Rules:
   failures return errors; `ErrInvalidCursor` permits the API reaper to restart
   a persisted pass. Listing errors must not expose private endpoint URLs.
 
-- `object.go:Client.GetBounded` limits actual streamed bytes for request finalize
-  and open. `Client.Put` writes the already verified ciphertext to a server-only
-  final key; request finalize must not COPY a mutable staging object.
+- `object.go:Client.PutStream` writes request finalize's verified stream to a
+  server-only final key, spooling through a temporary file so the SDK signs a
+  seekable body. Request finalize must not COPY a mutable staging object: the
+  bytes it hashes are the bytes it writes.

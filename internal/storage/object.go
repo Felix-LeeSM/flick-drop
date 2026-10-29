@@ -1,50 +1,41 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-var ErrObjectTooLarge = errors.New("object exceeds read limit")
-
-// GetBounded checks actual streamed bytes, not a prior HEAD of a mutable key.
-// The extra byte detects a provider that omits or misreports Content-Length.
-func (c *Client) GetBounded(ctx context.Context, key string, limit int64) ([]byte, error) {
-	if key == "" || limit < 1 || limit == 1<<63-1 {
-		return nil, errors.New("invalid bounded object read")
-	}
-	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(c.cfg.Bucket), Key: aws.String(key)})
-	if err != nil {
-		return nil, errors.New("object read failed")
-	}
-	defer out.Body.Close()
-	if out.ContentLength != nil && *out.ContentLength > limit {
-		return nil, ErrObjectTooLarge
-	}
-	body, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
-	if err != nil {
-		return nil, errors.New("object body read failed")
-	}
-	if int64(len(body)) > limit {
-		return nil, ErrObjectTooLarge
-	}
-	return body, nil
-}
-
-// Put writes the bytes already verified by the API to a server-only final key.
-// A failed response may follow a successful write; callers must not delete it.
-func (c *Client) Put(ctx context.Context, key string, ciphertext []byte) error {
-	if key == "" || len(ciphertext) == 0 {
+// PutStream writes exactly size bytes from body to a server-only final key.
+// The body is spooled to a temporary file first: the SDK signs and checksums a
+// seekable body the same way as before, while an unseekable stream would need
+// aws-chunked trailing checksums that S3-compatible stores do not all accept.
+// Memory stays bounded; the spool holds only ciphertext and is removed. A failed
+// response may follow a successful write; callers must not delete it.
+func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64) error {
+	if key == "" || size < 1 {
 		return errors.New("invalid object write")
 	}
-	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(c.cfg.Bucket), Key: aws.String(key), Body: bytes.NewReader(ciphertext), ContentLength: aws.Int64(int64(len(ciphertext)))})
+	spool, err := os.CreateTemp("", "flick-object-*")
+	if err != nil {
+		return errors.New("object spool failed")
+	}
+	defer os.Remove(spool.Name())
+	defer spool.Close()
+	written, err := io.Copy(spool, io.LimitReader(body, size))
+	if err != nil || written != size {
+		return errors.New("object body read failed")
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return errors.New("object spool failed")
+	}
+	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(c.cfg.Bucket), Key: aws.String(key), Body: spool, ContentLength: aws.Int64(size)})
 	if err != nil {
 		return errors.New("object write failed")
 	}
