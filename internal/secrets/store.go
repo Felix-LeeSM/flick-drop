@@ -869,6 +869,11 @@ func (s *Store) validateCreate(input CreateInput) error {
 // validateCreateLarge mirrors validateCreate minus the body checks: the body
 // never touches the server for the large path.
 func (s *Store) validateCreateLarge(input CreateLargeInput) error {
+	// Text lives in api.db (docs/architecture/storage-model.md); only files
+	// are large enough to need the bucket.
+	if input.Kind == KindText {
+		return ErrInvalidInput
+	}
 	// The presigned signature pins this length, so a declared size past the cap
 	// has to be refused here — otherwise the client would receive a signature
 	// for an upload the bucket is meant to never accept.

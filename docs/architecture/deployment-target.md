@@ -54,6 +54,7 @@ flick-web:
 flick-api:
   request: 64Mi memory, 25m cpu
   limit:   256Mi memory, 250m cpu
+  /tmp:    600Mi emptyDir on node disk (two request finalize spools)
 
 flick-worker:
   request: 64Mi memory, 25m cpu

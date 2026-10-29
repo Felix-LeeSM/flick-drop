@@ -34,7 +34,7 @@ Local development:
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` (Prometheus scrape). Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/metrics` fails closed (401). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored as SQLite BLOB. Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
-| `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. |
+| `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |

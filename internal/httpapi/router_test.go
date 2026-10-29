@@ -655,6 +655,11 @@ func ageBody(n int) []byte {
 }
 
 // ageField is ageBody(n) as the base64 the API carries in JSON fields.
+func largeFilename() *string {
+	name := ageField(120)
+	return &name
+}
+
 func ageField(n int) string {
 	return base64.StdEncoding.EncodeToString(ageBody(n))
 }
@@ -906,10 +911,11 @@ func newS3OpenFixture(t *testing.T, objects *streamObjects) (testRouterFixture, 
 	}, objects)
 	ctx := context.Background()
 	created, err := fixture.store.CreateLarge(ctx, secrets.CreateLargeInput{
-		Kind:       secrets.KindText,
-		SizeBytes:  int64(len(objects.body)),
-		TTLSeconds: 600,
-		MaxViews:   1,
+		Kind:              secrets.KindFile,
+		EncryptedFilename: largeFilename(),
+		SizeBytes:         int64(len(objects.body)),
+		TTLSeconds:        600,
+		MaxViews:          1,
 	})
 	if err != nil {
 		t.Fatalf("create large: %v", err)
@@ -933,7 +939,7 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 
 	resp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
 	assertOpenResponse(t, resp, objects.body, map[string]string{
-		"Flick-Kind":             secrets.KindText,
+		"Flick-Kind":             secrets.KindFile,
 		"Flick-Wrapped-Identity": "",
 	})
 	if len(objects.opened) != 1 {
@@ -1000,7 +1006,7 @@ func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 
 			objects.openErr, objects.sizeSkew = nil, 0
 			retry := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
-			assertOpenResponse(t, retry, objects.body, map[string]string{"Flick-Kind": secrets.KindText})
+			assertOpenResponse(t, retry, objects.body, map[string]string{"Flick-Kind": secrets.KindFile})
 		})
 	}
 }

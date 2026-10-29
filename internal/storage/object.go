@@ -21,7 +21,7 @@ import (
 // caller that hashes the stream can refuse it; its error is returned as is. A
 // failed response may follow a successful write; callers must not delete it.
 func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error {
-	if key == "" || size < 1 {
+	if key == "" || size < 1 || verify == nil {
 		return errors.New("invalid object write")
 	}
 	spool, err := os.CreateTemp("", "flick-object-*")

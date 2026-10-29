@@ -69,3 +69,15 @@ func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
 		})
 	}
 }
+
+func TestPutStreamRefusesNilVerify(t *testing.T) {
+	body := []byte("age-encryption.org/v1\nciphertext")
+	puts := 0
+	client := &Client{cfg: Config{Bucket: "test-bucket"}, s3: s3.New(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String("https://object.example"), UsePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("test", "test", ""), RetryMaxAttempts: 1, HTTPClient: listTransport(func(r *http.Request) (*http.Response, error) {
+		puts++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})})}
+	if err := client.PutStream(context.Background(), "managed/requests/final", bytes.NewReader(body), int64(len(body)), nil); err == nil || puts != 0 {
+		t.Fatal("nil verify was accepted", err, puts)
+	}
+}

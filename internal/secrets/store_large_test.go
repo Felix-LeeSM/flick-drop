@@ -118,12 +118,13 @@ func newLargeTestStore(t *testing.T, conn *sql.DB, objects storage.ObjectStore) 
 func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mock *mockObjectStore) string {
 	t.Helper()
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind:            KindText,
-		AccessProofHash: "proof-hash",
-		AccessKDF:       testAccessKDF,
-		WrappedIdentity: testWrappedIdentity,
-		SizeBytes:       1000,
-		TTLSeconds:      600,
+		Kind:              KindFile,
+		EncryptedFilename: ageField(200),
+		AccessProofHash:   "proof-hash",
+		AccessKDF:         testAccessKDF,
+		WrappedIdentity:   testWrappedIdentity,
+		SizeBytes:         1000,
+		TTLSeconds:        600,
 	})
 	if err != nil {
 		t.Fatalf("create large: %v", err)
@@ -319,7 +320,7 @@ func TestFinalizeIdempotent(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
+		Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +343,7 @@ func TestFinalizeMissingObject(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
+		Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +364,7 @@ func TestFinalizeOversized(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
+		Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -438,9 +439,10 @@ func TestCreateLargeSignsExactSize(t *testing.T) {
 	store := newLargeTestStore(t, conn, mock)
 
 	if _, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind:       KindText,
-		SizeBytes:  1000,
-		TTLSeconds: 600,
+		Kind:              KindFile,
+		EncryptedFilename: ageField(200),
+		SizeBytes:         1000,
+		TTLSeconds:        600,
 	}); err != nil {
 		t.Fatalf("create large: %v", err)
 	}
@@ -473,9 +475,10 @@ func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := store.CreateLarge(ctx, CreateLargeInput{
-				Kind:       KindText,
-				SizeBytes:  c.size,
-				TTLSeconds: 600,
+				Kind:              KindFile,
+				EncryptedFilename: ageField(200),
+				SizeBytes:         c.size,
+				TTLSeconds:        600,
 			})
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("err = %v, want %v", err, c.wantErr)
@@ -493,9 +496,10 @@ func TestCreateLargeRejectsOverflowingSize(t *testing.T) {
 
 	for _, size := range []int64{math.MaxInt64} {
 		_, err := store.CreateLarge(ctx, CreateLargeInput{
-			Kind:       KindText,
-			SizeBytes:  size,
-			TTLSeconds: 600,
+			Kind:              KindFile,
+			EncryptedFilename: ageField(200),
+			SizeBytes:         size,
+			TTLSeconds:        600,
 		})
 		if !errors.Is(err, ErrPayloadTooLarge) {
 			t.Fatalf("size %d: err = %v, want ErrPayloadTooLarge", size, err)
@@ -512,7 +516,7 @@ func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 	store := newLargeTestStore(t, conn, mock)
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
+		Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatalf("create large: %v", err)
@@ -536,9 +540,10 @@ func TestCreateLargeValidatesAgeFields(t *testing.T) {
 	ctx := context.Background()
 	store := newLargeTestStore(t, openTestDB(t, ctx), newMockObjectStore())
 	cases := map[string]CreateLargeInput{
-		"model A without wrapped identity": {Kind: KindText, AccessKDF: testAccessKDF, AccessProofHash: "proof"},
-		"model B with wrapped identity":    {Kind: KindText, WrappedIdentity: testWrappedIdentity},
+		"model A without wrapped identity": {Kind: KindFile, EncryptedFilename: ageField(200), AccessKDF: testAccessKDF, AccessProofHash: "proof"},
+		"model B with wrapped identity":    {Kind: KindFile, EncryptedFilename: ageField(200), WrappedIdentity: testWrappedIdentity},
 		"text with encrypted filename":     {Kind: KindText, EncryptedFilename: ageField(200)},
+		"text on the large path":           {Kind: KindText},
 		"file without encrypted filename":  {Kind: KindFile},
 	}
 	for name, in := range cases {

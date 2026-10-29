@@ -26,7 +26,14 @@ type Store struct {
 	db   *sql.DB
 	opts Options
 	now  func() time.Time
+	// copies holds one slot per running finalize copy; see maxCopies.
+	copies chan struct{}
 }
+
+// maxCopies bounds concurrent finalize copies. Each spools one object (about
+// 256 MiB at the default cap) to /tmp, and deploy/base/api.yaml sizes the /tmp
+// emptyDir for this many.
+const maxCopies = 2
 
 type OutboxEnqueuer interface {
 	EnqueueTx(context.Context, *sql.Tx, events.JobEvent) (events.OutboxRecord, error)
@@ -50,7 +57,7 @@ func NewStore(db *sql.DB, opts Options) (*Store, error) {
 	if db == nil || opts.PayloadInlineMaxBytes < int64(len(AgeMagic)) || opts.MaxObjectBytes <= 0 || (opts.Objects != nil && opts.Outbox == nil) || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
 		return nil, fmt.Errorf("invalid request store configuration")
 	}
-	return &Store{db: db, opts: opts, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Store{db: db, opts: opts, now: func() time.Time { return time.Now().UTC() }, copies: make(chan struct{}, maxCopies)}, nil
 }
 
 func (s *Store) SetNowForTest(now func() time.Time) { s.now = now }

@@ -251,8 +251,15 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 // file of the reserved length and checksum, even when a losing finalizer read
 // a re-PUT upload. Never delete on error: a write may have succeeded, or
 // another same-attempt finalizer may accept; reconciliation removes an unused
-// final object.
+// final object. A copy waits for a slot before it opens the bucket read, so a
+// waiting finalize holds no idle download.
 func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
+	select {
+	case s.copies <- struct{}{}:
+		defer func() { <-s.copies }()
+	case <-ctx.Done():
+		return ErrStorage
+	}
 	body, length, err := s.opts.Objects.Open(ctx, a.uploadKey.String)
 	if err != nil {
 		return ErrStorage

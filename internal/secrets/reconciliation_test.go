@@ -92,7 +92,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 	store.outbox = newTestOutbox(t, conn)
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
-	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
+	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 600})
 	if err != nil {
 		t.Fatal(err)
 	}
