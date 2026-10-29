@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -50,7 +51,9 @@ type ObjectStore interface {
 	List(ctx context.Context, prefix, cursor string, limit int) (ObjectPage, error)
 	PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error)
 	Head(ctx context.Context, key string) (ObjectInfo, error)
-	Get(ctx context.Context, key string) ([]byte, error)
+	// Open starts reading an object and returns its body with the length the
+	// store reports. The caller must close the body.
+	Open(ctx context.Context, key string) (io.ReadCloser, int64, error)
 	Delete(ctx context.Context, key string) error
 }
 

@@ -88,11 +88,16 @@ func TestMinIORoundTrip(t *testing.T) {
 		t.Fatalf("head = %+v, want exists size %d", info, len(ciphertext))
 	}
 
-	got, err := c.Get(ctx, key)
+	body, size, err := c.Open(ctx, key)
 	if err != nil {
-		t.Fatalf("get: %v", err)
+		t.Fatalf("open: %v", err)
 	}
-	if !bytes.Equal(got, ciphertext) {
+	got, err := io.ReadAll(body)
+	body.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if size != int64(len(ciphertext)) || !bytes.Equal(got, ciphertext) {
 		t.Fatalf("get mismatch: %q", got)
 	}
 
