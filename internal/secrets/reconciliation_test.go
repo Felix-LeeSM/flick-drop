@@ -372,3 +372,48 @@ func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
 		})
 	}
 }
+
+// TestPurgeKeepsStreamingObjectProtected opens an S3 body just before the
+// secret expires. The expiry purge must not delete its row while the stream may
+// still run, because that row is what keeps reconciliation away from the object.
+func TestPurgeKeepsStreamingObjectProtected(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
+	conn := openTestDB(t, ctx)
+	objects := newMockObjectStore()
+	store := newLargeTestStore(t, conn, objects)
+	f := secretFixture{
+		id: "late", storageBackend: StorageS3, storageKey: managedObjectPrefix + "late",
+		expiresAt: now.Add(-time.Minute), consumedAt: now.Add(-2 * time.Minute), createdAt: now.Add(-time.Hour),
+	}
+	insertSecret(t, ctx, conn, f)
+	if _, err := conn.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at, outcome) values (?, ?, ?, 'opened')`,
+		f.id, make([]byte, 32), f.expiresAt.Format(managementTimeFormat)); err != nil {
+		t.Fatal(err)
+	}
+	objects.objects[f.storageKey] = ageBody(100)
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
+
+	// ClaimOnce runs the expiry purge and then one reconciliation page.
+	tick := func(at time.Time) int {
+		t.Helper()
+		reaper.SetNowForTest(func() time.Time { return at })
+		if _, err := reaper.ClaimOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return len(readOutboxEvents(t, ctx, conn))
+	}
+	if n := tick(now); n != 0 {
+		t.Fatalf("%d object delete jobs while the body may still stream, want 0", n)
+	}
+	var rows int
+	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("streaming row count = %d (%v), want it kept", rows, err)
+	}
+	if n := tick(f.consumedAt.Add(openObjectGrace)); n != 1 {
+		t.Fatalf("%d object delete jobs after the grace, want 1", n)
+	}
+	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("row count after the grace = %d (%v), want purged", rows, err)
+	}
+}

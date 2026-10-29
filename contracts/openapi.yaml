@@ -1155,7 +1155,9 @@ components:
           description: Required for file secrets, rejected for text. Base64 of the filename age file, at most 8 KiB decoded.
         content_type:
           type: string
-          description: Media type for file download, or application/octet-stream.
+          maxLength: 255
+          pattern: '^[\x20-\x7e]*$'
+          description: Media type for file download, or application/octet-stream. Printable ASCII only, because the open response returns it as a header.
         size_bytes:
           type: integer
           minimum: 0

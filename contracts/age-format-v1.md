@@ -142,8 +142,8 @@ a client changed the format.
   then fails at the missing final chunk instead of showing a partial file.
 - A stream may last at most 30 minutes (`secrets.OpenStreamTimeout`). The API
   queues the bucket delete when the stream ends. Object reconciliation leaves a
-  just-opened object alone for 35 minutes, so it never deletes a body that is
-  still streaming.
+  just-opened object alone for 35 minutes, and the expiry purge keeps the
+  secret's row that long too, so neither deletes a body that is still streaming.
 - Limits: `/api/config` advertises sizes before encryption. The server's
   ciphertext caps add `AgeHeaderAllowanceBytes` (4,096), the 16-byte payload
   nonce, and 16 bytes per 64 KiB chunk (`internal/secrets/age.go`).

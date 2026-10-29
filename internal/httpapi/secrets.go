@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -332,13 +333,16 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The secret is already consumed; a failure from here on loses it, which
-	// the recipient sees as a truncated age file that will not decrypt.
-	_, _ = io.Copy(w, secret.Body)
+	// the recipient sees as a truncated age file that will not decrypt. The log
+	// line carries no ID or error text (which names the client address).
+	if _, err := io.Copy(w, secret.Body); err != nil {
+		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secrets.StorageS3)
+	}
 	secret.Body.Close()
 	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageKey)
 }
 
-func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProofHash string) (secrets.Secret, error) {
+func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProofHash string) (_ secrets.Secret, err error) {
 	if s.outbox == nil {
 		return secrets.Secret{}, fmt.Errorf("outbox store is required")
 	}
@@ -356,6 +360,12 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	}()
 
 	secret, err := s.secrets.OpenTx(ctx, tx, id, accessProofHash)
+	// An opened S3 body belongs to the caller only on success.
+	defer func() {
+		if err != nil && secret.Body != nil {
+			secret.Body.Close()
+		}
+	}()
 	if err != nil {
 		if errors.Is(err, secrets.ErrInvalidAccess) {
 			if commitErr := tx.Commit(); commitErr != nil {
@@ -376,9 +386,6 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	// An S3 body is deleted only after it has streamed (enqueueOpenedObjectCleanup);
 	// deleting it now could cut the recipient's download short.
 	if err := tx.Commit(); err != nil {
-		if secret.Body != nil {
-			secret.Body.Close()
-		}
 		return secrets.Secret{}, fmt.Errorf("commit open cleanup transaction: %w", err)
 	}
 	telemetry.SecretOpened.Inc()

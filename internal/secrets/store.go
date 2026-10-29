@@ -863,7 +863,7 @@ func (s *Store) validateCreate(input CreateInput) error {
 	if !bytes.HasPrefix(input.Ciphertext, ageMagic) || int64(len(input.Ciphertext)) != input.SizeBytes {
 		return ErrInvalidInput
 	}
-	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename)
+	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename, input.ContentType)
 }
 
 // validateCreateLarge mirrors validateCreate minus the body checks: the body
@@ -878,10 +878,10 @@ func (s *Store) validateCreateLarge(input CreateLargeInput) error {
 	if input.SizeBytes < MaxCiphertextBytes(0)-AgeHeaderAllowanceBytes {
 		return ErrInvalidInput
 	}
-	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename)
+	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename, input.ContentType)
 }
 
-func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF KDFParams, accessProofHash string, wrappedIdentity, encryptedFilename *string) error {
+func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF KDFParams, accessProofHash string, wrappedIdentity, encryptedFilename, contentType *string) error {
 	if kind != KindText && kind != KindFile {
 		return ErrUnsupportedKind
 	}
@@ -921,7 +921,26 @@ func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF 
 			return ErrInvalidInput
 		}
 	}
+	if contentType != nil && !validContentType(*contentType) {
+		return ErrInvalidInput
+	}
 	return nil
+}
+
+// validContentType bounds the sender-chosen media type, which the open response
+// returns in the Flick-Content-Type header: printable ASCII only, so it cannot
+// break the header or make the recipient's fetch reject an already-consumed
+// response.
+func validContentType(value string) bool {
+	if len(value) > maxContentTypeBytes {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // modelAColumns returns the access KDF JSON and proof hash for a Model A

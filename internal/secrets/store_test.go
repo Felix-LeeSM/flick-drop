@@ -507,6 +507,11 @@ func TestStoreCreateValidatesAgeFields(t *testing.T) {
 		in.WrappedIdentity = ptr(base64.StdEncoding.EncodeToString([]byte("not age")))
 	})
 	add("wrapped identity not base64", modelA(KindText), func(in *CreateInput) { in.WrappedIdentity = ptr("!!!") })
+	add("content type with a newline", modelB(KindFile), func(in *CreateInput) { in.ContentType = ptr("text/plain\r\nX: y") })
+	add("content type with non-ASCII", modelB(KindFile), func(in *CreateInput) { in.ContentType = ptr("text/plaïn") })
+	add("content type over 255 bytes", modelB(KindFile), func(in *CreateInput) {
+		in.ContentType = ptr("application/" + strings.Repeat("x", 244))
+	})
 	add("wrapped identity over 1 KiB", modelA(KindText), func(in *CreateInput) { in.WrappedIdentity = ageField(maxWrappedIdentityBytes + 1) })
 	add("proof without access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF = KDFParams{} })
 	add("access kdf without proof", modelA(KindText), func(in *CreateInput) { in.AccessProofHash = "" })

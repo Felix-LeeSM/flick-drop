@@ -33,6 +33,8 @@ const (
 	// maxEncryptedFilenameBytes bounds the filename file: one hybrid header plus
 	// a filename of a few hundred bytes.
 	maxEncryptedFilenameBytes = 8 * 1024
+	// maxContentTypeBytes bounds the media type returned as a response header.
+	maxContentTypeBytes = 255
 )
 
 var ageMagic = []byte("age-encryption.org/v1\n")

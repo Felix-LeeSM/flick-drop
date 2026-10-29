@@ -834,6 +834,9 @@ type streamObjects struct {
 	openErr  error
 	opened   []string
 	onEOF    func()
+	// readErr, when set, ends the body with this error after half the bytes,
+	// as a bucket connection that drops mid-stream would.
+	readErr error
 }
 
 func (o *streamObjects) PresignPUT(_ context.Context, key string, _ int64, _ time.Duration) (storage.UploadInstruction, error) {
@@ -849,8 +852,16 @@ func (o *streamObjects) Open(_ context.Context, key string) (io.ReadCloser, int6
 	if o.openErr != nil {
 		return nil, 0, o.openErr
 	}
-	return io.NopCloser(&eofHookReader{r: bytes.NewReader(o.body), onEOF: o.onEOF}), int64(len(o.body)) + o.sizeSkew, nil
+	var r io.Reader = bytes.NewReader(o.body)
+	if o.readErr != nil {
+		r = io.MultiReader(bytes.NewReader(o.body[:len(o.body)/2]), errReader{o.readErr})
+	}
+	return io.NopCloser(&eofHookReader{r: r, onEOF: o.onEOF}), int64(len(o.body)) + o.sizeSkew, nil
 }
+
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
 
 type eofHookReader struct {
 	r     io.Reader
@@ -941,6 +952,25 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	job, ok := after[events.KindDeleteOCIObject]
 	if !ok || job.ObjectKey != objects.opened[0] || job.Reason != events.ReasonConsumed {
 		t.Fatalf("outbox after open = %+v, want consumed object delete for %q", after, objects.opened[0])
+	}
+}
+
+// TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete covers a bucket read that
+// fails after the 200 status: the secret is consumed (lost by design), the
+// recipient gets a short body, and the object still gets its delete job.
+func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
+	objects := &streamObjects{body: ageBody(5000), readErr: errors.New("connection reset")}
+	fixture, id := newS3OpenFixture(t, objects)
+
+	resp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
+	if resp.Code != http.StatusOK || resp.Body.Len() != 2500 {
+		t.Fatalf("broken stream status = %d, body bytes = %d, want 200 and the first half", resp.Code, resp.Body.Len())
+	}
+	if job, ok := outboxKinds(t, fixture.outbox)[events.KindDeleteOCIObject]; !ok || job.ObjectKey != objects.opened[0] {
+		t.Fatalf("object delete after a broken stream = %+v, want one for %q", job, objects.opened[0])
+	}
+	if again := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{}); again.Code != http.StatusGone {
+		t.Fatalf("reopen after a broken stream status = %d, want 410", again.Code)
 	}
 }
 
