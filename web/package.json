@@ -50,6 +50,7 @@
 	"dependencies": {
 		"@fontsource-variable/jetbrains-mono": "^5.2.8",
 		"@fontsource/instrument-serif": "^5.2.8",
+		"age-encryption": "0.3.1",
 		"fflate": "^0.8.3",
 		"uqr": "^0.1.3"
 	},

@@ -104,6 +104,12 @@ encryption key.
 Argon2id is the preferred memory-hard direction for a later release, but it
 requires a browser WASM dependency and supply-chain review.
 
+M13 replaces this format with standard age files
+([age format v1](../../contracts/age-format-v1.md)): a per-secret hybrid
+identity, 64 KiB authenticated chunks, and for Model A the identity wrapped by
+an age scrypt passphrase file. The access proof stays PBKDF2. Until the M13
+switch lands, the AES-GCM format above is the one in production.
+
 ## Access Control Models
 
 Flick supports two access control models. Both keep the plaintext out of the

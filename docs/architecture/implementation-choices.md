@@ -118,6 +118,15 @@ PBKDF2 is selected first because it is available through Web Crypto without a
 WASM dependency. Argon2id is the preferred later direction after browser WASM
 supply-chain review.
 
+M13 moves payload encryption to age (`filippo.io/age` v1.3.2 in Go,
+`age-encryption` 0.3.1 in the browser, both BSD-3-Clause, both by the age
+author). age is chosen over a Flick-specific chunked AES-GCM layout because it
+is a reviewed, versioned format with two maintained implementations and shared
+test vectors, so Flick designs no cryptography. Model A then wraps the
+per-secret identity with age's scrypt passphrase recipient (work factor 18)
+instead of PBKDF2; the access proof keeps PBKDF2. See
+[age format v1](../../contracts/age-format-v1.md).
+
 The server must not receive the passphrase or a value that can directly decrypt
 the secret.
 

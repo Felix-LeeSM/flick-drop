@@ -8,6 +8,10 @@ Client-side encryption for non-browser clients. This is the Go mirror of
 - `crypto.go`: PBKDF2 key derivation, AES-GCM seal/open, the access verifier,
   the encrypted-filename envelope.
 - `fragment.go`: the Model B key in a share URL fragment (`#key=...`).
+- `age.go`: the M13 age format (`contracts/age-format-v1.md`) — hybrid
+  identity, passphrase-wrapped identity, streaming encrypt/decrypt. Interop
+  files in `tests/fixtures/age/` are opened by both this package and
+  `web/src/lib/crypto/age.test.ts`.
 - Golden vector tests against `tests/fixtures/client-crypto-vectors.json`.
 
 ## The rule that matters
