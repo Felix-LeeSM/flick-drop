@@ -64,9 +64,16 @@ for (const [name, size] of [
 				await page.getByRole('status').filter({ hasText: 'Finalizing link' }).waitFor();
 				assert.equal(await page.getByLabel('Share URL').count(), 0);
 				const events = await page.evaluate(() => window.uploadEvents);
+				// The upload is the age file: the plaintext plus a header and a
+				// 16-byte tag per 64 KiB chunk (contracts/age-format-v1.md).
+				const ageBytes = size + 16 * Math.ceil(size / 65_536);
 				assert.ok(
 					events.some(
-						(event) => event.known && event.loaded === size + 16 && event.total === size + 16
+						(event) =>
+							event.known &&
+							event.loaded === event.total &&
+							event.total > ageBytes &&
+							event.total <= ageBytes + 4096 + 16
 					)
 				);
 				release.resolve();
