@@ -1,8 +1,9 @@
 // Command flick is the Flick command-line client: it creates and opens
 // one-time secrets against a Flick deployment.
 //
-// Like the browser, it encrypts and decrypts locally — the passphrase, the
-// derived key, and the plaintext never leave this process. See
+// Like the browser, it encrypts and decrypts locally with age — the
+// passphrase, the secret's identity, and the plaintext never leave this
+// process. See
 // docs/architecture/security-model.md.
 package main
 
@@ -120,11 +121,12 @@ func runSend(ctx context.Context, args []string) error {
 		if flags.NArg() > 0 {
 			return errors.New("send a file or text, not both")
 		}
-		payload, err := os.ReadFile(*filePath)
+		file, err := os.Open(*filePath)
 		if err != nil {
 			return err
 		}
-		opts.FileBytes = payload
+		defer file.Close()
+		opts.File = file
 		opts.FileName = fileNameOf(*filePath)
 	case flags.NArg() == 0 && term.IsTerminal(int(os.Stdin.Fd())):
 		// Nothing to send and a human at the terminal: ask for the parts the
@@ -217,7 +219,7 @@ func runOpen(ctx context.Context, args []string) error {
 		OutputDir:  *outputDir,
 	})
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
-		return salvage(result, rescueDir(*output, *outputDir), err)
+		return salvage(result, err)
 	}
 	if err != nil {
 		return err
@@ -248,46 +250,28 @@ func runOpen(ctx context.Context, args []string) error {
 // exist, so it is put somewhere the user can still reach.
 //
 // Text goes to stdout. A file secret does not: raw bytes written to a terminal
-// are effectively unrecoverable, so it goes to a file next to the destination
-// the user asked for, whose path is named on stderr.
-func salvage(result flickcli.OpenResult, dir string, cause error) error {
+// are effectively unrecoverable, and it was streamed to disk instead of held in
+// memory, so what survives is the decrypted staging file beside the
+// destination the user asked for, whose path is named on stderr.
+func salvage(result flickcli.OpenResult, cause error) error {
 	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
-	fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
 
-	if result.Kind != "file" {
+	switch {
+	case result.RescuedPath != "":
+		fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
+		fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", result.RescuedPath)
+	case result.Kind != "file":
+		fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
 		fmt.Fprintln(os.Stderr, "Its contents follow on stdout — save them now.")
 		if _, err := os.Stdout.Write(result.Plaintext); err != nil {
 			return fmt.Errorf("%w (and the payload could not be printed: %w)", cause, err)
 		}
-		return cause
+	default:
+		// The write failed while the file was still streaming, so no complete
+		// copy exists anywhere.
+		fmt.Fprintln(os.Stderr, "The secret is gone from the server, and the file could not be saved while it was decrypted.")
 	}
-
-	rescued, err := os.CreateTemp(dir, "flick-rescued-*")
-	if err != nil && dir != "" {
-		// That directory is a likely reason the write failed in the first
-		// place, so the shared temp directory is the last resort rather than
-		// the default: it is where a plaintext lingers longest unnoticed.
-		rescued, err = os.CreateTemp("", "flick-rescued-*")
-	}
-	if err != nil {
-		return fmt.Errorf("%w (and no rescue file could be created: %w)", cause, err)
-	}
-	defer rescued.Close()
-	if _, err := rescued.Write(result.Plaintext); err != nil {
-		return fmt.Errorf("%w (and the rescue file could not be written: %w)", cause, err)
-	}
-	fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", rescued.Name())
 	return cause
-}
-
-// rescueDir names where a salvaged payload should land: beside the file the
-// user asked for. os.TempDir() is a poor home for a plaintext — many systems
-// do not clear it promptly, and nothing here removes the file.
-func rescueDir(output, outputDir string) string {
-	if output != "" {
-		return filepath.Dir(output)
-	}
-	return outputDir
 }
 
 // readText takes the payload from the argument, or from stdin when none is

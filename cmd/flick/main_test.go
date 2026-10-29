@@ -399,7 +399,7 @@ func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
 	cause := errors.New("disk full")
 
 	stdout, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, dir, cause)
+		return salvage(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, cause)
 	})
 
 	if !errors.Is(err, cause) {
@@ -420,14 +420,17 @@ func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
 	}
 }
 
-// Raw file bytes on a terminal are unrecoverable, so a file secret goes to
-// disk — next to where the user asked for it, not into the shared temp
-// directory that nothing clears.
-func TestSalvageWritesAFileSecretBesideTheRequestedOutput(t *testing.T) {
-	dir := t.TempDir()
+// Raw file bytes on a terminal are unrecoverable, so a file secret's rescue is
+// the decrypted staging file Open left beside the requested output, named on
+// stderr.
+func TestSalvageNamesTheRescuedFile(t *testing.T) {
+	rescued := filepath.Join(t.TempDir(), ".flick-partial-1")
+	if err := os.WriteFile(rescued, []byte("binary payload"), 0o600); err != nil {
+		t.Fatalf("seed rescued file: %v", err)
+	}
 
 	stdout, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, dir, errors.New("disk full"))
+		return salvage(flickcli.OpenResult{Kind: "file", RescuedPath: rescued}, errors.New("no unused filename"))
 	})
 
 	if err == nil {
@@ -436,55 +439,29 @@ func TestSalvageWritesAFileSecretBesideTheRequestedOutput(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("file bytes were dumped on stdout: %q", stdout)
 	}
-	rescued := rescuedPath(t, stderr)
-	if filepath.Dir(rescued) != dir {
-		t.Errorf("rescued file = %s, want it inside %s", rescued, dir)
+	if got := rescuedPath(t, stderr); got != rescued {
+		t.Errorf("announced %q, want %q", got, rescued)
 	}
-	written, readErr := os.ReadFile(rescued)
-	if readErr != nil {
-		t.Fatalf("read rescued file: %v", readErr)
-	}
-	if string(written) != "binary payload" {
-		t.Errorf("rescued payload = %q", written)
-	}
-	info, statErr := os.Stat(rescued)
-	if statErr != nil {
-		t.Fatalf("stat rescued file: %v", statErr)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("rescued file mode = %v, want 0600", info.Mode().Perm())
+	if !strings.Contains(stderr, "only remaining copy") {
+		t.Errorf("stderr did not warn that this is the last copy: %q", stderr)
 	}
 }
 
-// An unusable output directory is the likeliest reason the write failed in the
-// first place, so it must not take the payload down with it.
-func TestSalvageFallsBackToTheTempDirectoryWhenTheOutputDirectoryIsUnusable(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "gone")
-
-	_, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "file", Plaintext: []byte("binary payload")}, missing, errors.New("disk full"))
+// A file whose write failed mid-stream has no complete copy anywhere; salvage
+// must say so instead of pointing at a partial file.
+func TestSalvageReportsALostFile(t *testing.T) {
+	stdout, stderr, err := captureOutput(t, func() error {
+		return salvage(flickcli.OpenResult{Kind: "file"}, errors.New("disk full"))
 	})
 
 	if err == nil {
 		t.Fatal("salvage reported success for a secret that could not be written")
 	}
-	rescued := rescuedPath(t, stderr)
-	t.Cleanup(func() { os.Remove(rescued) })
-	written, readErr := os.ReadFile(rescued)
-	if readErr != nil {
-		t.Fatalf("read rescued file: %v", readErr)
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
 	}
-	if string(written) != "binary payload" {
-		t.Errorf("rescued payload = %q", written)
-	}
-}
-
-func TestRescueDirPrefersTheDirectoryOfTheRequestedOutput(t *testing.T) {
-	if got := rescueDir(filepath.Join("out", "secret.txt"), "."); got != "out" {
-		t.Errorf("rescueDir with -output = %q, want out", got)
-	}
-	if got := rescueDir("", "downloads"); got != "downloads" {
-		t.Errorf("rescueDir without -output = %q, want downloads", got)
+	if strings.Contains(stderr, "Payload written to") || !strings.Contains(stderr, "could not be saved") {
+		t.Errorf("stderr = %q, want it to report the file as lost", stderr)
 	}
 }
 

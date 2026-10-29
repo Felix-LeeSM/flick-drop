@@ -13,7 +13,9 @@ package flickcli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,12 +26,13 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// Default plaintext limits mirror web/src/lib/api/config.ts. The inline
-// ciphertext ceiling reserves 16 bytes for the AES-GCM authentication tag.
+// Default limits, in bytes before encryption, mirror web/src/lib/api/config.ts.
+// The inline ceiling is the largest input whose age file fits the server's
+// 1 MiB default: secrets.MaxPlaintextBytes(1048576) in internal/secrets/age.go.
 // They are the fallback when GET /api/config is unreachable; the server
 // re-enforces both, so these are advisory.
 const (
-	DefaultPayloadInlineMaxBytes = 1_048_576 - 16
+	DefaultPayloadInlineMaxBytes = 1_044_208
 	DefaultMaxFileBytes          = 52_428_800 // 50 MiB
 )
 
@@ -104,12 +107,14 @@ func (c *Client) Config(ctx context.Context) Limits {
 // CreateSecretRequest mirrors contracts/openapi.yaml CreateSecretRequest. The
 // API rejects unknown fields, and omitempty on Ciphertext is what selects the
 // large-upload path: omitting it asks the server for a presigned PUT.
+//
+// Ciphertext, EncryptedFilename, and WrappedIdentity are base64 age files.
+// SizeBytes is the exact length of the body age file.
 type CreateSecretRequest struct {
 	Kind              string                       `json:"kind"`
 	Ciphertext        string                       `json:"ciphertext,omitempty"`
-	Nonce             string                       `json:"nonce"`
-	KDF               *clientcrypto.KDFParams      `json:"kdf,omitempty"`
 	Access            *clientcrypto.AccessVerifier `json:"access,omitempty"`
+	WrappedIdentity   string                       `json:"wrapped_identity,omitempty"`
 	EncryptedFilename string                       `json:"encrypted_filename,omitempty"`
 	ContentType       string                       `json:"content_type,omitempty"`
 	SizeBytes         int                          `json:"size_bytes"`
@@ -158,33 +163,23 @@ func (m SecretMetadata) AccessKDF() clientcrypto.KDFParams {
 	return m.Access.KDF
 }
 
-// OpenSecretResponse is the payload returned by a successful open. The open is
-// destructive: the server consumes the secret in the same operation, so a
-// failure to write the result locally loses it for good.
-type OpenSecretResponse struct {
-	ID                string                  `json:"id"`
-	Kind              string                  `json:"kind"`
-	Ciphertext        string                  `json:"ciphertext"`
-	Nonce             string                  `json:"nonce"`
-	KDF               *clientcrypto.KDFParams `json:"kdf,omitempty"`
-	EncryptedFilename string                  `json:"encrypted_filename,omitempty"`
-	ContentType       string                  `json:"content_type,omitempty"`
-	SizeBytes         int                     `json:"size_bytes"`
-	ExpiresAt         string                  `json:"expires_at"`
-}
-
-// Payload rebuilds the clientcrypto payload for decryption. The KDF is absent
-// for Model B, where the key comes from the link fragment instead.
-func (r OpenSecretResponse) Payload() clientcrypto.Payload {
-	payload := clientcrypto.Payload{
-		Ciphertext: r.Ciphertext,
-		Nonce:      r.Nonce,
-		SizeBytes:  r.SizeBytes,
-	}
-	if r.KDF != nil {
-		payload.KDF = *r.KDF
-	}
-	return payload
+// OpenedSecret is what a successful open returns: the raw age body and the
+// metadata the API sends in Flick-* headers (contracts/openapi.yaml
+// openSecret). The open is destructive: the server consumes the secret in the
+// same operation, so a failure to write the result locally loses it for good.
+type OpenedSecret struct {
+	Kind        string
+	ContentType string
+	ExpiresAt   string
+	// EncryptedFilename is the base64 age file for file secrets, empty
+	// otherwise. It stays encoded so a damaged name costs only the name: by
+	// the time it is read the secret is already consumed.
+	EncryptedFilename string
+	// WrappedIdentity is the Model A age scrypt file, nil for Model B.
+	WrappedIdentity []byte
+	// Body streams the age file. It yields exactly the size_bytes the
+	// metadata probe reported, or an error. The caller must Close it.
+	Body io.ReadCloser
 }
 
 func (c *Client) CreateSecret(ctx context.Context, req CreateSecretRequest) (CreateSecretResponse, error) {
@@ -199,15 +194,90 @@ func (c *Client) SecretMetadata(ctx context.Context, id string) (SecretMetadata,
 	return resp, err
 }
 
-// OpenSecret consumes the secret. accessProof is empty for Model B.
-func (c *Client) OpenSecret(ctx context.Context, id, accessProof string) (OpenSecretResponse, error) {
+// OpenSecret consumes the secret. accessProof is empty for Model B. sizeBytes
+// is the exact body length from the metadata probe; a body of any other length
+// fails while it is read, so a substituted body cannot run on without bound.
+func (c *Client) OpenSecret(ctx context.Context, id, accessProof string, sizeBytes int) (OpenedSecret, error) {
 	body := map[string]string{}
 	if accessProof != "" {
 		body["access_proof"] = accessProof
 	}
-	var resp OpenSecretResponse
-	err := c.do(ctx, http.MethodPost, "/api/secrets/"+url.PathEscape(id)+"/open", body, &resp)
-	return resp, err
+	resp, err := c.send(ctx, http.MethodPost, "/api/secrets/"+url.PathEscape(id)+"/open", body)
+	if err != nil {
+		return OpenedSecret{}, err
+	}
+	opened, err := openedSecret(resp, sizeBytes)
+	if err != nil {
+		resp.Body.Close()
+		return OpenedSecret{}, err
+	}
+	return opened, nil
+}
+
+func openedSecret(resp *http.Response, sizeBytes int) (OpenedSecret, error) {
+	var err error
+
+	opened := OpenedSecret{
+		Kind:        resp.Header.Get("Flick-Kind"),
+		ContentType: resp.Header.Get("Flick-Content-Type"),
+		ExpiresAt:   resp.Header.Get("Flick-Expires-At"),
+	}
+	if opened.Kind != "text" && opened.Kind != "file" {
+		return OpenedSecret{}, fmt.Errorf("open response has an unknown kind %q", opened.Kind)
+	}
+	opened.EncryptedFilename = resp.Header.Get("Flick-Encrypted-Filename")
+	if opened.WrappedIdentity, err = headerBytes(resp.Header, "Flick-Wrapped-Identity"); err != nil {
+		return OpenedSecret{}, err
+	}
+	opened.Body = &exactBody{body: resp.Body, remaining: int64(sizeBytes)}
+	return opened, nil
+}
+
+// exactBody reads exactly remaining bytes from body and fails on a shorter or
+// longer stream.
+type exactBody struct {
+	body      io.ReadCloser
+	remaining int64
+}
+
+func (b *exactBody) Read(p []byte) (int, error) {
+	if b.remaining == 0 {
+		var extra [1]byte
+		if n, _ := b.body.Read(extra[:]); n > 0 {
+			return 0, errors.New("opened secret is longer than its recorded size")
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > b.remaining {
+		p = p[:b.remaining]
+	}
+	n, err := b.body.Read(p)
+	b.remaining -= int64(n)
+	if errors.Is(err, io.EOF) {
+		if b.remaining > 0 {
+			return n, fmt.Errorf("opened secret ended %d bytes short: %w", b.remaining, io.ErrUnexpectedEOF)
+		}
+		err = nil
+	}
+	if err != nil {
+		return n, fmt.Errorf("read opened secret: %w", err)
+	}
+	return n, nil
+}
+
+func (b *exactBody) Close() error { return b.body.Close() }
+
+// headerBytes decodes an optional base64 Flick-* header.
+func headerBytes(header http.Header, name string) ([]byte, error) {
+	value := header.Get(name)
+	if value == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("open response header %s is not valid base64: %w", name, err)
+	}
+	return decoded, nil
 }
 
 // FinalizeSecret activates a large secret after its ciphertext has landed in
@@ -226,12 +296,12 @@ func (c *Client) FinalizeSecret(ctx context.Context, id string) error {
 	return nil
 }
 
-// Upload sends raw ciphertext to the presigned URL. Unlike the browser, a Go
+// Upload sends the raw age file to the presigned URL. Unlike the browser, a Go
 // client may set Content-Length, so every signed header is echoed verbatim —
 // Content-Length is part of the signature and a body of any other length is
-// rejected at the bucket.
-func (c *Client) Upload(ctx context.Context, upload PresignedUpload, ciphertext []byte) error {
-	req, err := http.NewRequestWithContext(ctx, upload.Method, upload.URL, bytes.NewReader(ciphertext))
+// rejected at the bucket. body is read once, as it is sent.
+func (c *Client) Upload(ctx context.Context, upload PresignedUpload, body io.Reader, size int64) error {
+	req, err := http.NewRequestWithContext(ctx, upload.Method, upload.URL, body)
 	if err != nil {
 		return fmt.Errorf("build upload request: %w", err)
 	}
@@ -243,7 +313,7 @@ func (c *Client) Upload(ctx context.Context, upload PresignedUpload, ciphertext 
 		}
 		req.Header.Set(name, value)
 	}
-	req.ContentLength = int64(len(ciphertext))
+	req.ContentLength = size
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -262,32 +332,11 @@ func (c *Client) Upload(ctx context.Context, upload PresignedUpload, ciphertext 
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encode request: %w", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	resp, err := c.send(ctx, method, path, body)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("could not reach %s: %w", c.baseURL, err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return readAPIError(resp)
-	}
 	if out == nil {
 		return nil
 	}
@@ -295,6 +344,37 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return fmt.Errorf("decode response from %s: %w", path, err)
 	}
 	return nil
+}
+
+// send makes a JSON request and returns a 2xx response for the caller to read
+// and close. Any other status becomes an *APIError.
+func (c *Client) send(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encode request: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("could not reach %s: %w", c.baseURL, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, readAPIError(resp)
+	}
+	return resp, nil
 }
 
 func readAPIError(resp *http.Response) error {
