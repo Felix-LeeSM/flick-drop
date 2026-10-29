@@ -3,12 +3,11 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -29,7 +29,7 @@ var requestTestKey string
 func requestFixture(t *testing.T, rate int) (http.Handler, *requests.Store, *sql.DB) {
 	t.Helper()
 	conn := openHTTPTestDB(t, context.Background())
-	store, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 1024, MaxFileBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	store, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,15 +39,11 @@ func requestFixture(t *testing.T, rate int) (http.Handler, *requests.Store, *sql
 func createHTTPRequest(t *testing.T, router http.Handler) requests.Created {
 	t.Helper()
 	requestKeyOnce.Do(func() {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		identity, err := age.GenerateHybridIdentity()
 		if err != nil {
 			t.Fatal(err)
 		}
-		der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requestTestKey = base64.StdEncoding.EncodeToString(der)
+		requestTestKey = identity.Recipient().String()
 	})
 	resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{"public_key": requestTestKey})
 	assertRequestStatus(t, resp, http.StatusCreated, "")
@@ -56,10 +52,25 @@ func createHTTPRequest(t *testing.T, router http.Handler) requests.Created {
 	return c
 }
 
+// requestAgeBody is age-shaped: the API checks only the header magic.
+func requestAgeBody(size int, b byte) []byte {
+	return append([]byte(requests.AgeMagic), bytes.Repeat([]byte{b}, size-len(requests.AgeMagic))...)
+}
+
 func requestSubmission() requests.SubmitInput {
-	encoded := func(n int, b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, n)) }
-	envelope, _ := json.Marshal(requests.Envelope{Version: 1, Algorithm: "RSA-OAEP-256+A256GCM", WrappedKey: encoded(256, 1), Nonce: encoded(12, 2)})
-	return requests.SubmitInput{Generation: 1, AttemptToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), Kind: "text", SizeBytes: 5, Envelope: envelope, Ciphertext: encoded(21, 4)}
+	envelope, _ := json.Marshal(requests.Envelope{Version: 2})
+	return requests.SubmitInput{Generation: 1, AttemptToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), Kind: "text", SizeBytes: 60, Envelope: envelope, Ciphertext: base64.StdEncoding.EncodeToString(requestAgeBody(60, 4))}
+}
+
+// assertOpenedBody checks an open response: the raw age body with its
+// metadata in headers.
+func assertOpenedBody(t *testing.T, r *httptest.ResponseRecorder, kind string, want []byte) {
+	t.Helper()
+	body, _ := io.ReadAll(r.Body)
+	h := r.Header()
+	if h.Get("Content-Type") != "application/octet-stream" || h.Get("Content-Length") != fmt.Sprint(len(want)) || h.Get("Flick-Kind") != kind || !bytes.Equal(body, want) {
+		t.Fatalf("opened body or headers: %v %q", h, body)
+	}
 }
 
 func auth(token string) map[string]string {
@@ -124,10 +135,10 @@ func TestRequestHTTPFlowAndRoleSeparation(t *testing.T) {
 	}
 	opened := performJSON(t, router, http.MethodPost, path+"/open", nil, auth(c.RetrievalToken))
 	assertRequestStatus(t, opened, 200, "")
-	var payload requests.Payload
-	decodeBody(t, opened, &payload)
-	if payload.Ciphertext != in.Ciphertext {
-		t.Fatal("wrong ciphertext")
+	want, _ := base64.StdEncoding.DecodeString(in.Ciphertext)
+	assertOpenedBody(t, opened, "text", want)
+	if opened.Header().Get("Flick-Encrypted-Filename") != "" {
+		t.Fatal("text open carried a filename")
 	}
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/open", nil, auth(c.RetrievalToken)), 409, "request_conflict")
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/revoke", nil, auth(c.RetrievalToken)), 409, "request_conflict")
@@ -145,9 +156,9 @@ func TestRequestHTTPRejectsMalformedBodies(t *testing.T) {
 	valid, _ := json.Marshal(in)
 	for _, body := range []string{
 		"null", "[]", string(valid) + "{}", string(valid[:len(valid)-1]) + `,"plaintext":"must-not-store"}`,
-		strings.Replace(string(valid), `"size_bytes":5`, `"size_bytes":1.2`, 1),
-		strings.Replace(string(valid), `"size_bytes":5`, `"size_bytes":null`, 1),
-		strings.Replace(string(valid), `"size_bytes":5,`, "", 1),
+		strings.Replace(string(valid), `"size_bytes":60`, `"size_bytes":1.2`, 1),
+		strings.Replace(string(valid), `"size_bytes":60`, `"size_bytes":null`, 1),
+		strings.Replace(string(valid), `"size_bytes":60,`, "", 1),
 		strings.Replace(string(valid), `"generation":1`, `"Generation":1`, 1),
 		`{"generation":1,` + string(valid[1:]),
 	} {
@@ -157,7 +168,7 @@ func TestRequestHTTPRejectsMalformedBodies(t *testing.T) {
 		router.ServeHTTP(resp, req)
 		assertRequestStatus(t, resp, 400, "invalid_request")
 	}
-	in.SizeBytes = 1024
+	in.SizeBytes = 1025
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/submit", in, auth(c.SubmissionToken)), 413, "payload_too_large")
 	in = requestSubmission()
 	in.Ciphertext = strings.Repeat("A", 70000)

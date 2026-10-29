@@ -233,3 +233,99 @@ func TestLargeTransitionsRollBackOutboxAndCommitFailures(t *testing.T) {
 		}
 	}
 }
+
+// An opened object whose stream never reported back (FinishOpen did not run)
+// stays protected by its consumed row for the open grace, then the purge and
+// reconciliation release it.
+func TestOpenedObjectProtectedForStreamGrace(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	c := f.create(t)
+	in, data := largeInput()
+	_, final, _ := reserve(t, f, o, c, in, data)
+	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range outboxKeys(t, f.db) {
+		o.Delete(ctx, event.ObjectKey)
+	}
+	// Open just before the request deadline, so expiry lands mid-stream.
+	openedAt := c.ExpiresAt.Add(-time.Second)
+	f.store.now = func() time.Time { return openedAt }
+	if _, err := f.store.Open(ctx, c.ID, c.RetrievalToken); err != nil {
+		t.Fatal(err)
+	}
+	purge := func(now time.Time) {
+		t.Helper()
+		tx, err := f.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if err := PurgeExpiredTx(ctx, tx, now, 10, f.store.opts.Outbox); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued := func() bool {
+		for _, event := range outboxKeys(t, f.db) {
+			if event.ObjectKey == final {
+				return true
+			}
+		}
+		return false
+	}
+
+	inGrace := openedAt.Add(openObjectGrace - time.Second)
+	f.store.now = func() time.Time { return inGrace }
+	purge(inGrace)
+	if n, err := f.store.ReconcileOnce(ctx, 10); err != nil || n != 0 || count(t, f.db, "requests") != 1 || queued() {
+		t.Fatal("streaming object released inside the grace", n, err)
+	}
+
+	afterGrace := openedAt.Add(openObjectGrace)
+	f.store.now = func() time.Time { return afterGrace }
+	purge(afterGrace)
+	if count(t, f.db, "requests") != 0 || !queued() {
+		t.Fatal("expired opened object not queued after the grace")
+	}
+}
+
+// Reconciliation alone also releases an unfinished open once the grace
+// passes, while the request itself is still live.
+func TestReconciliationReleasesUnfinishedOpenAfterGrace(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	f.store.opts.DefaultTTLSeconds = 3600
+	c := f.create(t)
+	in, data := largeInput()
+	_, final, _ := reserve(t, f, o, c, in, data)
+	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
+		t.Fatal(err)
+	}
+	// The staging copy is already queued by Finalize; only the final key is
+	// left for reconciliation to judge.
+	for _, event := range outboxKeys(t, f.db) {
+		o.Delete(ctx, event.ObjectKey)
+	}
+	if _, err := f.store.Open(ctx, c.ID, c.RetrievalToken); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.store.ReconcileOnce(ctx, 10); err != nil || n != 0 {
+		t.Fatal("streaming object reconciled", n, err)
+	}
+	later := f.now.Add(openObjectGrace)
+	f.store.now = func() time.Time { return later }
+	if _, err := f.db.Exec(`update request_reconciliation_cursor set continuation_token = ''`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.store.ReconcileOnce(ctx, 10); err != nil || n != 1 {
+		t.Fatal("unfinished open never released", n, err)
+	}
+	var claimed string
+	if err := f.db.QueryRow(`select object_key from request_reconciliation_pending`).Scan(&claimed); err != nil || claimed != final {
+		t.Fatal(claimed, err)
+	}
+}

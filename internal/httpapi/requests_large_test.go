@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,15 +28,19 @@ type requestHTTPObjects struct {
 func (o *requestHTTPObjects) PresignPUT(_ context.Context, key string, _ int64, ttl time.Duration) (storage.UploadInstruction, error) {
 	return storage.UploadInstruction{URL: "https://object.example/" + key, Method: "PUT", ExpiresAt: time.Now().Add(ttl), Headers: map[string]string{}}, nil
 }
-func (o *requestHTTPObjects) GetBounded(_ context.Context, key string, limit int64) ([]byte, error) {
+func (o *requestHTTPObjects) Open(_ context.Context, key string) (io.ReadCloser, int64, error) {
 	body, ok := o.bodies[key]
 	if !ok {
-		return nil, errors.New("missing")
+		return nil, 0, errors.New("missing")
 	}
-	return bytes.Clone(body), nil
+	return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 }
-func (o *requestHTTPObjects) Put(_ context.Context, key string, body []byte) error {
-	o.bodies[key] = bytes.Clone(body)
+func (o *requestHTTPObjects) PutStream(_ context.Context, key string, r io.Reader, size int64) error {
+	body, err := io.ReadAll(io.LimitReader(r, size))
+	if err != nil || int64(len(body)) != size {
+		return errors.New("short body")
+	}
+	o.bodies[key] = body
 	return nil
 }
 
@@ -46,7 +52,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := requests.NewStore(conn, requests.Options{Objects: objects, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxFileBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	store, err := requests.NewStore(conn, requests.Options{Objects: objects, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +64,11 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if err := json.Unmarshal(input.Envelope, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	envelope.EncryptedFilename = &requests.EncryptedFilename{Nonce: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 12)), Ciphertext: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 17))}
+	envelope.EncryptedFilename = base64.StdEncoding.EncodeToString(requestAgeBody(40, 4))
 	raw, _ := json.Marshal(envelope)
-	body := bytes.Repeat([]byte{8}, 40)
+	body := requestAgeBody(40, 8)
 	checksum := sha256.Sum256(body)
-	in := requests.UploadInput{Generation: 1, AttemptToken: input.AttemptToken, Kind: "file", SizeBytes: 24, Envelope: raw, CiphertextSHA256: base64.StdEncoding.EncodeToString(checksum[:])}
+	in := requests.UploadInput{Generation: 1, AttemptToken: input.AttemptToken, Kind: "file", SizeBytes: 40, Envelope: raw, CiphertextSHA256: base64.StdEncoding.EncodeToString(checksum[:])}
 	attempt := requests.AttemptInput{Generation: 1, AttemptToken: in.AttemptToken}
 	for _, endpoint := range []string{"upload", "finalize", "abandon"} {
 		var payload any = attempt
@@ -72,7 +78,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 		assertRequestStatus(t, performJSON(t, router, "POST", path+"/"+endpoint, payload, auth(c.RetrievalToken)), 404, "request_unavailable")
 	}
 	encoded, _ := json.Marshal(in)
-	for _, invalid := range []string{`{"generation":1,` + string(encoded[1:]), strings.Replace(string(encoded), `"ciphertext_sha256":`, `"checksum":`, 1), strings.Replace(string(encoded), `"size_bytes":24`, `"size_bytes":null`, 1), string(encoded) + "{}"} {
+	for _, invalid := range []string{`{"generation":1,` + string(encoded[1:]), strings.Replace(string(encoded), `"ciphertext_sha256":`, `"checksum":`, 1), strings.Replace(string(encoded), `"size_bytes":40`, `"size_bytes":null`, 1), string(encoded) + "{}"} {
 		req := httptest.NewRequest("POST", path+"/upload", strings.NewReader(invalid))
 		req.Header.Set("Authorization", "Bearer "+c.SubmissionToken)
 		resp := httptest.NewRecorder()
@@ -101,10 +107,20 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	assertRequestStatus(t, performJSON(t, router, "POST", path+"/abandon", attempt, auth(c.SubmissionToken)), 409, "request_conflict")
 	opened := performJSON(t, router, "POST", path+"/open", nil, auth(c.RetrievalToken))
 	assertRequestStatus(t, opened, 200, "")
-	var payload requests.Payload
-	decodeBody(t, opened, &payload)
-	if payload.Ciphertext != base64.StdEncoding.EncodeToString(body) {
-		t.Fatal("open payload changed")
+	assertOpenedBody(t, opened, "file", body)
+	if opened.Header().Get("Flick-Encrypted-Filename") != envelope.EncryptedFilename {
+		t.Fatal("open lost the encrypted filename")
+	}
+	// The handler finished the stream, so the final object is queued and the
+	// row no longer protects it.
+	var finalKey sql.NullString
+	if err := conn.QueryRow(`select final_key from requests where id=?`, c.ID).Scan(&finalKey); err != nil || finalKey.Valid {
+		t.Fatal("open did not release the final key", err)
+	}
+	var queued int
+	conn.QueryRow(`select count(*) from outbox_events where payload_json like ?`, "%"+final+"%").Scan(&queued)
+	if queued != 1 {
+		t.Fatal("open did not queue the final object", queued)
 	}
 	if _, err := conn.Exec(`insert into request_reconciliation_pending(object_key,job_id) values(?,?)`, final, "current-job"); err != nil {
 		t.Fatal(err)
@@ -132,7 +148,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if pending != 0 {
 		t.Fatal("ACK did not clear current claim")
 	}
-	disabled, err := requests.NewStore(conn, requests.Options{Outbox: outbox, PayloadInlineMaxBytes: 32, MaxFileBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	disabled, err := requests.NewStore(conn, requests.Options{Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}

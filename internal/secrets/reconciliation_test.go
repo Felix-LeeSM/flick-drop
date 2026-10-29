@@ -312,7 +312,7 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 		}
 		return storage.ObjectPage{Keys: []string{requests.ObjectPrefix + "orphan"}}, nil
 	}}
-	requestStore, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 32, MaxFileBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600, Objects: requestObjects, Outbox: outbox})
+	requestStore, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600, Objects: requestObjects, Outbox: outbox})
 	if err != nil {
 		t.Fatal(err)
 	}

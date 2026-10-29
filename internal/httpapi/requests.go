@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,12 +154,39 @@ func (s Server) openRequest(w http.ResponseWriter, r *http.Request) {
 		writeRequestError(w, requests.ErrInvalid)
 		return
 	}
-	result, err := s.requests.Open(r.Context(), chi.URLParam(r, "id"), requestBearer(r))
+	id := chi.URLParam(r, "id")
+	// The deadline covers the bucket read and every write to the requester, so
+	// a body cannot stream past the window in which cleanup protects its object.
+	ctx, cancel := context.WithTimeout(r.Context(), requests.OpenStreamTimeout)
+	defer cancel()
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(requests.OpenStreamTimeout))
+
+	opened, err := s.requests.Open(ctx, id, requestBearer(r))
 	if err != nil {
 		writeRequestError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("Content-Length", strconv.FormatInt(opened.SizeBytes, 10))
+	h.Set(headerKind, opened.Kind)
+	if opened.Envelope.EncryptedFilename != "" {
+		h.Set(headerEncryptedFilename, opened.Envelope.EncryptedFilename)
+	}
+	w.WriteHeader(http.StatusOK)
+	// The request is already consumed; a failure from here on loses the
+	// submission, which the requester sees as a truncated age file. The log
+	// line carries no ID or error text (which names the client address).
+	if _, err := io.Copy(w, opened.Body); err != nil {
+		slog.Warn("opened request body stopped streaming before the end")
+	}
+	opened.Body.Close()
+	if opened.ObjectKey != "" {
+		if err := s.requests.FinishOpen(context.WithoutCancel(r.Context()), id, opened.ObjectKey); err != nil {
+			slog.Warn("opened request object cleanup was not queued; the purge will retry")
+		}
+	}
 }
 
 func (s Server) revokeRequest(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +222,8 @@ func writeRequestError(w http.ResponseWriter, err error) {
 }
 
 func (s Server) reserveRequest(w http.ResponseWriter, r *http.Request) {
-	body, err := readRequestBody(w, r, 8192)
+	// The envelope alone may be EnvelopeMaxBytes.
+	body, err := readRequestBody(w, r, 16384)
 	if err != nil {
 		writeRequestError(w, err)
 		return

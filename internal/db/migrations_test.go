@@ -354,45 +354,53 @@ func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
 	}
 }
 
-func TestRequestLargeMigrationPreservesInlineDatabase(t *testing.T) {
+// TestMigrateAPIDropsRSARequests pins the request format cut-over: a requests
+// table without consumed_at holds RSA-OAEP/AES-GCM submissions no client can
+// open any more, so it is dropped with its payloads and the age schema takes
+// its place. A second migration leaves the age table and its rows alone.
+func TestMigrateAPIDropsRSARequests(t *testing.T) {
 	ctx := context.Background()
 	conn, err := OpenSQLite(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	// The exact pre-large-upload shape, including its restrictive state CHECK.
+	// An RSA-era shape, including its restrictive state CHECK.
 	for _, statement := range []string{
 		`create table requests (id text primary key, public_key text not null, fingerprint text not null, submission_token_hash blob not null check(length(submission_token_hash)=32), retrieval_token_hash blob not null check(length(retrieval_token_hash)=32), state text not null default 'waiting' check(state in ('waiting','submitted','consumed','cancelled')), generation integer not null default 1 check(generation between 1 and 16), attempt_token_hash blob, attempt_body_hash blob, kind text, size_bytes integer, envelope_json text, expires_at text not null)`,
 		`create table request_payloads(request_id text primary key, ciphertext blob not null, foreign key(request_id) references requests(id) on delete cascade)`,
-		`insert into requests values('existing','public','fingerprint',zeroblob(32),zeroblob(32),'submitted',3,zeroblob(32),zeroblob(32),'text',1,'{}','2026-10-08T00:00:00.000000000Z')`,
-		`insert into request_payloads values('existing',X'010203')`,
+		`insert into requests values('rsa','public','fingerprint',zeroblob(32),zeroblob(32),'submitted',3,zeroblob(32),zeroblob(32),'text',1,'{}','2026-10-08T00:00:00.000000000Z')`,
+		`insert into request_payloads values('rsa',X'010203')`,
 	} {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for range 2 {
-		if err := MigrateAPI(ctx, conn); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var state, backend string
-	var generation int
-	var payload []byte
-	if err := conn.QueryRow(`select r.state,r.generation,r.storage_backend,p.ciphertext from requests r join request_payloads p on p.request_id=r.id`).Scan(&state, &generation, &backend, &payload); err != nil {
+	if err := MigrateAPI(ctx, conn); err != nil {
 		t.Fatal(err)
 	}
-	if state != "submitted" || generation != 3 || backend != "sqlite_blob" || string(payload) != "\x01\x02\x03" {
-		t.Fatal("migration changed inline request")
+	var count int
+	if err := conn.QueryRow(`select (select count(*) from requests) + (select count(*) from request_payloads)`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("RSA requests survived the cut-over", count, err)
 	}
-	if _, err := conn.Exec(`update requests set state='uploading',storage_backend='s3_object',kind='file',upload_key='managed/requests/upload',final_key='managed/requests/final',ciphertext_sha256=zeroblob(32),reservation_expires_at=expires_at`); err != nil {
-		t.Fatal("new state CHECK absent", err)
+	if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,expires_at) values('age','public','fingerprint',zeroblob(32),zeroblob(32),'2026-10-08T00:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values('age',X'010203')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from requests r join request_payloads p on p.request_id=r.id`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("second migration dropped age requests", count, err)
+	}
+	if _, err := conn.Exec(`update requests set state='consumed',storage_backend='s3_object',kind='file',final_key='managed/requests/final',consumed_at=expires_at`); err != nil {
+		t.Fatal("age schema columns or state CHECK absent", err)
 	}
 	if _, err := conn.Exec(`delete from requests`); err != nil {
 		t.Fatal(err)
 	}
-	var count int
 	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("FK cascade lost", err)
 	}

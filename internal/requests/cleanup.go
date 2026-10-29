@@ -12,6 +12,14 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
+// OpenStreamTimeout bounds one opened request body's stream, and
+// openObjectGrace outlasts it: reconciliation and the expiry purge leave a
+// just-opened object alone that long. Same values as internal/secrets/age.go.
+const (
+	OpenStreamTimeout = 30 * time.Minute
+	openObjectGrace   = OpenStreamTimeout + 5*time.Minute
+)
+
 func enqueueObjectTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, key, reason string, now time.Time) error {
 	if !strings.HasPrefix(key, ObjectPrefix) || key == ObjectPrefix || outbox == nil {
 		return ErrStorage
@@ -91,7 +99,9 @@ func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int, o
 			return err
 		}
 	}
-	rows, err = tx.QueryContext(ctx, `select id from requests where expires_at <= ? order by expires_at, id limit ?`, now.UTC().Format(timeFormat), limit)
+	// A request whose object may still be streaming keeps its row, and so its
+	// final_key protection, until the open grace passes.
+	rows, err = tx.QueryContext(ctx, `select id from requests where expires_at <= ? and not (state = 'consumed' and final_key is not null and consumed_at > ?) order by expires_at, id limit ?`, now.UTC().Format(timeFormat), now.UTC().Add(-openObjectGrace).Format(timeFormat), limit)
 	if err != nil {
 		return err
 	}
@@ -180,7 +190,9 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 		var protected bool
 		// A deadline-expired generation can never accept again, even if its reaper
 		// transition is delayed. Any DB error must fail closed, never mean absent.
-		err := tx.QueryRowContext(ctx, `select exists (select 1 from requests where expires_at > ? and ((state = 'submitted' and final_key = ?) or (state = 'uploading' and reservation_expires_at > ? and (upload_key = ? or final_key = ?))))`, now.Format(timeFormat), key, now.Format(timeFormat), key, key).Scan(&protected)
+		// A just-opened object is protected for the stream grace whatever the
+		// request deadline, since its body may still be streaming.
+		err := tx.QueryRowContext(ctx, `select exists (select 1 from requests where (state = 'consumed' and final_key = ? and consumed_at > ?) or (expires_at > ? and ((state = 'submitted' and final_key = ?) or (state = 'uploading' and reservation_expires_at > ? and (upload_key = ? or final_key = ?)))))`, key, now.Add(-openObjectGrace).Format(timeFormat), now.Format(timeFormat), key, now.Format(timeFormat), key, key).Scan(&protected)
 		if err != nil {
 			return 0, err
 		}

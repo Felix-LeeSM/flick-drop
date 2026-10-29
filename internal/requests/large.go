@@ -8,7 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"io"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -63,16 +63,15 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if err != nil {
 		return UploadResult{}, err
 	}
-	if in.Kind != "file" || in.SizeBytes < 0 {
+	// size_bytes is the exact age file length. Any file may take the large
+	// path: clients route on the inline limit before encryption, which is not
+	// this store's limit on the age file.
+	if in.Kind != "file" || in.SizeBytes < int64(len(AgeMagic)) {
 		return UploadResult{}, ErrInvalid
 	}
-	if in.SizeBytes > s.opts.MaxFileBytes {
+	if in.SizeBytes > s.opts.MaxObjectBytes {
 		return UploadResult{}, ErrTooLarge
 	}
-	// Any file may take the large path. The browser routes on the
-	// age-adjusted inline limit from /api/config, which sits below this
-	// store's AES-GCM inline limit, so a lower bound here refused files between
-	// the two.
 	envelope, err := validateEnvelope(in.Envelope, in.Kind)
 	if err != nil {
 		return UploadResult{}, err
@@ -148,7 +147,7 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if ttl <= 0 {
 		return UploadResult{}, ErrUnavailable
 	}
-	instruction, err := s.opts.Objects.PresignPUT(ctx, a.uploadKey.String, in.SizeBytes+tagBytes, ttl)
+	instruction, err := s.opts.Objects.PresignPUT(ctx, a.uploadKey.String, in.SizeBytes, ttl)
 	if err != nil {
 		return UploadResult{}, ErrStorage
 	}
@@ -188,31 +187,15 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 		}
 		return Receipt{row.generation, "submitted"}, nil
 	}
-	if s.opts.Objects == nil || !a.uploadKey.Valid || !a.finalKey.Valid || !a.size.Valid || a.size.Int64 < 0 || a.size.Int64 > s.opts.MaxFileBytes {
+	if s.opts.Objects == nil || !a.uploadKey.Valid || !a.finalKey.Valid || !a.size.Valid || a.size.Int64 < 0 || a.size.Int64 > s.opts.MaxObjectBytes {
 		return Receipt{}, ErrStorage
 	}
 	if err := s.commit(tx, row.expires); err != nil {
 		return Receipt{}, err
 	}
 	tx.close()
-	body, err := s.opts.Objects.GetBounded(ctx, a.uploadKey.String, a.size.Int64+tagBytes)
-	if errors.Is(err, storage.ErrObjectTooLarge) {
-		return Receipt{}, ErrInvalid
-	}
-	if err != nil {
-		return Receipt{}, ErrStorage
-	}
-	if int64(len(body)) != a.size.Int64+tagBytes {
-		return Receipt{}, ErrInvalid
-	}
-	checksum := sha256.Sum256(body)
-	if !bytes.Equal(checksum[:], a.checksum) {
-		return Receipt{}, ErrInvalid
-	}
-	// Same-attempt finalizers only write identical, checksum-verified bytes. Never
-	// delete on error: a PUT may have succeeded, or another finalizer may accept.
-	if err := s.opts.Objects.Put(ctx, a.finalKey.String, body); err != nil {
-		return Receipt{}, ErrStorage
+	if err := s.copyVerified(ctx, a); err != nil {
+		return Receipt{}, err
 	}
 	tx, row, err = s.begin(ctx, id, token, false)
 	if err != nil {
@@ -259,6 +242,46 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 		return Receipt{}, err
 	}
 	return Receipt{row.generation, "submitted"}, nil
+}
+
+// copyVerified streams the uploaded object into the server-only final key
+// while hashing it, so a large body is never held in memory. The final object
+// is accepted only if the bytes are an age file of the reserved length and
+// checksum. Never delete on error: a write may have succeeded, or another
+// same-attempt finalizer may accept; reconciliation removes an unused final
+// object.
+func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
+	body, length, err := s.opts.Objects.Open(ctx, a.uploadKey.String)
+	if err != nil {
+		return ErrStorage
+	}
+	defer body.Close()
+	if length != a.size.Int64 {
+		return ErrInvalid
+	}
+	hash := sha256.New()
+	head := &prefixRecorder{limit: len(AgeMagic)}
+	src := io.TeeReader(io.LimitReader(body, length), io.MultiWriter(hash, head))
+	if err := s.opts.Objects.PutStream(ctx, a.finalKey.String, src, length); err != nil {
+		return ErrStorage
+	}
+	if !isAgeFile(head.b) || !bytes.Equal(hash.Sum(nil), a.checksum) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// prefixRecorder keeps the first limit bytes written to it.
+type prefixRecorder struct {
+	b     []byte
+	limit int
+}
+
+func (p *prefixRecorder) Write(b []byte) (int, error) {
+	if room := p.limit - len(p.b); room > 0 {
+		p.b = append(p.b, b[:min(room, len(b))]...)
+	}
+	return len(b), nil
 }
 
 func (s *Store) Abandon(ctx context.Context, id, token string, in AttemptInput) (Receipt, error) {

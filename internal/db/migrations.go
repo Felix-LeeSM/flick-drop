@@ -93,6 +93,9 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	if err := dropAESGCMSecrets(ctx, conn); err != nil {
 		return err
 	}
+	if err := dropRSARequests(ctx, conn); err != nil {
+		return err
+	}
 	for _, statement := range statements {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply api migration: %w", err)
