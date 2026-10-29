@@ -28,6 +28,8 @@ const (
 	// open must open in the browser too. The wrapped identity arrives from the
 	// server; this cap stops it from pinning the client's CPU and memory.
 	MaxWrapWorkFactor = 20
+	// maxIdentityBytes bounds an unwrapped identity; a real one is 77 bytes.
+	maxIdentityBytes = 1024
 )
 
 // NewIdentity generates the per-secret identity.
@@ -39,7 +41,7 @@ func NewIdentity() (*age.HybridIdentity, error) {
 // Model A file. Any other identity type is refused.
 func ParseIdentity(s string) (*age.HybridIdentity, error) {
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(strings.ToUpper(s), IdentityPrefix) {
+	if !strings.HasPrefix(s, IdentityPrefix) {
 		return nil, fmt.Errorf("identity must start with %s", IdentityPrefix)
 	}
 	return age.ParseHybridIdentity(s)
@@ -103,9 +105,12 @@ func UnwrapIdentity(wrapped []byte, passphrase string) (*age.HybridIdentity, err
 	}
 	// An identity string is under 100 bytes; refuse to buffer a large file a
 	// server substituted.
-	plaintext, err := io.ReadAll(io.LimitReader(r, 1024))
+	plaintext, err := io.ReadAll(io.LimitReader(r, maxIdentityBytes+1))
 	if err != nil {
 		return nil, decryptError(err)
+	}
+	if len(plaintext) > maxIdentityBytes {
+		return nil, errors.New("wrapped identity is too large")
 	}
 	return ParseIdentity(string(plaintext))
 }

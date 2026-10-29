@@ -3,7 +3,13 @@
 // construction of its own. internal/clientcrypto/age.go is the Go twin, and
 // tests/fixtures/age/ holds files each side produced for the other to open.
 
-import { Decrypter, Encrypter, generateHybridIdentity, identityToRecipient } from 'age-encryption';
+import {
+	Decrypter,
+	Encrypter,
+	generateHybridIdentity,
+	identityToRecipient,
+	type ReadableStreamWithSize
+} from 'age-encryption';
 
 // The only identity type a secret uses: hybrid ML-KEM-768 + X25519. Body and
 // filename are age files encrypted to its recipient.
@@ -23,22 +29,23 @@ export function generateSecretIdentity(): Promise<string> {
 // refuses any other identity type.
 export function parseSecretIdentity(value: string): string {
 	const identity = value.trim();
-	if (!identity.toUpperCase().startsWith(IDENTITY_PREFIX)) {
+	if (!identity.startsWith(IDENTITY_PREFIX)) {
 		throw new Error(`identity must start with ${IDENTITY_PREFIX}`);
 	}
 	return identity;
 }
 
 // A stream input returns a stream: each 64 KiB chunk is encrypted as it is read.
+// Its size() gives the exact ciphertext length for a plaintext length.
 export async function encryptTo(identity: string, input: Uint8Array | string): Promise<Uint8Array>;
 export async function encryptTo(
 	identity: string,
 	input: ReadableStream<Uint8Array>
-): Promise<ReadableStream<Uint8Array>>;
+): Promise<ReadableStreamWithSize>;
 export async function encryptTo(
 	identity: string,
 	input: Uint8Array | string | ReadableStream<Uint8Array>
-): Promise<Uint8Array | ReadableStream<Uint8Array>> {
+): Promise<Uint8Array | ReadableStreamWithSize> {
 	const encrypter = new Encrypter();
 	encrypter.addRecipient(await identityToRecipient(parseSecretIdentity(identity)));
 	// Overloads do not narrow through a union argument.

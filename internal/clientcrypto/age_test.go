@@ -198,6 +198,17 @@ func TestAgeFailsClosed(t *testing.T) {
 		t.Fatal("a truncated file decrypted")
 	}
 
+	// An unwrapped file larger than an identity is refused, not truncated.
+	cheap, _ := age.NewScryptRecipient(v.Passphrase)
+	cheap.SetWorkFactor(10)
+	var big bytes.Buffer
+	bw, _ := age.Encrypt(&big, cheap)
+	io.WriteString(bw, v.Go.Identity+strings.Repeat(" ", 2000))
+	bw.Close()
+	if _, err := UnwrapIdentity(big.Bytes(), v.Passphrase); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversized identity: err = %v, want too large", err)
+	}
+
 	// A wrapped identity whose stanza asks for more than the cap is refused
 	// before scrypt runs. Editing the stanza breaks the header MAC, but the
 	// work factor is checked first, which is the point.
@@ -205,7 +216,7 @@ func TestAgeFailsClosed(t *testing.T) {
 	if bytes.Equal(heavy, wrapped) {
 		t.Fatal("fixture stanza does not carry work factor 18")
 	}
-	if _, err := UnwrapIdentity(heavy, v.Passphrase); err == nil || errors.Is(err, ErrDecrypt) {
+	if _, err := UnwrapIdentity(heavy, v.Passphrase); err == nil || !strings.Contains(err.Error(), "work factor") {
 		t.Fatalf("work factor 21: err = %v, want a work-factor error", err)
 	}
 }
