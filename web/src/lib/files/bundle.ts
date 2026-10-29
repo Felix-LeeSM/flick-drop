@@ -1,4 +1,4 @@
-import { zip } from 'fflate';
+import { Zip, ZipDeflate } from 'fflate';
 
 export const BUNDLE_FILENAME = 'bundle.zip';
 
@@ -15,36 +15,40 @@ export async function bundleFiles(files: File[]): Promise<File> {
 		return files[0];
 	}
 
-	const entries: Record<string, Uint8Array> = {};
+	const parts: Blob[] = [];
+	let failure: Error | null = null;
+	let finished = false;
+	// Each output chunk goes straight into a Blob, which the browser may keep on
+	// disk, so neither the inputs nor the zip are ever whole in memory.
+	const archive = new Zip((err, chunk, final) => {
+		if (err) {
+			failure = err;
+			return;
+		}
+		parts.push(new Blob([chunk as Uint8Array<ArrayBuffer>]));
+		finished = final;
+	});
 	const usedNames = new Set<string>();
 	for (const file of files) {
-		const name = uniqueName(file.name || 'file', usedNames);
-		entries[name] = new Uint8Array(await file.arrayBuffer());
+		// level 6 is the balanced default: it shrinks compressible inputs (text,
+		// logs) while leaving already-compressed media effectively as-is.
+		const entry = new ZipDeflate(uniqueName(file.name || 'file', usedNames), { level: 6 });
+		archive.add(entry);
+		const reader = file.stream().getReader();
+		// Reading one chunk at a time keeps the form responsive between chunks.
+		for (let read = await reader.read(); !read.done; read = await reader.read()) {
+			entry.push(read.value);
+		}
+		entry.push(new Uint8Array(0), true);
+		if (failure) {
+			throw failure;
+		}
 	}
-
-	const zipped = await zipAsync(entries);
-	// Widen to a plain ArrayBuffer: fflate types its output as Uint8Array<ArrayBufferLike>,
-	// which BlobPart (ArrayBuffer-backed views only) rejects. The zip is never shared memory.
-	const buffer = zipped.buffer.slice(
-		zipped.byteOffset,
-		zipped.byteOffset + zipped.byteLength
-	) as ArrayBuffer;
-	return new File([buffer], BUNDLE_FILENAME, { type: 'application/zip' });
-}
-
-// fflate's async zip runs off the main thread, so bundling a large batch does not
-// freeze the create form. level 6 is the balanced default: it shrinks compressible
-// inputs (text, logs) while leaving already-compressed media effectively as-is.
-function zipAsync(entries: Record<string, Uint8Array>): Promise<Uint8Array> {
-	return new Promise((resolve, reject) => {
-		zip(entries, { level: 6 }, (err, data) => {
-			if (err) {
-				reject(err);
-			} else {
-				resolve(data);
-			}
-		});
-	});
+	archive.end();
+	if (failure || !finished) {
+		throw failure ?? new Error('zip did not finish');
+	}
+	return new File(parts, BUNDLE_FILENAME, { type: 'application/zip' });
 }
 
 // Two dropped files can share a name; a plain zip map would silently drop the

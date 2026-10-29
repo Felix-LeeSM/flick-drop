@@ -34,7 +34,7 @@ func TestGetConfig(t *testing.T) {
 
 func TestGetConfigFallsBackToDefaultsWhenUnset(t *testing.T) {
 	// An empty Options leaves both limits at zero, so the router must substitute
-	// the built-in defaults (1 MiB inline threshold, 50 MiB absolute bound).
+	// the built-in defaults (1 MiB inline threshold, 256 MiB absolute bound).
 	fixture := newTestRouterFixture(t, Options{})
 
 	resp := performJSON(t, fixture.router, http.MethodGet, "/api/config", nil)
@@ -49,8 +49,8 @@ func TestGetConfigFallsBackToDefaultsWhenUnset(t *testing.T) {
 	if body.PayloadInlineMaxBytes != 1048576 {
 		t.Fatalf("payload_inline_max_bytes = %d, want 1048576 (default fallback)", body.PayloadInlineMaxBytes)
 	}
-	if body.MaxFileBytes != 52428800 {
-		t.Fatalf("max_file_bytes = %d, want 52428800 (default fallback)", body.MaxFileBytes)
+	if body.MaxFileBytes != 268435456 {
+		t.Fatalf("max_file_bytes = %d, want 268435456 (default fallback)", body.MaxFileBytes)
 	}
 }
 

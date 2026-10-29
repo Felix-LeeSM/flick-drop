@@ -26,7 +26,7 @@ describe('getConfig', () => {
 
 		await expect(getConfig('http://api.local/', fetcher)).resolves.toEqual({
 			payloadInlineMaxBytes: 1_044_208,
-			maxFileBytes: 52_428_800
+			maxFileBytes: 268_435_456
 		});
 	});
 

@@ -8,7 +8,7 @@
 // (4 KiB header allowance, 16-byte nonce, 16 bytes per 64 KiB chunk).
 export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_044_208;
 // The large-file limit already counts bytes before encryption; no overhead.
-export const DEFAULT_MAX_FILE_BYTES = 52_428_800; // 50 MiB
+export const DEFAULT_MAX_FILE_BYTES = 268_435_456; // 256 MiB
 
 export type ClientLimits = {
 	payloadInlineMaxBytes: number;

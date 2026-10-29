@@ -79,7 +79,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	}
 	maxFileBytes := opts.MaxFileBytes
 	if maxFileBytes <= 0 {
-		maxFileBytes = 52428800
+		maxFileBytes = 268435456
 	}
 
 	server := Server{
