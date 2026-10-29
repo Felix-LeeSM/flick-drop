@@ -23,12 +23,9 @@ create table secrets (
   kind text not null check (kind in ('text', 'file')),
   storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
   storage_key text not null,
-  nonce text not null,
-  kdf_algorithm text not null,
-  kdf_salt text not null,
-  kdf_params_json text not null,
   access_kdf_params_json text,
   access_proof_hash text,
+  wrapped_identity text,
   encrypted_filename text,
   content_type text,
   size_bytes integer not null check (size_bytes >= 0),
@@ -39,7 +36,10 @@ create table secrets (
   expires_at datetime not null,
   consumed_at datetime,
   created_at datetime not null,
-  updated_at datetime not null
+  updated_at datetime not null,
+  reclaim_enqueued_at datetime,
+  check ((access_kdf_params_json is null) = (access_proof_hash is null)
+    and (access_proof_hash is null) = (wrapped_identity is null))
 );
 
 create index idx_secrets_expires_at on secrets(expires_at);
@@ -103,9 +103,18 @@ create index idx_outbox_events_state_next_attempt
   on outbox_events(state, next_attempt_at);
 ```
 
-`kdf_algorithm`, `kdf_salt`, and `kdf_params_json` are not secret values. They
-store the browser-side derivation parameters required to reproduce the same
-derived key from the user-entered passphrase.
+Bodies (`secret_payloads.ciphertext` or the bucket object), `encrypted_filename`,
+and `wrapped_identity` are age files ([age format v1](../../contracts/age-format-v1.md));
+the last two are stored base64. `size_bytes` is the exact body age file length.
+`wrapped_identity` is the Model A identity wrapped by an age scrypt passphrase
+file; only the verified open returns it. Model B rows leave it, the access KDF,
+and the proof hash NULL, which the table CHECK enforces.
+
+A database that still has the AES-GCM `nonce` column is migrated by dropping
+its `secrets` and `secret_payloads` tables (`internal/db/migrations.go`
+`dropAESGCMSecrets`): age clients cannot open those secrets. Their management
+pages report `unavailable`, and object reconciliation deletes their bucket
+objects.
 
 `access_kdf_params_json` stores separate browser-side derivation parameters for
 the one-time open proof. `access_proof_hash` stores a server-side hash of that
