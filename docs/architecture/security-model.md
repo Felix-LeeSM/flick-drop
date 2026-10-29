@@ -87,31 +87,24 @@ S3-compatible object storage
 
 ## Encryption
 
-Initial encryption and KDF target:
+Secrets use standard age files ([age format v1](../../contracts/age-format-v1.md)):
 
-- Web Crypto AES-GCM.
-- PBKDF2-HMAC-SHA256 through Web Crypto for MVP.
-- 600,000 PBKDF2 iterations or more.
-- Random 128-bit or larger salt per secret.
-- Random nonce per encrypted payload.
-- Derived key used only in browser memory.
+- A fresh hybrid age identity per secret, generated in the client
+  (`age-encryption` in the browser, `filippo.io/age` in the CLI).
+- 64 KiB authenticated chunks, so files encrypt and decrypt as streams. A client
+  shows content only after the final chunk authenticates.
+- Model A wraps the identity in an age scrypt passphrase file (work factor 18;
+  clients refuse more than 20). Model B carries the identity in the link
+  fragment.
+- Derived keys and identities stay in client memory.
 
-The API stores nonce, KDF salt, and KDF parameters because they are required for
-browser-side decrypt. These values are not secret.
+The API stores the age body, the age-encrypted filename, and for Model A the
+wrapped identity. None of these is secret without the passphrase or the link.
 
-Access proof KDF parameters are stored separately from encryption KDF
-parameters. They allow the browser to reproduce the proof before the API returns
-the ciphertext payload. The API compares proof hashes and never receives the
-encryption key.
-
-Argon2id is the preferred memory-hard direction for a later release, but it
-requires a browser WASM dependency and supply-chain review.
-
-M13 replaces this format with standard age files
-([age format v1](../../contracts/age-format-v1.md)): a per-secret hybrid
-identity, 64 KiB authenticated chunks, and for Model A the identity wrapped by
-an age scrypt passphrase file. The access proof stays PBKDF2. Until the M13
-switch lands, the AES-GCM format above is the one in production.
+The Model A access proof stays PBKDF2-HMAC-SHA256 (600,000 iterations or more,
+random 128-bit salt), stored separately from the wrapped identity. It lets the
+browser prove the passphrase before the API returns the body. The API compares
+proof hashes and never receives the passphrase or the identity in the clear.
 
 ## Access Control Models
 
