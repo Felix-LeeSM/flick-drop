@@ -32,6 +32,14 @@ describe('bundleFiles', () => {
 		expect(await unzip(result)).toEqual({ 'dup.txt': 'first', 'dup (1).txt': 'second' });
 	});
 
+	it('streams files larger than one read chunk without losing bytes', async () => {
+		const big = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 7) % 256);
+		const result = await bundleFiles([new File([big], 'big.bin'), file('small.txt', 'tail')]);
+		const entries = unzipSync(new Uint8Array(await result.arrayBuffer()));
+		expect(entries['big.bin']).toEqual(big);
+		expect(strFromU8(entries['small.txt'])).toBe('tail');
+	});
+
 	it('rejects an empty batch', async () => {
 		await expect(bundleFiles([])).rejects.toThrow();
 	});

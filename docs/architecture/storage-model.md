@@ -34,14 +34,21 @@ max file size: 256 MiB
 The local web flow accepts files only up to the SQLite inline threshold while
 large-object storage is disabled.
 
-Large bodies stream end to end, so the 256 MiB ceiling is bounded by time, not
-API memory. A sender's PUT must finish inside the 15-minute upload window (the
-secret pending-upload TTL and `requests.ReservationTTL`), and an open must
-finish inside the 30-minute stream limit (`secrets.OpenStreamTimeout`,
-`requests.OpenStreamTimeout`). For a 256 MiB file that means about 300 KB/s
-upload and 150 KB/s download at least. The CLI's HTTP timeout is 30 minutes for
-the same reason. Request finalize spools one object at a time per call to the
-API container's `/tmp`.
+No API path holds a large body in memory, and the browser and CLI encrypt and
+decrypt files as streams, so the 256 MiB ceiling is bounded by time. A secret's
+presigned PUT must start within 5 minutes (`presignTTL`) and finish inside the
+15-minute pending-upload window; a request upload's PUT and the server's
+finalize copy together must finish inside `requests.ReservationTTL` (15
+minutes). An open must finish inside the 30-minute stream limit
+(`secrets.OpenStreamTimeout`, `requests.OpenStreamTimeout`). For a 256 MiB file
+that means about 300 KB/s upload and 150 KB/s download at least. The CLI's HTTP
+timeout is 30 minutes for the same reason.
+
+Request finalize copies the object (download, hash, upload) inside one HTTP
+call, so behind a proxy that cuts silent requests (Cloudflare: 100 seconds) the
+API-to-bucket bandwidth bounds the usable request file size. Each running
+finalize spools one object to the API container's `/tmp`, which has no separate
+size limit.
 
 Filesystem storage is not a persistent backend. It is allowed only for temporary
 upload files, local scratch, and test fixtures.
