@@ -39,18 +39,19 @@ export async function openText(
 }
 
 // Same guarantee as openText: the Blob exists only once the whole file has
-// decrypted, so nothing partial can be downloaded.
+// decrypted, so nothing partial can be downloaded. The Blob is always
+// application/octet-stream: the sender picks the content type, and a
+// text/html blob: URL opened in a tab would run in the Flick origin.
 export async function openFile(
 	identity: string,
 	body: ReadableStream<Uint8Array>,
-	encryptedFilename: Uint8Array,
-	contentType: string
+	encryptedFilename: Uint8Array
 ): Promise<{ blob: Blob; filename: string }> {
 	const decrypted = await new Response(await decryptWith(identity, body)).blob();
 	const filename = new TextDecoder('utf-8', { fatal: true }).decode(
 		await decryptWith(identity, encryptedFilename)
 	);
-	return { blob: decrypted.slice(0, decrypted.size, contentType), filename };
+	return { blob: decrypted.slice(0, decrypted.size, 'application/octet-stream'), filename };
 }
 
 export async function wrapIdentityOffThread(
@@ -88,6 +89,7 @@ function runScrypt(request: ScryptRequest): Promise<string | Uint8Array> {
 			}
 		};
 		worker.onerror = () => reject(new Error(failure));
+		worker.onmessageerror = () => reject(new Error(failure));
 		worker.postMessage(request);
 	}).finally(() => worker.terminate());
 }

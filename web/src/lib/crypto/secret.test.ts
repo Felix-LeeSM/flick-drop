@@ -38,14 +38,9 @@ describe('sealing and opening secrets', () => {
 		expect(sealed).toMatchObject({ contentType: 'application/pdf', plaintextBytes: FILE_BYTES });
 		expect(sealed.body.size).toBeGreaterThan(FILE_BYTES + 3 * TAG);
 
-		const opened = await openFile(
-			identity,
-			sealed.body.stream(),
-			sealed.encryptedFilename,
-			sealed.contentType
-		);
+		const opened = await openFile(identity, sealed.body.stream(), sealed.encryptedFilename);
 		expect(opened.filename).toBe('quarterly report.pdf');
-		expect(opened.blob.type).toBe('application/pdf');
+		expect(opened.blob.type).toBe('application/octet-stream');
 		expect(new Uint8Array(await opened.blob.arrayBuffer())).toEqual(
 			new Uint8Array(await file.arrayBuffer())
 		);
@@ -70,8 +65,7 @@ describe('sealing and opening secrets', () => {
 			openFile(
 				identity,
 				sealed.body.slice(0, sealed.body.size - missing).stream(),
-				sealed.encryptedFilename,
-				sealed.contentType
+				sealed.encryptedFilename
 			)
 		).rejects.toThrow();
 	});
@@ -83,9 +77,7 @@ describe('sealing and opening secrets', () => {
 		const text = await sealText(identity, 'not for you');
 		const file = await sealFile(identity, new File(['x'], 'x.txt'));
 		await expect(openText(other, streamOf(text))).rejects.toThrow();
-		await expect(
-			openFile(other, file.body.stream(), file.encryptedFilename, file.contentType)
-		).rejects.toThrow();
+		await expect(openFile(other, file.body.stream(), file.encryptedFilename)).rejects.toThrow();
 	});
 });
 

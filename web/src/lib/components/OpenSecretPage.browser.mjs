@@ -179,3 +179,86 @@ for (const [status, phase] of [
 		}
 	});
 }
+
+// Serves a Model B secret: metadata without an access block, then the age body.
+async function routeModelB(page, kind, body, headers = {}) {
+	await page.route(`**${secretPath}`, (route) =>
+		route.fulfill({
+			json: {
+				id: 'metadata-retry',
+				kind,
+				size_bytes: body.length,
+				expires_at: '2099-01-01T00:00:00Z'
+			}
+		})
+	);
+	await page.route(`**${secretPath}/open`, (route) =>
+		route.fulfill({
+			contentType: 'application/octet-stream',
+			headers: {
+				'Access-Control-Expose-Headers':
+					'Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At',
+				'Flick-Kind': kind,
+				'Flick-Expires-At': '2099-01-01T00:00:00Z',
+				...headers
+			},
+			body
+		})
+	);
+}
+
+test('Model B file opens to its filename and a download of the original bytes', async () => {
+	const page = await browser.newPage();
+	try {
+		await routeModelB(
+			page,
+			'file',
+			await readFile(new URL(`../../../../tests/fixtures/age/${age.web.file}`, import.meta.url)),
+			{ 'Flick-Content-Type': 'application/pdf', 'Flick-Encrypted-Filename': age.web.filename }
+		);
+		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment}`);
+		await page.getByRole('button', { name: 'Open', exact: true }).click();
+		await page.getByText(age.plaintext.filename, { exact: true }).waitFor();
+		const download = page.getByRole('link', { name: 'Download' });
+		assert.equal(await download.getAttribute('download'), age.plaintext.filename);
+		const blob = await download.evaluate(async (link) => {
+			const response = await (await fetch(link.href)).blob();
+			const bytes = new Uint8Array(await response.arrayBuffer());
+			return {
+				type: response.type,
+				length: bytes.length,
+				matches: bytes.every((byte, i) => byte === i % 251)
+			};
+		});
+		assert.deepEqual(blob, {
+			type: 'application/octet-stream',
+			length: age.plaintext.file.length,
+			matches: true
+		});
+	} finally {
+		await page.close();
+	}
+});
+
+test('a body that fails to authenticate after the open is final and shows nothing', async () => {
+	const page = await browser.newPage();
+	try {
+		const text = Buffer.from(age.web.text, 'base64');
+		await routeModelB(page, 'text', text.subarray(0, text.length - 1));
+		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment}`);
+		const open = page.getByRole('button', { name: 'Open', exact: true });
+		await open.click();
+		await page
+			.getByRole('alert')
+			.filter({
+				hasText: 'This secret was opened but could not be decrypted. It cannot be opened again.'
+			})
+			.waitFor();
+		assert.equal(await open.isEnabled(), false);
+		await page.getByRole('link', { name: 'Create a new secret instead' }).waitFor();
+		assert.equal(await page.getByRole('textbox', { name: 'Decrypted secret' }).count(), 0);
+		assert.equal(await page.getByText(age.plaintext.text, { exact: false }).count(), 0);
+	} finally {
+		await page.close();
+	}
+});

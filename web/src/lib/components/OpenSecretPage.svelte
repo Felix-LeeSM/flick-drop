@@ -68,6 +68,9 @@ let linkIdentity = $state<string | null>(null);
 // Metadata loaded on mount or explicit retry and reused on open — the Model A KDF lives here,
 // so openPassphraseSecret no longer re-fetches it (one fewer round-trip).
 let metadata = $state<GetSecretMetadataResponse | null>(null);
+// Set once the server has answered the open: from then on the secret is burned,
+// and a decryption failure is final rather than retryable.
+let consumedOnServer = false;
 
 onMount(() => {
 	void loadModel();
@@ -170,9 +173,16 @@ async function openSecret(): Promise<void> {
 		// best-effort reference-dropping for GC, not a memory wipe.
 		linkIdentity = null;
 	} catch (error) {
-		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+		if (consumedOnServer) {
+			// The server has already burned the secret, so retrying can only
+			// answer "consumed". Say what happened instead.
+			status = 'This secret was opened but could not be decrypted. It cannot be opened again.';
+			linkUnusable = true;
+		} else {
+			status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+			linkUnusable = isUnavailable(error);
+		}
 		statusKind = 'error';
-		linkUnusable = isUnavailable(error);
 	} finally {
 		isOpening = false;
 	}
@@ -185,7 +195,9 @@ async function openLinkBearerSecret(): Promise<void> {
 	if (!identity) {
 		throw new Error('missing decryption key');
 	}
-	await render(identity, await api.openSecret(secretId));
+	const opened = await api.openSecret(secretId);
+	consumedOnServer = true;
+	await render(identity, opened);
 }
 
 // Model A: the passphrase-derived proof opens the secret, and the same
@@ -197,6 +209,7 @@ async function openPassphraseSecret(): Promise<void> {
 	}
 	const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
 	const opened = await api.openSecret(secretId, accessProof);
+	consumedOnServer = true;
 	if (!opened.wrappedIdentity) {
 		throw new Error('expected a wrapped identity for Model A secret');
 	}
@@ -208,12 +221,7 @@ async function render(identity: string, opened: OpenedSecret): Promise<void> {
 		if (!opened.encryptedFilename) {
 			throw new Error('expected an encrypted filename for a file secret');
 		}
-		const file = await openFile(
-			identity,
-			opened.body,
-			opened.encryptedFilename,
-			opened.contentType
-		);
+		const file = await openFile(identity, opened.body, opened.encryptedFilename);
 		downloadUrl = URL.createObjectURL(file.blob);
 		downloadFilename = file.filename;
 		downloadSize = file.blob.size;
