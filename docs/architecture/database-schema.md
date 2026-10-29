@@ -146,6 +146,7 @@ create table requests (
   final_key text,
   ciphertext_sha256 blob check (length(ciphertext_sha256) = 32),
   reservation_expires_at text,
+  consumed_at text,
   expires_at text not null,
   check ((attempt_token_hash is null) = (attempt_body_hash is null)),
   check (state != 'uploading' or (storage_backend = 's3_object' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
@@ -172,16 +173,20 @@ expired/abandoned reservation atomically advances generation; ending generation
 A cancelled pending reservation clears its attempt hashes; only accepted receipts
 survive open/revoke. Reservation deadlines use the same fixed-width UTC format.
 Open/revoke clear payloads, envelope, kind, and size in the same transaction.
+An opened object-store request keeps `final_key` and records `consumed_at`
+while its body streams; the API clears the key when the stream ends, and the
+purge and reconciliation leave the row and object alone for 35 minutes after
+`consumed_at` in case that step never runs.
 Public key, token hashes, minimal owner state, and attempt receipt expire at
 the original deadline; the API reaper purges them even after early consumption
 or cancellation. The worker never reads or writes request tables.
 
 
-`internal/db/requests.go:normalizeRequestsSchema` rebuilds the older inline table
-on a pinned connection to extend its state CHECK, copies every existing request,
-and preserves `request_payloads` and its cascading foreign key. Foreign key
-checks run before commit and enforcement is restored before releasing the
-connection. Current schemas skip the rebuild. Indexes cover expiry, pending
+`internal/db/requests.go:dropRSARequests` drops a `requests` table that lacks
+`consumed_at`, together with `request_payloads`: such a table is from before
+request links moved to age, and its RSA-era submissions cannot be opened by any
+current client. The age schema is then created in their place.
+`normalizeRequestsSchema` adds the indexes, which cover expiry, pending
 reservation deadlines, and unique non-null staging/final keys.
 
 Request reconciliation has independent API-owned progress, never shared with

@@ -151,25 +151,29 @@ could decrypt the payload on open — breaking the core invariant.
 
 ## One-time requests
 
-[Request links v1](request-links.md) defines independent submission/retrieval
-tokens and native RSA-OAEP wrapping of an AES-GCM content key. The public
-submission link cannot retrieve or decrypt content. The private retrieval link
-deliberately carries the requester key in its fragment, with explicit custody
-and history-exposure guidance. #205 implements the inline API with separate
-SHA-256 capability hashes, strict canonical RSA SPKI/envelope validation,
-non-consuming authenticated metadata, and atomic one-time ciphertext release.
-The API cannot validate RSA labels or GCM authentication; clients must enforce
-the request ID/kind bindings when encrypting and decrypting. HTTP spans contain
-only method, route template, and status; request bodies and Authorization are
-excluded. The browser flow uses the reviewed request crypto module, validates the
-private key against owner metadata before Open, and keeps decrypted content and
-retry receipts only in memory. Large file reservations bind one generation, attempt token, immutable
-envelope, size, and ciphertext SHA-256. Only verified bounded bytes are PUT to a
-pre-reserved server-only final key; a signed staging PUT cannot overwrite accepted
-content. The API rechecks reservation and original expiry at acceptance, and object
-read failures never consume. Generation exhaustion returns unavailable. Recurring
-request-prefix cleanup handles late writes even after capability metadata is gone.
-Existing Model A/Model B formats are unchanged.
+[Request links](request-links.md) define independent submission/retrieval
+tokens and standard age files encrypted to a per-request hybrid ML-KEM-768 +
+X25519 recipient. The public submission link cannot retrieve or decrypt
+content. The private retrieval link deliberately carries the requester's age
+identity in its fragment, with explicit custody and history-exposure guidance.
+The API keeps separate SHA-256 capability hashes, accepts only a canonical
+hybrid recipient and the version 2 envelope, checks the age header magic, and
+releases the ciphertext once through non-consuming authenticated metadata and
+an atomic consuming open. It cannot authenticate anything inside an age file;
+the requester's decryption does. The request ID and kind are not bound into the
+ciphertext: each request has its own identity, so a body cannot move to another
+request, but the server could relabel its kind, which changes only how the
+browser presents the bytes. HTTP spans contain only method, route template, and
+status; request bodies and Authorization are excluded. The browser checks that
+its identity's recipient matches owner metadata before Open, and keeps decrypted
+content and retry receipts only in memory. Large file reservations bind one
+generation, attempt token, immutable envelope, size, and ciphertext SHA-256.
+Finalize streams the upload into a pre-reserved server-only final key and
+accepts it only if the bytes it wrote match that length and checksum; a signed
+staging PUT cannot overwrite accepted content. The API rechecks reservation and
+original expiry at acceptance, and object read failures never consume.
+Generation exhaustion returns unavailable. Recurring request-prefix cleanup
+handles late writes even after capability metadata is gone.
 
 ## Structured Credentials
 
