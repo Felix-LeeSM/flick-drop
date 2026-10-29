@@ -163,6 +163,33 @@ describe('request payloads', () => {
 			)
 		).rejects.toThrow();
 	});
+	it('stops reading the body once the plaintext passes the limit', async () => {
+		const sealed = await encryptRequestPayload(
+			keys.public_key,
+			{ kind: 'file', file: new File([new Uint8Array(1_000_000)], 'big.bin') },
+			{ ...limits, maxFileBytes: 2_000_000 }
+		);
+		// Network-sized reads, so the test sees how far the decrypter pulls.
+		let pulled = 0;
+		const body = new ReadableStream<Uint8Array>(
+			{
+				async pull(controller) {
+					if (pulled >= sealed.body.size) {
+						controller.close();
+						return;
+					}
+					const chunk = sealed.body.slice(pulled, pulled + 16_384);
+					pulled += chunk.size;
+					controller.enqueue(new Uint8Array(await chunk.arrayBuffer()));
+				}
+			},
+			{ highWaterMark: 0 }
+		);
+		await expect(
+			decryptRequestPayload(keys.identity, { ...opened(sealed), body }, limits)
+		).rejects.toThrow();
+		expect(pulled).toBeLessThan(sealed.body.size / 2);
+	});
 	it('accepts only canonical base64 filename headers', () => {
 		const bytes = new Uint8Array([1, 2, 3]);
 		expect(encryptedFilenameFromHeader(bytesToBase64(bytes))).toEqual(bytes);
