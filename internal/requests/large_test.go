@@ -52,10 +52,13 @@ func (o *requestObjects) Open(_ context.Context, key string) (io.ReadCloser, int
 	}
 	return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
 }
-func (o *requestObjects) PutStream(_ context.Context, key string, r io.Reader, size int64) error {
+func (o *requestObjects) PutStream(_ context.Context, key string, r io.Reader, size int64, verify func() error) error {
 	b, err := io.ReadAll(io.LimitReader(r, size))
 	if err != nil || int64(len(b)) != size {
 		return errors.New("short object body")
+	}
+	if err := verify(); err != nil {
+		return err
 	}
 	o.write(key, b)
 	if o.putHook != nil {
@@ -602,5 +605,42 @@ func TestLargeConcurrentReservationVersusInlineOrLarge(t *testing.T) {
 				t.Fatal("competing attempts both accepted", wins, conflicts)
 			}
 		})
+	}
+}
+
+// A losing finalizer that reads a re-PUT upload must not write those bytes
+// over the accepted final object: verification runs before the write.
+func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	c := f.create(t)
+	in, data := largeInput()
+	upload, final, _ := reserve(t, f, o, c, in, data)
+	other := reopenLarge(t, f)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	o.getHook = func(key string) {
+		if key != upload {
+			return
+		}
+		block := false
+		once.Do(func() { block = true; close(entered) })
+		if block {
+			<-release
+		}
+	}
+	loser := make(chan error, 1)
+	go func() { _, err := other.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); loser <- err }()
+	<-entered
+	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
+		t.Fatal(err)
+	}
+	// The presigned PUT is still valid; the submitter replaces the upload.
+	o.write(upload, ageBody(len(data), 3))
+	close(release)
+	requireError(t, <-loser, ErrInvalid)
+	if !bytes.Equal(o.body(final), data) {
+		t.Fatal("losing finalizer overwrote the accepted final object")
 	}
 }

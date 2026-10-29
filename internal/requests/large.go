@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"time"
 
@@ -245,11 +246,12 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 }
 
 // copyVerified streams the uploaded object into the server-only final key
-// while hashing it, so a large body is never held in memory. The final object
-// is accepted only if the bytes are an age file of the reserved length and
-// checksum. Never delete on error: a write may have succeeded, or another
-// same-attempt finalizer may accept; reconciliation removes an unused final
-// object.
+// while hashing it, so a large body is never held in memory. The bytes are
+// checked before PutStream writes them: the final key only ever holds an age
+// file of the reserved length and checksum, even when a losing finalizer read
+// a re-PUT upload. Never delete on error: a write may have succeeded, or
+// another same-attempt finalizer may accept; reconciliation removes an unused
+// final object.
 func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 	body, length, err := s.opts.Objects.Open(ctx, a.uploadKey.String)
 	if err != nil {
@@ -262,11 +264,17 @@ func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 	hash := sha256.New()
 	head := &prefixRecorder{limit: len(AgeMagic)}
 	src := io.TeeReader(io.LimitReader(body, length), io.MultiWriter(hash, head))
-	if err := s.opts.Objects.PutStream(ctx, a.finalKey.String, src, length); err != nil {
-		return ErrStorage
+	verify := func() error {
+		if !isAgeFile(head.b) || !bytes.Equal(hash.Sum(nil), a.checksum) {
+			return ErrInvalid
+		}
+		return nil
 	}
-	if !isAgeFile(head.b) || !bytes.Equal(hash.Sum(nil), a.checksum) {
-		return ErrInvalid
+	if err := s.opts.Objects.PutStream(ctx, a.finalKey.String, src, length, verify); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			return ErrInvalid
+		}
+		return ErrStorage
 	}
 	return nil
 }

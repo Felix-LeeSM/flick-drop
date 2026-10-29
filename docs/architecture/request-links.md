@@ -324,9 +324,12 @@ An old issued PUT must never overwrite the immutable accepted payload: finalize
 streams the uploaded bytes into a distinct server-only final key while hashing
 them, and accepts that final key only if the bytes have the reserved length and
 checksum, start with the age header line, and the attempt remains the active
-reservation. Finalize holds no body in memory; the object client spools the copy
-to a temporary file so the PUT carries a plain `Content-Length`
-(`internal/storage/object.go`). No PUT instruction targets a final key. There is
+reservation. The check runs on the spooled copy before anything is written, so
+a losing finalizer that read a re-PUT upload cannot overwrite the accepted final
+object. Finalize holds no body in memory; the object client spools the copy to a
+temporary file so the PUT carries a plain `Content-Length`
+(`internal/storage/object.go`). Each running finalize therefore uses up to one
+object's size of the API container's temporary disk (`/tmp`, no separate limit). No PUT instruction targets a final key. There is
 exactly one stable final key per immutable attempt, reused by same-attempt
 finalize retries. Reserve the final key in the active attempt record before the
 server write, so reconciliation protects both that final key and the upload key

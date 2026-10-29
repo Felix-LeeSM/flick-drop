@@ -60,8 +60,9 @@ type ObjectStore interface {
 // RequestObjectStore adds server-only final writes for request links.
 type RequestObjectStore interface {
 	ObjectStore
-	// PutStream writes exactly size bytes read from body to key.
-	PutStream(ctx context.Context, key string, body io.Reader, size int64) error
+	// PutStream writes exactly size bytes read from body to key, only if
+	// verify accepts them once they are all read.
+	PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error
 }
 
 type Client struct {

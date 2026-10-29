@@ -184,7 +184,7 @@ func (s Server) openRequest(w http.ResponseWriter, r *http.Request) {
 	opened.Body.Close()
 	if opened.ObjectKey != "" {
 		if err := s.requests.FinishOpen(context.WithoutCancel(r.Context()), id, opened.ObjectKey); err != nil {
-			slog.Warn("opened request object cleanup was not queued; the purge will retry")
+			slog.Warn("opened request object cleanup was not queued; reconciliation releases it after the open grace")
 		}
 	}
 }

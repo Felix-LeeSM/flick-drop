@@ -15,7 +15,7 @@ import (
 )
 
 func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
-	for _, kind := range []string{"exact", "short", "transport"} {
+	for _, kind := range []string{"exact", "short", "refused", "transport"} {
 		t.Run(kind, func(t *testing.T) {
 			body := []byte("age-encryption.org/v1\nciphertext")
 			puts := 0
@@ -36,14 +36,29 @@ func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
 			if kind == "short" {
 				size++
 			}
-			err := client.PutStream(context.Background(), "managed/requests/final", bytes.NewReader(body), size)
+			refusal := errors.New("checksum mismatch")
+			verified := false
+			verify := func() error {
+				verified = true
+				if kind == "refused" {
+					return refusal
+				}
+				return nil
+			}
+			err := client.PutStream(context.Background(), "managed/requests/final", bytes.NewReader(body), size, verify)
 			switch kind {
 			case "exact":
-				if err != nil || puts != 1 {
-					t.Fatal(err, puts)
+				if err != nil || puts != 1 || !verified {
+					t.Fatal(err, puts, verified)
+				}
+			case "refused":
+				// A refused body is never written, and the refusal is not
+				// masked as a storage failure.
+				if err != refusal || puts != 0 {
+					t.Fatal("refused body was written", err, puts)
 				}
 			case "short":
-				if err == nil || puts != 0 {
+				if err == nil || puts != 0 || verified {
 					t.Fatal("short body was written", err, puts)
 				}
 			case "transport":

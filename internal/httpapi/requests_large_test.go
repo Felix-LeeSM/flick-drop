@@ -35,10 +35,13 @@ func (o *requestHTTPObjects) Open(_ context.Context, key string) (io.ReadCloser,
 	}
 	return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 }
-func (o *requestHTTPObjects) PutStream(_ context.Context, key string, r io.Reader, size int64) error {
+func (o *requestHTTPObjects) PutStream(_ context.Context, key string, r io.Reader, size int64, verify func() error) error {
 	body, err := io.ReadAll(io.LimitReader(r, size))
 	if err != nil || int64(len(body)) != size {
 		return errors.New("short body")
+	}
+	if err := verify(); err != nil {
+		return err
 	}
 	o.bodies[key] = body
 	return nil

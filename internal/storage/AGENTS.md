@@ -30,5 +30,6 @@ Rules:
 
 - `object.go:Client.PutStream` writes request finalize's verified stream to a
   server-only final key, spooling through a temporary file so the SDK signs a
-  seekable body. Request finalize must not COPY a mutable staging object: the
-  bytes it hashes are the bytes it writes.
+  seekable body. Its `verify` callback runs after the spool and before the PUT,
+  so finalize refuses bad bytes without writing them. Request finalize must not
+  COPY a mutable staging object: the bytes it hashes are the bytes it writes.

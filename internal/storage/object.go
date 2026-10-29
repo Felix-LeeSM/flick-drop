@@ -16,9 +16,11 @@ import (
 // The body is spooled to a temporary file first: the SDK signs and checksums a
 // seekable body the same way as before, while an unseekable stream would need
 // aws-chunked trailing checksums that S3-compatible stores do not all accept.
-// Memory stays bounded; the spool holds only ciphertext and is removed. A failed
-// response may follow a successful write; callers must not delete it.
-func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64) error {
+// Memory stays bounded; the spool holds only ciphertext and is removed. verify
+// runs once the whole body is spooled and before anything is written, so a
+// caller that hashes the stream can refuse it; its error is returned as is. A
+// failed response may follow a successful write; callers must not delete it.
+func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error {
 	if key == "" || size < 1 {
 		return errors.New("invalid object write")
 	}
@@ -31,6 +33,9 @@ func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size
 	written, err := io.Copy(spool, io.LimitReader(body, size))
 	if err != nil || written != size {
 		return errors.New("object body read failed")
+	}
+	if err := verify(); err != nil {
+		return err
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
 		return errors.New("object spool failed")
