@@ -48,8 +48,8 @@ Request finalize copies the object (download, hash, upload) inside one HTTP
 call, so behind a proxy that cuts silent requests (Cloudflare: 100 seconds) the
 API-to-bucket bandwidth bounds the usable request file size. Each running
 finalize spools one object to the API container's `/tmp`, an `emptyDir` capped
-at 600 MiB. At most two spools exist at once (`maxSpools` in
-`internal/storage`); a third finalize waits for a slot, so under load its wait
+at 600 MiB. At most two spools exist at once (`maxCopies` in
+`internal/requests`); a third finalize waits for a slot, so under load its wait
 counts against the same proxy timeout.
 
 Filesystem storage is not a persistent backend. It is allowed only for temporary

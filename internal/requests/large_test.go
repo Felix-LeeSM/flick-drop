@@ -644,3 +644,34 @@ func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
 		t.Fatal("losing finalizer overwrote the accepted final object")
 	}
 }
+
+// Finalize copies beyond maxCopies wait for a slot before they open the bucket
+// read, and give up with their context; a freed slot lets the copy run.
+func TestLargeFinalizeWaitsForACopySlotBeforeOpening(t *testing.T) {
+	f, o := largeFixture(t)
+	c := f.create(t)
+	in, data := largeInput()
+	reserve(t, f, o, c, in, data)
+	opens := 0
+	o.getHook = func(string) { opens++ }
+	for range maxCopies {
+		f.store.copies <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for len(f.store.copies) > 0 {
+			<-f.store.copies
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in))
+	requireError(t, err, ErrStorage)
+	if opens != 0 {
+		t.Fatal("waiting finalize opened the bucket read")
+	}
+	<-f.store.copies
+	receipt, err := f.store.Finalize(context.Background(), c.ID, c.SubmissionToken, attemptInput(in))
+	if err != nil || receipt.State != "submitted" || opens != 1 || len(f.store.copies) != maxCopies-1 {
+		t.Fatal("freed slot was not used and released", receipt, err, opens, len(f.store.copies))
+	}
+}

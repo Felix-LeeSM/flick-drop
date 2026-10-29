@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -71,36 +70,14 @@ func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
 	}
 }
 
-func TestPutStreamRefusesNilVerifyAndBoundsSpools(t *testing.T) {
+func TestPutStreamRefusesNilVerify(t *testing.T) {
 	body := []byte("age-encryption.org/v1\nciphertext")
 	puts := 0
 	client := &Client{cfg: Config{Bucket: "test-bucket"}, s3: s3.New(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String("https://object.example"), UsePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("test", "test", ""), RetryMaxAttempts: 1, HTTPClient: listTransport(func(r *http.Request) (*http.Response, error) {
 		puts++
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
 	})})}
-	put := func(ctx context.Context, verify func() error) error {
-		return client.PutStream(ctx, "managed/requests/final", bytes.NewReader(body), int64(len(body)), verify)
-	}
-	accept := func() error { return nil }
-	if err := put(context.Background(), nil); err == nil || puts != 0 {
+	if err := client.PutStream(context.Background(), "managed/requests/final", bytes.NewReader(body), int64(len(body)), nil); err == nil || puts != 0 {
 		t.Fatal("nil verify was accepted", err, puts)
-	}
-
-	// Two finalizes hold every spool slot: a third waits, then gives up with
-	// its context before creating a spool or writing anything.
-	for range maxSpools {
-		spools <- struct{}{}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := put(ctx, accept); err == nil || puts != 0 {
-		t.Fatal("write went past the spool bound", err, puts)
-	}
-	<-spools
-	if err := put(context.Background(), accept); err != nil || puts != 1 {
-		t.Fatal("freed slot was not reused", err, puts)
-	}
-	for range maxSpools - 1 {
-		<-spools
 	}
 }

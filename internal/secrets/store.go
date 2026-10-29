@@ -871,7 +871,7 @@ func (s *Store) validateCreate(input CreateInput) error {
 func (s *Store) validateCreateLarge(input CreateLargeInput) error {
 	// Text lives in api.db (docs/architecture/storage-model.md); only files
 	// are large enough to need the bucket.
-	if input.Kind != KindFile {
+	if input.Kind == KindText {
 		return ErrInvalidInput
 	}
 	// The presigned signature pins this length, so a declared size past the cap
