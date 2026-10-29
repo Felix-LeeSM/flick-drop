@@ -7,6 +7,8 @@ Expected files:
 - `openapi.yaml`: browser/web to API HTTP contract.
 - `sender-management-v1.md`: M8 sender management API, capability, and
   lifecycle contract; `openapi.yaml` changes only with runtime implementation.
+- `age-format-v1.md`: M13 age client encryption format (identity, Model A
+  wrapping, objects, size arithmetic, interop vectors).
 - `credential-payload.schema.json`: browser-only structured credential JSON
   after the `FLCR1:` prefix and before text-secret encryption.
 - `events/*.schema.json`: NATS job/event payload contracts.

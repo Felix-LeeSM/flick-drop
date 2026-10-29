@@ -200,3 +200,20 @@ identity, and fix the size, hierarchy, and consistency problems found in the
   themes, and the deployed frontend.
 - Exclude page flows, security-warning wording, API, worker, crypto, or
   contract changes, and a new palette or typeface.
+
+### M13: age Streaming Encryption
+
+Goal: encrypt and decrypt files up to 256 MiB in 64 KiB chunks with the
+standard age format, so neither client holds a whole file in memory.
+
+- [#253](https://github.com/Felix-LeeSM/flick-drop/issues/253): the
+  [age format contract](../contracts/age-format-v1.md) with Go and browser
+  interop vectors.
+- Then, one issue each: API and database switch with removal of the AES-GCM
+  format; raw ciphertext streamed through the API on open, keeping atomic
+  one-time consumption and no presigned GET URL; browser send and open; CLI;
+  request links on age recipients; the 256 MiB limit everywhere.
+- Verify Go/browser interop vectors, browser create/open at phone and desktop
+  widths, and an S3 round trip of a 256 MiB file.
+- Exclude custom cryptography, keeping the AES-GCM format for existing links,
+  presigned GET URLs, and browser-to-browser transfer.
