@@ -3,7 +3,9 @@
 ARG NODE_IMAGE=node:24.15.0-alpine
 ARG WEB_RUNTIME_IMAGE=nginx:1.29-alpine
 
-FROM ${NODE_IMAGE} AS build
+# The build output is static and architecture-independent, so it always runs
+# natively on the build platform; only the nginx runtime stage is per-platform.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 ENV CI=true

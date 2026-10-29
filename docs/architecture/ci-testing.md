@@ -291,6 +291,8 @@ and run only when the required secrets are present.
 and `flick-web` images to Docker Hub. It is not a PR check and must not deploy
 to OCI directly.
 
+Each image is published as a `linux/amd64` + `linux/arm64` manifest list.
+
 The workflow requires:
 
 ```text

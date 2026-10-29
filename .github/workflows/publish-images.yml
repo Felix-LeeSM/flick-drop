@@ -16,6 +16,7 @@ permissions:
 
 env:
   REGISTRY: docker.io
+  IMAGE_PLATFORMS: linux/amd64,linux/arm64
   PUBLIC_FLICK_API_BASE_URL: /
   PUBLIC_FLICK_MIN_TTL_SECONDS: "300"
   PUBLIC_FLICK_MAX_TTL_SECONDS: "604800"
@@ -144,6 +145,12 @@ jobs:
           write_tags worker_tags flick-worker
           write_tags web_tags flick-web
 
+      # Runtime stages run a few RUN steps for arm64 under emulation; Go and web
+      # builds cross-compile on the runner (see the Dockerfiles).
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -156,6 +163,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.api
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
           tags: ${{ steps.image.outputs.api_tags }}
           labels: |
@@ -168,6 +176,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.worker
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
           tags: ${{ steps.image.outputs.worker_tags }}
           labels: |
@@ -180,6 +189,7 @@ jobs:
         with:
           context: web
           file: web/Dockerfile
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
           build-args: |
             PUBLIC_FLICK_API_BASE_URL=${{ env.PUBLIC_FLICK_API_BASE_URL }}
@@ -200,6 +210,7 @@ jobs:
           Namespace: \`${{ steps.image.outputs.namespace }}\`
           Primary tag: \`${{ steps.image.outputs.image_tag }}\`
           Immutable tag: \`${{ steps.image.outputs.sha_tag }}\`
+          Platforms: \`${{ env.IMAGE_PLATFORMS }}\`
 
           \`\`\`text
           ${{ steps.image.outputs.api_tags }}
