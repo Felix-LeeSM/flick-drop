@@ -17,6 +17,9 @@ importers:
       '@fontsource/instrument-serif':
         specifier: ^5.2.8
         version: 5.2.8
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
       age-encryption:
         specifier: 0.3.1
         version: 0.3.1

@@ -5,15 +5,14 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { openResponse, requestVectors } from './request-vectors.mjs';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
-const vectors = JSON.parse(
-	await readFile(new URL('../../../../tests/fixtures/request-crypto-v1.json', import.meta.url))
-);
+const vectors = await requestVectors();
 const submitToken = 'A'.repeat(43);
 const receiveToken = `${'B'.repeat(42)}A`;
 const submitPath = `/r/${vectors.request_id}#submit=${submitToken}&fp=${vectors.fingerprint}`;
-const ownerPath = `/r/${vectors.request_id}/receive#receive=${receiveToken}&key=${vectors.private_key}`;
+const ownerPath = `/r/${vectors.request_id}/receive#receive=${receiveToken}&key=${vectors.identity}`;
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -89,9 +88,7 @@ function fixture(options = {}) {
 					}),
 				requests: () => {
 					publicKey = request.postDataJSON().public_key;
-					fingerprint = createHash('sha256')
-						.update(Buffer.from(publicKey, 'base64'))
-						.digest('base64url');
+					fingerprint = createHash('sha256').update(publicKey).digest('base64url');
 					return route.fulfill({
 						json: {
 							id: vectors.request_id,
@@ -117,7 +114,7 @@ function fixture(options = {}) {
 				open: () => {
 					assert.equal(request.postData(), null);
 					state = 'consumed';
-					return options.lostOpen ? route.abort('failed') : route.fulfill({ json: payload });
+					return options.lostOpen ? route.abort('failed') : route.fulfill(openResponse(payload));
 				},
 				revoke: () => {
 					assert.equal(request.postData(), null);
@@ -309,8 +306,8 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		await owner.getByText('synthetic-request-password', { exact: true }).waitFor();
 		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
 		for (const value of ['synthetic-request-user', 'synthetic-request-password']) {
-			await privacy(owner, mock.calls, vectors.private_key, value);
-			await privacy(sender, mock.calls, vectors.private_key, value);
+			await privacy(owner, mock.calls, vectors.identity, value);
+			await privacy(sender, mock.calls, vectors.identity, value);
 			assert.equal(owner.url().includes(value) || sender.url().includes(value), false);
 		}
 	} finally {

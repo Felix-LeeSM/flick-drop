@@ -1,5 +1,10 @@
-import { base64ToBytes, bytesToBase64 } from '$lib/crypto/encoding';
-import type { RequestPayload } from '$lib/crypto/requests';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToBase64 } from '$lib/crypto/encoding';
+import {
+	encryptedFilenameFromHeader,
+	type OpenedRequestBody,
+	type SealedRequest
+} from '$lib/crypto/requests';
 import type { ClientLimits } from './config';
 import { isManagementToken } from './management';
 import {
@@ -31,7 +36,8 @@ export type Submission = Readonly<{
 	generation: number;
 	attemptToken: string;
 	body: string;
-	ciphertext?: string;
+	// The exact age file a large attempt PUTs; absent for inline attempts.
+	upload?: Blob;
 }>;
 export type AttemptReceipt = {
 	generation: number;
@@ -48,8 +54,12 @@ export function requestLimits(config: ClientLimits) {
 }
 
 // Snapshot the exact encrypted body once. An unknown outcome may retry only these bytes.
-export function prepareSubmission(payload: RequestPayload, generation: number): Submission {
+export async function prepareSubmission(
+	payload: SealedRequest,
+	generation: number
+): Promise<Submission> {
 	const attemptToken = newAttemptToken();
+	const ciphertext = bytesToBase64(new Uint8Array(await payload.body.arrayBuffer()));
 	return Object.freeze({
 		generation,
 		attemptToken,
@@ -59,7 +69,7 @@ export function prepareSubmission(payload: RequestPayload, generation: number): 
 			kind: payload.kind,
 			size_bytes: payload.size_bytes,
 			envelope: payload.envelope,
-			ciphertext: payload.ciphertext
+			ciphertext
 		})
 	});
 }
@@ -70,20 +80,29 @@ function newAttemptToken(): string {
 		.replace(/\//g, '_')
 		.replace(/=+$/, '');
 }
+// Hashes the Blob as it is read; Web Crypto's digest would need it whole in memory.
+async function blobSha256(blob: Blob): Promise<Uint8Array> {
+	const hash = sha256.create();
+	const reader = blob.stream().getReader();
+	for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+		hash.update(chunk.value);
+	}
+	return hash.digest();
+}
+
 export async function prepareLargeSubmission(
-	payload: RequestPayload,
+	payload: SealedRequest,
 	generation: number
 ): Promise<Submission> {
 	if (payload.kind !== 'file') {
 		throw new Error('Large uploads require a file.');
 	}
 	const attemptToken = newAttemptToken();
-	const bytes = new Uint8Array(base64ToBytes(payload.ciphertext));
-	const checksum = bytesToBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+	const checksum = bytesToBase64(await blobSha256(payload.body));
 	return Object.freeze({
 		generation,
 		attemptToken,
-		ciphertext: payload.ciphertext,
+		upload: payload.body,
 		body: JSON.stringify({
 			generation,
 			attempt_token: attemptToken,
@@ -193,13 +212,13 @@ function generation(value: unknown): number {
 export function createRequestApiClient(options: { baseUrl?: string; fetcher?: typeof fetch } = {}) {
 	const base = (options.baseUrl ?? DEFAULT_API_BASE_URL).replace(/\/+$/, '');
 	const fetcher = options.fetcher ?? fetch;
-	async function request(
+	async function send(
 		path: string,
 		method: 'GET' | 'POST',
 		token?: string,
 		body?: string,
 		signal?: AbortSignal
-	): Promise<unknown> {
+	): Promise<Response> {
 		if (token !== undefined && !isManagementToken(token)) {
 			throw new RequestApiError('Request link unavailable.', 'request_unavailable', 404);
 		}
@@ -238,6 +257,16 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 				response.status
 			);
 		}
+		return response;
+	}
+	async function request(
+		path: string,
+		method: 'GET' | 'POST',
+		token?: string,
+		body?: string,
+		signal?: AbortSignal
+	): Promise<unknown> {
+		const response = await send(path, method, token, body, signal);
 		try {
 			return await response.json();
 		} catch {
@@ -341,7 +370,7 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			expiresAt: string,
 			signal?: AbortSignal
 		): Promise<Reservation> {
-			if (attempt.ciphertext === undefined) {
+			if (attempt.upload === undefined) {
 				throw new Error('A large-file attempt is required.');
 			}
 			return reservation(
@@ -352,17 +381,10 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 		},
 		put: (
 			upload: PresignedUpload,
-			ciphertext: string,
+			body: Blob,
 			signal?: AbortSignal,
 			onProgress?: (progress: FileUploadProgress) => void
-		) =>
-			uploadToObjectStore(
-				fetcher,
-				upload,
-				new Blob([base64ToBytes(ciphertext)]),
-				signal,
-				onProgress
-			),
+		) => uploadToObjectStore(fetcher, upload, body, signal, onProgress),
 		async finalize(
 			id: string,
 			token: string,
@@ -391,9 +413,25 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			}
 			return next;
 		},
-		// The crypto module validates the entire payload before decryption. These operations have NO body.
-		open: (id: string, token: string, signal?: AbortSignal) =>
-			request(path(id, '/open'), 'POST', token, undefined, signal),
+		// The body is the raw age file; age authenticates it while decrypting.
+		// These operations have NO request body.
+		async open(id: string, token: string, signal?: AbortSignal): Promise<OpenedRequestBody> {
+			const response = await send(path(id, '/open'), 'POST', token, undefined, signal);
+			const kind = response.headers.get('Flick-Kind');
+			const filename = response.headers.get('Flick-Encrypted-Filename');
+			if ((kind !== 'text' && kind !== 'file') || !response.body) {
+				invalidResponse();
+			}
+			let encryptedFilename: Uint8Array | undefined;
+			if (filename !== null) {
+				try {
+					encryptedFilename = encryptedFilenameFromHeader(filename);
+				} catch {
+					invalidResponse();
+				}
+			}
+			return { kind, encryptedFilename, body: response.body };
+		},
 		async revoke(id: string, token: string, signal?: AbortSignal): Promise<void> {
 			if (
 				record(await request(path(id, '/revoke'), 'POST', token, undefined, signal)).state !==

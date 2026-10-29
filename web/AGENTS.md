@@ -8,8 +8,8 @@ Directory structure principles:
 - Expected structure after scaffold:
   - `src/routes/`: pages and route-level load/actions.
   - `src/lib/api/`: typed API client and response mapping.
-  - `src/lib/crypto/`: age (`age-encryption`) secret sealing, the PBKDF2 access
-    proof, and request-link Web Crypto helpers.
+  - `src/lib/crypto/`: age (`age-encryption`) sealing for secrets and request
+    links, and the PBKDF2 access proof.
   - `src/lib/credentials/`: browser-only credential envelope build/parse/serialize (templates, schema).
   - `src/lib/components/`: reusable UI components.
   - `src/lib/state/`: browser-only state that does not persist passphrases or
@@ -71,14 +71,16 @@ Do not expose internal tokens, OCI settings, NATS URLs, or server-only config.
 
 Request-link boundary:
 
-- `docs/architecture/request-links.md` defines M9's RSA-OAEP/AES-GCM
-  envelope and separate submission/retrieval authority; request crypto belongs
-  in `src/lib/crypto/requests.ts`, independently of the age secret format.
-- `docs/architecture/request-links.md` permits the requester-only PKCS#8 key in
-  `/r/{id}/receive#receive=...&key=...` for explicit private-link custody. The
-  request key must never enter HTTP, path/query, browser storage, telemetry,
-  or `history.state`. A submission link must never contain the requester key.
-- `src/lib/components/ReceiveRequestPage.svelte` validates the private key against
+- `docs/architecture/request-links.md` defines request links on age with
+  separate submission/retrieval authority; request crypto lives in
+  `src/lib/crypto/requests.ts` and uses `src/lib/crypto/age.ts`, the same
+  library as secrets.
+- `docs/architecture/request-links.md` permits the requester-only
+  `AGE-SECRET-KEY-PQ-1…` identity in `/r/{id}/receive#receive=...&key=...` for
+  explicit private-link custody. The identity must never enter HTTP,
+  path/query, browser storage, telemetry, or `history.state`. A submission link
+  must never contain it.
+- `src/lib/components/ReceiveRequestPage.svelte` validates the identity against
   owner metadata and requires verified configuration before consuming Open.
   `src/lib/api/config.ts:getVerifiedConfig` rejects failed or malformed responses
   instead of substituting advisory creation limits.

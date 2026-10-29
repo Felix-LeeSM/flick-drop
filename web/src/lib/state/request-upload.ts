@@ -49,7 +49,7 @@ export async function finishRequestUpload(
 			0
 		);
 	}
-	await api.put(reservation.upload, attempt.ciphertext as string, signal, onProgress);
+	await api.put(reservation.upload, attempt.upload as Blob, signal, onProgress);
 	signal.throwIfAborted();
 	// A PUT finishing does not establish acceptance, even at 100 percent.
 	onProgress({ stage: 'finalizing' });

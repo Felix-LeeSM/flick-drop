@@ -1,7 +1,7 @@
 # One-time request links
 
 Status: request links use the age format (M13). #288 moved the API, schema and
-contract; #289 moves the browser. The first version (#203–#207) used RSA-OAEP
+contract; #289 moved the browser. The first version (#203–#207) used RSA-OAEP
 and AES-GCM; that format is gone, and the API migration drops its rows (see
 "Ownership and implementation boundaries"). Send links follow
 `contracts/age-format-v1.md`; sender management follows the separate #199
@@ -116,9 +116,12 @@ stream with `decryptWith`, which authenticates every chunk and fails on a
 truncated file instead of showing a partial one.
 
 Callers bound plaintext with the advertised `/api/config` limits, which are
-already plaintext sizes. The browser converts a plaintext length to the age
-file length with the size formula in `contracts/age-format-v1.md` to choose
-between the inline and the large path.
+already plaintext sizes: `payloadInlineMaxBytes` is the largest plaintext whose
+age file fits the inline cap. A file at or below it takes the inline path, a
+larger one the large path (`SubmitRequestPage.svelte`). The requester also
+refuses decrypted content above those limits. The retrieval fragment's
+identity is checked like a Model B `#key=` fragment
+(`web/src/lib/crypto/fragment.ts`).
 
 ## Browser flow (#206, #207 and #289)
 

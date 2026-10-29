@@ -1,16 +1,42 @@
 // biome-ignore-all lint/style/useNamingConvention: synthetic fixtures follow request wire names.
 import { createHash } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
 	createRequestApiClient,
 	prepareLargeSubmission,
 	type ReservedUpload
 } from '$lib/api/requests';
-import type { RequestPayload } from '$lib/crypto/requests';
-import vectors from '../../../../tests/fixtures/request-crypto-v1.json';
+import {
+	encryptRequestPayload,
+	generateRequestKeys,
+	type SealedRequest
+} from '$lib/crypto/requests';
 import { cancelRequestUpload, finishRequestUpload, inspectRequestAttempt } from './request-upload';
 
 const token = 'A'.repeat(43);
+let sealed: SealedRequest;
+let instructions: {
+	public_key: string;
+	fingerprint: string;
+	expires_at: string;
+	generation: number;
+	can_submit: boolean;
+};
+beforeAll(async () => {
+	const keys = await generateRequestKeys();
+	sealed = await encryptRequestPayload(
+		keys.public_key,
+		{ kind: 'file', file: new File(['synthetic file'], 'synthetic.txt') },
+		{ maxTextBytes: 1024, maxFileBytes: 1024 }
+	);
+	instructions = {
+		public_key: keys.public_key,
+		fingerprint: keys.fingerprint,
+		expires_at: deadline,
+		generation: 2,
+		can_submit: true
+	};
+});
 const deadline = '2099-01-01T01:00:00Z';
 const reserved: ReservedUpload = {
 	generation: 1,
@@ -20,15 +46,8 @@ const reserved: ReservedUpload = {
 		url: 'https://storage.example.test/synthetic',
 		method: 'PUT',
 		expires_at: '2099-01-01T00:15:00Z',
-		headers: { 'Content-Length': String(vectors.file.payload.size_bytes + 16) }
+		headers: {}
 	}
-};
-const instructions = {
-	public_key: vectors.public_key,
-	fingerprint: vectors.fingerprint,
-	expires_at: deadline,
-	generation: 2,
-	can_submit: true
 };
 class UploadRequest {
 	status = 200;
@@ -55,28 +74,35 @@ function transport() {
 	);
 	return xhr;
 }
-const attempt = () =>
-	prepareLargeSubmission(structuredClone(vectors.file.payload) as RequestPayload, 1);
+const attempt = () => prepareLargeSubmission(sealed, 1);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('request upload immutable attempt and finalization', () => {
 	it('snapshots encrypted metadata and SHA-256, keeping payload bytes out of reservation HTTP', async () => {
-		const payload = structuredClone(vectors.file.payload) as RequestPayload;
+		const payload = structuredClone(sealed);
+		const envelope = structuredClone(sealed.envelope);
 		const prepared = await prepareLargeSubmission(payload, 1);
-		payload.envelope.nonce = 'mutated';
-		payload.ciphertext = 'mutated';
+		payload.envelope.encrypted_filename = 'mutated';
 		const body = JSON.parse(prepared.body);
 		expect(body.ciphertext).toBeUndefined();
-		expect(body.size_bytes).toBe(vectors.file.payload.size_bytes);
+		expect(body.size_bytes).toBe(sealed.body.size);
 		expect(body.ciphertext_sha256).toBe(
 			createHash('sha256')
-				.update(Buffer.from(vectors.file.payload.ciphertext, 'base64'))
+				.update(new Uint8Array(await sealed.body.arrayBuffer()))
 				.digest('base64')
 		);
-		expect(body.envelope).toEqual(vectors.file.payload.envelope);
-		expect(prepared.ciphertext).toBe(vectors.file.payload.ciphertext);
+		expect(body.envelope).toEqual(envelope);
+		expect(prepared.upload).toBe(payload.body);
 		expect(Buffer.from(prepared.attemptToken, 'base64url')).toHaveLength(32);
 		expect(Object.isFrozen(prepared)).toBe(true);
+	});
+	it('hashes a body that streams in many chunks', async () => {
+		const bytes = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 7) % 256);
+		const body = new Blob([bytes]);
+		const prepared = await prepareLargeSubmission({ ...sealed, size_bytes: body.size, body }, 1);
+		expect(JSON.parse(prepared.body).ciphertext_sha256).toBe(
+			createHash('sha256').update(bytes).digest('base64')
+		);
 	});
 	it('100% PUT progress is not accepted until explicit finalize confirms, and object storage receives no capability', async () => {
 		const xhr = transport();
@@ -102,8 +128,9 @@ describe('request upload immutable attempt and finalization', () => {
 			accepted = true;
 		});
 		await vi.waitFor(() => expect(xhr.send).toHaveBeenCalledOnce());
+		expect(xhr.send.mock.calls[0][0]).toBe(prepared.upload);
 		expect(new Uint8Array(await (xhr.send.mock.calls[0][0] as Blob).arrayBuffer())).toEqual(
-			new Uint8Array(Buffer.from(prepared.ciphertext as string, 'base64'))
+			new Uint8Array(await (prepared.upload as Blob).arrayBuffer())
 		);
 		expect(xhr.setRequestHeader).not.toHaveBeenCalled();
 		xhr.upload.onprogress?.({ loaded: 44, total: 44, lengthComputable: true });

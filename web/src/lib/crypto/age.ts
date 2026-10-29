@@ -46,8 +46,29 @@ export async function encryptTo(
 	identity: string,
 	input: Uint8Array | string | ReadableStream<Uint8Array>
 ): Promise<Uint8Array | ReadableStreamWithSize> {
+	return encryptToRecipient(await recipientOf(identity), input as Uint8Array);
+}
+
+// The recipient (public half) of an identity, as a request link publishes it.
+export function recipientOf(identity: string): Promise<string> {
+	return identityToRecipient(parseSecretIdentity(identity));
+}
+
+// A request submitter holds only the requester's recipient, never the identity.
+export function encryptToRecipient(
+	recipient: string,
+	input: Uint8Array | string
+): Promise<Uint8Array>;
+export function encryptToRecipient(
+	recipient: string,
+	input: ReadableStream<Uint8Array>
+): Promise<ReadableStreamWithSize>;
+export function encryptToRecipient(
+	recipient: string,
+	input: Uint8Array | string | ReadableStream<Uint8Array>
+): Promise<Uint8Array | ReadableStreamWithSize> {
 	const encrypter = new Encrypter();
-	encrypter.addRecipient(await identityToRecipient(parseSecretIdentity(identity)));
+	encrypter.addRecipient(recipient);
 	// Overloads do not narrow through a union argument.
 	return encrypter.encrypt(input as Uint8Array);
 }

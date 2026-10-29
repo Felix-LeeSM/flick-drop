@@ -74,7 +74,7 @@ let now = $state(Date.now());
 let heading = $state<HTMLHeadingElement | null>(null);
 let token = '';
 let fingerprint = '';
-let publicKey: CryptoKey | null = null;
+let publicKey: string | null = null;
 let pending = $state<Submission | null>(null);
 let controller: AbortController | null = null;
 let alive = false;
@@ -228,7 +228,7 @@ async function sendPending(request: AbortController): Promise<void> {
 		return;
 	}
 	try {
-		if (pending.ciphertext === undefined) {
+		if (pending.upload === undefined) {
 			await api.submit(requestId, token, pending, request.signal);
 		} else {
 			await finishRequestUpload(
@@ -280,16 +280,12 @@ function validSize(): boolean {
 	}
 	return true;
 }
-async function encryptSelection(key: CryptoKey) {
+function encryptSelection(recipient: string) {
 	const content =
 		mode === 'file'
-			? {
-					kind: 'file' as const,
-					bytes: new Uint8Array(await (selected as File).arrayBuffer()),
-					filename: (selected as File).name
-				}
+			? { kind: 'file' as const, file: selected as File }
 			: { kind: 'text' as const, text: textContent() };
-	return encryptRequestPayload(requestId, key, content, limits);
+	return encryptRequestPayload(recipient, content, limits);
 }
 function encryptionFailed(): void {
 	if (!alive || hasExpired()) {
@@ -297,7 +293,7 @@ function encryptionFailed(): void {
 	}
 	phase = 'ready';
 	error =
-		'Could not encrypt the content. Check the file name and size, and use a browser with Web Crypto over HTTPS or localhost.';
+		'Could not encrypt the content. Check the file name and size, and use a current browser over HTTPS or localhost.';
 }
 async function submit(): Promise<void> {
 	if (busy || phase !== 'ready' || !publicKey || !instructions) {
@@ -322,10 +318,12 @@ async function submit(): Promise<void> {
 		if (!current(request.signal) || hasExpired()) {
 			return;
 		}
+		// Route on the plaintext size, as /api/config limits are; the API also
+		// accepts a large upload of any size, so neither path strands a file.
 		pending =
-			payload.kind === 'file' && payload.size_bytes > limits.maxTextBytes
+			payload.kind === 'file' && payload.plaintextBytes > limits.maxTextBytes
 				? await prepareLargeSubmission(payload, instructions.generation)
-				: prepareSubmission(payload, instructions.generation);
+				: await prepareSubmission(payload, instructions.generation);
 		if (!current(request.signal)) {
 			pending = null;
 			return;
@@ -430,7 +428,7 @@ async function retry(): Promise<void> {
 	}
 }
 async function cancelUpload(): Promise<void> {
-	if (!pending?.ciphertext || !instructions || (cancelRequested && busy)) {
+	if (!pending?.upload || !instructions || (cancelRequested && busy)) {
 		return;
 	}
 	controller?.abort();
@@ -553,7 +551,7 @@ onMount(() => {
 			<p class="text-sm text-muted-foreground">Keep this tab open and check the submission before retrying. A retry resends the same encrypted content; leaving or reloading discards it.</p>
 			{#if reservation}<p class="text-sm">Upload reservation: {Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60)}m {remainingSecondsFrom(reservation.reservation_expires_at, now) % 60}s remaining.</p>{/if}
 			<Button variant="outline" disabled={busy} onclick={() => { void checkAttempt(); }}>Check submission</Button>
-			{#if pending?.ciphertext}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? 'Retry cancellation' : 'Cancel upload'}</Button><p class="text-sm text-muted-foreground">Cancellation must be confirmed by the server before another attempt. Stopping the transfer does not delete uploaded bytes; server cleanup handles them.</p>{/if}
+			{#if pending?.upload}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? 'Retry cancellation' : 'Cancel upload'}</Button><p class="text-sm text-muted-foreground">Cancellation must be confirmed by the server before another attempt. Stopping the transfer does not delete uploaded bytes; server cleanup handles them.</p>{/if}
 			{#if retryReady}<p role="status">The server has not accepted this attempt. You can retry the same submission.</p><Button disabled={busy} onclick={() => { void retry(); }}>Retry same submission</Button>{/if}
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
