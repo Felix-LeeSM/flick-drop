@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -19,8 +20,23 @@ import (
 type mockObjectStore struct {
 	objects map[string][]byte
 	// presignedSize records the length the store asked to be signed, so tests can
-	// assert it matches the declared plaintext plus the AEAD tag.
+	// assert it is exactly the declared age file length.
 	presignedSize int64
+	// openErr fails Open; openSizeDelta skews the length Open reports.
+	openErr       error
+	openSizeDelta int64
+	opened        []*trackedBody
+}
+
+// trackedBody records whether the store closed a body it was handed.
+type trackedBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackedBody) Close() error {
+	b.closed = true
+	return nil
 }
 
 func newMockObjectStore() *mockObjectStore {
@@ -61,12 +77,17 @@ func (m *mockObjectStore) Head(_ context.Context, key string) (storage.ObjectInf
 	return storage.ObjectInfo{Key: key, Exists: true, Size: int64(len(b))}, nil
 }
 
-func (m *mockObjectStore) Get(_ context.Context, key string) ([]byte, error) {
+func (m *mockObjectStore) Open(_ context.Context, key string) (io.ReadCloser, int64, error) {
+	if m.openErr != nil {
+		return nil, 0, m.openErr
+	}
 	b, ok := m.objects[key]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, 0, errors.New("not found")
 	}
-	return b, nil
+	body := &trackedBody{Reader: bytes.NewReader(b)}
+	m.opened = append(m.opened, body)
+	return body, int64(len(b)) + m.openSizeDelta, nil
 }
 
 func (m *mockObjectStore) Delete(_ context.Context, key string) error {
@@ -98,18 +119,17 @@ func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mo
 	t.Helper()
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
 		Kind:            KindText,
-		Nonce:           "nonce",
-		KDF:             KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "salt", Iterations: 600000, KeyLengthBits: 256},
 		AccessProofHash: "proof-hash",
-		AccessKDF:       KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "access-salt", Iterations: 600000, KeyLengthBits: 256},
+		AccessKDF:       testAccessKDF,
+		WrappedIdentity: testWrappedIdentity,
 		SizeBytes:       1000,
 		TTLSeconds:      600,
 	})
 	if err != nil {
 		t.Fatalf("create large: %v", err)
 	}
-	// Finalize checks the exact staged length: plaintext plus the AEAD tag.
-	mock.objects["managed/secrets/"+res.ID] = make([]byte, 1000+AEADOverheadBytes)
+	// Finalize checks the exact staged length.
+	mock.objects["managed/secrets/"+res.ID] = ageBody(1000)
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
@@ -213,11 +233,9 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	filename := "report.enc"
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
 		Kind:              KindFile,
-		Nonce:             "nonce",
-		EncryptedFilename: &filename,
+		EncryptedFilename: ageField(200),
 		SizeBytes:         1000,
 		TTLSeconds:        600,
 	})
@@ -239,10 +257,9 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 		t.Fatalf("large secret should not write an inline payload")
 	}
 
-	// client uploads ciphertext straight to the bucket. Finalize verifies the
-	// exact staged length, so the object has to be plaintext + tag long.
-	ciphertext := []byte("ciphertext-bytes")
-	ciphertext = append(ciphertext, make([]byte, 1000+AEADOverheadBytes-len(ciphertext))...)
+	// client uploads the age file straight to the bucket. Finalize verifies the
+	// exact staged length.
+	ciphertext := ageBody(1000)
 	mock.objects["managed/secrets/"+res.ID] = ciphertext
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
@@ -256,8 +273,9 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get large secret: %v", err)
 	}
-	if !bytes.Equal(got.Ciphertext, ciphertext) {
-		t.Fatalf("ciphertext round trip mismatch (%d bytes)", len(got.Ciphertext))
+	// Get reads metadata only; the bucket body is streamed by OpenTx.
+	if got.Ciphertext != nil || got.Body != nil {
+		t.Fatalf("Get returned an S3 body (%d inline bytes)", len(got.Ciphertext))
 	}
 	if got.StorageBackend != StorageS3 {
 		t.Fatalf("backend = %q, want s3_object", got.StorageBackend)
@@ -270,9 +288,18 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if opened, err := store.OpenTx(ctx, tx, res.ID, "proof-hash"); err != nil || opened.ManagementToken != "" {
+	opened, err := store.OpenTx(ctx, tx, res.ID, "")
+	if err != nil || opened.ManagementToken != "" {
 		t.Fatalf("open leaked capability or failed: %v", err)
 	}
+	if opened.Ciphertext != nil || opened.Body == nil {
+		t.Fatalf("S3 open: inline %d bytes, body %v; want a streamed body only", len(opened.Ciphertext), opened.Body)
+	}
+	streamed, err := io.ReadAll(opened.Body)
+	if err != nil || !bytes.Equal(streamed, ciphertext) {
+		t.Fatalf("streamed body mismatch (%d bytes): %v", len(streamed), err)
+	}
+	opened.Body.Close()
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -292,12 +319,12 @@ func TestFinalizeIdempotent(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, Nonce: "n", SizeBytes: 10, TTLSeconds: 600,
+		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.objects["managed/secrets/"+res.ID] = make([]byte, 10+AEADOverheadBytes)
+	mock.objects["managed/secrets/"+res.ID] = ageBody(100)
 
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -315,7 +342,7 @@ func TestFinalizeMissingObject(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, Nonce: "n", SizeBytes: 10, TTLSeconds: 600,
+		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +363,7 @@ func TestFinalizeOversized(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, Nonce: "n", SizeBytes: 10, TTLSeconds: 600,
+		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -402,10 +429,9 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	}
 }
 
-// The presigned upload pins Content-Length, so the store must ask for exactly
-// the ciphertext length: the declared plaintext plus the AEAD tag. Signing the
-// plaintext length would make every real upload fail authentication.
-func TestCreateLargeSignsCiphertextLength(t *testing.T) {
+// The presigned upload pins Content-Length, and size_bytes is the exact age
+// file length, so the store must sign exactly the declared size.
+func TestCreateLargeSignsExactSize(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	mock := newMockObjectStore()
@@ -413,19 +439,18 @@ func TestCreateLargeSignsCiphertextLength(t *testing.T) {
 
 	if _, err := store.CreateLarge(ctx, CreateLargeInput{
 		Kind:       KindText,
-		Nonce:      "nonce",
 		SizeBytes:  1000,
 		TTLSeconds: 600,
 	}); err != nil {
 		t.Fatalf("create large: %v", err)
 	}
 
-	if want := int64(1000 + AEADOverheadBytes); mock.presignedSize != want {
+	if want := int64(1000); mock.presignedSize != want {
 		t.Fatalf("presigned size = %d, want %d", mock.presignedSize, want)
 	}
 }
 
-// A declared size whose ciphertext would exceed the object cap must be refused
+// A declared size past the object cap must be refused
 // before signing — otherwise the client gets a signature for an upload the
 // bucket is meant to never accept.
 func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
@@ -439,14 +464,16 @@ func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
 		size    int64
 		wantErr error
 	}{
-		{"exactly at the cap once the tag is added", 4096 - AEADOverheadBytes, nil},
-		{"one byte past the cap", 4096 - AEADOverheadBytes + 1, ErrPayloadTooLarge},
+		{"exactly at the cap", 4096, nil},
+		{"one byte past the cap", 4097, ErrPayloadTooLarge},
+		// The smallest age file is a payload nonce and one tag past the header.
+		{"smallest age file", MaxCiphertextBytes(0) - AgeHeaderAllowanceBytes, nil},
+		{"shorter than any age file", MaxCiphertextBytes(0) - AgeHeaderAllowanceBytes - 1, ErrInvalidInput},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := store.CreateLarge(ctx, CreateLargeInput{
 				Kind:       KindText,
-				Nonce:      "nonce",
 				SizeBytes:  c.size,
 				TTLSeconds: 600,
 			})
@@ -457,18 +484,16 @@ func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
 	}
 }
 
-// SizeBytes is attacker-controlled, so the cap check must not overflow: adding
-// the tag to MaxInt64 wraps negative and would slip past a naive comparison,
-// reaching the presigner and surfacing as a 500 instead of a 413.
+// SizeBytes is attacker-controlled; the largest value must be refused as too
+// large, not reach the presigner and surface as a 500.
 func TestCreateLargeRejectsOverflowingSize(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	store := newLargeTestStore(t, conn, newMockObjectStore())
 
-	for _, size := range []int64{math.MaxInt64, math.MaxInt64 - AEADOverheadBytes + 1} {
+	for _, size := range []int64{math.MaxInt64} {
 		_, err := store.CreateLarge(ctx, CreateLargeInput{
 			Kind:       KindText,
-			Nonce:      "nonce",
 			SizeBytes:  size,
 			TTLSeconds: 600,
 		})
@@ -487,18 +512,124 @@ func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 	store := newLargeTestStore(t, conn, mock)
 
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
-		Kind: KindText, Nonce: "n", SizeBytes: 100, TTLSeconds: 600,
+		Kind: KindText, SizeBytes: 100, TTLSeconds: 600,
 	})
 	if err != nil {
 		t.Fatalf("create large: %v", err)
 	}
 
 	// Within the object cap, but not the length this secret was staged for.
-	mock.objects["managed/secrets/"+res.ID] = make([]byte, 100+AEADOverheadBytes+1)
-	if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
-		t.Fatalf("finalize err = %v, want ErrObjectMissing", err)
+	for _, n := range []int{99, 101} {
+		mock.objects["managed/secrets/"+res.ID] = ageBody(n)
+		if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
+			t.Fatalf("finalize %d-byte object err = %v, want ErrObjectMissing", n, err)
+		}
 	}
 	if got := secretState(t, ctx, conn, res.ID); got != "pending_upload" {
 		t.Fatalf("state = %q, want pending_upload (not activated)", got)
+	}
+}
+
+// CreateLarge shares the age field rules with Create: Model A carries a
+// wrapped identity, Model B does not, and only files carry a filename.
+func TestCreateLargeValidatesAgeFields(t *testing.T) {
+	ctx := context.Background()
+	store := newLargeTestStore(t, openTestDB(t, ctx), newMockObjectStore())
+	cases := map[string]CreateLargeInput{
+		"model A without wrapped identity": {Kind: KindText, AccessKDF: testAccessKDF, AccessProofHash: "proof"},
+		"model B with wrapped identity":    {Kind: KindText, WrappedIdentity: testWrappedIdentity},
+		"text with encrypted filename":     {Kind: KindText, EncryptedFilename: ageField(200)},
+		"file without encrypted filename":  {Kind: KindFile},
+	}
+	for name, in := range cases {
+		in.SizeBytes, in.TTLSeconds = 100, 600
+		if _, err := store.CreateLarge(ctx, in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+		}
+	}
+}
+
+func consumedAt(t *testing.T, conn *sql.DB, id string) sql.NullString {
+	t.Helper()
+	var consumed sql.NullString
+	if err := conn.QueryRow(`select consumed_at from secrets where id = ?`, id).Scan(&consumed); err != nil {
+		t.Fatalf("read consumed_at: %v", err)
+	}
+	return consumed
+}
+
+func openS3(t *testing.T, ctx context.Context, conn *sql.DB, store *Store, id string) (Secret, error) {
+	t.Helper()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.OpenTx(ctx, tx, id, "proof-hash")
+	if err != nil {
+		_ = tx.Rollback()
+		return Secret{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return opened, nil
+}
+
+// A bucket that cannot start serving the body must leave the secret
+// reopenable: OpenTx opens the object before it marks the secret consumed.
+func TestStoreOpenTxS3OpenFailureLeavesSecretOpenable(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	mock := newMockObjectStore()
+	store := newLargeTestStore(t, conn, mock)
+	store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
+	id := createFinalizedS3Secret(t, ctx, store, mock)
+
+	mock.openErr = errors.New("bucket unavailable")
+	if _, err := openS3(t, ctx, conn, store, id); err == nil {
+		t.Fatal("open succeeded although the bucket failed")
+	}
+	if c := consumedAt(t, conn, id); c.Valid {
+		t.Fatalf("failed object open consumed the secret at %s", c.String)
+	}
+
+	mock.openErr = nil
+	opened, err := openS3(t, ctx, conn, store, id)
+	if err != nil {
+		t.Fatalf("reopen after bucket recovered: %v", err)
+	}
+	opened.Body.Close()
+}
+
+// The handler announces size_bytes as Content-Length before streaming, so an
+// object of any other length is refused, its body closed, and the secret kept.
+func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
+	for _, delta := range []int64{-1, 1} {
+		t.Run(strconv.FormatInt(delta, 10), func(t *testing.T) {
+			ctx := context.Background()
+			conn := openTestDB(t, ctx)
+			mock := newMockObjectStore()
+			store := newLargeTestStore(t, conn, mock)
+			store.SetNowForTest(func() time.Time { return time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC) })
+			id := createFinalizedS3Secret(t, ctx, store, mock)
+
+			mock.openSizeDelta = delta
+			if _, err := openS3(t, ctx, conn, store, id); err == nil {
+				t.Fatal("open accepted an object of the wrong length")
+			}
+			if len(mock.opened) != 1 || !mock.opened[0].closed {
+				t.Fatalf("refused body not closed (opened %d)", len(mock.opened))
+			}
+			if c := consumedAt(t, conn, id); c.Valid {
+				t.Fatalf("length mismatch consumed the secret at %s", c.String)
+			}
+
+			mock.openSizeDelta = 0
+			opened, err := openS3(t, ctx, conn, store, id)
+			if err != nil {
+				t.Fatalf("reopen with the right length: %v", err)
+			}
+			opened.Body.Close()
+		})
 	}
 }

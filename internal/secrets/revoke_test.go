@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,11 +24,11 @@ func TestRevokeRemovesAccessAndPreservesOutcome(t *testing.T) {
 				store.outbox = newTestOutbox(t, conn)
 				now := time.Date(2026, 10, 8, 1, 0, 0, 123456789, time.UTC)
 				store.SetNowForTest(func() time.Time { return now })
-				input := CreateInput{Kind: KindText, Nonce: "nonce", Ciphertext: []byte("ciphertext"), SizeBytes: 10, TTLSeconds: 600}
+				input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600}
 				if proof != "" {
 					input.AccessProofHash = proof
-					input.KDF = KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "salt", Iterations: 600000, KeyLengthBits: 256}
-					input.AccessKDF = input.KDF
+					input.AccessKDF = testAccessKDF
+					input.WrappedIdentity = testWrappedIdentity
 				}
 				var id, token string
 				if state == "inline" {
@@ -37,12 +38,12 @@ func TestRevokeRemovesAccessAndPreservesOutcome(t *testing.T) {
 					}
 					id, token = created.ID, created.ManagementToken
 				} else {
-					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: input.Kind, Nonce: input.Nonce, KDF: input.KDF, AccessKDF: input.AccessKDF, AccessProofHash: proof, SizeBytes: 2048, TTLSeconds: 600})
+					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: input.Kind, AccessKDF: input.AccessKDF, WrappedIdentity: input.WrappedIdentity, AccessProofHash: proof, SizeBytes: 2048, TTLSeconds: 600})
 					if err != nil {
 						t.Fatal(err)
 					}
 					id, token = created.ID, created.ManagementToken
-					objects.objects[managedObjectPrefix+id] = make([]byte, 2048+AEADOverheadBytes)
+					objects.objects[managedObjectPrefix+id] = ageBody(2048)
 					if state == "active_s3" {
 						if err := store.Finalize(ctx, id); err != nil {
 							t.Fatal(err)
@@ -101,7 +102,7 @@ func TestRevokeRollsBackOutboxAndCommitFailures(t *testing.T) {
 			conn := openTestDB(t, ctx)
 			store := newLargeTestStore(t, conn, newMockObjectStore())
 			store.outbox = newTestOutbox(t, conn)
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,16 +135,16 @@ type blockingObjects struct {
 	blockGet bool
 }
 
-func (o blockingObjects) Get(ctx context.Context, key string) ([]byte, error) {
+func (o blockingObjects) Open(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	if o.blockGet {
 		close(o.entered)
 		select {
 		case <-o.release:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, 0, ctx.Err()
 		}
 	}
-	return o.ObjectStore.Get(ctx, key)
+	return o.ObjectStore.Open(ctx, key)
 }
 func (o blockingObjects) Head(ctx context.Context, key string) (storage.ObjectInfo, error) {
 	if !o.blockGet {
@@ -180,11 +181,11 @@ func TestRevokeWinsAgainstInFlightObjectRead(t *testing.T) {
 			store := newLargeTestStore(t, first, objects)
 			revoker := newLargeTestStore(t, second, objects)
 			revoker.outbox = newTestOutbox(t, second)
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
 			if err != nil {
 				t.Fatal(err)
 			}
-			objects.objects[managedObjectPrefix+created.ID] = make([]byte, 2048+AEADOverheadBytes)
+			objects.objects[managedObjectPrefix+created.ID] = ageBody(2048)
 			if operation == "open" {
 				if err := store.Finalize(ctx, created.ID); err != nil {
 					t.Fatal(err)
@@ -237,8 +238,7 @@ func TestRevokeRacesOpenAndProofLockout(t *testing.T) {
 			ctx := context.Background()
 			conn := openTestDB(t, ctx)
 			store := newTestStore(t, conn)
-			kdf := KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "salt", Iterations: 600000, KeyLengthBits: 256}
-			created, err := store.Create(ctx, CreateInput{Kind: KindText, Nonce: "nonce", Ciphertext: []byte("ciphertext"), SizeBytes: 10, TTLSeconds: 600, KDF: kdf, AccessKDF: kdf, AccessProofHash: "proof"})
+			created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600, AccessKDF: testAccessKDF, AccessProofHash: "proof", WrappedIdentity: testWrappedIdentity})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +302,7 @@ func TestRevokeHonorsPendingAndContentDeadlines(t *testing.T) {
 	store.outbox = newTestOutbox(t, conn)
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123456789, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
-	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 3600})
+	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}

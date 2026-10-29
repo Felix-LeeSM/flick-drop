@@ -72,7 +72,6 @@ type secretFixture struct {
 	kind           string
 	storageBackend string
 	storageKey     string
-	nonce          string
 	state          string
 	expiresAt      time.Time
 	consumedAt     time.Time // zero → NULL
@@ -95,9 +94,6 @@ func insertSecret(t *testing.T, ctx context.Context, conn *sql.DB, f secretFixtu
 	if f.storageKey == "" {
 		f.storageKey = f.id
 	}
-	if f.nonce == "" {
-		f.nonce = "nonce"
-	}
 	if f.state == "" {
 		f.state = "active"
 	}
@@ -110,10 +106,10 @@ func insertSecret(t *testing.T, ctx context.Context, conn *sql.DB, f secretFixtu
 		consumed = formatTime(f.consumedAt)
 	}
 	_, err := conn.ExecContext(ctx, `insert into secrets (
-		id, kind, storage_backend, storage_key, nonce, size_bytes,
+		id, kind, storage_backend, storage_key, size_bytes,
 		max_views, view_count, failed_access_count, state, expires_at, consumed_at, created_at, updated_at
-	) values (?,?,?,?,?,?,1,0,0,?,?,?,?,?)`,
-		f.id, f.kind, f.storageBackend, f.storageKey, f.nonce, f.sizeBytes,
+	) values (?,?,?,?,?,1,0,0,?,?,?,?,?)`,
+		f.id, f.kind, f.storageBackend, f.storageKey, f.sizeBytes,
 		f.state, formatTime(f.expiresAt), consumed, formatTime(f.createdAt), formatTime(f.updatedAt),
 	)
 	if err != nil {
@@ -388,14 +384,13 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 				store.SetNowForTest(func() time.Time { return now })
 				var id, token string
 				if state == "pending_upload" {
-					filename := "encrypted-name"
-					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: &filename, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+					created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 600})
 					if err != nil {
 						t.Fatal(err)
 					}
 					id, token = created.ID, created.ManagementToken
 				} else {
-					created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: []byte("ciphertext"), Nonce: "nonce", SizeBytes: 10, TTLSeconds: 600})
+					created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600})
 					if err != nil {
 						t.Fatal(err)
 					}

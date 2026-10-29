@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -21,12 +22,11 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 			store := newTestStore(t, conn)
 			now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
 			store.SetNowForTest(func() time.Time { return now })
-			input := CreateInput{Kind: KindText, Ciphertext: []byte("encrypted"), Nonce: "nonce", SizeBytes: 9, TTLSeconds: 600}
+			input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600}
 			if outcome == "locked" {
 				input.AccessProofHash = "proof"
-				input.KDF = KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "salt", Iterations: 600000, KeyLengthBits: 256}
-				input.AccessKDF = input.KDF
-				input.AccessKDF.Salt = "access-salt"
+				input.AccessKDF = testAccessKDF
+				input.WrappedIdentity = testWrappedIdentity
 			}
 			created, err := store.Create(ctx, input)
 			if err != nil {
@@ -108,7 +108,7 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	store := newTestStore(t, conn)
-	input := CreateInput{Kind: KindText, Ciphertext: []byte("encrypted"), Nonce: "nonce", SizeBytes: 9, TTLSeconds: 600}
+	input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600}
 	first, err := store.Create(ctx, input)
 	if err != nil {
 		t.Fatal(err)
@@ -186,10 +186,10 @@ func (s clockAdvancingObjects) Head(ctx context.Context, key string) (storage.Ob
 	return info, err
 }
 
-func (s clockAdvancingObjects) Get(ctx context.Context, key string) ([]byte, error) {
-	body, err := s.ObjectStore.Get(ctx, key)
+func (s clockAdvancingObjects) Open(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	body, size, err := s.ObjectStore.Open(ctx, key)
 	s.afterIO()
-	return body, err
+	return body, size, err
 }
 
 func TestManagementOpenCannotOutliveExpiryDuringObjectRead(t *testing.T) {
@@ -227,8 +227,7 @@ func TestManagementPendingUploadDeadlineAndReclaim(t *testing.T) {
 			store := newLargeTestStore(t, conn, objects)
 			now := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
 			store.SetNowForTest(func() time.Time { return now })
-			filename := "encrypted-name"
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: &filename, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: ttl})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: ttl})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,7 +235,7 @@ func TestManagementPendingUploadDeadlineAndReclaim(t *testing.T) {
 			if !strings.HasSuffix(created.Upload.URL, key) {
 				t.Fatal("upload escaped sender prefix")
 			}
-			objects.objects[key] = make([]byte, 2048+AEADOverheadBytes)
+			objects.objects[key] = ageBody(2048)
 			if status, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil || status.Status != "pending_upload" {
 				t.Fatalf("pending: %+v %v", status, err)
 			}

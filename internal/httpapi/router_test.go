@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 func TestSecretHTTPFlow(t *testing.T) {
@@ -27,28 +30,7 @@ func TestSecretHTTPFlow(t *testing.T) {
 	})
 	router := fixture.router
 
-	createBody := map[string]any{
-		"kind":       "text",
-		"ciphertext": base64.StdEncoding.EncodeToString([]byte("ciphertext")),
-		"nonce":      "nonce",
-		"kdf": map[string]any{
-			"algorithm":       secrets.KDFPBKDF2SHA256,
-			"salt":            "salt",
-			"iterations":      600000,
-			"key_length_bits": 256,
-		},
-		"access": map[string]any{
-			"kdf": map[string]any{
-				"algorithm":       secrets.KDFPBKDF2SHA256,
-				"salt":            "access-salt",
-				"iterations":      600000,
-				"key_length_bits": 256,
-			},
-			"proof": base64.StdEncoding.EncodeToString([]byte("proof")),
-		},
-		"size_bytes":  10,
-		"ttl_seconds": 600,
-	}
+	createBody := validCreateSecretBody()
 
 	createResp := performJSON(t, router, http.MethodPost, "/api/secrets", createBody)
 	if createResp.Code != http.StatusCreated {
@@ -87,11 +69,13 @@ func TestSecretHTTPFlow(t *testing.T) {
 	if openResp.Code != http.StatusOK {
 		t.Fatalf("open status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
-	var opened openSecretResponse
-	decodeBody(t, openResp, &opened)
-	if opened.Ciphertext != createBody["ciphertext"] {
-		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
-	}
+	assertOpenResponse(t, openResp, ageBody(64), map[string]string{
+		"Flick-Kind":               secrets.KindText,
+		"Flick-Wrapped-Identity":   createBody["wrapped_identity"].(string),
+		"Flick-Expires-At":         "2026-06-17T10:10:00Z",
+		"Flick-Content-Type":       "",
+		"Flick-Encrypted-Filename": "",
+	})
 	due, err := fixture.outbox.ListDue(context.Background(), time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
 	if err != nil {
 		t.Fatalf("list due outbox events: %v", err)
@@ -143,10 +127,10 @@ func TestFileSecretHTTPFlow(t *testing.T) {
 
 	createBody := validCreateSecretBody()
 	createBody["kind"] = "file"
-	createBody["ciphertext"] = base64.StdEncoding.EncodeToString([]byte("encrypted-file-bytes"))
-	createBody["encrypted_filename"] = `{"nonce":"filename-nonce","ciphertext":"filename-ciphertext"}`
+	createBody["ciphertext"] = ageField(80)
+	createBody["encrypted_filename"] = ageField(120)
 	createBody["content_type"] = "text/plain"
-	createBody["size_bytes"] = 20
+	createBody["size_bytes"] = 80
 
 	createResp := performJSON(t, router, http.MethodPost, "/api/secrets", createBody)
 	if createResp.Code != http.StatusCreated {
@@ -160,7 +144,7 @@ func TestFileSecretHTTPFlow(t *testing.T) {
 		t.Fatalf("file metadata status = %d, body = %s", getResp.Code, getResp.Body.String())
 	}
 	metadataBody := getResp.Body.String()
-	for _, forbidden := range []string{"ciphertext", "encrypted_filename", "filename-ciphertext"} {
+	for _, forbidden := range []string{"ciphertext", "encrypted_filename", "wrapped_identity", createBody["encrypted_filename"].(string)} {
 		if strings.Contains(metadataBody, forbidden) {
 			t.Fatalf("file metadata response contains %q: %s", forbidden, metadataBody)
 		}
@@ -177,20 +161,12 @@ func TestFileSecretHTTPFlow(t *testing.T) {
 	if openResp.Code != http.StatusOK {
 		t.Fatalf("file open status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
-	var opened openSecretResponse
-	decodeBody(t, openResp, &opened)
-	if opened.Kind != secrets.KindFile {
-		t.Fatalf("opened kind = %q, want %q", opened.Kind, secrets.KindFile)
-	}
-	if opened.Ciphertext != createBody["ciphertext"] {
-		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
-	}
-	if opened.EncryptedFilename == nil || *opened.EncryptedFilename != createBody["encrypted_filename"] {
-		t.Fatalf("opened encrypted filename = %v, want %q", opened.EncryptedFilename, createBody["encrypted_filename"])
-	}
-	if opened.ContentType == nil || *opened.ContentType != "text/plain" {
-		t.Fatalf("opened content type = %v, want text/plain", opened.ContentType)
-	}
+	assertOpenResponse(t, openResp, ageBody(80), map[string]string{
+		"Flick-Kind":               secrets.KindFile,
+		"Flick-Content-Type":       "text/plain",
+		"Flick-Encrypted-Filename": createBody["encrypted_filename"].(string),
+		"Flick-Wrapped-Identity":   createBody["wrapped_identity"].(string),
+	})
 
 	secondOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
 		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
@@ -338,20 +314,8 @@ func TestOpenRequiresOutbox(t *testing.T) {
 func TestCreateRejectsSensitiveFields(t *testing.T) {
 	router := newTestRouter(t)
 
-	body := map[string]any{
-		"kind":       "text",
-		"ciphertext": base64.StdEncoding.EncodeToString([]byte("ciphertext")),
-		"nonce":      "nonce",
-		"passphrase": "do-not-send",
-		"kdf": map[string]any{
-			"algorithm":       secrets.KDFPBKDF2SHA256,
-			"salt":            "salt",
-			"iterations":      600000,
-			"key_length_bits": 256,
-		},
-		"size_bytes":  10,
-		"ttl_seconds": 600,
-	}
+	body := validCreateSecretBody()
+	body["passphrase"] = "do-not-send"
 
 	resp := performJSON(t, router, http.MethodPost, "/api/secrets", body)
 	if resp.Code != http.StatusBadRequest {
@@ -362,19 +326,11 @@ func TestCreateRejectsSensitiveFields(t *testing.T) {
 func TestCreateRejectsTrailingJSON(t *testing.T) {
 	router := newTestRouter(t)
 
-	body := `{
-		"kind": "text",
-		"ciphertext": "Y2lwaGVydGV4dA==",
-		"nonce": "nonce",
-		"kdf": {
-			"algorithm": "PBKDF2-SHA-256",
-			"salt": "salt",
-			"iterations": 600000,
-			"key_length_bits": 256
-		},
-		"size_bytes": 10,
-		"ttl_seconds": 600
-	}{"passphrase":"do-not-send"}`
+	valid, err := json.Marshal(validCreateSecretBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(valid) + `{"passphrase":"do-not-send"}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -575,17 +531,28 @@ type testRouterFixture struct {
 	router http.Handler
 	db     *sql.DB
 	outbox *events.OutboxStore
+	store  *secrets.Store
 }
 
 func newTestRouterFixture(t *testing.T, opts Options) testRouterFixture {
+	t.Helper()
+
+	return newTestRouterFixtureWithObjects(t, opts, nil)
+}
+
+// newTestRouterFixtureWithObjects backs the store with objects (nil for an
+// inline-only deployment).
+func newTestRouterFixtureWithObjects(t *testing.T, opts Options, objects storage.ObjectStore) testRouterFixture {
 	t.Helper()
 
 	ctx := context.Background()
 	conn := openHTTPTestDB(t, ctx)
 	store, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: 1024,
+		MaxObjectBytes:        1 << 20,
 		MinTTLSeconds:         300,
 		MaxTTLSeconds:         604800,
+		Objects:               objects,
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -606,6 +573,7 @@ func newTestRouterFixture(t *testing.T, opts Options) testRouterFixture {
 		router: NewRouter(conn, store, opts),
 		db:     conn,
 		outbox: opts.OutboxStore,
+		store:  store,
 	}
 }
 
@@ -678,17 +646,24 @@ func performJSON(t *testing.T, handler http.Handler, method, path string, body a
 	return resp
 }
 
+const ageMagicLine = "age-encryption.org/v1\n"
+
+// ageBody is an age-shaped file of exactly n bytes: the magic line, then
+// padding. The server checks only the magic line and the length.
+func ageBody(n int) []byte {
+	return append([]byte(ageMagicLine), bytes.Repeat([]byte{'x'}, n-len(ageMagicLine))...)
+}
+
+// ageField is ageBody(n) as the base64 the API carries in JSON fields.
+func ageField(n int) string {
+	return base64.StdEncoding.EncodeToString(ageBody(n))
+}
+
+// validCreateSecretBody is a Model A text secret with a 64-byte age body.
 func validCreateSecretBody() map[string]any {
 	return map[string]any{
 		"kind":       "text",
-		"ciphertext": base64.StdEncoding.EncodeToString([]byte("ciphertext")),
-		"nonce":      "nonce",
-		"kdf": map[string]any{
-			"algorithm":       secrets.KDFPBKDF2SHA256,
-			"salt":            "salt",
-			"iterations":      600000,
-			"key_length_bits": 256,
-		},
+		"ciphertext": ageField(64),
 		"access": map[string]any{
 			"kdf": map[string]any{
 				"algorithm":       secrets.KDFPBKDF2SHA256,
@@ -698,8 +673,43 @@ func validCreateSecretBody() map[string]any {
 			},
 			"proof": base64.StdEncoding.EncodeToString([]byte("proof")),
 		},
-		"size_bytes":  10,
-		"ttl_seconds": 600,
+		"wrapped_identity": ageField(200),
+		"size_bytes":       64,
+		"ttl_seconds":      600,
+	}
+}
+
+// assertOpenResponse checks an open response: 200, the raw age bytes, the
+// transport headers, and each Flick-* header in want ("" means absent).
+func assertOpenResponse(t *testing.T, resp *httptest.ResponseRecorder, wantBody []byte, want map[string]string) {
+	t.Helper()
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("open status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Equal(resp.Body.Bytes(), wantBody) {
+		t.Fatalf("open body = %q, want %q", resp.Body.Bytes(), wantBody)
+	}
+	h := resp.Header()
+	for key, value := range map[string]string{
+		"Content-Type":   "application/octet-stream",
+		"Content-Length": strconv.Itoa(len(wantBody)),
+		"Cache-Control":  "no-store",
+	} {
+		if got := h.Get(key); got != value {
+			t.Fatalf("%s = %q, want %q", key, got, value)
+		}
+	}
+	for key, value := range want {
+		if value == "" {
+			if _, ok := h[key]; ok {
+				t.Fatalf("%s present (%q), want absent", key, h.Get(key))
+			}
+			continue
+		}
+		if got := h.Get(key); got != value {
+			t.Fatalf("%s = %q, want %q", key, got, value)
+		}
 	}
 }
 
@@ -724,9 +734,8 @@ func TestSecretHTTPFlowModelB(t *testing.T) {
 	// fragment, which the API never receives.
 	createBody := map[string]any{
 		"kind":        "text",
-		"ciphertext":  base64.StdEncoding.EncodeToString([]byte("ciphertext")),
-		"nonce":       "nonce",
-		"size_bytes":  10,
+		"ciphertext":  ageField(48),
+		"size_bytes":  48,
 		"ttl_seconds": 600,
 	}
 
@@ -750,15 +759,218 @@ func TestSecretHTTPFlowModelB(t *testing.T) {
 	if openResp.Code != http.StatusOK {
 		t.Fatalf("open status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
-	var opened openSecretResponse
-	decodeBody(t, openResp, &opened)
-	if opened.Ciphertext != createBody["ciphertext"] {
-		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, createBody["ciphertext"])
-	}
+	// Model B has no wrapped identity: the identity is in the URL fragment.
+	assertOpenResponse(t, openResp, ageBody(48), map[string]string{
+		"Flick-Kind":             secrets.KindText,
+		"Flick-Expires-At":       "2026-06-17T10:10:00Z",
+		"Flick-Wrapped-Identity": "",
+	})
 
 	// One-time open still applies.
 	secondOpen := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
 	if secondOpen.Code != http.StatusGone {
 		t.Fatalf("second open status = %d, body = %s", secondOpen.Code, secondOpen.Body.String())
+	}
+}
+
+// TestCreateValidatesAgeFields covers the age create contract: the body must be
+// an age file whose exact length is size_bytes, Model A carries a wrapped
+// identity and Model B does not, and only file secrets carry a filename.
+func TestCreateValidatesAgeFields(t *testing.T) {
+	modelB := func(body map[string]any) {
+		delete(body, "access")
+		delete(body, "wrapped_identity")
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"size_bytes is plaintext length": func(b map[string]any) { b["size_bytes"] = 64 - 32 },
+		"size_bytes past the body":       func(b map[string]any) { b["size_bytes"] = 65 },
+		"body without age magic": func(b map[string]any) {
+			b["ciphertext"] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'x'}, 64))
+		},
+		"model A without wrapped identity": func(b map[string]any) { delete(b, "wrapped_identity") },
+		"model A wrapped identity not age": func(b map[string]any) {
+			b["wrapped_identity"] = base64.StdEncoding.EncodeToString([]byte("not an age file"))
+		},
+		"model A wrapped identity too large": func(b map[string]any) { b["wrapped_identity"] = ageField(1025) },
+		"model B with wrapped identity":      func(b map[string]any) { delete(b, "access") },
+		"text with encrypted filename":       func(b map[string]any) { b["encrypted_filename"] = ageField(100) },
+		"file without encrypted filename": func(b map[string]any) {
+			modelB(b)
+			b["kind"] = "file"
+		},
+		"file filename not age": func(b map[string]any) {
+			modelB(b)
+			b["kind"] = "file"
+			b["encrypted_filename"] = base64.StdEncoding.EncodeToString([]byte(`{"nonce":"n","ciphertext":"c"}`))
+		},
+		"removed nonce field": func(b map[string]any) { b["nonce"] = "nonce" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := validCreateSecretBody()
+			mutate(body)
+			// A router per case: the create limiter would otherwise trip.
+			resp := performJSON(t, newTestRouter(t), http.MethodPost, "/api/secrets", body)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", resp.Code, resp.Body.String())
+			}
+		})
+	}
+
+	body := validCreateSecretBody()
+	modelB(body)
+	body["kind"] = "file"
+	body["encrypted_filename"] = ageField(100)
+	if resp := performJSON(t, newTestRouter(t), http.MethodPost, "/api/secrets", body); resp.Code != http.StatusCreated {
+		t.Fatalf("model B file status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+// streamObjects is a bucket holding one S3 body. Open serves it through a
+// reader that calls onEOF when the handler reads past the last byte.
+type streamObjects struct {
+	storage.ObjectStore
+	body     []byte
+	sizeSkew int64
+	openErr  error
+	opened   []string
+	onEOF    func()
+}
+
+func (o *streamObjects) PresignPUT(_ context.Context, key string, _ int64, _ time.Duration) (storage.UploadInstruction, error) {
+	return storage.UploadInstruction{URL: "http://bucket.test/" + key}, nil
+}
+
+func (o *streamObjects) Head(context.Context, string) (storage.ObjectInfo, error) {
+	return storage.ObjectInfo{Exists: true, Size: int64(len(o.body))}, nil
+}
+
+func (o *streamObjects) Open(_ context.Context, key string) (io.ReadCloser, int64, error) {
+	o.opened = append(o.opened, key)
+	if o.openErr != nil {
+		return nil, 0, o.openErr
+	}
+	return io.NopCloser(&eofHookReader{r: bytes.NewReader(o.body), onEOF: o.onEOF}), int64(len(o.body)) + o.sizeSkew, nil
+}
+
+type eofHookReader struct {
+	r     io.Reader
+	onEOF func()
+	fired bool
+}
+
+func (e *eofHookReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF && !e.fired && e.onEOF != nil {
+		e.fired = true
+		e.onEOF()
+	}
+	return n, err
+}
+
+// outboxKinds lists the kinds of every outbox job, in no particular order.
+func outboxKinds(t *testing.T, outbox *events.OutboxStore) map[string]events.JobEvent {
+	t.Helper()
+
+	due, err := outbox.ListDue(context.Background(), time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), 100)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	kinds := map[string]events.JobEvent{}
+	for _, record := range due {
+		kinds[record.Payload.Kind] = record.Payload
+	}
+	return kinds
+}
+
+func newS3OpenFixture(t *testing.T, objects *streamObjects) (testRouterFixture, string) {
+	t.Helper()
+
+	jobs := 0
+	fixture := newTestRouterFixtureWithObjects(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		NewJobID: func() (string, error) {
+			jobs++
+			return "job-s3-" + strconv.Itoa(jobs), nil
+		},
+	}, objects)
+	ctx := context.Background()
+	created, err := fixture.store.CreateLarge(ctx, secrets.CreateLargeInput{
+		Kind:       secrets.KindText,
+		SizeBytes:  int64(len(objects.body)),
+		TTLSeconds: 600,
+		MaxViews:   1,
+	})
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+	if err := fixture.store.Finalize(ctx, created.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	return fixture, created.ID
+}
+
+// TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete proves an S3 body larger
+// than the inline cap streams from the object store's Open, and that the
+// bucket delete is queued only once the body has been read to the end, while
+// the DB cleanup job is already committed with the open.
+func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
+	objects := &streamObjects{body: ageBody(5000)}
+	fixture, id := newS3OpenFixture(t, objects)
+
+	var atEOF map[string]events.JobEvent
+	objects.onEOF = func() { atEOF = outboxKinds(t, fixture.outbox) }
+
+	resp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
+	assertOpenResponse(t, resp, objects.body, map[string]string{
+		"Flick-Kind":             secrets.KindText,
+		"Flick-Wrapped-Identity": "",
+	})
+	if len(objects.opened) != 1 {
+		t.Fatalf("object opens = %v, want one", objects.opened)
+	}
+	if atEOF == nil {
+		t.Fatal("body was not read to EOF")
+	}
+	if _, ok := atEOF[events.KindDeleteSecret]; !ok {
+		t.Fatalf("outbox at EOF = %+v, want the DB cleanup job from the open transaction", atEOF)
+	}
+	if _, ok := atEOF[events.KindDeleteOCIObject]; ok {
+		t.Fatalf("object delete was queued before the body finished streaming: %+v", atEOF)
+	}
+	after := outboxKinds(t, fixture.outbox)
+	job, ok := after[events.KindDeleteOCIObject]
+	if !ok || job.ObjectKey != objects.opened[0] || job.Reason != events.ReasonConsumed {
+		t.Fatalf("outbox after open = %+v, want consumed object delete for %q", after, objects.opened[0])
+	}
+}
+
+// TestOpenS3BodyFailureLeavesSecretOpenable proves a bucket that cannot start
+// the read, or reports a length other than size_bytes, refuses the open
+// without consuming the secret or queueing any cleanup.
+func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
+	for name, breakOpen := range map[string]func(*streamObjects){
+		"open fails":      func(o *streamObjects) { o.openErr = errors.New("bucket unavailable") },
+		"length mismatch": func(o *streamObjects) { o.sizeSkew = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			objects := &streamObjects{body: ageBody(5000)}
+			fixture, id := newS3OpenFixture(t, objects)
+			breakOpen(objects)
+
+			resp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
+			if resp.Code != http.StatusInternalServerError {
+				t.Fatalf("broken open status = %d, body = %s", resp.Code, resp.Body.String())
+			}
+			if kinds := outboxKinds(t, fixture.outbox); len(kinds) != 0 {
+				t.Fatalf("outbox after refused open = %+v, want empty", kinds)
+			}
+			if got := performJSON(t, fixture.router, http.MethodGet, "/api/secrets/"+id, nil); got.Code != http.StatusOK {
+				t.Fatalf("metadata after refused open status = %d, want 200 (not consumed)", got.Code)
+			}
+
+			objects.openErr, objects.sizeSkew = nil, 0
+			retry := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
+			assertOpenResponse(t, retry, objects.body, map[string]string{"Flick-Kind": secrets.KindText})
+		})
 	}
 }

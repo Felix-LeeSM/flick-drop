@@ -102,8 +102,8 @@ func Load() (Config, error) {
 	if cfg.PayloadInlineMaxBytes, err = envPositiveInt64("FLICK_PAYLOAD_INLINE_MAX_BYTES", cfg.PayloadInlineMaxBytes); err != nil {
 		return Config{}, err
 	}
-	if cfg.PayloadInlineMaxBytes <= secrets.AEADOverheadBytes {
-		return Config{}, fmt.Errorf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be greater than %d bytes (AES-GCM tag)", secrets.AEADOverheadBytes)
+	if cfg.PayloadInlineMaxBytes < secrets.MaxCiphertextBytes(0) {
+		return Config{}, fmt.Errorf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be at least %d bytes (an empty age file)", secrets.MaxCiphertextBytes(0))
 	}
 	if cfg.MaxFileBytes, err = envPositiveInt64("FLICK_MAX_FILE_BYTES", cfg.MaxFileBytes); err != nil {
 		return Config{}, err
@@ -171,22 +171,20 @@ func Load() (Config, error) {
 
 // EffectivePayloadInlineMaxBytes is the largest plaintext that still fits the
 // inline SQLite path once encrypted. FLICK_PAYLOAD_INLINE_MAX_BYTES bounds the
-// ciphertext, so the plaintext the client may route inline is one AEAD tag
-// smaller. aeadOverhead is passed in rather than redeclared here: the domain
-// owns that number (secrets.AEADOverheadBytes), and a second copy could drift
-// from the one the presigned upload length is built from.
-func (c Config) EffectivePayloadInlineMaxBytes(aeadOverhead int64) int64 {
-	return c.PayloadInlineMaxBytes - aeadOverhead
+// age file, so the plaintext the client may route inline is smaller by the age
+// header allowance, payload nonce, and chunk tags.
+func (c Config) EffectivePayloadInlineMaxBytes() int64 {
+	return secrets.MaxPlaintextBytes(c.PayloadInlineMaxBytes)
 }
 
 // EffectiveMaxFileBytes is the largest plaintext this deployment will actually
 // accept. With large-object storage disabled the inline path is the only route,
 // so the ceiling drops to the inline threshold: advertising the full
-// MaxFileBytes there would promise 50 MiB and then answer 413 just past 1 MiB.
+// MaxFileBytes there would promise it and then answer 413 just past 1 MiB.
 // With it enabled the configured limit stands, because the object cap is
-// derived from MaxFileBytes plus the same tag.
-func (c Config) EffectiveMaxFileBytes(aeadOverhead int64) int64 {
-	if inline := c.EffectivePayloadInlineMaxBytes(aeadOverhead); !c.S3.Enabled && c.MaxFileBytes > inline {
+// derived from MaxFileBytes plus the same age overhead.
+func (c Config) EffectiveMaxFileBytes() int64 {
+	if inline := c.EffectivePayloadInlineMaxBytes(); !c.S3.Enabled && c.MaxFileBytes > inline {
 		return inline
 	}
 	return c.MaxFileBytes

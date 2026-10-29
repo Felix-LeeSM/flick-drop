@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -54,7 +55,9 @@ func (o *requestObjects) GetBounded(_ context.Context, key string, limit int64) 
 	}
 	return b, nil
 }
-func (o *requestObjects) Get(context.Context, string) ([]byte, error) { panic("unbounded GET used") }
+func (o *requestObjects) Open(context.Context, string) (io.ReadCloser, int64, error) {
+	panic("unbounded open used")
+}
 func (o *requestObjects) Put(_ context.Context, key string, b []byte) error {
 	o.write(key, b)
 	if o.putHook != nil {

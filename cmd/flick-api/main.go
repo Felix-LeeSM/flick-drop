@@ -77,11 +77,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
 	}
-	// The ciphertext cap is exactly the plaintext cap plus the AES-GCM tag: the
-	// presigned upload signs that length, and CreateLarge derives it from the
-	// declared plaintext size. Slack here would widen the real ceiling past what
-	// /api/config advertises.
-	maxObjectBytes := cfg.MaxFileBytes + secrets.AEADOverheadBytes
+	// The object cap is the largest age file a MaxFileBytes plaintext can
+	// produce; CreateLarge refuses to presign a declared length above it.
+	maxObjectBytes := secrets.MaxCiphertextBytes(cfg.MaxFileBytes)
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
@@ -137,8 +135,8 @@ func main() {
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
 			PayloadInlineMaxBytes:    cfg.PayloadInlineMaxBytes,
-			AdvertisedInlineMaxBytes: cfg.EffectivePayloadInlineMaxBytes(secrets.AEADOverheadBytes),
-			MaxFileBytes:             cfg.EffectiveMaxFileBytes(secrets.AEADOverheadBytes),
+			AdvertisedInlineMaxBytes: cfg.EffectivePayloadInlineMaxBytes(),
+			MaxFileBytes:             cfg.EffectiveMaxFileBytes(),
 			AllowedOrigin:            cfg.PublicBaseURL,
 			InternalToken:            cfg.InternalToken,
 			MetricsToken:             cfg.MetricsToken,
@@ -154,8 +152,9 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		// WriteTimeout intentionally unset: an S3-backed /open streams up to
-		// MaxFileBytes (50 MiB) of ciphertext back through the API, and a fixed
-		// write deadline would abort legitimate large downloads on slow links.
+		// MaxFileBytes of ciphertext back through the API and sets its own
+		// deadline (secrets.OpenStreamTimeout); a server-wide one would abort
+		// legitimate large downloads on slow links.
 		// ReadHeaderTimeout is the Slowloris defense; idle keep-alives are reaped
 		// by IdleTimeout.
 	}
