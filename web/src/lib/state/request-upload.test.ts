@@ -96,6 +96,14 @@ describe('request upload immutable attempt and finalization', () => {
 		expect(Buffer.from(prepared.attemptToken, 'base64url')).toHaveLength(32);
 		expect(Object.isFrozen(prepared)).toBe(true);
 	});
+	it('hashes a body that streams in many chunks', async () => {
+		const bytes = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 7) % 256);
+		const body = new Blob([bytes]);
+		const prepared = await prepareLargeSubmission({ ...sealed, size_bytes: body.size, body }, 1);
+		expect(JSON.parse(prepared.body).ciphertext_sha256).toBe(
+			createHash('sha256').update(bytes).digest('base64')
+		);
+	});
 	it('100% PUT progress is not accepted until explicit finalize confirms, and object storage receives no capability', async () => {
 		const xhr = transport();
 		const finalized = Promise.withResolvers<Response>();
@@ -120,6 +128,7 @@ describe('request upload immutable attempt and finalization', () => {
 			accepted = true;
 		});
 		await vi.waitFor(() => expect(xhr.send).toHaveBeenCalledOnce());
+		expect(xhr.send.mock.calls[0][0]).toBe(prepared.upload);
 		expect(new Uint8Array(await (xhr.send.mock.calls[0][0] as Blob).arrayBuffer())).toEqual(
 			new Uint8Array(await (prepared.upload as Blob).arrayBuffer())
 		);

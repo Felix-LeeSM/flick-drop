@@ -12,7 +12,7 @@ const vectors = await requestVectors();
 const submitToken = 'A'.repeat(43);
 const receiveToken = `${'B'.repeat(42)}A`;
 const submitPath = `/r/${vectors.request_id}#submit=${submitToken}&fp=${vectors.fingerprint}`;
-const ownerPath = `/r/${vectors.request_id}/receive#receive=${receiveToken}&key=${vectors.private_key}`;
+const ownerPath = `/r/${vectors.request_id}/receive#receive=${receiveToken}&key=${vectors.identity}`;
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -306,8 +306,8 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		await owner.getByText('synthetic-request-password', { exact: true }).waitFor();
 		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
 		for (const value of ['synthetic-request-user', 'synthetic-request-password']) {
-			await privacy(owner, mock.calls, vectors.private_key, value);
-			await privacy(sender, mock.calls, vectors.private_key, value);
+			await privacy(owner, mock.calls, vectors.identity, value);
+			await privacy(sender, mock.calls, vectors.identity, value);
 			assert.equal(owner.url().includes(value) || sender.url().includes(value), false);
 		}
 	} finally {

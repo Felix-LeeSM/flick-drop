@@ -38,7 +38,7 @@ const api = createRequestApiClient();
 let snapshot = $state<RequestOwner | null>(null);
 let submission = $state('');
 let privateLink = $state('');
-let privateKey = $state<string | null>(null);
+let identity = $state<string | null>(null);
 let keyProblem = $state('');
 let busy = $state(false);
 let error = $state('');
@@ -98,7 +98,7 @@ function clearContent(): void {
 	}
 }
 function clearLinks(): void {
-	privateKey = null;
+	identity = null;
 	keyFragment = '';
 	verifiedFingerprint = '';
 	privateLink = '';
@@ -137,14 +137,14 @@ async function accept(data: RequestOwner): Promise<void> {
 			'Missing private key. Reopen the complete private retrieval link. Flick cannot recover a lost key or decrypt without it.';
 		return;
 	}
-	if (privateKey && verifiedFingerprint === data.fingerprint) {
+	if (identity && verifiedFingerprint === data.fingerprint) {
 		return;
 	}
-	privateKey = null;
+	identity = null;
 	try {
 		const key = await importRequestIdentity(keyFragment, data.fingerprint);
 		if (alive && !expired && !controller?.signal.aborted) {
-			privateKey = key;
+			identity = key;
 			verifiedFingerprint = data.fingerprint;
 			keyProblem = '';
 		}
@@ -296,7 +296,7 @@ async function openFailure(cause: unknown, released: boolean, signal: AbortSigna
 	error = '';
 }
 async function open(): Promise<void> {
-	if (busy || opened || terminal || snapshot?.state !== 'submitted' || !privateKey || !configured) {
+	if (busy || opened || terminal || snapshot?.state !== 'submitted' || !identity || !configured) {
 		return;
 	}
 	clock();
@@ -307,7 +307,7 @@ async function open(): Promise<void> {
 	opened = true;
 	error = '';
 	notice = '';
-	const key = privateKey;
+	const key = identity;
 	const request = new AbortController();
 	controller = request;
 	let released = false;
@@ -414,7 +414,7 @@ onMount(() => {
 		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">Download {content.filename}</a>
 	{/if}
 	{#if snapshot?.state === 'submitted' && !terminal && !opened}
-		<Button size="cta" disabled={busy || !privateKey} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
+		<Button size="cta" disabled={busy || !identity} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
 	{/if}
 	{#if submission && !terminal}
 		<section class="grid gap-2.5" aria-labelledby="submission-link-heading">

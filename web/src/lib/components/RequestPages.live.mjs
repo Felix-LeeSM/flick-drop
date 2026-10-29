@@ -240,7 +240,7 @@ test('real API: original deadline expires owner and submission authority', async
 		const created = await response.json();
 		const owner = await context.newPage();
 		await owner.goto(
-			`${baseUrl}/r/${created.id}/receive#receive=${created.retrieval_token}&key=${vectors.private_key}`
+			`${baseUrl}/r/${created.id}/receive#receive=${created.retrieval_token}&key=${vectors.identity}`
 		);
 		await owner.getByRole('heading', { name: 'Request expired', exact: true }).waitFor();
 		assert.equal(

@@ -11,6 +11,8 @@ const RECIPIENT_PATTERN = /^age1pq1[02-9ac-hj-np-z]+$/;
 const RECIPIENT_MAX_CHARS = 2400;
 // The API's cap on the filename age file.
 const FILENAME_MAX_BYTES = 4096;
+// The plaintext filename, in UTF-8 bytes, on both sides.
+const NAME_MAX_BYTES = 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', {
 	fatal: true,
@@ -139,7 +141,11 @@ export async function encryptRequestPayload(
 	}
 	const { file } = content;
 	const filename = encoder.encode(file.name);
-	if (filename.length < 1 || filename.length > 1024 || decoder.decode(filename) !== file.name) {
+	if (
+		filename.length < 1 ||
+		filename.length > NAME_MAX_BYTES ||
+		decoder.decode(filename) !== file.name
+	) {
 		invalid();
 	}
 	assertLimit(file.size, 'file', limits);
@@ -180,7 +186,11 @@ export async function decryptRequestPayload(
 	}
 	const decrypted = await new Response(await decryptWith(identity, opened.body)).blob();
 	assertLimit(decrypted.size, 'file', limits);
-	const filename = decoder.decode(await decryptWith(identity, opened.encryptedFilename));
+	const name = await decryptWith(identity, opened.encryptedFilename);
+	if (name.length < 1 || name.length > NAME_MAX_BYTES) {
+		invalid();
+	}
+	const filename = decoder.decode(name);
 	return {
 		kind: 'file',
 		blob: decrypted.slice(0, decrypted.size, 'application/octet-stream'),

@@ -22,7 +22,7 @@ export async function requestVectors() {
 		request_id: 'synthetic-request',
 		public_key: publicKey,
 		fingerprint: createHash('sha256').update(publicKey).digest('base64url'),
-		private_key: identity,
+		identity,
 		text: {
 			plaintext: text,
 			payload: {

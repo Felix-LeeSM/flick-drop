@@ -144,6 +144,14 @@ describe('request payloads', () => {
 				limits
 			)
 		).rejects.toThrow();
+		const longName = await encryptTo(keys.identity, 'a'.repeat(1025));
+		await expect(
+			decryptRequestPayload(
+				keys.identity,
+				{ ...opened(sealed), encryptedFilename: longName },
+				limits
+			)
+		).rejects.toThrow();
 	});
 	it('refuses decrypted content above the advertised limit', async () => {
 		const body = await encryptTo(keys.identity, 'x'.repeat(2000));
