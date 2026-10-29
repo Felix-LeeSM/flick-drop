@@ -177,8 +177,8 @@ Submitters check the fragment fingerprint before encryption and verify configure
 limits before submitting. Files use the advertised `maxFileBytes`, which the API
 already clamps to the inline allowance when object storage is disabled.
 `payloadInlineMaxBytes` is the plaintext allowance after the secrets' age
-overhead, which is smaller than this format's 16-byte tag requires; text and
-files within it use the inline path. The API accepts a large upload of any file
+overhead (1,044,208 by default), below the 1,048,560 that this format's
+16-byte tag would allow; text and files within it use the inline path. The API accepts a large upload of any file
 size, so that gap cannot strand a file. Larger files retain an
 immutable ciphertext/checksum/attempt snapshot in memory, reserve an upload, PUT
 the ciphertext with byte progress, and finalize. A complete PUT is not acceptance.
