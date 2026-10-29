@@ -12,6 +12,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// maxSpools bounds PutStream's temporary files across the process: each holds
+// up to one object (about 256 MiB), and deploy/base/api.yaml sizes the /tmp
+// emptyDir for this many.
+const maxSpools = 2
+
+var spools = make(chan struct{}, maxSpools)
+
 // PutStream writes exactly size bytes from body to a server-only final key.
 // The body is spooled to a temporary file first: the SDK signs and checksums a
 // seekable body the same way as before, while an unseekable stream would need
@@ -20,9 +27,17 @@ import (
 // runs once the whole body is spooled and before anything is written, so a
 // caller that hashes the stream can refuse it; its error is returned as is. A
 // failed response may follow a successful write; callers must not delete it.
+// At most maxSpools spools exist at once; a later write waits for a slot or
+// gives up with its context.
 func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error {
-	if key == "" || size < 1 {
+	if key == "" || size < 1 || verify == nil {
 		return errors.New("invalid object write")
+	}
+	select {
+	case spools <- struct{}{}:
+		defer func() { <-spools }()
+	case <-ctx.Done():
+		return errors.New("object spool busy")
 	}
 	spool, err := os.CreateTemp("", "flick-object-*")
 	if err != nil {

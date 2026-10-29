@@ -64,10 +64,17 @@ spec:
           volumeMounts:
             - name: api-data
               mountPath: /data
+            # Request finalize spools (internal/storage maxSpools: two objects
+            # of about 256 MiB each) live here, not on the node's root layer.
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: api-data
           persistentVolumeClaim:
             claimName: flick-api-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 600Mi
 ---
 apiVersion: v1
 kind: Service

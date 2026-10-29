@@ -1122,7 +1122,7 @@ components:
           enum: [text, file]
         ciphertext:
           type: string
-          description: Base64 of the body age file for the inline path. Omit it to receive a presigned upload instead.
+          description: Base64 of the body age file for the inline path. Omit it to receive a presigned upload instead; only file secrets may do so, text is always inline.
         access:
           $ref: "#/components/schemas/AccessVerifier"
         wrapped_identity:
