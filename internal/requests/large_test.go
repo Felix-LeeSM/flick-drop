@@ -472,9 +472,10 @@ func TestLargeBoundariesConflictAndDisabledRetrieval(t *testing.T) {
 			in, _ := largeInput()
 			in.SizeBytes = size
 			_, err := f.store.Reserve(ctx, c.ID, c.SubmissionToken, in)
+			// Sizes at or below the inline limit may take the large path too:
+			// the browser routes on the smaller age-adjusted limit from
+			// /api/config.
 			switch size {
-			case 16:
-				requireError(t, err, ErrInvalid)
 			case 101:
 				requireError(t, err, ErrTooLarge)
 			default:
