@@ -148,8 +148,13 @@ a client changed the format.
   ciphertext caps add `AgeHeaderAllowanceBytes` (4,096), the 16-byte payload
   nonce, and 16 bytes per 64 KiB chunk (`internal/secrets/age.go`).
 
-## Not Yet Decided Here
+## Request Links
 
-The remaining M13 issues define:
-
-- request links on age recipients.
+Request links use the same age files, encrypted to a per-request hybrid
+recipient that the requester's browser generates
+(`docs/architecture/request-links.md`). The recipient is `public_key`; the
+identity travels only in the private retrieval fragment (`#receive=…&key=…`).
+There is no passphrase and no wrapped identity. Bodies and filenames map to the
+API as for secrets: `size_bytes` is the exact age file length, the filename is
+`envelope.encrypted_filename` on submit, and open returns the raw body with
+`Flick-Kind` and `Flick-Encrypted-Filename` headers.

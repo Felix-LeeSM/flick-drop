@@ -2,13 +2,14 @@ package requests
 
 import (
 	"bytes"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
+
+	"filippo.io/age"
 )
 
 var (
@@ -20,23 +21,25 @@ var (
 )
 
 const (
-	EnvelopeMaxBytes = 4096
+	EnvelopeMaxBytes = 8192
 	MaxGeneration    = 16
-	algorithm        = "RSA-OAEP-256+A256GCM"
-	tagBytes         = 16
+	// envelopeVersion 2 is the age format (contracts/age-format-v1.md). The
+	// RSA-OAEP/AES-GCM version 1 is gone.
+	envelopeVersion = 2
+	// recipientPrefix is the only recipient type a request uses: the hybrid
+	// ML-KEM-768 + X25519 recipient, about 1,960 characters.
+	recipientPrefix     = "age1pq1"
+	maxRecipientChars   = 2400
+	maxEncryptedNameLen = 4096
+	// AgeMagic starts every age file; bodies and filenames must carry it.
+	AgeMagic = "age-encryption.org/v1\n"
 )
 
+// Envelope is the submitted metadata beside the body. For files it carries the
+// filename as a base64 age file to the same recipient; text has none.
 type Envelope struct {
-	Version           int                `json:"version"`
-	Algorithm         string             `json:"algorithm"`
-	WrappedKey        string             `json:"wrapped_key"`
-	Nonce             string             `json:"nonce"`
-	EncryptedFilename *EncryptedFilename `json:"encrypted_filename,omitempty"`
-}
-
-type EncryptedFilename struct {
-	Nonce      string `json:"nonce"`
-	Ciphertext string `json:"ciphertext"`
+	Version           int    `json:"version"`
+	EncryptedFilename string `json:"encrypted_filename,omitempty"`
 }
 
 // DecodeObject rejects unknown/case-alias/duplicate fields, nulls, missing
@@ -92,24 +95,17 @@ func canonicalBase64(s string, min, max int) ([]byte, error) {
 	return b, nil
 }
 
+// publicKeyFingerprint accepts a hybrid age recipient in its canonical string
+// form and returns SHA-256 over that string, unpadded base64url.
 func publicKeyFingerprint(s string) (string, error) {
-	der, err := canonicalBase64(s, 1, 512)
-	if err != nil {
-		return "", err
-	}
-	key, err := x509.ParsePKIXPublicKey(der)
-	if err != nil {
+	if len(s) > maxRecipientChars || !strings.HasPrefix(s, recipientPrefix) {
 		return "", ErrInvalid
 	}
-	rsaKey, ok := key.(*rsa.PublicKey)
-	if !ok || rsaKey.N.BitLen() != 2048 || rsaKey.E != 65537 || rsaKey.N.Bit(0) != 1 {
+	recipient, err := age.ParseHybridRecipient(s)
+	if err != nil || recipient.String() != s {
 		return "", ErrInvalid
 	}
-	canonical, err := x509.MarshalPKIXPublicKey(rsaKey)
-	if err != nil || !bytes.Equal(der, canonical) {
-		return "", ErrInvalid
-	}
-	fp := sha256.Sum256(der)
+	fp := sha256.Sum256([]byte(s))
 	return base64.RawURLEncoding.EncodeToString(fp[:]), nil
 }
 
@@ -129,35 +125,29 @@ func validateEnvelope(raw json.RawMessage, kind string) ([]byte, error) {
 	if len(raw) > EnvelopeMaxBytes {
 		return nil, ErrInvalid
 	}
-	var fields map[string]json.RawMessage
-	if err := DecodeObject(raw, &fields, []string{"version", "algorithm", "wrapped_key", "nonce"}, []string{"encrypted_filename"}); err != nil {
+	var e Envelope
+	if err := DecodeObject(raw, &e, []string{"version"}, []string{"encrypted_filename"}); err != nil {
 		return nil, err
 	}
-	var e Envelope
-	if err := json.Unmarshal(raw, &e); err != nil || e.Version != 1 || e.Algorithm != algorithm {
+	if e.Version != envelopeVersion {
 		return nil, ErrInvalid
 	}
-	if _, err := canonicalBase64(e.WrappedKey, 256, 256); err != nil {
-		return nil, err
-	}
-	nonce, err := canonicalBase64(e.Nonce, 12, 12)
-	if err != nil {
-		return nil, err
-	}
-	if kind == "file" {
-		var name EncryptedFilename
-		if err := DecodeObject(fields["encrypted_filename"], &name, []string{"nonce", "ciphertext"}, nil); err != nil {
-			return nil, err
-		}
-		filenameNonce, err := canonicalBase64(name.Nonce, 12, 12)
-		if err != nil || bytes.Equal(nonce, filenameNonce) {
+	switch kind {
+	case "file":
+		name, err := canonicalBase64(e.EncryptedFilename, len(AgeMagic), maxEncryptedNameLen)
+		if err != nil || !isAgeFile(name) {
 			return nil, ErrInvalid
 		}
-		if _, err := canonicalBase64(name.Ciphertext, 17, 1040); err != nil {
-			return nil, err
+	case "text":
+		if e.EncryptedFilename != "" {
+			return nil, ErrInvalid
 		}
-	} else if kind != "text" || e.EncryptedFilename != nil {
+	default:
 		return nil, ErrInvalid
 	}
 	return json.Marshal(e)
+}
+
+func isAgeFile(b []byte) bool {
+	return bytes.HasPrefix(b, []byte(AgeMagic))
 }

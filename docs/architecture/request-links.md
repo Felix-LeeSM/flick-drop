@@ -1,10 +1,11 @@
-# One-time request links v1
+# One-time request links
 
-Status: approved v1 contract from #203. #205 implements the inline API and
-SQLite lifecycle; #207 implements reserved object uploads and recurring cleanup.
-#204 implements browser crypto and #206 implements the requester/submitter UI.
-Existing send-link formats and CLI vectors are
-unchanged. Sender management follows the separate #199 contract.
+Status: request links use the age format (M13). #288 moved the API, schema and
+contract; #289 moves the browser. The first version (#203–#207) used RSA-OAEP
+and AES-GCM; that format is gone, and the API migration drops its rows (see
+"Ownership and implementation boundaries"). Send links follow
+`contracts/age-format-v1.md`; sender management follows the separate #199
+contract.
 
 ## Product and authority
 
@@ -13,28 +14,29 @@ The requester shares a separate submission link. The first accepted submission
 wins; the requester can release its ciphertext once and decrypt locally. There
 are no accounts, repeat collection, permanent inboxes, or recovery service.
 
-The browser generates a fresh RSA key pair before creation. The API receives
-only the public key and issues independent 32-byte random submission and
-retrieval tokens. Both use unpadded base64url; the API stores SHA-256 hashes,
-never raw tokens. Tokens are unrelated to key material and the request ID.
+The requester browser generates a fresh age identity before creation. The API
+receives only its recipient (the public half) and issues independent 32-byte
+random submission and retrieval tokens. Both use unpadded base64url; the API
+stores SHA-256 hashes, never raw tokens. Tokens are unrelated to key material
+and the request ID.
 
 | Capability | Read submission instructions | Submit | Read owner status/revoke | Release ciphertext | Decrypt |
 | --- | --- | --- | --- | --- | --- |
 | ID alone | No | No | No | No | No |
-| Submission token and public-key fingerprint | Yes | Once | No | No | No |
+| Submission token and recipient fingerprint | Yes | Once | No | No | No |
 | Retrieval token | No | No | Yes | Once | No |
-| RSA private key alone | No | No | No | No | Only with ciphertext |
-| Private retrieval link (token and key) | No | No | Yes | Once | Yes |
+| age identity alone | No | No | No | No | Only with ciphertext |
+| Private retrieval link (token and identity) | No | No | Yes | Once | Yes |
 
 Submission URL: `/r/{id}#submit=<token>&fp=<fingerprint>`.
-Private retrieval URL: `/r/{id}/receive#receive=<token>&key=<pkcs8>`.
+Private retrieval URL: `/r/{id}/receive#receive=<token>&key=<identity>`.
 Fragments never enter HTTP requests. The appropriate token travels only in
 `Authorization: Bearer <token>`, never in a query or path. Cross-role tokens
 fail authorization. Apply `Cache-Control: no-store` to all request API responses,
 allow Authorization only for the configured web CORS origin, and exclude
 headers, bodies, URLs, tokens, and key material from logs and telemetry.
 
-The submission fragment's fingerprint pins the public key against accidental
+The submission fragment's fingerprint pins the recipient against accidental
 or server-side substitution when the client code is honest. Whoever can replace
 the shared link can replace its fingerprint. A malicious server can still serve
 malicious JavaScript; this browser limitation is the same as ordinary send links.
@@ -42,113 +44,88 @@ No requester identity or submitter identity is authenticated.
 
 ## Key custody
 
-Only the requester browser generates or imports the RSA private key. Export it
-as PKCS#8 for the private retrieval fragment; never transmit it to the API.
-Keep working keys and decrypted data in memory. Do not put them in
-localStorage, sessionStorage, IndexedDB, analytics, or Svelte history state.
+Only the requester browser generates the identity. It is a hybrid ML-KEM-768 +
+X25519 age identity (`AGE-SECRET-KEY-PQ-1…`, 77 characters), the same type a
+Model B send link carries. It goes into the private retrieval fragment as is and
+is never transmitted to the API. Keep identities and decrypted data in memory.
+Do not put them in localStorage, sessionStorage, IndexedDB, analytics, or Svelte
+history state.
 
-The private retrieval URL deliberately contains the key, unlike an ordinary
+The private retrieval URL deliberately contains the identity, unlike an ordinary
 sender management URL. Saving or reopening that complete private URL supports
 refresh, browser restart, and another device while the request is valid. The
 UI must explain that clipboard managers, browser history/sync, screenshots, and
 anyone receiving the link may retain the complete retrieval capability. Do not
 promise the URL is absent from history. A fragment-free URL cannot recover it.
-Losing the complete link/key means the submission cannot be recovered.
+Losing the complete link or identity means the submission cannot be recovered.
 
-On the retrieval page, import and validate the private key before enabling
-Open. Derive its public key and verify the stored public-key fingerprint before
-the consuming request. Status reads do not consume. After consumption, a
-refresh cannot retrieve again; retain the plaintext/download only in memory.
-Do not automatically open, replay an open, or retry a lost open response.
+On the retrieval page, parse the identity and derive its recipient before
+enabling Open. The derived recipient must equal the `public_key` from owner
+status; a mismatch means the link pairs the wrong identity with this request.
+Status reads do not consume. After consumption, a refresh cannot retrieve
+again; retain the plaintext/download only in memory. Do not automatically open,
+replay an open, or retry a lost open response.
 
-## Browser encryption envelope
+## Encryption format
 
-Use only native Web Crypto primitives in a secure context: RSA-OAEP with
-SHA-256/MGF1-SHA-256, a 2048-bit modulus, and exponent 65537; AES-256-GCM with a
-128-bit tag. RSA encrypts only a fresh 32-byte AES content key, never the file.
-This uses the [Web Crypto RSA-OAEP operations](https://www.w3.org/TR/webcrypto/#rsa-oaep)
-and [AES-GCM operations](https://www.w3.org/TR/webcrypto/#aes-gcm).
-If these operations are unavailable, show an unsupported-browser error before
-creation/submission; do not downgrade or add a custom primitive.
+A submission is standard age, as `contracts/age-format-v1.md` pins it for send
+links. There is no Flick-specific construction.
 
-Public keys use DER SPKI encoded as canonical standard base64. The fingerprint
-is SHA-256 over the SPKI bytes, encoded unpadded base64url. Validate DER RSA
-public key type, modulus length, and exponent in both API and browser. Private
-fragments use canonical unpadded base64url DER PKCS#8; bound the encoded key to
-4,096 characters before decoding and reject other algorithms/sizes.
+- `public_key` is the hybrid recipient (`age1pq1…`, about 1,960 characters) in
+  its canonical lowercase Bech32 string. The API parses it with
+  `age.ParseHybridRecipient` and accepts it only if it re-encodes to the same
+  string, at most 2,400 characters. Other recipient types are refused.
+- The fingerprint is SHA-256 over that exact string, unpadded base64url.
+- The body is one age file to that recipient. For a file, the filename is a
+  second age file to the same recipient (UTF-8, 1..1024 bytes before
+  encryption). Unknown MIME types download as `application/octet-stream`; no
+  plaintext filename or MIME type is sent.
+- `size_bytes` is the exact age file length, the same unit secrets use. The
+  inline path sends the file as canonical standard base64 in `ciphertext`; the
+  large path PUTs those raw bytes to the object store.
 
-Each submit attempt generates a new AES key and independent random 12-byte
-payload and filename nonces; reject equal nonces. There is no passphrase/KDF.
-For request ID `id` and kind `text` or `file`, byte-exact UTF-8 bindings are:
-
-```text
-RSA-OAEP label: Flick request v1\n{id}\n{kind}\nkey
-Payload AAD:   Flick request v1\n{id}\n{kind}\npayload
-Filename AAD:  Flick request v1\n{id}\n{kind}\nfilename
-```
-
-Here `\n` denotes one LF byte, with no final newline. IDs permit no newline.
-RSA wrapping and AES authentication bind the content to the request and kind.
-Unwrapping must return exactly 32 bytes. Check declared plaintext size against
-the decrypted byte length before displaying or downloading.
-
-The envelope object has these exact fields (all binary fields standard base64):
+The envelope beside the body is:
 
 ```text
-version: 1
-algorithm: "RSA-OAEP-256+A256GCM"
-wrapped_key: 256 bytes
-nonce: 12 bytes
-encrypted_filename: absent for text; {nonce: 12 bytes, ciphertext: 17..1040 bytes} for file
+version: 2
+encrypted_filename: absent for text; for file, canonical standard base64 of an
+                    age file of at most 4,096 bytes
 ```
 
-`kind`, `size_bytes`, and envelope are immutable submission metadata. File names
-are UTF-8, 1..1024 bytes before encryption; unknown MIME types are downloaded
-as `application/octet-stream`. No plaintext filename or MIME subtype is sent.
-Payload ciphertext length is exactly `size_bytes + 16`; inline requests include
-its base64, while large uploads carry those same bytes to the object store.
-Limit serialized envelope JSON to 4,096 bytes. Reject unknown versions,
-algorithms, fields, malformed/noncanonical base64, wrong lengths, negative or
-fractional sizes, kind/filename mismatches, and invalid key material before
-database writes or crypto. Do not reinterpret existing Model A/B envelopes.
+Serialized envelope JSON is at most 8,192 bytes. The API rejects unknown
+versions and fields, duplicate or case-alias keys, nulls, malformed or
+noncanonical base64, a body or filename that does not start with the age header
+line `age-encryption.org/v1\n`, wrong lengths, negative or fractional sizes, and
+kind/filename mismatches, before any database write. It cannot check anything
+inside an age file; only the requester's decryption authenticates the content.
 
-## Browser crypto module (#204)
+Each request has its own identity, so a body encrypted for one request cannot be
+decrypted under another. Unlike the first version, the request ID and kind are
+not bound into the ciphertext. The server could therefore relabel a submission
+as `text` or `file`, which changes only how the requester's browser presents
+the decrypted bytes. Secrets carry `kind` the same way.
 
-`web/src/lib/crypto/requests.ts` implements this envelope without HTTP, browser
-storage, UI, or crypto dependencies. Callers supply explicit plaintext byte
-bounds through `RequestLimits.maxTextBytes` and `RequestLimits.maxFileBytes`;
-the later API client subtracts the 16-byte GCM tag from its inline ciphertext
-limit to obtain `maxTextBytes`. The module returns base64 ciphertext for the inline
-path; large-upload callers decode those same bytes for the object-store PUT.
-Existing send-link crypto remains separate.
+## Browser crypto module (#289)
 
-Both key import functions require the expected public-key fingerprint. The
-submitter obtains that value from its shared fragment; the requester obtains
-it from owner status before consuming Open. Imports check native RSA parameters
-and byte-for-byte canonical DER re-export. Private import also verifies a local
-OAEP encrypt/decrypt challenge so structurally accepted but unusable private
-components cannot enable a consuming Open. Keys and challenge bytes stay in
-memory. The module rejects request IDs longer than 256 characters, CR/LF, and
-lossy UTF-8; callers use the server-issued ID unchanged.
+The browser builds on `web/src/lib/crypto/age.ts`, the same module send links
+use. The requester page generates the identity with `generateSecretIdentity`
+and derives the recipient for creation. The submitter page encrypts the body as
+a stream (64 KiB chunks) into a Blob and hashes the age bytes for the large
+path's `ciphertext_sha256`. The requester page opens the response body as a
+stream with `decryptWith`, which authenticates every chunk and fails on a
+truncated file instead of showing a partial one.
 
-`tests/fixtures/request-crypto-v1.json` contains immutable public synthetic
-RSA material and ciphertext produced independently with Node's `node:crypto`.
-Never use these keys for real requests or regenerate the fixture to match a
-changed implementation. Unit tests decrypt those vectors, reject an otherwise
-valid AES-128 downgrade, and cover malformed keys, tampering and request/kind
-replay. Run `pnpm --dir web test` for unit coverage and
-`pnpm --dir web exec node --test src/lib/crypto/requests.browser.mjs` for actual
-Chromium Web Crypto. The browser harness bundles the module with Vite and serves
-it through Playwright's intercepted HTTPS origin, with no listener, API, or
-object store. Native RSA-OAEP/AES-GCM and secure contexts are required; the
-included browser check targets Chromium, with no Firefox or Safari validation.
+Callers bound plaintext with the advertised `/api/config` limits, which are
+already plaintext sizes. The browser converts a plaintext length to the age
+file length with the size formula in `contracts/age-format-v1.md` to choose
+between the inline and the large path.
 
-## Browser flow (#206 and #207)
+## Browser flow (#206, #207 and #289)
 
 `/request` creates a request; `/r/{id}` submits text, one file, or a structured
 credential (serialized as `FLCR1:` text, so its request kind stays `text`);
 `/r/{id}/receive` checks requester status, cancels, or opens once. The main send
-page links to request creation. Existing Model A/B send formats are unchanged.
+page links to request creation.
 `web/src/lib/api/requests.ts` sends only the selected capability in Authorization,
 uses empty bodies for Open/revoke, and snapshots each encrypted submission body
 with its generation and random attempt token for exact retries.
@@ -157,9 +134,9 @@ with its generation and random attempt token for exact retries.
 transient submission-link handoff. Only submission links get native Share and QR
 controls. The private retrieval link has a separate copy action and explicitly
 warns about key loss, browser history/sync, clipboard managers, and screenshots.
-A private link without its key still permits status/cancellation; it cannot enable
-Open. The full private link supports reload and another device, but cannot recover
-the separate submission link or a consumed response.
+A private link without its identity still permits status/cancellation; it cannot
+enable Open. The full private link supports reload and another device, but cannot
+recover the separate submission link or a consumed response.
 
 Owner polling starts at ten seconds, runs only while visible, backs off to at most
 120 seconds on failures, and stops at terminal states or expiry. Cancellation
@@ -176,13 +153,13 @@ page explains that its previous in-memory attempt was discarded.
 Submitters check the fragment fingerprint before encryption and verify configured
 limits before submitting. Files use the advertised `maxFileBytes`, which the API
 already clamps to the inline allowance when object storage is disabled.
-`payloadInlineMaxBytes` is the plaintext allowance after the secrets' age
-overhead (1,044,208 by default), below the 1,048,560 that this format's
-16-byte tag would allow; text and files within it use the inline path. The API accepts a large upload of any file
-size, so that gap cannot strand a file. Larger files retain an
-immutable ciphertext/checksum/attempt snapshot in memory, reserve an upload, PUT
-the ciphertext with byte progress, and finalize. A complete PUT is not acceptance.
-Only a successful submit/finalize or matching accepted receipt confirms acceptance.
+`payloadInlineMaxBytes` is the plaintext allowance after age overhead (1,044,208
+by default); text and files within it use the inline path. The API accepts a
+large upload of any file size, so a file never gets stranded between the two
+paths. Larger files keep an immutable ciphertext Blob, checksum and attempt
+snapshot, reserve an upload, PUT the ciphertext with byte progress, and
+finalize. A complete PUT is not acceptance. Only a successful submit/finalize or
+matching accepted receipt confirms acceptance.
 
 After an unknown response, the user checks the same attempt and can explicitly
 retry its exact encrypted bytes. Cancellation must abandon that reservation and
@@ -190,17 +167,19 @@ confirm a new generation before offering a new submission. If the reservation
 response was lost, cancellation first resolves the same immutable reservation;
 it cannot assume that aborting an HTTP request removed server state. An expired
 upload instruction must be abandoned before a new attempt. Leaving/reloading
-discards the retry receipt. No private key, plaintext, or filename is written to
+discards the retry receipt. No identity, plaintext, or filename is written to
 browser storage, Svelte navigation state, HTTP, or error messages.
 
 ## Lifetime and transitions
 
 Use the existing configured min/default/max TTL and size limits. Defaults are
-300/3600/604800 seconds, a 1,048,576-byte inline ciphertext limit, and a
-52,428,800-byte plaintext file limit. The single deadline is creation time plus
-TTL: submitting never extends it. Plaintext text must fit the inline bound
-after the 16-byte GCM tag. Owner metadata and token hashes expire at that same
-deadline; an API reaper removes them. Backup/WAL residual risks still apply.
+300/3600/604800 seconds, a 1,048,576-byte inline age file limit
+(`FLICK_PAYLOAD_INLINE_MAX_BYTES`), and a plaintext file limit
+(`FLICK_MAX_FILE_BYTES`). A large upload may be up to the largest age file that
+plaintext limit produces (`secrets.MaxCiphertextBytes`). The single deadline is
+creation time plus TTL: submitting never extends it. Owner metadata and token
+hashes expire at that same deadline; an API reaper removes them. Backup/WAL
+residual risks still apply.
 
 | Current state | Operation | Result |
 | --- | --- | --- |
@@ -208,7 +187,7 @@ deadline; an API reaper removes them. Backup/WAL residual risks still apply.
 | waiting | Large reservation | uploading, one attempt and object key reserved |
 | uploading | Correct attempt finalize, verified object | submitted |
 | uploading | Reservation deadline | waiting if request remains valid; old attempt permanently invalid |
-| submitted | Owner open | consumed; release once and enqueue cleanup atomically |
+| submitted | Owner open | consumed; inline bytes removed in the same transaction, object cleanup queued when its stream ends |
 | waiting/uploading/submitted | Owner revoke | cancelled; remove inline bytes and enqueue object cleanup atomically |
 | any live state | Request deadline | unavailable, never reopen |
 | consumed/cancelled | Repeated revoke | consumed conflict / cancelled idempotent success |
@@ -239,8 +218,8 @@ with the same token and exact content returns the previous outcome without
 another transition; a different body/token conflicts. A submitter may query its
 attempt status using submission authorization and the attempt token in a POST
 body after a lost response. Status returns no ciphertext or owner token.
-Clients retry only that exact immutable generation and attempt; they never regenerate an
-encryption key or new attempt automatically after an unknown outcome.
+Clients retry only that exact immutable generation and attempt; they never re-encrypt
+or create a new attempt automatically after an unknown outcome.
 
 Creation response loss cannot recover server-issued tokens. Explain the unknown
 outcome and let the unused request expire; never automatically create again.
@@ -264,7 +243,7 @@ return `503 storage_unavailable` and do not consume or finalize.
 | POST `/{id}/submit` | Submission token | generation, attempt_token, kind, size_bytes, envelope, ciphertext → submitted receipt |
 | POST `/{id}/attempt` | Submission token | generation, attempt_token → waiting/uploading/accepted/unavailable; no owner details |
 | GET `/{id}/owner` | Retrieval token | public_key, fingerprint, expires_at, state; no ciphertext |
-| POST `/{id}/open` | Retrieval token | no body → one envelope and ciphertext; consuming |
+| POST `/{id}/open` | Retrieval token | no body → the age file as `application/octet-stream`; consuming |
 | POST `/{id}/revoke` | Retrieval token | no body → cancelled; consumed returns conflict |
 | POST `/{id}/upload` | Submission token | generation, attempt_token, immutable file metadata and ciphertext checksum → upload instruction, reservation_expires_at |
 | POST `/{id}/finalize` | Submission token | generation, attempt_token → submitted receipt |
@@ -276,10 +255,18 @@ parameters, duplicate JSON fields, case aliases, unknown fields, and null values
 are rejected. Successful submit returns `{generation, state: "submitted"}`;
 attempt status returns `{generation, state: "waiting"|"uploading"|"accepted"|"unavailable"}`.
 Only the matching active attempt sees `uploading`; other attempts see `unavailable`.
-Open returns `{kind, size_bytes, envelope, ciphertext}` and revoke returns
-`{state: "cancelled"}`. The accepted receipt survives open/revoke until expiry
-and describes historical acceptance, not present deliverability. Immutable
-content comparison ignores JSON whitespace and property order.
+Revoke returns `{state: "cancelled"}`. The accepted receipt survives open/revoke
+until expiry and describes historical acceptance, not present deliverability.
+Immutable content comparison ignores JSON whitespace and property order.
+
+Open answers like a secret open. The body is the raw age file; `Content-Length`
+is its exact length, `Flick-Kind` is `text` or `file`, and a file carries
+`Flick-Encrypted-Filename` (base64 of the filename age file). The request is
+consumed before the first body byte, so a transfer that breaks midway loses the
+submission; the requester's decryption then fails at the missing final chunk.
+An object-store body is opened before the consuming transaction, so a bucket
+that cannot serve it leaves the request openable. A stream may last at most 30
+minutes (`requests.OpenStreamTimeout`).
 
 Inline open/revoke delete payload bytes and encrypted metadata in their SQLite
 transaction, so no external cleanup job remains. Every write transaction checks
@@ -300,9 +287,10 @@ a manual refresh. No WebSocket or notification service is added.
 
 `/upload` accepts a strict object containing `generation`, `attempt_token`,
 `kind: "file"`, `size_bytes`, `envelope`, and `ciphertext_sha256` (canonical
-standard base64 of the 32-byte SHA-256 digest of the ciphertext). Files must exceed
-the inline ciphertext limit and stay within the configured plaintext file limit.
-The HTTP body is bounded to 8,192 bytes. Disabled S3 returns
+standard base64 of the 32-byte SHA-256 digest of the age file). `size_bytes` is
+the exact age file length: at least the 22-byte age header line and at most the
+largest age file a maximum-size file produces. Any file may take this path. The
+HTTP body is bounded to 16,384 bytes. Disabled S3 returns
 `503 storage_unavailable`; advertised file limits already clamp to the inline
 maximum when S3 is disabled.
 
@@ -329,19 +317,25 @@ discard attempt material or generate a new attempt until a newer generation or
 terminal result establishes the outcome.
 
 Object keys are unique, never reused, and exclusively under `managed/requests/`.
-Each attempt has its own key. Pin ciphertext length in the signed PUT and store
-the expected SHA-256 ciphertext checksum with the reservation. Validate actual
-bytes against that checksum before accepting finalize. The checksum is integrity
-metadata, not an access token.
+Each attempt has its own key. Pin the age file length in the signed PUT and
+store the expected SHA-256 checksum with the reservation. The checksum is
+integrity metadata, not an access token.
 An old issued PUT must never overwrite the immutable accepted payload: finalize
-writes those same verified bytes to a distinct server-only final key, then atomically
-accepts that final key only if the attempt remains the active reservation. No
-PUT instruction targets a final key. There is exactly one stable final key per
-immutable attempt, reused by same-attempt finalize retries. Reserve the final key in the active attempt
-record before the server write, so reconciliation protects both that final key
-and the upload key until the attempt commits or becomes invalid. Do not validate
-a GET then copy a mutable
-source key: another PUT could replace the source between those operations.
+streams the uploaded bytes into a distinct server-only final key while hashing
+them, and accepts that final key only if the bytes have the reserved length and
+checksum, start with the age header line, and the attempt remains the active
+reservation. The check runs on the spooled copy before anything is written, so
+a losing finalizer that read a re-PUT upload cannot overwrite the accepted final
+object. Finalize holds no body in memory; the object client spools the copy to a
+temporary file so the PUT carries a plain `Content-Length`
+(`internal/storage/object.go`). Each running finalize therefore uses up to one
+object's size of the API container's temporary disk (`/tmp`, no separate limit). No PUT instruction targets a final key. There is
+exactly one stable final key per immutable attempt, reused by same-attempt
+finalize retries. Reserve the final key in the active attempt record before the
+server write, so reconciliation protects both that final key and the upload key
+until the attempt commits or becomes invalid. Because the checksum is computed
+over the very bytes written to the final key, another PUT replacing the upload
+key mid-copy cannot slip unverified bytes into the final key.
 A duplicate finalize returns the accepted receipt if that same attempt already
 won. Concurrent writes to the final key must use the identical bytes verified
 against the immutable attempt checksum. A losing call, timeout, or failed PUT
@@ -351,8 +345,14 @@ Only API-owned cleanup/reconciliation may schedule deletion after a transaction
 proves the key has no active or accepted reference and its generation cannot be
 accepted again. Submitted keys remain protected until open/revoke/expiry; active
 attempt keys remain protected until their attempt/request deadline or abandon.
-Check request expiry again when committing after object verification. Finalize may buffer ciphertext
-up to the existing file-size cap, as the current open operation already does.
+Check request expiry again when committing after object verification.
+
+An opened object keeps its `final_key` on the consumed row, stamped with
+`consumed_at`, while its body streams. When the stream ends, the API clears the
+key and queues the delete (`Store.FinishOpen`). If that step never runs (the API
+stops mid-stream), reconciliation and the expiry purge leave the object alone
+for 35 minutes after `consumed_at`, longer than the 30-minute stream limit, and
+then reclaim it.
 
 Immediate unavailability does not mean immediate physical deletion. Revoke,
 open, expiry, reservation expiry, and abandon enqueue ID/key-only cleanup using
@@ -366,29 +366,21 @@ risks; no lifecycle rule is silently assumed configured.
 
 ## Ownership and implementation boundaries
 
-Use an API-owned `requests` table for public key, token hashes, state, expiry,
+Use an API-owned `requests` table for recipient, token hashes, state, expiry,
 current generation and attempt receipt/hash, immutable envelope, and storage reference, and a separate
 inline payload table with cascading deletion. Keep payload-independent owner
 metadata only until the original deadline. The API alone writes these tables;
 the worker continues processing cleanup through existing internal interfaces.
 `internal/db/migrations.go` and `contracts/openapi.yaml` define the implemented
-schema and HTTP shapes. `internal/db/requests.go` upgrades older inline-only
-tables by rebuilding the state CHECK on one pinned connection while preserving
-inline payloads and their foreign key. Request storage references, reservation
-deadlines, and independent reconciliation cursor/claims are API-owned.
+schema and HTTP shapes. `internal/db/requests.go` drops a `requests` table that
+lacks `consumed_at`, with its payloads: such a table holds RSA-era submissions
+that no client can open any more. Objects those rows referenced are reclaimed by
+reconciliation. Request storage references, reservation deadlines, and
+independent reconciliation cursor/claims are API-owned.
 
-- #204: browser-only crypto module, immutable synthetic decrypt golden vectors,
-  tamper/cross-request vectors and strict validation; no HTTP/UI/storage.
-- #205: inline API, schema, contracts, auth/state/race/expiry tests; no large
-  reservation endpoints or request UI.
-- #206: requester/submitter API client and browser flow using #204, two-context
-  end-to-end tests, and explicit private-link custody and unknown-outcome UX.
-- #207: reserved object uploads, immutable final storage, reconciliation, and
-  actual browser/MinIO tests, including delayed PUT and losing finalizers.
-
-All four require independent review. Test missing/cross-role tokens, substituted
-keys, modified envelopes, duplicate/conflicting submits, parallel opens/revokes,
-expired requests, mismatched private keys, and existing send-link compatibility.
-Include A-expired/B-abandoned/A-delayed reservation replay, the generation
-upper bound, simultaneous same-attempt finalize, and final PUT response loss
-followed by retry; an accepted final key must survive every losing call.
+Tests cover missing/cross-role tokens, substituted recipients, modified
+envelopes, duplicate/conflicting submits, parallel opens/revokes, expired
+requests, A-expired/B-abandoned/A-delayed reservation replay, the generation
+upper bound, simultaneous same-attempt finalize, final PUT response loss
+followed by retry (an accepted final key must survive every losing call), and
+an opened object that stays protected for the stream grace.

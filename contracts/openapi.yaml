@@ -655,14 +655,31 @@ paths:
         - $ref: "#/components/parameters/SecretId"
       responses:
         "200":
-          description: Release ciphertext at most once; never automatically retry.
+          description: >
+            Request consumed. The body is the submitted age file, streamed; the
+            request is consumed before the first byte, so a broken stream loses
+            the submission (the client sees a truncated age file).
           headers:
             Cache-Control:
               $ref: "#/components/headers/RequestNoStore"
-          content:
-            application/json:
+            Content-Length:
+              description: Exact age file length, equal to the submitted size_bytes.
               schema:
-                $ref: "#/components/schemas/RequestPayload"
+                type: integer
+            Flick-Kind:
+              required: true
+              schema:
+                type: string
+                enum: [text, file]
+            Flick-Encrypted-Filename:
+              description: File submissions only. Base64 of the filename age file.
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
         "400":
           $ref: "#/components/responses/RequestInvalid"
         "404":
@@ -834,9 +851,12 @@ components:
       description: Canonical unpadded base64url encoding of exactly 32 bytes, including zero trailing pad bits.
     RequestPublicKey:
       type: string
-      format: byte
-      maxLength: 684
-      description: Canonical standard base64 DER SPKI RSA public key; modulus 2048 bits, exponent 65537. No other key type is accepted.
+      maxLength: 2400
+      pattern: '^age1pq1[02-9ac-hj-np-z]+$'
+      description: >
+        Hybrid ML-KEM-768 + X25519 age recipient in canonical lowercase Bech32
+        (about 1960 characters). No other recipient type is accepted. The
+        fingerprint is unpadded base64url SHA-256 of this exact string.
     RequestGeneration:
       type: integer
       minimum: 1
@@ -893,45 +913,19 @@ components:
     RequestEnvelope:
       type: object
       additionalProperties: false
-      required: [version, algorithm, wrapped_key, nonce]
+      required: [version]
       description: >
-        Serialized JSON is at most 4096 bytes. Binary fields require canonical
-        standard base64. Version 1 uses RSA-OAEP SHA-256/MGF1-SHA-256 and
-        AES-256-GCM with a 16-byte tag. Clients must enforce the request ID and
-        kind bindings defined in docs/architecture/request-links.md. The API
-        validates shapes and lengths; only the client can authenticate ciphertext.
+        Serialized JSON is at most 8192 bytes. Version 2 is the age format
+        (contracts/age-format-v1.md): the body and the filename are each an age
+        file to the request's recipient. The API checks shapes, lengths and the
+        age header magic; only the client can authenticate ciphertext.
       properties:
-        version: {type: integer, const: 1}
-        algorithm: {type: string, const: RSA-OAEP-256+A256GCM}
-        wrapped_key:
-          type: string
-          format: byte
-          minLength: 344
-          maxLength: 344
-          description: Exactly 256 decoded bytes wrapping a fresh 32-byte AES key.
-        nonce:
-          type: string
-          format: byte
-          minLength: 16
-          maxLength: 16
-          description: Exactly 12 decoded bytes.
+        version: {type: integer, const: 2}
         encrypted_filename:
-          type: object
-          additionalProperties: false
-          required: [nonce, ciphertext]
-          properties:
-            nonce:
-              type: string
-              format: byte
-              minLength: 16
-              maxLength: 16
-              description: Exactly 12 decoded bytes; must differ from payload nonce.
-            ciphertext:
-              type: string
-              format: byte
-              minLength: 24
-              maxLength: 1388
-              description: 17..1040 decoded bytes.
+          type: string
+          format: byte
+          maxLength: 5464
+          description: Canonical standard base64 of an age file of at most 4096 bytes encrypting the UTF-8 filename.
     RequestKindRules:
       if:
         properties:
@@ -945,25 +939,6 @@ components:
         properties:
           envelope:
             required: [encrypted_filename]
-    RequestPayload:
-      type: object
-      additionalProperties: false
-      required: [kind, size_bytes, envelope, ciphertext]
-      allOf:
-        - $ref: "#/components/schemas/RequestKindRules"
-      properties:
-        kind: {type: string, enum: [text, file]}
-        size_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-          description: Original content length. Text fits the configured inline bound; files obey the configured file-size limit and may use object storage.
-        envelope:
-          $ref: "#/components/schemas/RequestEnvelope"
-        ciphertext:
-          type: string
-          format: byte
-          description: Canonical standard base64 of exactly size_bytes + 16 decoded bytes.
     SubmitRequest:
       type: object
       additionalProperties: false
@@ -985,13 +960,14 @@ components:
         size_bytes:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 22
+          description: Exact age file length, within the configured inline limit; files also within the object limit.
         envelope:
           $ref: "#/components/schemas/RequestEnvelope"
         ciphertext:
           type: string
           format: byte
-          description: Canonical standard base64 of exactly size_bytes + 16 decoded bytes, within the configured inline limit.
+          description: Canonical standard base64 of exactly size_bytes decoded bytes, starting with the age header magic.
     RequestUpload:
       type: object
       additionalProperties: false
@@ -999,9 +975,11 @@ components:
       allOf:
         - $ref: "#/components/schemas/RequestKindRules"
       description: >
-        Strict immutable file reservation, bounded to 8192 HTTP body bytes.
-        Ciphertext size must exceed the inline threshold; original file size cannot
-        exceed the configured maximum file size. The attempt digest covers the
+        Strict immutable file reservation, bounded to 16384 HTTP body bytes.
+        size_bytes is the exact age file length; it cannot exceed the largest age
+        file a maximum-size file produces. Any file may take this path. Finalize
+        accepts the upload only if it has that length and checksum and starts
+        with the age header magic. The attempt digest covers the
         canonical envelope, kind, size and checksum. Retries never extend either
         deadline; different metadata or another active attempt conflicts.
         S3 disabled or signing failures return storage_unavailable.
@@ -1011,7 +989,7 @@ components:
         attempt_token:
           $ref: "#/components/schemas/RequestCapability"
         kind: {type: string, const: file}
-        size_bytes: {type: integer, format: int64, minimum: 0}
+        size_bytes: {type: integer, format: int64, minimum: 22, description: Exact age file length.}
         envelope:
           $ref: "#/components/schemas/RequestEnvelope"
         ciphertext_sha256:

@@ -57,12 +57,12 @@ type ObjectStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// RequestObjectStore adds bounded reads and server-only final writes. Existing
-// send-link storage behavior continues using ObjectStore unchanged.
+// RequestObjectStore adds server-only final writes for request links.
 type RequestObjectStore interface {
 	ObjectStore
-	GetBounded(context.Context, string, int64) ([]byte, error)
-	Put(context.Context, string, []byte) error
+	// PutStream writes exactly size bytes read from body to key, only if
+	// verify accepts them once they are all read.
+	PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error
 }
 
 type Client struct {

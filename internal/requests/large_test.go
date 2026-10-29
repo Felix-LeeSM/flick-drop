@@ -42,23 +42,24 @@ func (o *requestObjects) body(key string) []byte {
 	defer o.mu.Unlock()
 	return bytes.Clone(o.bodies[key])
 }
-func (o *requestObjects) GetBounded(_ context.Context, key string, limit int64) ([]byte, error) {
+func (o *requestObjects) Open(_ context.Context, key string) (io.ReadCloser, int64, error) {
 	if o.getHook != nil {
 		o.getHook(key)
 	}
 	b := o.body(key)
 	if b == nil {
-		return nil, errors.New("missing object")
+		return nil, 0, errors.New("missing object")
 	}
-	if int64(len(b)) > limit {
-		return nil, storage.ErrObjectTooLarge
+	return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
+}
+func (o *requestObjects) PutStream(_ context.Context, key string, r io.Reader, size int64, verify func() error) error {
+	b, err := io.ReadAll(io.LimitReader(r, size))
+	if err != nil || int64(len(b)) != size {
+		return errors.New("short object body")
 	}
-	return b, nil
-}
-func (o *requestObjects) Open(context.Context, string) (io.ReadCloser, int64, error) {
-	panic("unbounded open used")
-}
-func (o *requestObjects) Put(_ context.Context, key string, b []byte) error {
+	if err := verify(); err != nil {
+		return err
+	}
 	o.write(key, b)
 	if o.putHook != nil {
 		return o.putHook(key)
@@ -103,17 +104,19 @@ func largeFixture(t *testing.T) (fixture, *requestObjects) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.store.opts.PayloadInlineMaxBytes = 32
-	f.store.opts.MaxFileBytes = 100
+	f.store.opts.PayloadInlineMaxBytes = 64
+	f.store.opts.MaxObjectBytes = 100
 	f.store.opts.Objects = o
 	f.store.opts.Outbox = outbox
 	return f, o
 }
 func largeInput() (UploadInput, []byte) {
+	return largeInputOf(ageBody(40, 9))
+}
+func largeInputOf(data []byte) (UploadInput, []byte) {
 	in := submission("file")
-	data := bytes.Repeat([]byte{9}, 40)
 	digest := sha256.Sum256(data)
-	return UploadInput{Generation: 1, AttemptToken: in.AttemptToken, Kind: "file", SizeBytes: 24, Envelope: in.Envelope, CiphertextSHA256: base64.StdEncoding.EncodeToString(digest[:])}, data
+	return UploadInput{Generation: 1, AttemptToken: in.AttemptToken, Kind: "file", SizeBytes: int64(len(data)), Envelope: in.Envelope, CiphertextSHA256: base64.StdEncoding.EncodeToString(digest[:])}, data
 }
 func reserve(t *testing.T, f fixture, o *requestObjects, c Created, in UploadInput, data []byte) (string, string, UploadResult) {
 	t.Helper()
@@ -206,7 +209,7 @@ func TestLargeReservationFinalizeAndOneTimeOpen(t *testing.T) {
 		t.Fatal("accepted retry", again, err)
 	}
 	payload, err := f.store.Open(ctx, c.ID, c.RetrievalToken)
-	if err != nil || payload.Ciphertext != base64.StdEncoding.EncodeToString(data) {
+	if err != nil || payload.ObjectKey != final || readOpened(t, payload) != base64.StdEncoding.EncodeToString(data) {
 		t.Fatal("open", err)
 	}
 	_, err = f.store.Open(ctx, c.ID, c.RetrievalToken)
@@ -215,9 +218,26 @@ func TestLargeReservationFinalizeAndOneTimeOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal("historical receipt lost", err)
 	}
+	// While the body streams, the consumed row keeps its final key and no
+	// delete is queued for it.
+	var key, consumedAt sql.NullString
+	if err := f.db.QueryRow(`select final_key, consumed_at from requests where id=?`, c.ID).Scan(&key, &consumedAt); err != nil || key.String != final || !consumedAt.Valid {
+		t.Fatal("streaming object lost its protection", key, consumedAt, err)
+	}
+	if jobs := outboxKeys(t, f.db); len(jobs) != 1 || jobs[0].ObjectKey != upload {
+		t.Fatal("final object queued before the stream ended", jobs)
+	}
+	for range 2 {
+		if err := f.store.FinishOpen(ctx, c.ID, final); err != nil {
+			t.Fatal(err)
+		}
+	}
 	jobs := outboxKeys(t, f.db)
-	if len(jobs) != 2 || jobs[0].ObjectKey == jobs[1].ObjectKey {
-		t.Fatal("staging/final cleanup not atomic", jobs)
+	if len(jobs) != 2 || jobs[1].ObjectKey != final || jobs[1].Reason != events.ReasonConsumed {
+		t.Fatal("finished open did not queue the final object once", jobs)
+	}
+	if err := f.db.QueryRow(`select final_key from requests where id=?`, c.ID).Scan(&key); err != nil || key.Valid {
+		t.Fatal("finished open kept the final key", err)
 	}
 	if !bytes.Equal(o.body(final), data) {
 		t.Fatal("API directly deleted accepted object")
@@ -274,12 +294,16 @@ func TestLargeReservationGenerationFencesAndExhaustion(t *testing.T) {
 }
 
 func TestLargeValidationAndStorageFailureDoesNotAccept(t *testing.T) {
-	for _, kind := range []string{"short", "long", "checksum", "missing", "put_response_lost"} {
+	for _, kind := range []string{"short", "long", "checksum", "magic", "missing", "put_response_lost"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			f, o := largeFixture(t)
 			c := f.create(t)
 			in, data := largeInput()
+			if kind == "magic" {
+				// The checksum matches; only the age header is wrong.
+				in, data = largeInputOf(bytes.Repeat([]byte{9}, 40))
+			}
 			upload, final, _ := reserve(t, f, o, c, in, data)
 			switch kind {
 			case "short":
@@ -287,7 +311,7 @@ func TestLargeValidationAndStorageFailureDoesNotAccept(t *testing.T) {
 			case "long":
 				o.write(upload, append(data, 0))
 			case "checksum":
-				o.write(upload, bytes.Repeat([]byte{7}, len(data)))
+				o.write(upload, ageBody(len(data), 7))
 			case "missing":
 				o.Delete(ctx, upload)
 			case "put_response_lost":
@@ -364,7 +388,7 @@ func TestLargeConcurrentFinalizersKeepWinnerKey(t *testing.T) {
 	}
 	o.putHook = nil
 	payload, err := other.Open(ctx, c.ID, c.RetrievalToken)
-	if err != nil || payload.Ciphertext != base64.StdEncoding.EncodeToString(data) {
+	if err != nil || readOpened(t, payload) != base64.StdEncoding.EncodeToString(data) {
 		t.Fatal(err)
 	}
 }
@@ -465,7 +489,7 @@ func TestLargeOpenDoesNotConsumeOnReadFailureOrLoseRevokeRace(t *testing.T) {
 
 func TestLargeBoundariesConflictAndDisabledRetrieval(t *testing.T) {
 	ctx := context.Background()
-	for _, size := range []int64{16, 17, 100, 101} {
+	for _, size := range []int64{int64(len(AgeMagic)) - 1, int64(len(AgeMagic)), 100, 101} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			f, _ := largeFixture(t)
 			c := f.create(t)
@@ -476,6 +500,8 @@ func TestLargeBoundariesConflictAndDisabledRetrieval(t *testing.T) {
 			// the browser routes on the smaller age-adjusted limit from
 			// /api/config.
 			switch size {
+			case int64(len(AgeMagic)) - 1:
+				requireError(t, err, ErrInvalid)
 			case 101:
 				requireError(t, err, ErrTooLarge)
 			default:
@@ -579,5 +605,42 @@ func TestLargeConcurrentReservationVersusInlineOrLarge(t *testing.T) {
 				t.Fatal("competing attempts both accepted", wins, conflicts)
 			}
 		})
+	}
+}
+
+// A losing finalizer that reads a re-PUT upload must not write those bytes
+// over the accepted final object: verification runs before the write.
+func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	c := f.create(t)
+	in, data := largeInput()
+	upload, final, _ := reserve(t, f, o, c, in, data)
+	other := reopenLarge(t, f)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	o.getHook = func(key string) {
+		if key != upload {
+			return
+		}
+		block := false
+		once.Do(func() { block = true; close(entered) })
+		if block {
+			<-release
+		}
+	}
+	loser := make(chan error, 1)
+	go func() { _, err := other.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); loser <- err }()
+	<-entered
+	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
+		t.Fatal(err)
+	}
+	// The presigned PUT is still valid; the submitter replaces the upload.
+	o.write(upload, ageBody(len(data), 3))
+	close(release)
+	requireError(t, <-loser, ErrInvalid)
+	if !bytes.Equal(o.body(final), data) {
+		t.Fatal("losing finalizer overwrote the accepted final object")
 	}
 }

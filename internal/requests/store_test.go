@@ -3,22 +3,20 @@ package requests
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
@@ -28,15 +26,11 @@ var testPublicKey string
 func publicKey(t *testing.T) string {
 	t.Helper()
 	testKeyOnce.Do(func() {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		identity, err := age.GenerateHybridIdentity()
 		if err != nil {
 			t.Fatal(err)
 		}
-		der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		testPublicKey = base64.StdEncoding.EncodeToString(der)
+		testPublicKey = identity.Recipient().String()
 	})
 	return testPublicKey
 }
@@ -59,7 +53,7 @@ func newFixture(t *testing.T) fixture {
 	if err := db.MigrateAPI(context.Background(), conn); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(conn, Options{PayloadInlineMaxBytes: 1024, MaxFileBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	store, err := NewStore(conn, Options{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +77,33 @@ func encoded(size int, value byte) string {
 func attempt(value byte) string {
 	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{value}, 32))
 }
+
+// ageBody is an age-shaped body of size bytes: the store checks only the
+// header magic, so the rest stands in for the encrypted payload.
+func ageBody(size int, value byte) []byte {
+	return append([]byte(AgeMagic), bytes.Repeat([]byte{value}, size-len(AgeMagic))...)
+}
+func ageEncoded(size int, value byte) string {
+	return base64.StdEncoding.EncodeToString(ageBody(size, value))
+}
 func submission(kind string) SubmitInput {
-	e := Envelope{Version: 1, Algorithm: algorithm, WrappedKey: encoded(256, 1), Nonce: encoded(12, 2)}
+	e := Envelope{Version: envelopeVersion}
 	if kind == "file" {
-		e.EncryptedFilename = &EncryptedFilename{Nonce: encoded(12, 3), Ciphertext: encoded(17, 4)}
+		e.EncryptedFilename = ageEncoded(40, 4)
 	}
 	raw, _ := json.Marshal(e)
-	return SubmitInput{Generation: 1, AttemptToken: attempt(5), Kind: kind, SizeBytes: 5, Envelope: raw, Ciphertext: encoded(21, 6)}
+	return SubmitInput{Generation: 1, AttemptToken: attempt(5), Kind: kind, SizeBytes: 60, Envelope: raw, Ciphertext: ageEncoded(60, 6)}
+}
+
+// readOpened drains and closes an opened body, returning it as the base64 a
+// submission carries.
+func readOpened(t *testing.T, opened Opened) string {
+	t.Helper()
+	body, err := io.ReadAll(opened.Body)
+	if err != nil || opened.Body.Close() != nil || int64(len(body)) != opened.SizeBytes {
+		t.Fatalf("opened body: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(body)
 }
 
 func requireError(t *testing.T, got, want error) {
@@ -121,8 +135,7 @@ func TestCreateCapabilitiesAndAuthorization(t *testing.T) {
 	}
 	wantSH, _ := tokenHash(c.SubmissionToken)
 	wantRH, _ := tokenHash(c.RetrievalToken)
-	der, _ := base64.StdEncoding.DecodeString(key)
-	wantFP := sha256.Sum256(der)
+	wantFP := sha256.Sum256([]byte(key))
 	if !bytes.Equal(sh, wantSH) || !bytes.Equal(rh, wantRH) || fp != base64.RawURLEncoding.EncodeToString(wantFP[:]) {
 		t.Fatal("stored hashes or fingerprint")
 	}
@@ -180,8 +193,13 @@ func TestInlineLifecycleAndReceiptAfterConsumption(t *testing.T) {
 				t.Fatal("status/duplicate consumed payload")
 			}
 			opened, err := f.store.Open(ctx, c.ID, c.RetrievalToken)
-			if err != nil || opened.Ciphertext != in.Ciphertext || opened.Kind != kind || opened.SizeBytes != in.SizeBytes {
+			if err != nil || opened.Kind != kind || opened.SizeBytes != in.SizeBytes || opened.ObjectKey != "" || readOpened(t, opened) != in.Ciphertext {
 				t.Fatalf("open: %v", err)
+			}
+			wantEnvelope := Envelope{}
+			_ = json.Unmarshal(submission(kind).Envelope, &wantEnvelope)
+			if opened.Envelope != wantEnvelope {
+				t.Fatal("opened envelope")
 			}
 			if count(t, f.db, "request_payloads") != 0 {
 				t.Fatal("payload retained after open")
@@ -217,11 +235,8 @@ func TestImmutableSubmissionAndGeneration(t *testing.T) {
 	}
 	for _, change := range []func(*SubmitInput){
 		func(v *SubmitInput) { v.AttemptToken = attempt(7) },
-		func(v *SubmitInput) { v.Ciphertext = encoded(21, 7) },
-		func(v *SubmitInput) { v.SizeBytes = 6; v.Ciphertext = encoded(22, 6) },
-		func(v *SubmitInput) {
-			v.Envelope = bytes.Replace(v.Envelope, []byte(encoded(256, 1)), []byte(encoded(256, 9)), 1)
-		},
+		func(v *SubmitInput) { v.Ciphertext = ageEncoded(60, 7) },
+		func(v *SubmitInput) { v.SizeBytes = 61; v.Ciphertext = ageEncoded(61, 6) },
 		func(v *SubmitInput) { *v = submission("file") },
 	} {
 		changed := in
@@ -246,7 +261,7 @@ func TestImmutableSubmissionAndGeneration(t *testing.T) {
 		t.Fatalf("losing attempt: %v", err)
 	}
 	opened, err := f.store.Open(ctx, c.ID, c.RetrievalToken)
-	if err != nil || opened.Ciphertext != in.Ciphertext {
+	if err != nil || readOpened(t, opened) != in.Ciphertext {
 		t.Fatalf("accepted content replaced: %v", err)
 	}
 }
@@ -276,7 +291,7 @@ func TestConcurrentSubmissionAndOpenAcrossConnections(t *testing.T) {
 					in := submission("text")
 					if !same {
 						in.AttemptToken = attempt(byte(20 + i))
-						in.Ciphertext = encoded(21, byte(20+i))
+						in.Ciphertext = ageEncoded(60, byte(20+i))
 					}
 					_, err := s.Submit(ctx, c.ID, c.SubmissionToken, in)
 					results <- err
@@ -614,43 +629,36 @@ func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 		_, err := f.store.Create(ctx, publicKey(t), &ttl)
 		requireError(t, err, ErrInvalid)
 	}
-	weak, _ := rsa.GenerateKey(rand.Reader, 1024)
-	strongDER, _ := base64.StdEncoding.DecodeString(publicKey(t))
-	strong, _ := x509.ParsePKIXPublicKey(strongDER)
-	wrongExponent := rsa.PublicKey{N: strong.(*rsa.PublicKey).N, E: 3}
-	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	badKeys := []string{"", "not a key", publicKey(t) + "\n", publicKey(t) + "="}
-	for _, key := range []any{&weak.PublicKey, &wrongExponent, &ec.PublicKey} {
-		raw, _ := x509.MarshalPKIXPublicKey(key)
-		badKeys = append(badKeys, base64.StdEncoding.EncodeToString(raw))
-	}
+	classic, _ := age.GenerateX25519Identity()
+	badKeys := []string{"", "not a key", publicKey(t) + "\n", publicKey(t) + "=", " " + publicKey(t), strings.ToUpper(publicKey(t)), publicKey(t)[:len(publicKey(t))-1], classic.Recipient().String(), publicKey(t) + strings.Repeat("q", maxRecipientChars)}
 	for _, key := range badKeys {
 		_, err := f.store.Create(ctx, key, nil)
 		requireError(t, err, ErrInvalid)
 	}
 	c := f.create(t)
 	for name, change := range map[string]func(*SubmitInput){
-		"algorithm": func(v *SubmitInput) {
-			v.Envelope = bytes.Replace(v.Envelope, []byte(algorithm), []byte("RSA-OAEP-1"), 1)
-		},
 		"version": func(v *SubmitInput) {
-			v.Envelope = bytes.Replace(v.Envelope, []byte(`"version":1`), []byte(`"version":2`), 1)
+			v.Envelope = bytes.Replace(v.Envelope, []byte(`"version":2`), []byte(`"version":1`), 1)
 		},
 		"unknown":   func(v *SubmitInput) { v.Envelope = append([]byte(`{"key":"forbidden",`), v.Envelope[1:]...) },
-		"duplicate": func(v *SubmitInput) { v.Envelope = append([]byte(`{"version":1,`), v.Envelope[1:]...) },
-		"equal nonces": func(v *SubmitInput) {
-			v.Envelope = bytes.Replace(v.Envelope, []byte(encoded(12, 3)), []byte(encoded(12, 2)), 1)
+		"duplicate": func(v *SubmitInput) { v.Envelope = append([]byte(`{"version":2,`), v.Envelope[1:]...) },
+		"filename magic": func(v *SubmitInput) {
+			v.Envelope = []byte(`{"version":2,"encrypted_filename":"` + encoded(40, 4) + `"}`)
 		},
-		"short wrapped key": func(v *SubmitInput) {
-			v.Envelope = bytes.Replace(v.Envelope, []byte(encoded(256, 1)), []byte(encoded(255, 1)), 1)
+		"filename padding": func(v *SubmitInput) {
+			v.Envelope = []byte(`{"version":2,"encrypted_filename":"` + ageEncoded(40, 4) + `="}`)
+		},
+		"filename size": func(v *SubmitInput) {
+			v.Envelope = []byte(`{"version":2,"encrypted_filename":"` + ageEncoded(maxEncryptedNameLen+1, 4) + `"}`)
 		},
 		"bad padding":      func(v *SubmitInput) { v.Ciphertext += "=" },
 		"newline base64":   func(v *SubmitInput) { v.Ciphertext += "\n" },
 		"wrong length":     func(v *SubmitInput) { v.SizeBytes++ },
+		"body magic":       func(v *SubmitInput) { v.Ciphertext = encoded(60, 6) },
 		"missing filename": func(v *SubmitInput) { v.Envelope = submission("text").Envelope },
 		"text filename":    func(v *SubmitInput) { v.Kind = "text" },
 		"negative":         func(v *SubmitInput) { v.SizeBytes = -1 },
-		"envelope size":    func(v *SubmitInput) { v.Envelope = append(bytes.Repeat([]byte(" "), 4096), v.Envelope...) },
+		"envelope size":    func(v *SubmitInput) { v.Envelope = append(bytes.Repeat([]byte(" "), EnvelopeMaxBytes), v.Envelope...) },
 		"bad attempt":      func(v *SubmitInput) { v.AttemptToken += "=" },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -662,7 +670,7 @@ func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 	}
 	for _, kind := range []string{"text", "file"} {
 		in := submission(kind)
-		in.SizeBytes = 1024
+		in.SizeBytes = 1025
 		_, err := f.store.Submit(ctx, c.ID, c.SubmissionToken, in)
 		requireError(t, err, ErrTooLarge)
 	}
@@ -679,18 +687,18 @@ func TestInlineExactLimits(t *testing.T) {
 	for _, tc := range []struct {
 		kind string
 		size int64
-	}{{"text", 0}, {"file", 0}, {"text", 1008}, {"file", 900}} {
+	}{{"text", int64(len(AgeMagic))}, {"file", int64(len(AgeMagic))}, {"text", 1024}, {"file", 900}} {
 		t.Run(fmt.Sprintf("%s_%d", tc.kind, tc.size), func(t *testing.T) {
 			f := newFixture(t)
 			c := f.create(t)
 			in := submission(tc.kind)
 			in.SizeBytes = tc.size
-			in.Ciphertext = encoded(int(tc.size)+16, 7)
+			in.Ciphertext = ageEncoded(int(tc.size), 7)
 			if _, err := f.store.Submit(context.Background(), c.ID, c.SubmissionToken, in); err != nil {
 				t.Fatal(err)
 			}
 			got, err := f.store.Open(context.Background(), c.ID, c.RetrievalToken)
-			if err != nil || got.Ciphertext != in.Ciphertext {
+			if err != nil || readOpened(t, got) != in.Ciphertext {
 				t.Fatalf("inline boundary round trip: %v", err)
 			}
 		})

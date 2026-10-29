@@ -57,8 +57,11 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 	}
 	put(bytes.Repeat([]byte{3}, len(data)))
 	opened, err := f.store.Open(ctx, c.ID, c.RetrievalToken)
-	if err != nil || opened.Ciphertext != base64.StdEncoding.EncodeToString(data) {
+	if err != nil || readOpened(t, opened) != base64.StdEncoding.EncodeToString(data) {
 		t.Fatal("accepted final bytes changed", err)
+	}
+	if err := f.store.FinishOpen(ctx, c.ID, opened.ObjectKey); err != nil {
+		t.Fatal(err)
 	}
 	for _, event := range outboxKeys(t, f.db) {
 		if err := objectStore.Delete(ctx, event.ObjectKey); err != nil {

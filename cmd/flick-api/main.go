@@ -123,7 +123,7 @@ func main() {
 		Objects:               objectStore,
 		Outbox:                outboxStore,
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
-		MaxFileBytes:          cfg.MaxFileBytes,
+		MaxObjectBytes:        maxObjectBytes,
 		MinTTLSeconds:         cfg.MinTTLSeconds,
 		DefaultTTLSeconds:     cfg.DefaultTTLSeconds,
 		MaxTTLSeconds:         cfg.MaxTTLSeconds,

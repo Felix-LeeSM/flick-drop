@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -31,18 +32,22 @@ type OutboxEnqueuer interface {
 	EnqueueTx(context.Context, *sql.Tx, events.JobEvent) (events.OutboxRecord, error)
 }
 
+// Options bounds request bodies in age file bytes, the unit size_bytes uses.
 type Options struct {
-	Objects               storage.RequestObjectStore
-	Outbox                OutboxEnqueuer
+	Objects storage.RequestObjectStore
+	Outbox  OutboxEnqueuer
+	// PayloadInlineMaxBytes caps an inline age file (FLICK_PAYLOAD_INLINE_MAX_BYTES).
 	PayloadInlineMaxBytes int64
-	MaxFileBytes          int64
-	MinTTLSeconds         int
-	DefaultTTLSeconds     int
-	MaxTTLSeconds         int
+	// MaxObjectBytes caps an uploaded age file: the largest one a
+	// FLICK_MAX_FILE_BYTES input produces (secrets.MaxCiphertextBytes).
+	MaxObjectBytes    int64
+	MinTTLSeconds     int
+	DefaultTTLSeconds int
+	MaxTTLSeconds     int
 }
 
 func NewStore(db *sql.DB, opts Options) (*Store, error) {
-	if db == nil || opts.PayloadInlineMaxBytes <= tagBytes || opts.MaxFileBytes <= 0 || opts.MaxFileBytes > (1<<63-1)-tagBytes || (opts.Objects != nil && opts.Outbox == nil) || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
+	if db == nil || opts.PayloadInlineMaxBytes < int64(len(AgeMagic)) || opts.MaxObjectBytes <= 0 || (opts.Objects != nil && opts.Outbox == nil) || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
 		return nil, fmt.Errorf("invalid request store configuration")
 	}
 	return &Store{db: db, opts: opts, now: func() time.Time { return time.Now().UTC() }}, nil
@@ -91,6 +96,17 @@ type Payload struct {
 	SizeBytes  int64           `json:"size_bytes"`
 	Envelope   json.RawMessage `json:"envelope"`
 	Ciphertext string          `json:"ciphertext"`
+}
+
+// Opened is a consumed request's age body and metadata. Body yields exactly
+// SizeBytes; the caller must close it, then call FinishOpen with ObjectKey when
+// it is set so the object is deleted after the stream.
+type Opened struct {
+	Kind      string
+	SizeBytes int64
+	Envelope  Envelope
+	Body      io.ReadCloser
+	ObjectKey string
 }
 
 func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created, error) {
@@ -294,7 +310,7 @@ func (s *Store) validateSubmission(in SubmitInput) ([]byte, []byte, []byte, erro
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if in.SizeBytes > s.opts.PayloadInlineMaxBytes-tagBytes || (in.Kind == "file" && in.SizeBytes > s.opts.MaxFileBytes) {
+	if in.SizeBytes > s.opts.PayloadInlineMaxBytes || (in.Kind == "file" && in.SizeBytes > s.opts.MaxObjectBytes) {
 		return nil, nil, nil, ErrTooLarge
 	}
 	envelope, err := validateEnvelope(in.Envelope, in.Kind)
@@ -305,9 +321,10 @@ func (s *Store) validateSubmission(in SubmitInput) ([]byte, []byte, []byte, erro
 	if int64(len(in.Ciphertext)) > (s.opts.PayloadInlineMaxBytes+2)/3*4 {
 		return nil, nil, nil, ErrTooLarge
 	}
-	ciphertext, err := canonicalBase64(in.Ciphertext, int(in.SizeBytes)+tagBytes, int(in.SizeBytes)+tagBytes)
-	if err != nil {
-		return nil, nil, nil, err
+	// size_bytes is the exact age file length.
+	ciphertext, err := canonicalBase64(in.Ciphertext, int(in.SizeBytes), int(in.SizeBytes))
+	if err != nil || !isAgeFile(ciphertext) {
+		return nil, nil, nil, ErrInvalid
 	}
 	return attempt, envelope, ciphertext, nil
 }
@@ -396,65 +413,111 @@ func (s *Store) Attempt(ctx context.Context, id, token string, generation int, a
 	return Receipt{generation, state}, nil
 }
 
-func (s *Store) Open(ctx context.Context, id, token string) (Payload, error) {
+// Open consumes a submitted request. An S3 body is opened before the
+// consuming transaction, so a storage failure leaves the request openable; the
+// object stays protected by consumed_at until FinishOpen or the stream grace.
+func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 	tx, row, err := s.begin(ctx, id, token, true)
 	if err != nil {
-		return Payload{}, err
+		return Opened{}, err
 	}
 	defer tx.close()
 	if row.state != "submitted" {
-		return Payload{}, ErrConflict
+		return Opened{}, ErrConflict
 	}
-	var payload Payload
+	var opened Opened
 	var envelope, backend string
 	var key sql.NullString
-	var ciphertext, digest []byte
-	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, r.storage_backend, r.final_key, r.ciphertext_sha256, p.ciphertext from requests r left join request_payloads p on p.request_id = r.id where r.id = ?`, id).Scan(&payload.Kind, &payload.SizeBytes, &envelope, &backend, &key, &digest, &ciphertext); err != nil {
-		return Payload{}, err
+	var ciphertext []byte
+	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, r.storage_backend, r.final_key, p.ciphertext from requests r left join request_payloads p on p.request_id = r.id where r.id = ?`, id).Scan(&opened.Kind, &opened.SizeBytes, &envelope, &backend, &key, &ciphertext); err != nil {
+		return Opened{}, err
 	}
-	if backend == "s3_object" {
-		// Object I/O must not hold the SQLite writer. Cancellation/another open can
-		// commit during GET; only a later conditional transaction can release bytes.
-		tx.close()
-		if s.opts.Objects == nil || !key.Valid || payload.SizeBytes < 0 || payload.SizeBytes > s.opts.MaxFileBytes {
-			return Payload{}, ErrStorage
-		}
-		ciphertext, err = s.opts.Objects.GetBounded(ctx, key.String, payload.SizeBytes+tagBytes)
-		if err != nil || int64(len(ciphertext)) != payload.SizeBytes+tagBytes {
-			return Payload{}, ErrStorage
-		}
-		actual := sha256.Sum256(ciphertext)
-		if !bytes.Equal(actual[:], digest) {
-			return Payload{}, ErrStorage
-		}
-		tx, row, err = s.begin(ctx, id, token, true)
-		if err != nil {
-			return Payload{}, err
-		}
-		defer tx.close()
-		if row.state != "submitted" {
-			return Payload{}, ErrConflict
-		}
-		var currentKey sql.NullString
-		if err := tx.QueryRowContext(ctx, `select final_key from requests where id = ?`, id).Scan(&currentKey); err != nil {
-			return Payload{}, err
-		}
-		if currentKey != key {
-			return Payload{}, ErrConflict
-		}
+	if err := json.Unmarshal([]byte(envelope), &opened.Envelope); err != nil {
+		return Opened{}, err
 	}
-	if int64(len(ciphertext)) != payload.SizeBytes+tagBytes {
-		return Payload{}, ErrStorage
+	if backend != "s3_object" {
+		if int64(len(ciphertext)) != opened.SizeBytes {
+			return Opened{}, ErrStorage
+		}
+		if err := s.clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed", events.ReasonConsumed); err != nil {
+			return Opened{}, err
+		}
+		if err := s.commit(tx, row.expires); err != nil {
+			return Opened{}, err
+		}
+		opened.Body = io.NopCloser(bytes.NewReader(ciphertext))
+		return opened, nil
 	}
-	payload.Envelope = json.RawMessage(envelope)
-	payload.Ciphertext = base64.StdEncoding.EncodeToString(ciphertext)
-	if err := s.clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed", events.ReasonConsumed); err != nil {
-		return Payload{}, err
+
+	// Object I/O must not hold the SQLite writer. Cancellation or another open
+	// can commit meanwhile; only the later conditional transaction consumes.
+	tx.close()
+	if s.opts.Objects == nil || !key.Valid || opened.SizeBytes < 0 || opened.SizeBytes > s.opts.MaxObjectBytes {
+		return Opened{}, ErrStorage
 	}
-	if err := s.commit(tx, row.expires); err != nil {
-		return Payload{}, err
+	body, length, err := s.opts.Objects.Open(ctx, key.String)
+	if err != nil {
+		return Opened{}, ErrStorage
 	}
-	return payload, nil
+	if length != opened.SizeBytes {
+		body.Close()
+		return Opened{}, ErrStorage
+	}
+	if err := s.consumeObject(ctx, id, token, key); err != nil {
+		body.Close()
+		return Opened{}, err
+	}
+	opened.Body = body
+	opened.ObjectKey = key.String
+	return opened, nil
+}
+
+func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.NullString) error {
+	tx, row, err := s.begin(ctx, id, token, true)
+	if err != nil {
+		return err
+	}
+	defer tx.close()
+	if row.state != "submitted" {
+		return ErrConflict
+	}
+	// final_key stays set: it protects the object while the body streams, and
+	// FinishOpen or the stream grace releases it.
+	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = ?, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = ? and state = 'submitted' and final_key = ?`, s.now().UTC().Format(timeFormat), id, key.String)
+	if err != nil {
+		return err
+	}
+	if err := requireTransition(changed); err != nil {
+		return err
+	}
+	return s.commit(tx, row.expires)
+}
+
+// FinishOpen queues the opened object's delete once its stream has ended, and
+// drops the key from the request. It is safe to repeat.
+func (s *Store) FinishOpen(ctx context.Context, id, key string) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	transaction, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	tx := &writeTx{Tx: transaction, conn: conn}
+	defer tx.close()
+	changed, err := tx.ExecContext(ctx, `update requests set final_key = null where id = ? and state = 'consumed' and final_key = ?`, id, key)
+	if err != nil {
+		return err
+	}
+	if n, err := changed.RowsAffected(); err != nil || n == 0 {
+		return err
+	}
+	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, key, events.ReasonConsumed, s.now().UTC()); err != nil {
+		return err
+	}
+	return s.commit(tx, time.Time{})
 }
 
 func (s *Store) Revoke(ctx context.Context, id, token string) error {
@@ -479,7 +542,7 @@ func (s *Store) clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousStat
 	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = ?`, id); err != nil {
 		return err
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null where id = ? and state = ?`, state, id, previousState)
+	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null, consumed_at = case when ? = 'consumed' then ? else consumed_at end where id = ? and state = ?`, state, state, s.now().UTC().Format(timeFormat), id, previousState)
 	if err != nil {
 		return err
 	}
