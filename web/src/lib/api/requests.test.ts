@@ -1,16 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { RequestPayload } from '$lib/crypto/requests';
-import vectors from '../../../../tests/fixtures/request-crypto-v1.json';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { bytesToBase64 } from '$lib/crypto/encoding';
+import {
+	encryptRequestPayload,
+	generateRequestKeys,
+	type SealedRequest
+} from '$lib/crypto/requests';
 import { createRequestApiClient, prepareSubmission, requestLimits } from './requests';
 
 const submitToken = 'A'.repeat(43);
 const receiveToken = `${'B'.repeat(42)}A`;
-const metadata = {
-	public_key: vectors.public_key,
-	fingerprint: vectors.fingerprint,
-	expires_at: '2099-01-01T00:00:00Z'
-};
-const payload = vectors.text.payload as RequestPayload;
+const metadata = { public_key: '', fingerprint: '', expires_at: '2099-01-01T00:00:00Z' };
+let identity = '';
+let payload: SealedRequest;
+let ciphertext = '';
+beforeAll(async () => {
+	const keys = await generateRequestKeys();
+	identity = keys.identity;
+	metadata.public_key = keys.public_key;
+	metadata.fingerprint = keys.fingerprint;
+	payload = await encryptRequestPayload(
+		keys.public_key,
+		{ kind: 'text', text: 'synthetic' },
+		{ maxTextBytes: 1024, maxFileBytes: 1024 }
+	);
+	ciphertext = bytesToBase64(new Uint8Array(await payload.body.arrayBuffer()));
+});
 
 describe('request API capability and retry boundary', () => {
 	it('creation sends only the public key and lifetime', async () => {
@@ -56,10 +70,19 @@ describe('request API capability and retry boundary', () => {
 	it('open and revoke use empty HTTP bodies with retrieval authorization', async () => {
 		const fetcher = vi
 			.fn<typeof fetch>()
-			.mockResolvedValueOnce(Response.json(payload))
+			.mockResolvedValueOnce(
+				new Response(payload.body, {
+					headers: { 'Content-Type': 'application/octet-stream', 'Flick-Kind': 'text' }
+				})
+			)
 			.mockResolvedValueOnce(Response.json({ state: 'cancelled' }));
 		const api = createRequestApiClient({ baseUrl: '/', fetcher });
-		expect(await api.open('fixture', receiveToken)).toEqual(payload);
+		const opened = await api.open('fixture', receiveToken);
+		expect(opened.kind).toBe('text');
+		expect(opened.encryptedFilename).toBeUndefined();
+		expect(new Uint8Array(await new Response(opened.body).arrayBuffer())).toEqual(
+			new Uint8Array(await payload.body.arrayBuffer())
+		);
 		await api.revoke('fixture', receiveToken);
 		for (const [, init] of fetcher.mock.calls) {
 			expect(init?.method).toBe('POST');
@@ -67,11 +90,27 @@ describe('request API capability and retry boundary', () => {
 			expect(init?.headers).toEqual({ authorization: `Bearer ${receiveToken}` });
 		}
 	});
+	it('reads the open kind and filename from headers and refuses malformed ones', async () => {
+		const respond = (headers: Record<string, string>) =>
+			createRequestApiClient({
+				fetcher: vi.fn<typeof fetch>().mockResolvedValue(new Response('age', { headers }))
+			}).open('fixture', receiveToken);
+		const name = new Uint8Array([1, 2, 3]);
+		await expect(
+			respond({ 'Flick-Kind': 'file', 'Flick-Encrypted-Filename': bytesToBase64(name) })
+		).resolves.toMatchObject({ kind: 'file', encryptedFilename: name });
+		for (const headers of [
+			{} as Record<string, string>,
+			{ 'Flick-Kind': 'html' },
+			{ 'Flick-Kind': 'file', 'Flick-Encrypted-Filename': 'AQID=' }
+		]) {
+			await expect(respond(headers)).rejects.toMatchObject({ code: 'invalid_response' });
+		}
+	});
 	it('retains one immutable ciphertext and attempt token across response loss, status and explicit retry', async () => {
 		const original = structuredClone(payload);
-		const attempt = prepareSubmission(original, 2);
-		original.ciphertext = 'changed';
-		original.envelope.nonce = 'changed';
+		const attempt = await prepareSubmission(original, 2);
+		original.envelope.encrypted_filename = 'changed';
 		const fetcher = vi
 			.fn<typeof fetch>()
 			.mockRejectedValueOnce(new Error('transport detail must not escape'))
@@ -90,9 +129,12 @@ describe('request API capability and retry boundary', () => {
 		await api.submit('fixture', submitToken, attempt);
 		expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[2][1]?.body);
 		expect(JSON.parse(attempt.body)).toEqual({
-			...payload,
 			generation: 2,
-			attempt_token: attempt.attemptToken
+			attempt_token: attempt.attemptToken,
+			kind: 'text',
+			size_bytes: payload.size_bytes,
+			envelope: { version: 2 },
+			ciphertext
 		});
 		expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({
 			generation: 2,
@@ -106,11 +148,11 @@ describe('request API capability and retry boundary', () => {
 	])('keeps HTTP %i distinct without automatic retries or server error text', async (status) => {
 		const fetcher = vi
 			.fn<typeof fetch>()
-			.mockResolvedValue(Response.json({ error: { message: vectors.private_key } }, { status }));
+			.mockResolvedValue(Response.json({ error: { message: identity } }, { status }));
 		const api = createRequestApiClient({ fetcher });
 		const error = await api.open('fixture', receiveToken).catch((cause: unknown) => cause);
 		expect(error).toMatchObject({ status });
-		expect(String(error)).not.toContain(vectors.private_key);
+		expect(String(error)).not.toContain(identity);
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	});
 	it('rejects receipt confusion, noncanonical tokens and malformed metadata', async () => {
@@ -119,7 +161,7 @@ describe('request API capability and retry boundary', () => {
 			.mockResolvedValue(Response.json({ ...metadata, generation: 2, state: 'submitted' }));
 		const api = createRequestApiClient({ fetcher });
 		await expect(
-			api.submit('fixture', submitToken, prepareSubmission(payload, 1))
+			api.submit('fixture', submitToken, await prepareSubmission(payload, 1))
 		).rejects.toMatchObject({ code: 'invalid_response' });
 		await expect(api.owner('fixture', 'bad')).rejects.toMatchObject({ status: 404 });
 		expect(fetcher).toHaveBeenCalledTimes(1);

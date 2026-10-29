@@ -4,13 +4,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { requestVectors } from './request-vectors.mjs';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
 const apiUrl = process.env.FLICK_API_URL ?? 'http://127.0.0.1:8080';
 const disabled = process.env.FLICK_REQUEST_STORAGE_DISABLED === '1';
-const vectors = JSON.parse(
-	await readFile(new URL('../../../../tests/fixtures/request-crypto-v1.json', import.meta.url))
-);
+const vectors = await requestVectors();
 let browser;
 let limits;
 before(async () => {

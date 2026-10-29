@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { openResponse } from './request-vectors.mjs';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
 const submitToken = 'A'.repeat(43);
@@ -74,7 +75,7 @@ async function fixture(context, options = {}) {
 				url: `${baseUrl}/synthetic-request-upload`,
 				method: 'PUT',
 				expires_at: reservation_expires_at,
-				headers: { 'Content-Length': String(body.size_bytes + 16) }
+				headers: { 'Content-Length': String(body.size_bytes) }
 			}
 		});
 	}
@@ -119,9 +120,7 @@ async function fixture(context, options = {}) {
 				reply(route, { payload_inline_max_bytes: 64, max_file_bytes: options.disabled ? 64 : 128 }),
 			requests: () => {
 				publicKey = request.postDataJSON().public_key;
-				fingerprint = createHash('sha256')
-					.update(Buffer.from(publicKey, 'base64'))
-					.digest('base64url');
+				fingerprint = createHash('sha256').update(publicKey).digest('base64url');
 				return reply(
 					route,
 					{
@@ -167,7 +166,7 @@ async function fixture(context, options = {}) {
 			},
 			open: () => {
 				state = 'consumed';
-				return reply(route, accepted);
+				return route.fulfill(openResponse(accepted));
 			}
 		};
 		const handle = handlers[path.split('/').at(-1)];

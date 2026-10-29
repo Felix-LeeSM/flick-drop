@@ -5,13 +5,12 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { requestVectors } from './request-vectors.mjs';
 
 // Run only against an isolated API/database. See docs/architecture/ci-testing.md.
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
 const apiUrl = process.env.FLICK_API_URL ?? 'http://127.0.0.1:8080';
-const vectors = JSON.parse(
-	await readFile(new URL('../../../../tests/fixtures/request-crypto-v1.json', import.meta.url))
-);
+const vectors = await requestVectors();
 let browser;
 before(async () => {
 	browser = await chromium.launch();
