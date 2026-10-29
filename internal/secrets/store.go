@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -22,7 +24,7 @@ import (
 // tracer is shared by the store and reaper (same package). When tracing is off
 // (no OTLP endpoint) it resolves to OTel's no-op, so tracer.Start costs nothing.
 // Span attributes carry only safe metadata (kind, storage backend) — never
-// ciphertext, nonce, KDF salt, access proof, or keys.
+// ciphertext, wrapped identities, access proofs, or keys.
 var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/secrets")
 
 const (
@@ -41,13 +43,15 @@ type KDFParams struct {
 	KeyLengthBits int    `json:"key_length_bits"`
 }
 
+// CreateInput carries an inline secret. Ciphertext is the age file for the body
+// (contracts/age-format-v1.md) and SizeBytes its exact length. EncryptedFilename
+// and WrappedIdentity are base64 age files the server stores unread.
 type CreateInput struct {
 	Kind              string
 	Ciphertext        []byte
-	Nonce             string
-	KDF               KDFParams
 	AccessKDF         KDFParams
 	AccessProofHash   string
+	WrappedIdentity   *string
 	EncryptedFilename *string
 	ContentType       *string
 	SizeBytes         int64
@@ -55,23 +59,16 @@ type CreateInput struct {
 	MaxViews          int
 }
 
-// AEADOverheadBytes is the AES-GCM authentication tag the browser appends to
-// every ciphertext. The presigned upload signs an exact Content-Length, so the
-// server reconstructs the ciphertext length from the declared plaintext size.
-const AEADOverheadBytes = 16
-
-// CreateLargeInput carries the encryption metadata for a large payload that the
-// server never sees: the client uploads the ciphertext directly to the bucket
-// via a presigned PUT, then /finalize activates the secret. SizeBytes is the
-// plaintext length; the ciphertext is that plus the AEAD tag, and the presigned
-// signature pins exactly that length, so an upload of any other size is
-// rejected by the bucket.
+// CreateLargeInput carries the metadata for a body the server never sees: the
+// client uploads the age file directly to the bucket via a presigned PUT, then
+// /finalize activates the secret. SizeBytes is the exact age file length, and
+// the presigned signature pins it, so an upload of any other size is rejected
+// by the bucket.
 type CreateLargeInput struct {
 	Kind              string
-	Nonce             string
-	KDF               KDFParams
 	AccessKDF         KDFParams
 	AccessProofHash   string
+	WrappedIdentity   *string
 	EncryptedFilename *string
 	ContentType       *string
 	SizeBytes         int64
@@ -88,15 +85,17 @@ type CreateLargeResult struct {
 
 type Secret struct {
 	// Returned only by Create; never loaded from storage or returned on open.
-	ManagementToken   string `json:"-"`
-	ID                string
-	Kind              string
-	StorageBackend    string
-	StorageKey        string
+	ManagementToken string `json:"-"`
+	ID              string
+	Kind            string
+	StorageBackend  string
+	StorageKey      string
+	// Ciphertext holds an inline body. An S3 body opened by OpenTx arrives in
+	// Body instead, and the caller must close it.
 	Ciphertext        []byte
-	Nonce             string
-	KDF               KDFParams
+	Body              io.ReadCloser
 	AccessKDF         KDFParams
+	WrappedIdentity   *string
 	EncryptedFilename *string
 	ContentType       *string
 	SizeBytes         int64
@@ -205,27 +204,9 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 	now := s.now().UTC()
 	expiresAt := now.Add(time.Duration(input.TTLSeconds) * time.Second)
 
-	// Model A secrets store encryption + access KDF and an access proof hash.
-	// Model B secrets (passphrase optional) carry none of these: the decryption
-	// key travels in the URL fragment, so the columns stay NULL.
-	var (
-		kdfAlgorithm, kdfSalt, kdfParamsJSON any
-		accessKDFParamsJSON, accessProofHash any
-	)
-	if input.AccessProofHash != "" {
-		kdfJSON, err := json.Marshal(input.KDF)
-		if err != nil {
-			return Secret{}, fmt.Errorf("marshal kdf params: %w", err)
-		}
-		accessKDFJSON, err := json.Marshal(input.AccessKDF)
-		if err != nil {
-			return Secret{}, fmt.Errorf("marshal access kdf params: %w", err)
-		}
-		kdfAlgorithm = input.KDF.Algorithm
-		kdfSalt = input.KDF.Salt
-		kdfParamsJSON = string(kdfJSON)
-		accessKDFParamsJSON = string(accessKDFJSON)
-		accessProofHash = input.AccessProofHash
+	accessKDFParamsJSON, accessProofHash, err := modelAColumns(input.AccessKDF, input.AccessProofHash)
+	if err != nil {
+		return Secret{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -235,21 +216,17 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 	defer rollback(tx)
 
 	_, err = tx.ExecContext(ctx, `insert into secrets (
-		id, kind, storage_backend, storage_key, nonce, kdf_algorithm, kdf_salt,
-		kdf_params_json, access_kdf_params_json, access_proof_hash,
-		encrypted_filename, content_type, size_bytes, max_views,
-		view_count, expires_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+		id, kind, storage_backend, storage_key, access_kdf_params_json,
+		access_proof_hash, wrapped_identity, encrypted_filename, content_type,
+		size_bytes, max_views, view_count, expires_at, created_at, updated_at
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 		id,
 		input.Kind,
 		StorageSQLite,
 		id,
-		input.Nonce,
-		kdfAlgorithm,
-		kdfSalt,
-		kdfParamsJSON,
 		accessKDFParamsJSON,
 		accessProofHash,
+		input.WrappedIdentity,
 		input.EncryptedFilename,
 		input.ContentType,
 		input.SizeBytes,
@@ -287,9 +264,8 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 		StorageBackend:    StorageSQLite,
 		StorageKey:        id,
 		Ciphertext:        append([]byte(nil), input.Ciphertext...),
-		Nonce:             input.Nonce,
-		KDF:               input.KDF,
 		AccessKDF:         input.AccessKDF,
+		WrappedIdentity:   input.WrappedIdentity,
 		EncryptedFilename: input.EncryptedFilename,
 		ContentType:       input.ContentType,
 		SizeBytes:         input.SizeBytes,
@@ -326,30 +302,15 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	now := s.now().UTC()
 	expiresAt := now.Add(time.Duration(input.TTLSeconds) * time.Second)
 
-	var (
-		kdfAlgorithm, kdfSalt, kdfParamsJSON any
-		accessKDFParamsJSON, accessProofHash any
-	)
-	if input.AccessProofHash != "" {
-		kdfJSON, err := json.Marshal(input.KDF)
-		if err != nil {
-			return CreateLargeResult{}, fmt.Errorf("marshal kdf params: %w", err)
-		}
-		accessKDFJSON, err := json.Marshal(input.AccessKDF)
-		if err != nil {
-			return CreateLargeResult{}, fmt.Errorf("marshal access kdf params: %w", err)
-		}
-		kdfAlgorithm = input.KDF.Algorithm
-		kdfSalt = input.KDF.Salt
-		kdfParamsJSON = string(kdfJSON)
-		accessKDFParamsJSON = string(accessKDFJSON)
-		accessProofHash = input.AccessProofHash
+	accessKDFParamsJSON, accessProofHash, err := modelAColumns(input.AccessKDF, input.AccessProofHash)
+	if err != nil {
+		return CreateLargeResult{}, err
 	}
 
 	// Presign first (pure signing, no DB). A failure returns before any row is
 	// inserted, so no orphan pending_upload row is left for a reaper to clean.
 	storageKey := managedObjectPrefix + id
-	upload, err := s.objects.PresignPUT(ctx, storageKey, input.SizeBytes+AEADOverheadBytes, s.presignTTL)
+	upload, err := s.objects.PresignPUT(ctx, storageKey, input.SizeBytes, s.presignTTL)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
 	}
@@ -361,21 +322,17 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	defer rollback(tx)
 
 	_, err = tx.ExecContext(ctx, `insert into secrets (
-		id, kind, storage_backend, storage_key, nonce, kdf_algorithm, kdf_salt,
-		kdf_params_json, access_kdf_params_json, access_proof_hash,
-		encrypted_filename, content_type, size_bytes, max_views,
-		view_count, state, expires_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending_upload', ?, ?, ?)`,
+		id, kind, storage_backend, storage_key, access_kdf_params_json,
+		access_proof_hash, wrapped_identity, encrypted_filename, content_type,
+		size_bytes, max_views, view_count, state, expires_at, created_at, updated_at
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending_upload', ?, ?, ?)`,
 		id,
 		input.Kind,
 		StorageS3,
 		storageKey,
-		input.Nonce,
-		kdfAlgorithm,
-		kdfSalt,
-		kdfParamsJSON,
 		accessKDFParamsJSON,
 		accessProofHash,
+		input.WrappedIdentity,
 		input.EncryptedFilename,
 		input.ContentType,
 		input.SizeBytes,
@@ -402,10 +359,8 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 }
 
 // Finalize confirms a pending_upload secret: it HEADs the object to verify it
-// exists and is within the ciphertext cap, then flips state to active. The
-// size check uses the object's real byte length (the ciphertext), not the
-// plaintext size_bytes, since AES-GCM adds a tag. Idempotent — finalizing an
-// already-active secret is a no-op success.
+// exists with exactly the declared age file length, then flips state to
+// active. Idempotent — finalizing an already-active secret is a no-op success.
 func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	ctx, span := tracer.Start(ctx, "secrets.Finalize", trace.WithAttributes(
 		attribute.String("storage.backend", StorageS3),
@@ -462,7 +417,7 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	// but that is the bucket's promise, not ours. Check the exact length the row
 	// was staged for so activation never depends on a remote store enforcing the
 	// signature the way we expect.
-	if !info.Exists || info.Size != sizeBytes+AEADOverheadBytes {
+	if !info.Exists || info.Size != sizeBytes {
 		return ErrObjectMissing
 	}
 
@@ -532,9 +487,6 @@ func (s *Store) Get(ctx context.Context, id string) (Secret, error) {
 	}
 	if !s.now().UTC().Before(secret.ExpiresAt) {
 		return Secret{}, ErrExpired
-	}
-	if err := s.fillCiphertext(ctx, &secret); err != nil {
-		return Secret{}, err
 	}
 	return secret, nil
 }
@@ -625,12 +577,18 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		}
 	}
 
-	// Fetch the ciphertext from the object store (for s3_object secrets) before
-	// marking consumed, so a transient bucket failure leaves the secret
-	// reopenable rather than consumed-but-unreadable.
-	if err := s.fillCiphertext(ctx, &secret); err != nil {
+	// Start the object read (for s3_object secrets) before marking consumed, so
+	// a bucket that cannot serve the body leaves the secret reopenable rather
+	// than consumed-but-unreadable. Only a failure after the first byte, while
+	// the caller streams, loses the secret.
+	if err := s.openBody(ctx, &secret); err != nil {
 		return Secret{}, err
 	}
+	defer func() {
+		if err != nil && secret.Body != nil {
+			secret.Body.Close()
+		}
+	}()
 
 	now = s.now().UTC()
 	if !now.Before(secret.ExpiresAt) {
@@ -662,20 +620,26 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	return secret, nil
 }
 
-// fillCiphertext loads the payload for an S3-backed secret from the object
-// store. SQLite-backed secrets already carry their ciphertext in load.
-func (s *Store) fillCiphertext(ctx context.Context, secret *Secret) error {
+// openBody starts reading an S3-backed body. SQLite-backed secrets already
+// carry their ciphertext from load. The object must be exactly the length
+// /finalize checked, because the caller announces that length before
+// streaming.
+func (s *Store) openBody(ctx context.Context, secret *Secret) error {
 	if secret.StorageBackend != StorageS3 {
 		return nil
 	}
 	if s.objects == nil {
 		return ErrNotFound
 	}
-	ciphertext, err := s.objects.Get(ctx, secret.StorageKey)
+	body, size, err := s.objects.Open(ctx, secret.StorageKey)
 	if err != nil {
-		return fmt.Errorf("load object payload: %w", err)
+		return fmt.Errorf("open object payload: %w", err)
 	}
-	secret.Ciphertext = ciphertext
+	if size != secret.SizeBytes {
+		body.Close()
+		return fmt.Errorf("open object payload: object is %d bytes, want %d", size, secret.SizeBytes)
+	}
+	secret.Body = body
 	return nil
 }
 
@@ -811,9 +775,9 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 
 	var secret Secret
 	var ciphertext []byte
-	var kdfJSON sql.NullString
 	var accessKDFJSON sql.NullString
 	var accessProofHash sql.NullString
+	var wrappedIdentity sql.NullString
 	var encryptedFilename sql.NullString
 	var contentType sql.NullString
 	var storageBackend sql.NullString
@@ -823,8 +787,8 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	var failedAccessCount int
 
 	err := q.QueryRowContext(ctx, `select
-			s.id, s.kind, s.storage_backend, s.storage_key, p.ciphertext, s.nonce,
-			s.kdf_params_json, s.access_kdf_params_json, s.access_proof_hash,
+			s.id, s.kind, s.storage_backend, s.storage_key, p.ciphertext,
+			s.access_kdf_params_json, s.access_proof_hash, s.wrapped_identity,
 			s.encrypted_filename, s.content_type, s.size_bytes, s.expires_at,
 			s.consumed_at, s.failed_access_count
 		from secrets s
@@ -837,10 +801,9 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 		&storageBackend,
 		&storageKey,
 		&ciphertext,
-		&secret.Nonce,
-		&kdfJSON,
 		&accessKDFJSON,
 		&accessProofHash,
+		&wrappedIdentity,
 		&encryptedFilename,
 		&contentType,
 		&secret.SizeBytes,
@@ -864,15 +827,10 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	}
 	secret.Ciphertext = ciphertext
 
-	// kdf_params_json is present for Model A (passphrase-derived key) and NULL
-	// for Model B (random fragment key). Access KDF and proof hash must be both
-	// present (Model A) or both absent (Model B); anything else is corruption.
-	if kdfJSON.Valid {
-		if err := json.Unmarshal([]byte(kdfJSON.String), &secret.KDF); err != nil {
-			return Secret{}, sql.NullString{}, fmt.Errorf("decode kdf params: %w", err)
-		}
-	}
-	if accessKDFJSON.Valid != accessProofHash.Valid {
+	// Model A rows carry the access KDF, proof hash, and wrapped identity;
+	// Model B rows carry none (the identity travels in the URL fragment). The
+	// table CHECK enforces this; a mix here is corruption.
+	if accessKDFJSON.Valid != accessProofHash.Valid || accessProofHash.Valid != wrappedIdentity.Valid {
 		return Secret{}, sql.NullString{}, ErrInvalidInput
 	}
 	if accessKDFJSON.Valid {
@@ -880,6 +838,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 			return Secret{}, sql.NullString{}, fmt.Errorf("decode access kdf params: %w", err)
 		}
 		secret.accessProofHash = accessProofHash.String
+		secret.WrappedIdentity = &wrappedIdentity.String
 	}
 	expiresAt, err := parseTime(expiresRaw)
 	if err != nil {
@@ -898,98 +857,103 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 }
 
 func (s *Store) validateCreate(input CreateInput) error {
-	if input.Kind != KindText && input.Kind != KindFile {
-		return ErrUnsupportedKind
-	}
-	if len(input.Ciphertext) == 0 || input.Nonce == "" {
-		return ErrInvalidInput
-	}
 	if int64(len(input.Ciphertext)) > s.payloadInlineMaxBytes {
 		return ErrPayloadTooLarge
 	}
-	if input.SizeBytes < 0 {
+	if !bytes.HasPrefix(input.Ciphertext, ageMagic) || int64(len(input.Ciphertext)) != input.SizeBytes {
 		return ErrInvalidInput
 	}
-	if input.TTLSeconds < s.minTTL || input.TTLSeconds > s.maxTTL {
+	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename, input.ContentType)
+}
+
+// validateCreateLarge mirrors validateCreate minus the body checks: the body
+// never touches the server for the large path.
+func (s *Store) validateCreateLarge(input CreateLargeInput) error {
+	// The presigned signature pins this length, so a declared size past the cap
+	// has to be refused here — otherwise the client would receive a signature
+	// for an upload the bucket is meant to never accept.
+	if input.SizeBytes > s.maxObjectBytes {
+		return ErrPayloadTooLarge
+	}
+	if input.SizeBytes < MaxCiphertextBytes(0)-AgeHeaderAllowanceBytes {
 		return ErrInvalidInput
 	}
-	if input.MaxViews != 1 {
+	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename, input.ContentType)
+}
+
+func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF KDFParams, accessProofHash string, wrappedIdentity, encryptedFilename, contentType *string) error {
+	if kind != KindText && kind != KindFile {
+		return ErrUnsupportedKind
+	}
+	if ttlSeconds < s.minTTL || ttlSeconds > s.maxTTL {
+		return ErrInvalidInput
+	}
+	if maxViews != 1 {
 		return ErrUnsupportedViews
 	}
 
 	// A secret is either Model A or Model B, never a mix.
-	// Model A (passphrase): encryption KDF + access KDF + access proof hash all present.
-	// Model B (passphrase optional): all three absent — the random key travels in
-	// the URL fragment and the server stores no KDF or proof.
-	hasProof := input.AccessProofHash != ""
-	hasKDF := input.KDF.Algorithm != ""
-	hasAccessKDF := input.AccessKDF.Algorithm != ""
-	if hasProof != hasKDF || hasProof != hasAccessKDF {
+	// Model A (passphrase): access KDF, access proof hash, and wrapped identity
+	// all present. Model B (link only): all three absent — the identity travels
+	// in the URL fragment.
+	hasProof := accessProofHash != ""
+	hasAccessKDF := accessKDF.Algorithm != ""
+	hasWrapped := wrappedIdentity != nil
+	if hasProof != hasAccessKDF || hasProof != hasWrapped {
 		return ErrInvalidInput
 	}
 	if hasProof {
-		if input.KDF.Algorithm != KDFPBKDF2SHA256 || input.KDF.Salt == "" || input.KDF.Iterations < 600000 || input.KDF.KeyLengthBits != 256 {
+		if accessKDF.Algorithm != KDFPBKDF2SHA256 || accessKDF.Salt == "" || accessKDF.Iterations < 600000 || accessKDF.KeyLengthBits != 256 {
 			return ErrInvalidInput
 		}
-		if input.AccessKDF.Algorithm != KDFPBKDF2SHA256 || input.AccessKDF.Salt == "" || input.AccessKDF.Iterations < 600000 || input.AccessKDF.KeyLengthBits != 256 {
+		if _, err := decodeAgeField(*wrappedIdentity, maxWrappedIdentityBytes); err != nil {
 			return ErrInvalidInput
 		}
 	}
-	if input.Kind == KindFile {
-		if input.EncryptedFilename == nil || *input.EncryptedFilename == "" {
+	switch {
+	case kind == KindFile && encryptedFilename == nil:
+		return ErrInvalidInput
+	case kind == KindText && encryptedFilename != nil:
+		return ErrInvalidInput
+	}
+	if encryptedFilename != nil {
+		if _, err := decodeAgeField(*encryptedFilename, maxEncryptedFilenameBytes); err != nil {
 			return ErrInvalidInput
 		}
+	}
+	if contentType != nil && !validContentType(*contentType) {
+		return ErrInvalidInput
 	}
 	return nil
 }
 
-// validateCreateLarge mirrors validateCreate minus the ciphertext checks: the
-// payload never touches the server for the large path.
-func (s *Store) validateCreateLarge(input CreateLargeInput) error {
-	if input.Kind != KindText && input.Kind != KindFile {
-		return ErrUnsupportedKind
+// validContentType bounds the sender-chosen media type, which the open response
+// returns in the Flick-Content-Type header: printable ASCII only, so it cannot
+// break the header or make the recipient's fetch reject an already-consumed
+// response.
+func validContentType(value string) bool {
+	if len(value) > maxContentTypeBytes {
+		return false
 	}
-	if input.Nonce == "" {
-		return ErrInvalidInput
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
 	}
-	if input.SizeBytes < 0 {
-		return ErrInvalidInput
-	}
-	// The presigned signature pins the ciphertext length, so a declared size
-	// past the cap has to be refused here — otherwise the client would receive
-	// a signature for an upload the bucket is meant to never accept. Subtract
-	// rather than add: SizeBytes is attacker-controlled, and MaxInt64 plus the
-	// tag wraps negative and slips through.
-	if input.SizeBytes > s.maxObjectBytes-AEADOverheadBytes {
-		return ErrPayloadTooLarge
-	}
-	if input.TTLSeconds < s.minTTL || input.TTLSeconds > s.maxTTL {
-		return ErrInvalidInput
-	}
-	if input.MaxViews != 1 {
-		return ErrUnsupportedViews
-	}
+	return true
+}
 
-	hasProof := input.AccessProofHash != ""
-	hasKDF := input.KDF.Algorithm != ""
-	hasAccessKDF := input.AccessKDF.Algorithm != ""
-	if hasProof != hasKDF || hasProof != hasAccessKDF {
-		return ErrInvalidInput
+// modelAColumns returns the access KDF JSON and proof hash for a Model A
+// secret, or NULLs for Model B.
+func modelAColumns(accessKDF KDFParams, accessProofHash string) (any, any, error) {
+	if accessProofHash == "" {
+		return nil, nil, nil
 	}
-	if hasProof {
-		if input.KDF.Algorithm != KDFPBKDF2SHA256 || input.KDF.Salt == "" || input.KDF.Iterations < 600000 || input.KDF.KeyLengthBits != 256 {
-			return ErrInvalidInput
-		}
-		if input.AccessKDF.Algorithm != KDFPBKDF2SHA256 || input.AccessKDF.Salt == "" || input.AccessKDF.Iterations < 600000 || input.AccessKDF.KeyLengthBits != 256 {
-			return ErrInvalidInput
-		}
+	accessKDFJSON, err := json.Marshal(accessKDF)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal access kdf params: %w", err)
 	}
-	if input.Kind == KindFile {
-		if input.EncryptedFilename == nil || *input.EncryptedFilename == "" {
-			return ErrInvalidInput
-		}
-	}
-	return nil
+	return string(accessKDFJSON), accessProofHash, nil
 }
 
 func generateID() (string, error) {

@@ -178,14 +178,21 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 
 // Payload cleanup remains independent. Purge only expired managed terminal rows,
 // whose deletion jobs were committed with their outcome; leave legacy rows alone.
+// An S3 body opened within openObjectGrace may still be streaming, and its
+// delete job is queued only when the stream ends: its row stays until the grace
+// passes, because that row is what keeps reconciliation away from the object.
 func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
 	cutoff := now.Format(managementTimeFormat)
-	if _, err := tx.ExecContext(ctx, `delete from secrets where consumed_at is not null and id in
-		(select secret_id from secret_management where expires_at <= ? order by expires_at, secret_id limit ?)`, cutoff, limit); err != nil {
+	streaming := formatTime(now.Add(-openObjectGrace))
+	const expired = `select m.secret_id from secret_management m
+		where m.expires_at <= ? and not exists (select 1 from secrets s
+			where s.id = m.secret_id and s.storage_backend = 's3_object'
+			and julianday(s.consumed_at) > julianday(?))
+		order by m.expires_at, m.secret_id limit ?`
+	if _, err := tx.ExecContext(ctx, `delete from secrets where consumed_at is not null and id in (`+expired+`)`, cutoff, streaming, limit); err != nil {
 		return fmt.Errorf("purge managed terminal metadata: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id in
-		(select secret_id from secret_management where expires_at <= ? order by expires_at, secret_id limit ?)`, cutoff, limit); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id in (`+expired+`)`, cutoff, streaming, limit); err != nil {
 		return fmt.Errorf("purge management capabilities: %w", err)
 	}
 	return nil

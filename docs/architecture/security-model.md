@@ -65,6 +65,9 @@ S3-compatible object storage
 - Passphrases and derived keys must never be sent to the API.
 - Ciphertext payloads are returned only by a verified open operation that marks
   the secret consumed in the same transaction.
+- The Model A wrapped identity is returned only by that verified open, never by
+  metadata reads: anyone holding it can test passphrases offline at scrypt cost
+  with no lockout.
 - Five invalid access-proof attempts mark the secret consumed and remove the
   stored ciphertext payload.
 - NATS messages must never contain plaintext, passphrases, derived keys, or

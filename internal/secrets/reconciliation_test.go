@@ -92,7 +92,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 	store.outbox = newTestOutbox(t, conn)
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
-	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 600})
+	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindText, SizeBytes: 2048, TTLSeconds: 600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,5 +332,88 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 	jobs := readOutboxEvents(t, ctx, conn)
 	if len(jobs) != 1 || jobs[0].ObjectKey != requests.ObjectPrefix+"orphan" {
 		t.Fatal("request scan did not commit independently", jobs)
+	}
+}
+
+// A consumed S3 body may still be streaming to its recipient, so
+// reconciliation leaves it alone for openObjectGrace after consumed_at and
+// deletes it as an orphan once that has passed.
+func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
+	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		consumedAt time.Time
+		wantJobs   int
+	}{
+		{"just opened", now, 0},
+		{"one nanosecond inside the grace", now.Add(-openObjectGrace + time.Nanosecond), 0},
+		{"grace elapsed", now.Add(-openObjectGrace), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := openTestDB(t, ctx)
+			objects := newMockObjectStore()
+			store := newLargeTestStore(t, conn, objects)
+			f := secretFixture{
+				id: "opened", storageBackend: StorageS3, storageKey: managedObjectPrefix + "opened",
+				expiresAt: now.Add(time.Hour), consumedAt: tc.consumedAt, createdAt: now.Add(-time.Hour),
+			}
+			insertSecret(t, ctx, conn, f)
+			objects.objects[f.storageKey] = ageBody(100)
+			reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
+			reaper.SetNowForTest(func() time.Time { return now })
+			if n, err := reaper.ReconcileOnce(ctx); err != nil || n != tc.wantJobs {
+				t.Fatalf("reconciled %d want %d: %v", n, tc.wantJobs, err)
+			}
+			jobs := readOutboxEvents(t, ctx, conn)
+			if len(jobs) != tc.wantJobs || (tc.wantJobs == 1 && jobs[0].ObjectKey != f.storageKey) {
+				t.Fatalf("object delete jobs = %+v, want %d for %s", jobs, tc.wantJobs, f.storageKey)
+			}
+		})
+	}
+}
+
+// TestPurgeKeepsStreamingObjectProtected opens an S3 body just before the
+// secret expires. The expiry purge must not delete its row while the stream may
+// still run, because that row is what keeps reconciliation away from the object.
+func TestPurgeKeepsStreamingObjectProtected(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
+	conn := openTestDB(t, ctx)
+	objects := newMockObjectStore()
+	store := newLargeTestStore(t, conn, objects)
+	f := secretFixture{
+		id: "late", storageBackend: StorageS3, storageKey: managedObjectPrefix + "late",
+		expiresAt: now.Add(-time.Minute), consumedAt: now.Add(-2 * time.Minute), createdAt: now.Add(-time.Hour),
+	}
+	insertSecret(t, ctx, conn, f)
+	if _, err := conn.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at, outcome) values (?, ?, ?, 'opened')`,
+		f.id, make([]byte, 32), f.expiresAt.Format(managementTimeFormat)); err != nil {
+		t.Fatal(err)
+	}
+	objects.objects[f.storageKey] = ageBody(100)
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
+
+	// ClaimOnce runs the expiry purge and then one reconciliation page.
+	tick := func(at time.Time) int {
+		t.Helper()
+		reaper.SetNowForTest(func() time.Time { return at })
+		if _, err := reaper.ClaimOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return len(readOutboxEvents(t, ctx, conn))
+	}
+	if n := tick(now); n != 0 {
+		t.Fatalf("%d object delete jobs while the body may still stream, want 0", n)
+	}
+	var rows int
+	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("streaming row count = %d (%v), want it kept", rows, err)
+	}
+	if n := tick(f.consumedAt.Add(openObjectGrace)); n != 1 {
+		t.Fatalf("%d object delete jobs after the grace, want 1", n)
+	}
+	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("row count after the grace = %d (%v), want purged", rows, err)
 	}
 }

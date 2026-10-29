@@ -44,7 +44,13 @@ Large-object storage speaks the S3 API via the AWS SDK for Go v2
 S3-compatibility prod, AWS S3, Cloudflare R2 — and MinIO is the integration-test
 double (`minio_integration_test.go`).
 
-Object Storage receives browser-encrypted ciphertext only. Bucket names,
+Object Storage receives client-encrypted age files only. Uploads are presigned
+PUTs signed at the exact age file length. Downloads never use a presigned GET:
+the open call streams the object through the API, starting the bucket read
+before the secret is consumed and queueing the object delete after the stream
+ends. Object reconciliation leaves a consumed object alone for 35 minutes, past
+the 30-minute stream deadline, and then deletes it like any orphan
+([age format v1](../../contracts/age-format-v1.md#api-mapping)). Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 

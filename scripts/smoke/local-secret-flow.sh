@@ -19,21 +19,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$tmpdir/create.json" <<'JSON'
-{
-  "kind": "text",
-  "ciphertext": "Y2lwaGVydGV4dA==",
-  "nonce": "bm9uY2U=",
-  "kdf": {
-    "algorithm": "PBKDF2-SHA-256",
-    "salt": "c2FsdA==",
-    "iterations": 600000,
-    "key_length_bits": 256
-  },
-  "size_bytes": 10,
-  "ttl_seconds": 600
-}
-JSON
+# The API checks only the age magic line and lengths, so a fixed age-shaped
+# body exercises create and the streamed open without a real encryption.
+printf 'age-encryption.org/v1\nlocal-body' >"$tmpdir/body.age"
+jq -n \
+	--arg ciphertext "$(base64 <"$tmpdir/body.age" | tr -d '\n')" \
+	--argjson size "$(wc -c <"$tmpdir/body.age" | tr -d ' ')" \
+	'{kind: "text", ciphertext: $ciphertext, size_bytes: $size, ttl_seconds: 600}' \
+	>"$tmpdir/create.json"
 
 create_response="$(
 	curl -fsS \
@@ -54,36 +47,29 @@ if [ "$get_status" != "200" ]; then
 	exit 1
 fi
 
-consume_status="$(
+open_status="$(
 	curl -fsS \
-		-o "$tmpdir/consume.json" \
+		-o "$tmpdir/opened.age" \
 		-w "%{http_code}" \
-		-X POST "$api_base/api/secrets/$secret_id/consume"
+		-H "Content-Type: application/json" \
+		-d '{}' \
+		-X POST "$api_base/api/secrets/$secret_id/open"
 )"
-if [ "$consume_status" != "202" ]; then
-	echo "local-secret-flow: expected consume status 202, got $consume_status" >&2
+if [ "$open_status" != "200" ] || ! cmp -s "$tmpdir/body.age" "$tmpdir/opened.age"; then
+	echo "local-secret-flow: expected open status 200 with the stored body, got $open_status" >&2
 	exit 1
 fi
 
-second_get_status="$(
+second_open_status="$(
 	curl -sS \
-		-o "$tmpdir/second-get.json" \
+		-o "$tmpdir/second-open.json" \
 		-w "%{http_code}" \
-		"$api_base/api/secrets/$secret_id"
+		-H "Content-Type: application/json" \
+		-d '{}' \
+		-X POST "$api_base/api/secrets/$secret_id/open"
 )"
-if [ "$second_get_status" != "410" ]; then
-	echo "local-secret-flow: expected second get status 410, got $second_get_status" >&2
-	exit 1
-fi
-
-second_consume_status="$(
-	curl -sS \
-		-o "$tmpdir/second-consume.json" \
-		-w "%{http_code}" \
-		-X POST "$api_base/api/secrets/$secret_id/consume"
-)"
-if [ "$second_consume_status" != "409" ]; then
-	echo "local-secret-flow: expected second consume status 409, got $second_consume_status" >&2
+if [ "$second_open_status" != "410" ]; then
+	echo "local-secret-flow: expected second open status 410, got $second_open_status" >&2
 	exit 1
 fi
 

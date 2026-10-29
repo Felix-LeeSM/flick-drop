@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,16 +26,15 @@ import (
 const createBodyOverheadLimit = int64(64 * 1024)
 
 type createSecretRequest struct {
-	Kind              string            `json:"kind"`
-	Ciphertext        string            `json:"ciphertext"`
-	Nonce             string            `json:"nonce"`
-	KDF               secrets.KDFParams `json:"kdf"`
-	Access            accessRequest     `json:"access"`
-	EncryptedFilename *string           `json:"encrypted_filename"`
-	ContentType       *string           `json:"content_type"`
-	SizeBytes         int64             `json:"size_bytes"`
-	TTLSeconds        int               `json:"ttl_seconds"`
-	MaxViews          int               `json:"max_views"`
+	Kind              string        `json:"kind"`
+	Ciphertext        string        `json:"ciphertext"`
+	Access            accessRequest `json:"access"`
+	WrappedIdentity   *string       `json:"wrapped_identity"`
+	EncryptedFilename *string       `json:"encrypted_filename"`
+	ContentType       *string       `json:"content_type"`
+	SizeBytes         int64         `json:"size_bytes"`
+	TTLSeconds        int           `json:"ttl_seconds"`
+	MaxViews          int           `json:"max_views"`
 }
 
 type createSecretResponse struct {
@@ -82,17 +83,15 @@ type openSecretRequest struct {
 	AccessProof string `json:"access_proof"`
 }
 
-type openSecretResponse struct {
-	ID                string             `json:"id"`
-	Kind              string             `json:"kind"`
-	Ciphertext        string             `json:"ciphertext"`
-	Nonce             string             `json:"nonce"`
-	KDF               *secrets.KDFParams `json:"kdf,omitempty"`
-	EncryptedFilename *string            `json:"encrypted_filename,omitempty"`
-	ContentType       *string            `json:"content_type,omitempty"`
-	SizeBytes         int64              `json:"size_bytes"`
-	ExpiresAt         string             `json:"expires_at"`
-}
+// Open response headers. The body is the raw age file; everything else the
+// recipient needs travels here (contracts/openapi.yaml openSecret).
+const (
+	headerKind              = "Flick-Kind"
+	headerContentType       = "Flick-Content-Type"
+	headerEncryptedFilename = "Flick-Encrypted-Filename"
+	headerWrappedIdentity   = "Flick-Wrapped-Identity"
+	headerExpiresAt         = "Flick-Expires-At"
+)
 
 type cleanupSecretRequest struct {
 	JobID  string `json:"job_id"`
@@ -158,10 +157,9 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	created, err := s.secrets.Create(r.Context(), secrets.CreateInput{
 		Kind:              req.Kind,
 		Ciphertext:        ciphertext,
-		Nonce:             req.Nonce,
-		KDF:               req.KDF,
 		AccessKDF:         req.Access.KDF,
 		AccessProofHash:   accessProofHash,
+		WrappedIdentity:   req.WrappedIdentity,
 		EncryptedFilename: req.EncryptedFilename,
 		ContentType:       req.ContentType,
 		SizeBytes:         req.SizeBytes,
@@ -196,10 +194,9 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 
 	res, err := s.secrets.CreateLarge(r.Context(), secrets.CreateLargeInput{
 		Kind:              req.Kind,
-		Nonce:             req.Nonce,
-		KDF:               req.KDF,
 		AccessKDF:         req.Access.KDF,
 		AccessProofHash:   accessProofHash,
+		WrappedIdentity:   req.WrappedIdentity,
 		EncryptedFilename: req.EncryptedFilename,
 		ContentType:       req.ContentType,
 		SizeBytes:         req.SizeBytes,
@@ -299,31 +296,53 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	secret, err := s.openAndEnqueueCleanup(r.Context(), id, accessProofHash)
+	// The deadline covers the bucket read and every write to the recipient, so
+	// a body cannot stream past the window in which reconciliation protects
+	// its object.
+	ctx, cancel := context.WithTimeout(r.Context(), secrets.OpenStreamTimeout)
+	defer cancel()
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(secrets.OpenStreamTimeout))
+
+	secret, err := s.openAndEnqueueCleanup(ctx, id, accessProofHash)
 	if err != nil {
 		s.writeOpenError(w, err)
 		return
 	}
 
-	resp := openSecretResponse{
-		ID:                secret.ID,
-		Kind:              secret.Kind,
-		Ciphertext:        base64.StdEncoding.EncodeToString(secret.Ciphertext),
-		Nonce:             secret.Nonce,
-		EncryptedFilename: secret.EncryptedFilename,
-		ContentType:       secret.ContentType,
-		SizeBytes:         secret.SizeBytes,
-		ExpiresAt:         secret.ExpiresAt.Format(timeFormat),
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("Content-Length", strconv.FormatInt(secret.SizeBytes, 10))
+	h.Set(headerKind, secret.Kind)
+	h.Set(headerExpiresAt, secret.ExpiresAt.Format(timeFormat))
+	if secret.ContentType != nil {
+		h.Set(headerContentType, *secret.ContentType)
 	}
-	// Model A (passphrase) carries a KDF so the browser can re-derive the key.
-	// Model B omits it — the random key travels in the URL fragment.
-	if secret.KDF.Algorithm != "" {
-		resp.KDF = &secret.KDF
+	if secret.EncryptedFilename != nil {
+		h.Set(headerEncryptedFilename, *secret.EncryptedFilename)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	// Model A only: the passphrase-wrapped identity. Model B's identity is in
+	// the URL fragment.
+	if secret.WrappedIdentity != nil {
+		h.Set(headerWrappedIdentity, *secret.WrappedIdentity)
+	}
+	w.WriteHeader(http.StatusOK)
+
+	if secret.Body == nil {
+		_, _ = w.Write(secret.Ciphertext)
+		return
+	}
+	// The secret is already consumed; a failure from here on loses it, which
+	// the recipient sees as a truncated age file that will not decrypt. The log
+	// line carries no ID or error text (which names the client address).
+	if _, err := io.Copy(w, secret.Body); err != nil {
+		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secrets.StorageS3)
+	}
+	secret.Body.Close()
+	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageKey)
 }
 
-func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProofHash string) (secrets.Secret, error) {
+func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProofHash string) (_ secrets.Secret, err error) {
 	if s.outbox == nil {
 		return secrets.Secret{}, fmt.Errorf("outbox store is required")
 	}
@@ -341,6 +360,12 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	}()
 
 	secret, err := s.secrets.OpenTx(ctx, tx, id, accessProofHash)
+	// An opened S3 body belongs to the caller only on success.
+	defer func() {
+		if err != nil && secret.Body != nil {
+			secret.Body.Close()
+		}
+	}()
 	if err != nil {
 		if errors.Is(err, secrets.ErrInvalidAccess) {
 			if commitErr := tx.Commit(); commitErr != nil {
@@ -358,29 +383,41 @@ func (s Server) openAndEnqueueCleanup(ctx context.Context, id string, accessProo
 	}); err != nil {
 		return secrets.Secret{}, fmt.Errorf("enqueue consumed cleanup job: %w", err)
 	}
-	// M3: S3-backed secrets also need their bucket object deleted. Enqueued as a
-	// separate job so DB cleanup and object deletion can fail and retry on
-	// their own schedules.
-	if secret.StorageBackend == secrets.StorageS3 {
-		objectJobID, err := s.newJobID()
-		if err != nil {
-			return secrets.Secret{}, err
-		}
-		if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
-			JobID:       objectJobID,
-			Kind:        events.KindDeleteOCIObject,
-			ObjectKey:   secret.StorageKey,
-			Reason:      events.ReasonConsumed,
-			RequestedAt: time.Now().UTC(),
-		}); err != nil {
-			return secrets.Secret{}, fmt.Errorf("enqueue object cleanup job: %w", err)
-		}
-	}
+	// An S3 body is deleted only after it has streamed (enqueueOpenedObjectCleanup);
+	// deleting it now could cut the recipient's download short.
 	if err := tx.Commit(); err != nil {
 		return secrets.Secret{}, fmt.Errorf("commit open cleanup transaction: %w", err)
 	}
 	telemetry.SecretOpened.Inc()
 	return secret, nil
+}
+
+// enqueueOpenedObjectCleanup queues the bucket delete for a body that has
+// finished streaming, successfully or not. If this fails or the API stops
+// mid-stream, object reconciliation deletes the object once the stream window
+// has passed.
+func (s Server) enqueueOpenedObjectCleanup(ctx context.Context, key string) {
+	jobID, err := s.newJobID()
+	if err != nil {
+		return
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
+		JobID:       jobID,
+		Kind:        events.KindDeleteOCIObject,
+		ObjectKey:   key,
+		Reason:      events.ReasonConsumed,
+		RequestedAt: time.Now().UTC(),
+	}); err != nil {
+		return
+	}
+	_ = tx.Commit()
 }
 
 func (s Server) cleanupSecret(w http.ResponseWriter, r *http.Request) {

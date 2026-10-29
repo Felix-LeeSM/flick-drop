@@ -29,12 +29,11 @@ func TestManagementPendingFractionalDeadline(t *testing.T) {
 			now := base.Add(time.Duration(tc.createdNS))
 			deadline := now.Add(15 * time.Minute)
 			store.SetNowForTest(func() time.Time { return now })
-			filename := "encrypted-name"
-			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: &filename, Nonce: "nonce", SizeBytes: 2048, TTLSeconds: 3600})
+			created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 2048, TTLSeconds: 3600})
 			if err != nil {
 				t.Fatal(err)
 			}
-			objects.objects["managed/secrets/"+created.ID] = make([]byte, 2048+AEADOverheadBytes)
+			objects.objects["managed/secrets/"+created.ID] = ageBody(2048)
 			now = base.Add(15 * time.Minute).Add(time.Duration(tc.nowNS))
 			reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
 			reaper.SetNowForTest(func() time.Time { return now })

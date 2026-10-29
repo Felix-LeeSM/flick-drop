@@ -1,9 +1,12 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,18 +20,11 @@ func TestStoreCreateFileSecret(t *testing.T) {
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	encryptedFilename := `{"nonce":"filename-nonce","ciphertext":"filename-ciphertext"}`
+	encryptedFilename := *ageField(200)
 	contentType := "text/plain"
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindFile,
-		Ciphertext: []byte("encrypted-file-bytes"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
+		Ciphertext: testBody,
 		AccessKDF: KDFParams{
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "access-salt",
@@ -36,9 +32,10 @@ func TestStoreCreateFileSecret(t *testing.T) {
 			KeyLengthBits: 256,
 		},
 		AccessProofHash:   "proof-hash",
+		WrappedIdentity:   testWrappedIdentity,
 		EncryptedFilename: &encryptedFilename,
 		ContentType:       &contentType,
-		SizeBytes:         20,
+		SizeBytes:         testBodyLen,
 		TTLSeconds:        600,
 		MaxViews:          1,
 	})
@@ -59,8 +56,11 @@ func TestStoreCreateFileSecret(t *testing.T) {
 	if loaded.ContentType == nil || *loaded.ContentType != contentType {
 		t.Fatalf("content type = %v, want %q", loaded.ContentType, contentType)
 	}
-	if string(loaded.Ciphertext) != "encrypted-file-bytes" {
-		t.Fatalf("ciphertext = %q, want encrypted-file-bytes", string(loaded.Ciphertext))
+	if loaded.WrappedIdentity == nil || *loaded.WrappedIdentity != *testWrappedIdentity {
+		t.Fatalf("wrapped identity = %v, want the stored age file", loaded.WrappedIdentity)
+	}
+	if !bytes.Equal(loaded.Ciphertext, testBody) {
+		t.Fatalf("ciphertext = %q, want %q", loaded.Ciphertext, testBody)
 	}
 }
 
@@ -73,14 +73,7 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
+		Ciphertext: testBody,
 		AccessKDF: KDFParams{
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "access-salt",
@@ -88,7 +81,8 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 			KeyLengthBits: 256,
 		},
 		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
+		WrappedIdentity: testWrappedIdentity,
+		SizeBytes:       testBodyLen,
 		TTLSeconds:      600,
 		MaxViews:        1,
 	})
@@ -142,14 +136,7 @@ func TestStoreOpenTxLeavesPayloadForCleanup(t *testing.T) {
 
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
+		Ciphertext: testBody,
 		AccessKDF: KDFParams{
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "access-salt",
@@ -157,7 +144,8 @@ func TestStoreOpenTxLeavesPayloadForCleanup(t *testing.T) {
 			KeyLengthBits: 256,
 		},
 		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
+		WrappedIdentity: testWrappedIdentity,
+		SizeBytes:       testBodyLen,
 		TTLSeconds:      600,
 		MaxViews:        1,
 	})
@@ -206,14 +194,7 @@ func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
 
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
+		Ciphertext: testBody,
 		AccessKDF: KDFParams{
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "access-salt",
@@ -221,7 +202,8 @@ func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
 			KeyLengthBits: 256,
 		},
 		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
+		WrappedIdentity: testWrappedIdentity,
+		SizeBytes:       testBodyLen,
 		TTLSeconds:      600,
 		MaxViews:        1,
 	})
@@ -256,8 +238,8 @@ func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open with proof: %v", err)
 	}
-	if string(opened.Ciphertext) != "ciphertext" {
-		t.Fatalf("opened ciphertext = %q, want ciphertext", string(opened.Ciphertext))
+	if !bytes.Equal(opened.Ciphertext, testBody) {
+		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, testBody)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit open tx: %v", err)
@@ -284,14 +266,7 @@ func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
 
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
+		Ciphertext: testBody,
 		AccessKDF: KDFParams{
 			Algorithm:     KDFPBKDF2SHA256,
 			Salt:          "access-salt",
@@ -299,7 +274,8 @@ func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
 			KeyLengthBits: 256,
 		},
 		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
+		WrappedIdentity: testWrappedIdentity,
+		SizeBytes:       testBodyLen,
 		TTLSeconds:      600,
 		MaxViews:        1,
 	})
@@ -338,66 +314,6 @@ func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
 	}
 	if payloadCount != 0 {
 		t.Fatalf("payload count after failed access limit = %d, want 0", payloadCount)
-	}
-}
-
-func TestStoreRejectsInvalidKDF(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore(t, openTestDB(t, ctx))
-
-	_, err := store.Create(ctx, CreateInput{
-		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    10,
-			KeyLengthBits: 256,
-		},
-		AccessKDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "access-salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
-		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
-		TTLSeconds:      600,
-		MaxViews:        1,
-	})
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("create error = %v, want ErrInvalidInput", err)
-	}
-}
-
-func TestStoreRejectsFileWithoutEncryptedFilename(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore(t, openTestDB(t, ctx))
-
-	_, err := store.Create(ctx, CreateInput{
-		Kind:       KindFile,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
-		AccessKDF: KDFParams{
-			Algorithm:     KDFPBKDF2SHA256,
-			Salt:          "access-salt",
-			Iterations:    600000,
-			KeyLengthBits: 256,
-		},
-		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
-		TTLSeconds:      600,
-		MaxViews:        1,
-	})
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("create error = %v, want ErrInvalidInput", err)
 	}
 }
 
@@ -461,9 +377,8 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 	// capability; the decryption key travels in the URL fragment.
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		SizeBytes:  10,
+		Ciphertext: testBody,
+		SizeBytes:  testBodyLen,
 		TTLSeconds: 600,
 		MaxViews:   1,
 	})
@@ -488,8 +403,11 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open model B without proof: %v", err)
 	}
-	if string(opened.Ciphertext) != "ciphertext" {
-		t.Fatalf("opened ciphertext = %q, want ciphertext", string(opened.Ciphertext))
+	if !bytes.Equal(opened.Ciphertext, testBody) {
+		t.Fatalf("opened ciphertext = %q, want %q", opened.Ciphertext, testBody)
+	}
+	if opened.WrappedIdentity != nil {
+		t.Fatalf("model B wrapped identity = %q, want none", *opened.WrappedIdentity)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit model B open tx: %v", err)
@@ -508,45 +426,6 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsMixedAccessModel(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore(t, openTestDB(t, ctx))
-
-	validKDF := KDFParams{
-		Algorithm:     KDFPBKDF2SHA256,
-		Salt:          "salt",
-		Iterations:    600000,
-		KeyLengthBits: 256,
-	}
-
-	// Access proof without KDF must be rejected (not silently treated as Model B).
-	if _, err := store.Create(ctx, CreateInput{
-		Kind:            KindText,
-		Ciphertext:      []byte("ciphertext"),
-		Nonce:           "nonce",
-		AccessProofHash: "proof-hash",
-		SizeBytes:       10,
-		TTLSeconds:      600,
-		MaxViews:        1,
-	}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("proof without kdf error = %v, want ErrInvalidInput", err)
-	}
-
-	// KDF without access proof must be rejected.
-	if _, err := store.Create(ctx, CreateInput{
-		Kind:       KindText,
-		Ciphertext: []byte("ciphertext"),
-		Nonce:      "nonce",
-		KDF:        validKDF,
-		AccessKDF:  validKDF,
-		SizeBytes:  10,
-		TTLSeconds: 600,
-		MaxViews:   1,
-	}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("kdf without proof error = %v, want ErrInvalidInput", err)
-	}
-}
-
 func TestStoreRejectsTTLOutsideRange(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, openTestDB(t, ctx))
@@ -554,14 +433,132 @@ func TestStoreRejectsTTLOutsideRange(t *testing.T) {
 	for _, ttl := range []int{60, 999999} { // below the 300s floor, above the 604800s ceiling
 		_, err := store.Create(ctx, CreateInput{
 			Kind:       KindText,
-			Ciphertext: []byte("ciphertext"),
-			Nonce:      "nonce",
-			SizeBytes:  10,
+			Ciphertext: testBody,
+			SizeBytes:  testBodyLen,
 			TTLSeconds: ttl,
 			MaxViews:   1,
 		})
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("ttl %d: err = %v, want ErrInvalidInput", ttl, err)
+		}
+	}
+}
+
+const testBodyLen = 64
+
+var (
+	testBody            = ageBody(testBodyLen)
+	testWrappedIdentity = ageField(230)
+	testAccessKDF       = KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "access-salt", Iterations: 600000, KeyLengthBits: 256}
+)
+
+// ageBody returns n bytes shaped like an age file: the magic line, then
+// padding. The server only checks the magic and the length.
+func ageBody(n int) []byte {
+	return append([]byte(string(ageMagic)), bytes.Repeat([]byte("x"), n-len(ageMagic))...)
+}
+
+// ageField is the base64 of an n-byte age-shaped file, as the API carries
+// encrypted filenames and wrapped identities.
+func ageField(n int) *string {
+	s := base64.StdEncoding.EncodeToString(ageBody(n))
+	return &s
+}
+
+func ptr(s string) *string { return &s }
+
+func TestStoreCreateValidatesAgeFields(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, openTestDB(t, ctx))
+
+	modelA := func(kind string) CreateInput {
+		in := CreateInput{Kind: kind, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600, MaxViews: 1,
+			AccessKDF: testAccessKDF, AccessProofHash: "proof-hash", WrappedIdentity: testWrappedIdentity}
+		if kind == KindFile {
+			in.EncryptedFilename = ageField(200)
+		}
+		return in
+	}
+	modelB := func(kind string) CreateInput {
+		in := modelA(kind)
+		in.AccessKDF, in.AccessProofHash, in.WrappedIdentity = KDFParams{}, "", nil
+		return in
+	}
+	for _, ok := range []CreateInput{modelA(KindText), modelA(KindFile), modelB(KindText), modelB(KindFile)} {
+		if _, err := store.Create(ctx, ok); err != nil {
+			t.Fatalf("valid %s create (proof %q): %v", ok.Kind, ok.AccessProofHash, err)
+		}
+	}
+
+	cases := map[string]CreateInput{}
+	add := func(name string, base CreateInput, mut func(*CreateInput)) {
+		mut(&base)
+		cases[name] = base
+	}
+	add("size one short of the body", modelB(KindText), func(in *CreateInput) { in.SizeBytes = testBodyLen - 1 })
+	add("size one past the body", modelB(KindText), func(in *CreateInput) { in.SizeBytes = testBodyLen + 1 })
+	add("body without age magic", modelB(KindText), func(in *CreateInput) {
+		in.Ciphertext = bytes.Repeat([]byte("x"), testBodyLen)
+	})
+	add("empty body", modelB(KindText), func(in *CreateInput) { in.Ciphertext, in.SizeBytes = nil, 0 })
+	add("model A without wrapped identity", modelA(KindText), func(in *CreateInput) { in.WrappedIdentity = nil })
+	add("model B with wrapped identity", modelB(KindText), func(in *CreateInput) { in.WrappedIdentity = testWrappedIdentity })
+	add("wrapped identity not an age file", modelA(KindText), func(in *CreateInput) {
+		in.WrappedIdentity = ptr(base64.StdEncoding.EncodeToString([]byte("not age")))
+	})
+	add("wrapped identity not base64", modelA(KindText), func(in *CreateInput) { in.WrappedIdentity = ptr("!!!") })
+	add("content type with a newline", modelB(KindFile), func(in *CreateInput) { in.ContentType = ptr("text/plain\r\nX: y") })
+	add("content type with non-ASCII", modelB(KindFile), func(in *CreateInput) { in.ContentType = ptr("text/plaïn") })
+	add("content type over 255 bytes", modelB(KindFile), func(in *CreateInput) {
+		in.ContentType = ptr("application/" + strings.Repeat("x", 244))
+	})
+	add("wrapped identity over 1 KiB", modelA(KindText), func(in *CreateInput) { in.WrappedIdentity = ageField(maxWrappedIdentityBytes + 1) })
+	add("proof without access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF = KDFParams{} })
+	add("access kdf without proof", modelA(KindText), func(in *CreateInput) { in.AccessProofHash = "" })
+	add("weak access kdf", modelA(KindText), func(in *CreateInput) { in.AccessKDF.Iterations = 10 })
+	add("file without encrypted filename", modelB(KindFile), func(in *CreateInput) { in.EncryptedFilename = nil })
+	add("text with encrypted filename", modelB(KindText), func(in *CreateInput) { in.EncryptedFilename = ageField(200) })
+	add("filename not an age file", modelB(KindFile), func(in *CreateInput) {
+		in.EncryptedFilename = ptr(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 64))))
+	})
+	add("filename over 8 KiB", modelB(KindFile), func(in *CreateInput) { in.EncryptedFilename = ageField(maxEncryptedFilenameBytes + 1) })
+	for name, in := range cases {
+		if _, err := store.Create(ctx, in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+		}
+	}
+	// The size bounds are inclusive.
+	in := modelA(KindFile)
+	in.WrappedIdentity, in.EncryptedFilename = ageField(maxWrappedIdentityBytes), ageField(maxEncryptedFilenameBytes)
+	if _, err := store.Create(ctx, in); err != nil {
+		t.Fatalf("create at wrapped identity and filename caps: %v", err)
+	}
+}
+
+func TestMaxPlaintextBytesInvertsMaxCiphertextBytes(t *testing.T) {
+	floor := MaxCiphertextBytes(0)
+	for _, c := range []int64{0, 1, floor - 1} {
+		if got := MaxPlaintextBytes(c); got != 0 {
+			t.Fatalf("MaxPlaintextBytes(%d) = %d, want 0 below an empty age file", c, got)
+		}
+	}
+	var cs []int64
+	for c := floor; c < floor+64; c++ {
+		cs = append(cs, c)
+	}
+	for k := int64(0); k <= 4; k++ {
+		edge := MaxCiphertextBytes(k * ageChunkBytes)
+		for _, d := range []int64{-17, -16, -1, 0, 1, 16, 17} {
+			if edge+d >= floor {
+				cs = append(cs, edge+d)
+			}
+		}
+	}
+	cs = append(cs, 1<<20, 50<<20, 256<<20)
+	for _, c := range cs {
+		n := MaxPlaintextBytes(c)
+		if MaxCiphertextBytes(n) > c || MaxCiphertextBytes(n+1) <= c {
+			t.Fatalf("c=%d: n=%d, MaxCiphertextBytes(n)=%d, MaxCiphertextBytes(n+1)=%d", c, n, MaxCiphertextBytes(n), MaxCiphertextBytes(n+1))
 		}
 	}
 }

@@ -253,7 +253,13 @@ paths:
   /api/secrets/{id}/open:
     post:
       operationId: openSecret
-      summary: Atomically verify access, consume the secret, and return encrypted payload.
+      summary: Atomically verify access, consume the secret, and stream the encrypted body.
+      description: |
+        The body is the raw age file (contracts/age-format-v1.md), streamed
+        without base64. The bucket read starts before the secret is marked
+        consumed, so a store that cannot serve the body leaves it openable;
+        a transfer that fails after the 200 status has been sent loses the
+        secret. The stream must finish within 30 minutes.
       parameters:
         - $ref: "#/components/parameters/SecretId"
       requestBody:
@@ -264,11 +270,43 @@ paths:
               $ref: "#/components/schemas/OpenSecretRequest"
       responses:
         "200":
-          description: Secret opened.
-          content:
-            application/json:
+          description: Secret opened. The body is the age file; metadata travels in headers.
+          headers:
+            Cache-Control:
               schema:
-                $ref: "#/components/schemas/OpenSecretResponse"
+                type: string
+                const: no-store
+            Content-Length:
+              description: Exact age file length, equal to size_bytes.
+              schema:
+                type: integer
+            Flick-Kind:
+              required: true
+              schema:
+                type: string
+                enum: [text, file]
+            Flick-Expires-At:
+              required: true
+              schema:
+                type: string
+                format: date-time
+            Flick-Content-Type:
+              description: Media type for file download, when the sender set one.
+              schema:
+                type: string
+            Flick-Encrypted-Filename:
+              description: File secrets only. Base64 of the filename age file.
+              schema:
+                type: string
+            Flick-Wrapped-Identity:
+              description: Model A only. Base64 of the age scrypt file that wraps the secret's identity.
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
         "404":
           description: Secret missing.
           content:
@@ -1053,10 +1091,12 @@ components:
     ConfigResponse:
       type: object
       description: >
-        Public client-facing size limits. payload_inline_max_bytes is the inline
-        (SQLite BLOB) path threshold — files above it take the S3 path;
-        max_file_bytes is the absolute bound the server rejects above. Flat so
-        future fields can be added non-destructively.
+        Public client-facing size limits, counted before encryption. payload_inline_max_bytes is
+        the inline (SQLite BLOB) path threshold — files above it take the S3
+        path; max_file_bytes is the absolute bound the server rejects above.
+        Both already subtract age overhead, so the age file of any content
+        within them fits the server's ciphertext caps. Flat so future fields
+        can be added non-destructively.
       additionalProperties: true
       required: [payload_inline_max_bytes, max_file_bytes]
       properties:
@@ -1088,14 +1128,14 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Model A: send `kdf` and `access` together; the browser derives the
-        encryption key and access proof from a user-supplied value. Model B:
-        omit `kdf` and `access`; the browser encrypts with a random key carried
-        in the share URL fragment. Mixing the two (one without the other) is
-        rejected.
+        Bodies, filenames, and wrapped identities are age files
+        (contracts/age-format-v1.md). Model A: send `access` and
+        `wrapped_identity` together; the client wraps the secret's identity
+        with the user-entered value (age scrypt) and derives the access proof from it. Model B: omit
+        both; the identity travels in the share URL fragment. Mixing the two
+        (one without the other) is rejected.
       required:
         - kind
-        - nonce
         - size_bytes
         - ttl_seconds
       properties:
@@ -1104,24 +1144,24 @@ components:
           enum: [text, file]
         ciphertext:
           type: string
-          description: Base64-encoded encrypted payload.
-        nonce:
-          type: string
-          description: Base64-encoded AES-GCM nonce.
-        kdf:
-          $ref: "#/components/schemas/KdfParams"
+          description: Base64 of the body age file for the inline path. Omit it to receive a presigned upload instead.
         access:
           $ref: "#/components/schemas/AccessVerifier"
+        wrapped_identity:
+          type: string
+          description: Model A only. Base64 of the age scrypt file wrapping the secret's identity, at most 1 KiB decoded.
         encrypted_filename:
           type: string
-          description: Required for file secrets. Browser-encrypted JSON envelope containing filename metadata.
+          description: Required for file secrets, rejected for text. Base64 of the filename age file, at most 8 KiB decoded.
         content_type:
           type: string
-          description: Media type for file download, or application/octet-stream.
+          maxLength: 255
+          pattern: '^[\x20-\x7e]*$'
+          description: Media type for file download, or application/octet-stream. Printable ASCII only, because the open response returns it as a header.
         size_bytes:
           type: integer
           minimum: 0
-          description: Plain payload byte length before browser encryption.
+          description: Exact byte length of the body age file. Inline bodies must match it; large bodies are signed and finalized at exactly this length.
         ttl_seconds:
           type: integer
           minimum: 300
@@ -1176,10 +1216,10 @@ components:
       type: object
       additionalProperties: false
       description: >
-        A presigned upload for sending ciphertext directly to the object store.
-        Content-Length is part of the signature and equals size_bytes plus the
-        16-byte AEAD tag, so a body of any other length fails authentication at
-        the bucket and no object lands. PUT rather than POST because Oracle's S3
+        A presigned upload for sending the body age file directly to the object
+        store. Content-Length is part of the signature and equals size_bytes,
+        so a body of any other length fails authentication at the bucket and no
+        object lands. PUT rather than POST because Oracle's S3
         Compatibility API does not implement POST Object.
       required: [url, method, expires_at, headers]
       properties:
@@ -1249,6 +1289,7 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+          description: Exact byte length of the body age file.
         expires_at:
           type: string
           format: date-time
@@ -1263,43 +1304,6 @@ components:
         access_proof:
           type: string
           description: Base64-encoded proof derived from local user input and metadata access KDF. Required for Model A, omitted for Model B.
-    OpenSecretResponse:
-      type: object
-      additionalProperties: false
-      required:
-        - id
-        - kind
-        - ciphertext
-        - nonce
-        - size_bytes
-        - expires_at
-      properties:
-        id:
-          type: string
-        kind:
-          type: string
-          enum: [text, file]
-        ciphertext:
-          type: string
-          description: Base64-encoded encrypted payload.
-        nonce:
-          type: string
-          description: Base64-encoded AES-GCM nonce.
-        kdf:
-          $ref: "#/components/schemas/KdfParams"
-          description: Present only for Model A secrets. Omitted for Model B; the browser decrypts with the URL fragment key.
-        encrypted_filename:
-          type: string
-          description: Browser-encrypted JSON envelope containing filename metadata.
-        content_type:
-          type: string
-          description: Media type for file download, or application/octet-stream.
-        size_bytes:
-          type: integer
-          minimum: 0
-        expires_at:
-          type: string
-          format: date-time
     KdfParams:
       type: object
       additionalProperties: false

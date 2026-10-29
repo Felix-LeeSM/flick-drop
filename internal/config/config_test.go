@@ -178,7 +178,7 @@ func TestLoadS3PathStyleRejectsGarbage(t *testing.T) {
 // (or a missing mapping) makes at least one assertion flip.
 func TestLoadEnvOverrides(t *testing.T) {
 	clearFlickEnv(t)
-	t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", "2048")
+	t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", "8192")
 	t.Setenv("FLICK_MAX_FILE_BYTES", "4096")
 	// TTLs satisfy cross-validation: min <= default <= max.
 	t.Setenv("FLICK_MIN_TTL_SECONDS", "60")
@@ -198,7 +198,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 		got  any
 		want any
 	}{
-		{"PayloadInlineMaxBytes", cfg.PayloadInlineMaxBytes, int64(2048)},
+		{"PayloadInlineMaxBytes", cfg.PayloadInlineMaxBytes, int64(8192)},
 		{"MaxFileBytes", cfg.MaxFileBytes, int64(4096)},
 		{"MinTTLSeconds", cfg.MinTTLSeconds, 60},
 		{"DefaultTTLSeconds", cfg.DefaultTTLSeconds, 120},
@@ -219,10 +219,6 @@ func TestLoadEnvOverrides(t *testing.T) {
 // actually store: the inline threshold while large-object storage is off, the
 // configured limit once it is on.
 func TestEffectiveMaxFileBytes(t *testing.T) {
-	// Take the tag size from the domain rather than restating it: these cases
-	// encode threshold-minus-tag arithmetic, and a local copy would keep passing
-	// after the real constant moved.
-	const aeadOverhead = int64(secrets.AEADOverheadBytes)
 	cases := []struct {
 		name    string
 		enabled bool
@@ -230,12 +226,13 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 		max     int64
 		want    int64
 	}{
-		// The clamp leaves room for the AES-GCM tag: a plaintext of exactly the
-		// inline threshold encrypts to threshold+16 and would be refused.
-		{"large storage off clamps below the inline threshold", false, 1048576, 52428800, 1048560},
+		// The clamp leaves room for the age overhead: a 1 MiB age file holds
+		// at most 1 MiB minus the 4096-byte header allowance, the 16-byte
+		// payload nonce, and sixteen 16-byte chunk tags.
+		{"large storage off clamps below the inline threshold", false, 1048576, 52428800, 1044208},
 		{"large storage on keeps the configured limit", true, 1048576, 52428800, 52428800},
 		{"limit already below the clamp is left alone", false, 1048576, 4096, 4096},
-		{"limit inside the tag margin is clamped", false, 1048576, 1048570, 1048560},
+		{"limit inside the age margin is clamped", false, 1048576, 1048570, 1044208},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -244,21 +241,25 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 				MaxFileBytes:          c.max,
 				S3:                    S3Config{Enabled: c.enabled},
 			}
-			if got := cfg.EffectiveMaxFileBytes(aeadOverhead); got != c.want {
+			if got := cfg.EffectiveMaxFileBytes(); got != c.want {
 				t.Fatalf("EffectiveMaxFileBytes() = %d, want %d", got, c.want)
 			}
 		})
 	}
 }
 
-func TestLoadInlineThresholdLeavesRoomForAEADTag(t *testing.T) {
-	for _, threshold := range []int64{secrets.AEADOverheadBytes - 1, secrets.AEADOverheadBytes, secrets.AEADOverheadBytes + 1} {
+// TestLoadInlineThresholdFitsEmptyAgeFile pins the lower bound: the inline
+// threshold must hold at least an empty age file, and at exactly that size the
+// advertised inline plaintext is zero bytes.
+func TestLoadInlineThresholdFitsEmptyAgeFile(t *testing.T) {
+	empty := secrets.MaxCiphertextBytes(0)
+	for _, threshold := range []int64{empty - 1, empty, empty + 1} {
 		t.Run(fmt.Sprint(threshold), func(t *testing.T) {
 			clearFlickEnv(t)
 			t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", fmt.Sprint(threshold))
 			cfg, err := Load()
-			if threshold <= secrets.AEADOverheadBytes {
-				want := fmt.Sprintf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be greater than %d bytes (AES-GCM tag)", secrets.AEADOverheadBytes)
+			if threshold < empty {
+				want := fmt.Sprintf("FLICK_PAYLOAD_INLINE_MAX_BYTES must be at least %d bytes (an empty age file)", empty)
 				if err == nil || err.Error() != want {
 					t.Fatalf("Load() error = %v, want %q", err, want)
 				}
@@ -267,8 +268,8 @@ func TestLoadInlineThresholdLeavesRoomForAEADTag(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load(): %v", err)
 			}
-			if got := cfg.EffectivePayloadInlineMaxBytes(secrets.AEADOverheadBytes); got != 1 {
-				t.Fatalf("EffectivePayloadInlineMaxBytes() = %d, want 1", got)
+			if got, want := cfg.EffectivePayloadInlineMaxBytes(), threshold-empty; got != want {
+				t.Fatalf("EffectivePayloadInlineMaxBytes() = %d, want %d", got, want)
 			}
 		})
 	}

@@ -70,20 +70,21 @@ func (c *Client) Head(ctx context.Context, key string) (ObjectInfo, error) {
 	}, nil
 }
 
-func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
+// Open returns once the store has answered with headers, so a failure to start
+// the read surfaces here and not midway through a caller's stream.
+func (c *Client) Open(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.cfg.Bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get object %q: %w", key, err)
+		return nil, 0, fmt.Errorf("get object %q: %w", key, err)
 	}
-	defer out.Body.Close()
-	body, err := io.ReadAll(out.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read object %q: %w", key, err)
+	if out.ContentLength == nil {
+		out.Body.Close()
+		return nil, 0, fmt.Errorf("get object %q: no content length", key)
 	}
-	return body, nil
+	return out.Body, *out.ContentLength, nil
 }
 
 // Delete is idempotent: a 404 (already gone) is not an error.

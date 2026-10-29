@@ -134,20 +134,18 @@ wait_http "http://127.0.0.1:$web_port/healthz"
 # that runs it). The web is up, so the smoke runs rather than skipping.
 FLICK_WEB_BASE_URL="http://127.0.0.1:$web_port" scripts/smoke/web-headers.sh
 
-ciphertext="$(printf 'k3d-ciphertext' | base64)"
+# The API checks only the age magic line and lengths, so a fixed age-shaped
+# body exercises create and the streamed open without a real encryption.
+body="$tmp_dir/body.age"
+opened="$tmp_dir/opened.age"
+open_headers="$tmp_dir/open-headers.txt"
+printf 'age-encryption.org/v1\nk3d-body' >"$body"
 access_proof="$(printf 'k3d-proof' | base64)"
 create_body="$(
   cat <<JSON
 {
   "kind": "text",
-  "ciphertext": "$ciphertext",
-  "nonce": "$(printf 'k3d-nonce' | base64)",
-  "kdf": {
-    "algorithm": "PBKDF2-SHA-256",
-    "salt": "$(printf 'k3d-salt' | base64)",
-    "iterations": 600000,
-    "key_length_bits": 256
-  },
+  "ciphertext": "$(base64 <"$body" | tr -d '\n')",
   "access": {
     "kdf": {
       "algorithm": "PBKDF2-SHA-256",
@@ -157,7 +155,8 @@ create_body="$(
     },
     "proof": "$access_proof"
   },
-  "size_bytes": 13,
+  "wrapped_identity": "$(printf 'age-encryption.org/v1\nk3d-wrapped' | base64 | tr -d '\n')",
+  "size_bytes": $(wc -c <"$body" | tr -d ' '),
   "ttl_seconds": 600,
   "max_views": 1
 }
@@ -176,13 +175,15 @@ secret_id="$(printf '%s' "$create_response" | json_get id)"
 metadata_response="$(curl -fsS "http://127.0.0.1:$api_port/api/secrets/$secret_id")"
 printf '%s' "$metadata_response" | json_expect kind text
 
-open_response="$(
-  curl -fsS \
-    -H "Content-Type: application/json" \
-    -X POST \
-    -d "{\"access_proof\":\"$access_proof\"}" \
-    "http://127.0.0.1:$api_port/api/secrets/$secret_id/open"
-)"
-printf '%s' "$open_response" | json_expect ciphertext "$ciphertext"
+curl -fsS \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d "{\"access_proof\":\"$access_proof\"}" \
+  -D "$open_headers" \
+  -o "$opened" \
+  "http://127.0.0.1:$api_port/api/secrets/$secret_id/open"
+cmp "$body" "$opened"
+grep -qi '^flick-kind: text' "$open_headers"
+grep -qi '^flick-wrapped-identity: ' "$open_headers"
 
 echo "k3d-smoke: ok"

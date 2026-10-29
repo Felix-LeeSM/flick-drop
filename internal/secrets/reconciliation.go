@@ -103,12 +103,23 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 
 func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, now time.Time) (bool, error) {
 	var state, expiresRaw, createdRaw string
-	err := tx.QueryRowContext(ctx, `select state, expires_at, created_at from secrets where storage_backend = 's3_object' and storage_key = ? and consumed_at is null and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw)
+	var consumedRaw sql.NullString
+	err := tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend = 's3_object' and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("check live object protection: %w", err)
+	}
+	// A just-opened body may still be streaming to the recipient; the open
+	// handler enqueues its delete when the stream ends. Protect it until the
+	// stream deadline has certainly passed, then reconcile it like any orphan.
+	if consumedRaw.Valid {
+		consumed, err := parseTime(consumedRaw.String)
+		if err != nil {
+			return false, fmt.Errorf("parse protected open time: %w", err)
+		}
+		return now.Before(consumed.Add(openObjectGrace)), nil
 	}
 	expires, err := parseTime(expiresRaw)
 	if err != nil {
