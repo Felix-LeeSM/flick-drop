@@ -93,7 +93,7 @@ for (const [model, support, outcome] of [
 				assert.equal(new URL(recipientUrl).hash, '');
 				await page.getByText('Send the passphrase separately.', { exact: true }).waitFor();
 			} else {
-				assert.match(new URL(recipientUrl).hash, /^#key=[A-Za-z0-9_-]{43}$/);
+				assert.match(new URL(recipientUrl).hash, /^#key=AGE-SECRET-KEY-PQ-1[02-9AC-HJ-NP-Z]+$/);
 			}
 			// A future management route must share the provided link, never its own URL.
 			await page.evaluate(() => history.replaceState(null, '', '#manage=private-management-token'));

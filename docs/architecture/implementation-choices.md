@@ -105,26 +105,25 @@ friendly.
 
 Passphrase input is required in the MVP. Share links contain only secret IDs.
 
-Initial KDF:
+Access proof KDF:
 
 ```text
 PBKDF2-HMAC-SHA256
 iterations: 600,000 or more
 salt: random 128-bit or larger, stored with the secret
-derived key: AES-GCM 256-bit key, browser memory only
+output: 256-bit proof; the server keeps only its hash
 ```
 
-PBKDF2 is selected first because it is available through Web Crypto without a
-WASM dependency. Argon2id is the preferred later direction after browser WASM
-supply-chain review.
+PBKDF2 is selected because it is available through Web Crypto without a WASM
+dependency.
 
-M13 moves payload encryption to age (`filippo.io/age` v1.3.2 in Go,
+Payload encryption is age (`filippo.io/age` v1.3.2 in Go,
 `age-encryption` 0.3.1 in the browser, both BSD-3-Clause, both by the age
 author). age is chosen over a Flick-specific chunked AES-GCM layout because it
 is a reviewed, versioned format with two maintained implementations and shared
-test vectors, so Flick designs no cryptography. Model A then wraps the
-per-secret identity with age's scrypt passphrase recipient (work factor 18)
-instead of PBKDF2; the access proof keeps PBKDF2. See
+test vectors, so Flick designs no cryptography. Model A wraps the
+per-secret identity with age's scrypt passphrase recipient (work factor 18);
+the access proof keeps PBKDF2. See
 [age format v1](../../contracts/age-format-v1.md).
 
 The server must not receive the passphrase or a value that can directly decrypt

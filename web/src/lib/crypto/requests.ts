@@ -1,5 +1,5 @@
 // Request v1 only: docs/architecture/request-links.md. No I/O or key persistence.
-import { base64ToBytes, bytesToBase64 } from './text';
+import { base64ToBytes, bytesToBase64 } from './encoding';
 
 const RSA = { name: 'RSA-OAEP', hash: 'SHA-256' } as const;
 const ALGORITHM = 'RSA-OAEP-256+A256GCM';

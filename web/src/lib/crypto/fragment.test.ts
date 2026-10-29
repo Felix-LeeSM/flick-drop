@@ -1,38 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
+import { generateSecretIdentity } from './age';
 import { decodeKeyFragment, encodeKeyFragment } from './fragment';
 
-describe('fragment key transport', () => {
-	it('round trips raw key bytes through the fragment', () => {
-		// Bytes chosen to exercise base64url edge cases (+/- and padding).
-		const raw = new Uint8Array([1, 2, 3, 250, 255, 0, 127, 191, 254]);
-		const fragment = encodeKeyFragment(raw);
+describe('fragment identity transport', () => {
+	it('round trips a hybrid identity through the fragment', async () => {
+		const identity = await generateSecretIdentity();
+		const fragment = encodeKeyFragment(identity);
 
-		expect(fragment.startsWith('key=')).toBe(true);
-		expect(fragment).not.toContain('#');
-		expect(fragment).not.toContain('+');
-		expect(fragment).not.toContain('/');
-		expect(decodeKeyFragment(fragment)).toEqual(raw);
+		expect(fragment).toBe(`key=${identity}`);
+		expect(decodeKeyFragment(fragment)).toBe(identity);
+		expect(decodeKeyFragment(`#${fragment}`)).toBe(identity);
 	});
 
-	it('decodes a fragment with or without the leading hash', () => {
-		const raw = new Uint8Array([10, 20, 30, 40]);
-		const fragment = encodeKeyFragment(raw);
-		expect(decodeKeyFragment(fragment)).toEqual(raw);
-		expect(decodeKeyFragment(`#${fragment}`)).toEqual(raw);
+	it('refuses to encode anything but a hybrid identity', () => {
+		expect(() => encodeKeyFragment('AGE-SECRET-KEY-1QQQQ')).toThrow();
 	});
 
-	it('returns null for missing or malformed keys', () => {
+	it('returns null for missing or malformed identities', () => {
 		expect(decodeKeyFragment('')).toBeNull();
 		expect(decodeKeyFragment('other=value')).toBeNull();
-		expect(decodeKeyFragment('#other=value')).toBeNull();
-		expect(decodeKeyFragment('key=')).toBeNull();
 		expect(decodeKeyFragment('#key=')).toBeNull();
-		expect(decodeKeyFragment('key=!!!!')).toBeNull();
+		// The AES-GCM format's base64url raw key is no longer a valid fragment.
+		expect(decodeKeyFragment('key=cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8')).toBeNull();
+		expect(decodeKeyFragment('key=AGE-SECRET-KEY-1QQQQ')).toBeNull();
+		expect(decodeKeyFragment('key=AGE-SECRET-KEY-PQ-1bad!')).toBeNull();
 	});
 
 	it('rejects over-length fragments (DoS guard, #89)', () => {
-		expect(decodeKeyFragment(`key=${'A'.repeat(128)}`)).toBeNull();
-		expect(decodeKeyFragment(`#key=${'A'.repeat(128)}`)).toBeNull();
+		expect(decodeKeyFragment(`key=AGE-SECRET-KEY-PQ-1${'Q'.repeat(128)}`)).toBeNull();
 	});
 });

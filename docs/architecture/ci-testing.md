@@ -94,7 +94,7 @@ when testing worker delivery paths.
 Expected coverage:
 
 - passphrase input and KDF parameter handling.
-- Web Crypto encrypt/decrypt helpers.
+- age seal/open helpers and the PBKDF2 access proof.
 - upload and verified open UI state.
 - API client behavior with metadata lookup and proof-gated payload return.
 

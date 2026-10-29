@@ -3,9 +3,11 @@
 // failure (offline, misconfigured origin) must not break the app, so it falls
 // back to the plaintext equivalents of internal/config/defaults.go.
 
-// Inline storage bounds ciphertext, so reserve the 16-byte AES-GCM tag.
-export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_048_576 - 16; // 1 MiB minus tag
-// The large-file limit already counts plaintext bytes; do not subtract the tag.
+// Inline storage bounds the age file, so this is the largest input whose age
+// file fits 1 MiB: secrets.MaxPlaintextBytes(1048576) in internal/secrets/age.go
+// (4 KiB header allowance, 16-byte nonce, 16 bytes per 64 KiB chunk).
+export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_044_208;
+// The large-file limit already counts bytes before encryption; no overhead.
 export const DEFAULT_MAX_FILE_BYTES = 52_428_800; // 50 MiB
 
 export type ClientLimits = {

@@ -14,6 +14,7 @@ import { resolve } from '$app/paths';
 import {
 	createSecretApiClient,
 	type GetSecretMetadataResponse,
+	type OpenedSecret,
 	SecretApiError,
 	type SecretKind
 } from '$lib/api/secrets';
@@ -25,17 +26,9 @@ import { Input } from '$lib/components/ui/input';
 import { Label } from '$lib/components/ui/label';
 import { Textarea } from '$lib/components/ui/textarea';
 import { type CredentialEnvelope, parseCredential } from '$lib/credentials';
+import { deriveAccessProof } from '$lib/crypto/access';
 import { decodeKeyFragment } from '$lib/crypto/fragment';
-import {
-	decryptFile,
-	decryptFileWithKey,
-	decryptText,
-	decryptTextWithKey,
-	deriveAccessProof,
-	type EncryptedFilePayload,
-	type EncryptedTextPayload,
-	importAesGcmKey
-} from '$lib/crypto/text';
+import { openFile, openText, unwrapIdentityOffThread } from '$lib/crypto/secret';
 import { formatBytes } from '$lib/utils';
 
 type Props = {
@@ -71,10 +64,13 @@ let copyState = $state<'idle' | 'copied'>('idle');
 // Model A (passphrase) vs Model B (link-bearer). Determined by prefetching
 // metadata on mount: Model A secrets expose an access block, Model B do not.
 let accessModel = $state<'a' | 'b' | 'unknown'>('unknown');
-let linkKey = $state<CryptoKey | null>(null);
+let linkIdentity = $state<string | null>(null);
 // Metadata loaded on mount or explicit retry and reused on open — the Model A KDF lives here,
 // so openPassphraseSecret no longer re-fetches it (one fewer round-trip).
 let metadata = $state<GetSecretMetadataResponse | null>(null);
+// Set once the server has answered the open: from then on the secret is burned,
+// and a decryption failure is final rather than retryable.
+let consumedOnServer = false;
 
 onMount(() => {
 	void loadModel();
@@ -90,14 +86,14 @@ async function loadModel(): Promise<void> {
 		metadata = await api.getSecretMetadata(secretId);
 		accessModel = metadata.access ? 'a' : 'b';
 		if (accessModel === 'b') {
-			const raw = decodeKeyFragment(window.location.hash);
-			if (!raw) {
+			const identity = decodeKeyFragment(window.location.hash);
+			if (!identity) {
 				status = 'This link is incomplete — the decryption key is missing from the URL.';
 				statusKind = 'error';
 				linkUnusable = true;
 				return;
 			}
-			linkKey = await importAesGcmKey(raw);
+			linkIdentity = identity;
 		}
 		status = '';
 	} catch (error) {
@@ -123,7 +119,7 @@ const canOpen = $derived(
 		!isOpening &&
 		!hasOpened &&
 		(accessModel === 'b'
-			? linkKey !== null
+			? linkIdentity !== null
 			: metadata?.access !== undefined && passphrase.length > 0)
 );
 
@@ -173,64 +169,68 @@ async function openSecret(): Promise<void> {
 		revealPassphrase = false;
 		hasOpened = true;
 		// The secret is burned server-side; the key is now useless. Drop the
-		// reference. ponytail: JS can't securely zero a CryptoKey/string/Blob, so
-		// this is best-effort reference-dropping for GC, not a memory wipe.
-		linkKey = null;
+		// reference. ponytail: JS can't securely zero a string/Blob, so this is
+		// best-effort reference-dropping for GC, not a memory wipe.
+		linkIdentity = null;
 	} catch (error) {
-		status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+		if (consumedOnServer) {
+			// The server has already burned the secret, so retrying can only
+			// answer "consumed". Say what happened instead.
+			status = 'This secret was opened but could not be decrypted. It cannot be opened again.';
+			linkUnusable = true;
+		} else {
+			status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+			linkUnusable = isUnavailable(error);
+		}
 		statusKind = 'error';
-		linkUnusable = isUnavailable(error);
 	} finally {
 		isOpening = false;
 	}
 }
 
 // Model B: the link is the capability. Open without a proof and decrypt with
-// the fragment key.
+// the fragment identity.
 async function openLinkBearerSecret(): Promise<void> {
-	const key = linkKey;
-	if (!key) {
+	const identity = linkIdentity;
+	if (!identity) {
 		throw new Error('missing decryption key');
 	}
-	const payload = await api.openSecret(secretId);
-	if (payload.kind === 'file') {
-		const file = await decryptFileWithKey(payload as EncryptedFilePayload, key);
-		renderFile(file.bytes, file.filename, file.contentType);
-	} else {
-		decryptedText = await decryptTextWithKey(payload as EncryptedTextPayload, key);
-		credential = parseCredential(decryptedText);
-		openedKind = 'text';
-	}
+	const opened = await api.openSecret(secretId);
+	consumedOnServer = true;
+	await render(identity, opened);
 }
 
-// Model A: derive an access proof from the passphrase and decrypt with it.
-// Reuses the metadata fetched on mount instead of a second round-trip.
+// Model A: the passphrase-derived proof opens the secret, and the same
+// passphrase unwraps the identity the response carries. Reuses the metadata
+// fetched on mount instead of a second round-trip.
 async function openPassphraseSecret(): Promise<void> {
 	if (!metadata?.access) {
 		throw new Error('expected access metadata for Model A secret');
 	}
 	const accessProof = await deriveAccessProof(passphrase, metadata.access.kdf);
-	const payload = await api.openSecret(secretId, accessProof);
-	if (payload.kind === 'file') {
-		const file = await decryptFile(payload as EncryptedFilePayload, passphrase);
-		renderFile(file.bytes, file.filename, file.contentType);
+	const opened = await api.openSecret(secretId, accessProof);
+	consumedOnServer = true;
+	if (!opened.wrappedIdentity) {
+		throw new Error('expected a wrapped identity for Model A secret');
+	}
+	await render(await unwrapIdentityOffThread(opened.wrappedIdentity, passphrase), opened);
+}
+
+async function render(identity: string, opened: OpenedSecret): Promise<void> {
+	if (opened.kind === 'file') {
+		if (!opened.encryptedFilename) {
+			throw new Error('expected an encrypted filename for a file secret');
+		}
+		const file = await openFile(identity, opened.body, opened.encryptedFilename);
+		downloadUrl = URL.createObjectURL(file.blob);
+		downloadFilename = file.filename;
+		downloadSize = file.blob.size;
+		openedKind = 'file';
 	} else {
-		decryptedText = await decryptText(payload as EncryptedTextPayload, passphrase);
+		decryptedText = await openText(identity, opened.body);
 		credential = parseCredential(decryptedText);
 		openedKind = 'text';
 	}
-}
-
-function renderFile(bytes: Uint8Array, filename: string, contentType: string): void {
-	const fileBuffer = bytes.buffer.slice(
-		bytes.byteOffset,
-		bytes.byteOffset + bytes.byteLength
-	) as ArrayBuffer;
-	const blob = new Blob([fileBuffer], { type: contentType });
-	downloadUrl = URL.createObjectURL(blob);
-	downloadFilename = filename;
-	downloadSize = bytes.byteLength;
-	openedKind = 'file';
 }
 
 async function copySecret(): Promise<void> {

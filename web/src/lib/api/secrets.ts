@@ -1,11 +1,7 @@
+import type { AccessVerifierPayload, KdfParams } from '$lib/crypto/access';
+import { base64ToBytes, bytesToBase64 } from '$lib/crypto/encoding';
 import { encodeKeyFragment } from '$lib/crypto/fragment';
-import type {
-	AccessVerifierPayload,
-	EncryptedFilePayload,
-	EncryptedTextPayload,
-	KdfParams
-} from '$lib/crypto/text';
-import { base64ToBytes } from '$lib/crypto/text';
+import type { SealedFile } from '$lib/crypto/secret';
 import { type ClientLimits, defaultLimits } from './config';
 
 export const DEFAULT_API_BASE_URL =
@@ -44,19 +40,23 @@ export type CreateSecretResponse = {
 
 export type SecretKind = 'text' | 'file';
 
-export type GetTextSecretResponse = EncryptedTextPayload & {
-	id: string;
-	kind: 'text';
-	expires_at: string;
+// Model A: the PBKDF2 access proof plus the identity wrapped by age scrypt.
+// Model B sends neither; its identity is in the share URL fragment.
+export type PassphraseEnvelope = {
+	access: AccessVerifierPayload;
+	wrappedIdentity: Uint8Array;
 };
 
-export type GetFileSecretResponse = EncryptedFilePayload & {
-	id: string;
-	kind: 'file';
-	expires_at: string;
+// The open response: the raw age body as a stream, and the metadata the API
+// sends in Flick-* headers (contracts/openapi.yaml openSecret).
+export type OpenedSecret = {
+	kind: SecretKind;
+	expiresAt: string;
+	contentType: string;
+	encryptedFilename?: Uint8Array;
+	wrappedIdentity?: Uint8Array;
+	body: ReadableStream<Uint8Array>;
 };
-
-export type GetSecretResponse = GetTextSecretResponse | GetFileSecretResponse;
 
 export type GetSecretMetadataResponse = {
 	id: string;
@@ -72,20 +72,20 @@ export type GetSecretMetadataResponse = {
 
 export type SecretApiClient = {
 	createTextSecret(
-		payload: EncryptedTextPayload,
+		body: Uint8Array,
 		ttlSeconds: TtlSeconds,
-		access?: AccessVerifierPayload
+		modelA?: PassphraseEnvelope
 	): Promise<CreateSecretResponse>;
 	createFileSecret(
-		payload: EncryptedFilePayload,
+		sealed: SealedFile,
 		ttlSeconds: TtlSeconds,
-		access?: AccessVerifierPayload,
+		modelA?: PassphraseEnvelope,
 		// Cancels a large-file attempt; no later upload/finalize or result may follow.
 		signal?: AbortSignal,
 		onProgress?: (progress: FileUploadProgress) => void
 	): Promise<CreateSecretResponse>;
 	getSecretMetadata(id: string): Promise<GetSecretMetadataResponse>;
-	openSecret(id: string, accessProof?: string): Promise<GetSecretResponse>;
+	openSecret(id: string, accessProof?: string): Promise<OpenedSecret>;
 };
 
 export class SecretApiError extends Error {
@@ -115,47 +115,51 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 	const limits = options.limits ?? defaultLimits();
 
 	return {
-		createTextSecret(payload, ttlSeconds, access) {
-			// Model A sends kdf + access (passphrase-derived); Model B omits both.
-			const body: Record<string, unknown> = {
-				kind: 'text',
-				ciphertext: payload.ciphertext,
-				nonce: payload.nonce,
-				size_bytes: payload.size_bytes,
-				ttl_seconds: ttlSeconds,
-				max_views: 1
-			};
-			if (access) {
-				body.kdf = payload.kdf;
-				body.access = access;
-			}
-
+		createTextSecret(body, ttlSeconds, modelA) {
+			const request = withModelA(
+				{
+					kind: 'text',
+					ciphertext: bytesToBase64(body),
+					size_bytes: body.byteLength,
+					ttl_seconds: ttlSeconds,
+					max_views: 1
+				},
+				modelA
+			);
 			return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
+				body: JSON.stringify(request)
 			});
 		},
 
-		createFileSecret(payload, ttlSeconds, access, signal, onProgress) {
-			if (payload.size_bytes > limits.maxFileBytes) {
+		async createFileSecret(sealed, ttlSeconds, modelA, signal, onProgress) {
+			// Limits from /api/config count bytes before encryption; the server's
+			// ciphertext caps already include the age overhead.
+			if (sealed.plaintextBytes > limits.maxFileBytes) {
 				// Reject before any network call — the server would refuse it too.
-				return Promise.reject(
-					new SecretApiError('This file is too large.', 'payload_too_large', 0)
-				);
+				throw new SecretApiError('This file is too large.', 'payload_too_large', 0);
 			}
-			if (payload.size_bytes <= limits.payloadInlineMaxBytes) {
-				return createInlineFileSecret(fetcher, baseUrl, payload, ttlSeconds, access);
-			}
-			return createLargeFileSecret(
-				fetcher,
-				baseUrl,
-				payload,
-				ttlSeconds,
-				access,
-				signal,
-				onProgress
+			const request = withModelA(
+				{
+					kind: 'file',
+					encrypted_filename: bytesToBase64(sealed.encryptedFilename),
+					content_type: sealed.contentType,
+					size_bytes: sealed.body.size,
+					ttl_seconds: ttlSeconds,
+					max_views: 1
+				},
+				modelA
 			);
+			if (sealed.plaintextBytes <= limits.payloadInlineMaxBytes) {
+				request.ciphertext = bytesToBase64(new Uint8Array(await sealed.body.arrayBuffer()));
+				return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(request)
+				});
+			}
+			return createLargeFileSecret(fetcher, baseUrl, request, sealed.body, signal, onProgress);
 		},
 
 		getSecretMetadata(id) {
@@ -165,52 +169,21 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			);
 		},
 
-		openSecret(id, accessProof) {
+		async openSecret(id, accessProof) {
 			// Model A sends an access proof; Model B omits it (link is the
 			// capability). An empty body still satisfies the required request body.
-			const body = accessProof ? { access_proof: accessProof } : {};
-			return requestJson<GetSecretResponse>(
+			const response = await send(
 				fetcher,
 				`${baseUrl}/api/secrets/${encodeURIComponent(id)}/open`,
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(body)
+					body: JSON.stringify(accessProof ? { access_proof: accessProof } : {})
 				}
 			);
+			return openedSecret(response);
 		}
 	};
-}
-
-// createInlineFileSecret sends the ciphertext in the request body — the SQLite
-// BLOB path. Files at or below payloadInlineMaxBytes take this route.
-function createInlineFileSecret(
-	fetcher: typeof fetch,
-	baseUrl: string,
-	payload: EncryptedFilePayload,
-	ttlSeconds: TtlSeconds,
-	access?: AccessVerifierPayload
-): Promise<CreateSecretResponse> {
-	const body: Record<string, unknown> = {
-		kind: 'file',
-		ciphertext: payload.ciphertext,
-		nonce: payload.nonce,
-		encrypted_filename: payload.encrypted_filename,
-		content_type: payload.content_type,
-		size_bytes: payload.size_bytes,
-		ttl_seconds: ttlSeconds,
-		max_views: 1
-	};
-	if (access) {
-		body.kdf = payload.kdf;
-		body.access = access;
-	}
-
-	return requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body)
-	});
 }
 
 // createLargeFileSecret uploads the ciphertext straight to the object store:
@@ -222,34 +195,20 @@ function createInlineFileSecret(
 async function createLargeFileSecret(
 	fetcher: typeof fetch,
 	baseUrl: string,
-	payload: EncryptedFilePayload,
-	ttlSeconds: TtlSeconds,
-	access?: AccessVerifierPayload,
+	// ciphertext intentionally absent — that's what selects the large path.
+	request: Record<string, unknown>,
+	body: Blob,
 	signal?: AbortSignal,
 	onProgress?: (progress: FileUploadProgress) => void
 ): Promise<CreateSecretResponse> {
 	throwIfUploadAborted(signal);
 	onProgress?.({ stage: 'preparing' });
-	const body: Record<string, unknown> = {
-		kind: 'file',
-		// ciphertext intentionally omitted — that's what selects the large path.
-		nonce: payload.nonce,
-		encrypted_filename: payload.encrypted_filename,
-		content_type: payload.content_type,
-		size_bytes: payload.size_bytes,
-		ttl_seconds: ttlSeconds,
-		max_views: 1
-	};
-	if (access) {
-		body.kdf = payload.kdf;
-		body.access = access;
-	}
 
 	const staged = await requestJson<CreateSecretResponse>(fetcher, `${baseUrl}/api/secrets`, {
 		signal,
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body)
+		body: JSON.stringify(request)
 	});
 	if (!staged.upload) {
 		// The server only returns upload when ciphertext was omitted; reaching
@@ -257,7 +216,7 @@ async function createLargeFileSecret(
 		throw new SecretApiError('Could not start the large upload. Try again.', 'upload_failed', 0);
 	}
 
-	await uploadToObjectStore(fetcher, staged.upload, payload.ciphertext, signal, onProgress);
+	await uploadToObjectStore(fetcher, staged.upload, body, signal, onProgress);
 	throwIfUploadAborted(signal);
 	onProgress?.({ stage: 'finalizing' });
 
@@ -284,21 +243,17 @@ async function createLargeFileSecret(
 	};
 }
 
-// uploadToObjectStore sends the raw ciphertext as the request body. The
-// ciphertext arrives base64 and must be decoded first: Content-Length is signed,
-// and base64 is a third longer than the bytes it encodes, so uploading the text
-// form would fail authentication. Content-Length is not set by hand — the
-// browser forbids it as a header and derives it from the body, which is exactly
-// the signed value.
+// uploadToObjectStore sends the raw ciphertext as the request body.
+// Content-Length is signed and is not set by hand — the browser forbids it as a
+// header and derives it from the body, which is exactly the signed value.
 export async function uploadToObjectStore(
 	fetcher: typeof fetch,
 	upload: PresignedUpload,
-	ciphertextBase64: string,
+	body: Blob,
 	signal?: AbortSignal,
 	onProgress?: (progress: FileUploadProgress) => void
 ): Promise<void> {
 	throwIfUploadAborted(signal);
-	const bytes = base64ToBytes(ciphertextBase64);
 	// Content-Length is a forbidden header name, so it cannot be set here — the
 	// browser derives it from the body. Compare against the signed value anyway:
 	// a mismatch means the encryption overhead assumption drifted from the
@@ -307,12 +262,9 @@ export async function uploadToObjectStore(
 	const signedLength = Number(
 		Object.entries(upload.headers).find(([name]) => name.toLowerCase() === 'content-length')?.[1]
 	);
-	if (Number.isFinite(signedLength) && signedLength !== bytes.byteLength) {
+	if (Number.isFinite(signedLength) && signedLength !== body.size) {
 		throw new SecretApiError('Upload size mismatch. Try again.', 'upload_failed', 0);
 	}
-	// bytes is a fresh Uint8Array over an ArrayBuffer (offset 0), so its backing
-	// buffer carries exactly the signed ciphertext length.
-	const body = bytes.buffer as ArrayBuffer;
 	// Echo every signed header except Content-Length, which is a forbidden
 	// header name — the browser refuses to let us set it and derives it from the
 	// body instead. Any other header the server signs (a checksum, a content
@@ -412,13 +364,13 @@ function throwIfUploadAborted(signal?: AbortSignal | null): void {
 	}
 }
 
-export function createShareUrl(origin: string, id: string, key?: Uint8Array): string {
+export function createShareUrl(origin: string, id: string, identity?: string): string {
 	const url = new URL(origin);
 	url.pathname = `/s/${encodeURIComponent(id)}`;
 	url.search = '';
 	// Model B carries the decryption key in the fragment, which the browser
 	// never sends to the server. See web/src/lib/crypto/fragment.ts.
-	url.hash = key ? encodeKeyFragment(key) : '';
+	url.hash = identity ? encodeKeyFragment(identity) : '';
 	return url.toString();
 }
 
@@ -427,6 +379,18 @@ async function requestJson<T>(
 	input: RequestInfo | URL,
 	init?: RequestInit
 ): Promise<T> {
+	const response = await send(fetcher, input, init);
+	const result = (await response.json()) as T;
+	throwIfUploadAborted(init?.signal);
+	return result;
+}
+
+// send performs the request and turns a non-2xx answer into a SecretApiError.
+async function send(
+	fetcher: typeof fetch,
+	input: RequestInfo | URL,
+	init?: RequestInit
+): Promise<Response> {
 	throwIfUploadAborted(init?.signal);
 	let response: Response;
 	try {
@@ -449,9 +413,36 @@ async function requestJson<T>(
 			response.status
 		);
 	}
-	const result = (await response.json()) as T;
-	throwIfUploadAborted(init?.signal);
-	return result;
+	return response;
+}
+
+function withModelA(
+	request: Record<string, unknown>,
+	modelA?: PassphraseEnvelope
+): Record<string, unknown> {
+	if (modelA) {
+		request.access = modelA.access;
+		request.wrapped_identity = bytesToBase64(modelA.wrappedIdentity);
+	}
+	return request;
+}
+
+function openedSecret(response: Response): OpenedSecret {
+	const header = (name: string) => response.headers.get(name) ?? undefined;
+	const kind = header('Flick-Kind');
+	if ((kind !== 'text' && kind !== 'file') || !response.body) {
+		throw new SecretApiError('Flick sent an unreadable secret.', 'invalid_response', 0);
+	}
+	const encryptedFilename = header('Flick-Encrypted-Filename');
+	const wrappedIdentity = header('Flick-Wrapped-Identity');
+	return {
+		kind,
+		expiresAt: header('Flick-Expires-At') ?? '',
+		contentType: header('Flick-Content-Type') || 'application/octet-stream',
+		encryptedFilename: encryptedFilename ? base64ToBytes(encryptedFilename) : undefined,
+		wrappedIdentity: wrappedIdentity ? base64ToBytes(wrappedIdentity) : undefined,
+		body: response.body
+	};
 }
 
 type ServerError = {

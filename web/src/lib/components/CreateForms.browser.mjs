@@ -57,8 +57,19 @@ async function fixture(page, hold = false) {
 			}
 			assert.ok(['/api/secrets', '/api/requests'].includes(path), `Unexpected API path: ${path}`);
 			assert.equal(request.method(), 'POST');
+			const body = request.postDataJSON();
+			if (path === '/api/secrets') {
+				// age carries its own nonces and the passphrase file its own scrypt salt;
+				// the create contract has no top-level nonce or kdf.
+				assert.equal(body.nonce, undefined);
+				assert.equal(body.kdf, undefined);
+				assert.match(
+					Buffer.from(body.ciphertext, 'base64').toString('latin1'),
+					/^age-encryption\.org\/v1\n/
+				);
+			}
 			// Retain only the lifetime: keys and ciphertext are irrelevant to this regression.
-			ttls.push(request.postDataJSON().ttl_seconds);
+			ttls.push(body.ttl_seconds);
 			entered();
 			if (hold) {
 				await pending;

@@ -8,7 +8,8 @@ Directory structure principles:
 - Expected structure after scaffold:
   - `src/routes/`: pages and route-level load/actions.
   - `src/lib/api/`: typed API client and response mapping.
-  - `src/lib/crypto/`: Web Crypto, KDF, nonce, and encryption helpers.
+  - `src/lib/crypto/`: age (`age-encryption`) secret sealing, the PBKDF2 access
+    proof, and request-link Web Crypto helpers.
   - `src/lib/credentials/`: browser-only credential envelope build/parse/serialize (templates, schema).
   - `src/lib/components/`: reusable UI components.
   - `src/lib/state/`: browser-only state that does not persist passphrases or
@@ -32,14 +33,20 @@ Product principles:
 
 Security invariants:
 
-- `web/src/lib/crypto/text.ts` derives Model A keys from user-entered
-  passphrases; Model B generates a random key in the browser.
+- `contracts/age-format-v1.md` defines the secret format. Every secret gets a
+  fresh age identity in the browser (`web/src/lib/crypto/age.ts`). Model A
+  wraps it with the user-entered passphrase (age scrypt, in
+  `web/src/lib/crypto/scrypt.worker.ts`) and sends a separate PBKDF2 access
+  proof (`web/src/lib/crypto/access.ts`); Model B carries it in the link
+  fragment. Use the library; never hand-roll encryption or chunking.
 - `web/src/lib/api/secrets.ts:createShareUrl` puts only the secret ID in the
-  path and puts Model B keys only in the `#key=...` fragment, as specified in
+  path and puts Model B identities only in the `#key=...` fragment, as specified in
   `docs/architecture/security-model.md`. Never put keys in URL paths/queries.
 - Never send passphrases, derived keys, plaintext secret content, or plaintext
   filenames to the API.
-- Encrypt text and files with Web Crypto before upload.
+- Encrypt text and files with age before upload (`web/src/lib/crypto/secret.ts`).
+  Show decrypted content only after age authenticates the final chunk; never
+  offer a partial download.
 - Keep passphrases and encryption keys out of localStorage, sessionStorage,
   IndexedDB, `history.state`, telemetry, and error reports. Permitted key-bearing
   fragments are the Model B recipient link defined by
@@ -66,7 +73,7 @@ Request-link boundary:
 
 - `docs/architecture/request-links.md` defines M9's RSA-OAEP/AES-GCM
   envelope and separate submission/retrieval authority; request crypto belongs
-  in `src/lib/crypto/requests.ts`, independently of existing `text.ts` formats.
+  in `src/lib/crypto/requests.ts`, independently of the age secret format.
 - `docs/architecture/request-links.md` permits the requester-only PKCS#8 key in
   `/r/{id}/receive#receive=...&key=...` for explicit private-link custody. The
   request key must never enter HTTP, path/query, browser storage, telemetry,
