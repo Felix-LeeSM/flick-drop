@@ -102,7 +102,7 @@ describe('request upload immutable attempt and finalization', () => {
 			accepted = true;
 		});
 		await vi.waitFor(() => expect(xhr.send).toHaveBeenCalledOnce());
-		expect(new Uint8Array(xhr.send.mock.calls[0][0])).toEqual(
+		expect(new Uint8Array(await (xhr.send.mock.calls[0][0] as Blob).arrayBuffer())).toEqual(
 			new Uint8Array(Buffer.from(prepared.ciphertext as string, 'base64'))
 		);
 		expect(xhr.setRequestHeader).not.toHaveBeenCalled();
@@ -252,8 +252,8 @@ describe('request upload immutable attempt and finalization', () => {
 		xhr.onload?.();
 		await retry;
 		expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[2][1]?.body);
-		expect(new Uint8Array(xhr.send.mock.calls[0][0])).toEqual(
-			new Uint8Array(xhr.send.mock.calls[1][0])
+		expect(new Uint8Array(await (xhr.send.mock.calls[0][0] as Blob).arrayBuffer())).toEqual(
+			new Uint8Array(await (xhr.send.mock.calls[1][0] as Blob).arrayBuffer())
 		);
 	});
 	it('a recovered accepted reservation never PUTs or finalizes again', async () => {

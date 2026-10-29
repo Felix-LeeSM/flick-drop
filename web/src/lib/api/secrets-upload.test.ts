@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type EncryptedFilePayload, KDF_ALGORITHM } from '$lib/crypto/text';
+import type { SealedFile } from '$lib/crypto/secret';
 import { createSecretApiClient } from './secrets';
 
-const payload: EncryptedFilePayload = {
-	ciphertext: 'AAECAw==',
-	nonce: '',
-	kdf: { algorithm: KDF_ALGORITHM, salt: '', iterations: 0, key_length_bits: 256 },
-	size_bytes: 1000,
-	encrypted_filename: 'encrypted',
-	content_type: 'application/octet-stream'
+// Above the inline limit below, so every case takes the presigned-upload path.
+const payload: SealedFile = {
+	body: new Blob([new Uint8Array([0, 1, 2, 3])]),
+	encryptedFilename: new Uint8Array([1]),
+	contentType: 'application/octet-stream',
+	plaintextBytes: 1000
 };
 const staged = {
 	id: 'large-id',
@@ -69,7 +68,9 @@ describe('native encrypted upload', () => {
 		await vi.waitFor(() => expect(xhr.send).toHaveBeenCalledOnce());
 		expect(xhr.open).toHaveBeenCalledWith('PUT', staged.upload.url);
 		expect(xhr.setRequestHeader.mock.calls).toEqual([['x-amz-meta-probe', 'signed']]);
-		expect(new Uint8Array(xhr.send.mock.calls[0][0])).toEqual(new Uint8Array([0, 1, 2, 3]));
+		const sent = xhr.send.mock.calls[0][0] as Blob;
+		expect(sent).toBe(payload.body);
+		expect(new Uint8Array(await sent.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 3]));
 		xhr.upload.onprogress?.({ loaded: 2, total: 4, lengthComputable: true });
 		expect(progress).toHaveBeenLastCalledWith({ stage: 'uploading', loaded: 2, total: 4 });
 		xhr.upload.onprogress?.({ loaded: 3, total: 0, lengthComputable: false });

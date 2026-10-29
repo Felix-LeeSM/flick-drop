@@ -1,5 +1,5 @@
+import { base64ToBytes, bytesToBase64 } from '$lib/crypto/encoding';
 import type { RequestPayload } from '$lib/crypto/requests';
-import { base64ToBytes, bytesToBase64 } from '$lib/crypto/text';
 import type { ClientLimits } from './config';
 import { isManagementToken } from './management';
 import {
@@ -355,7 +355,14 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			ciphertext: string,
 			signal?: AbortSignal,
 			onProgress?: (progress: FileUploadProgress) => void
-		) => uploadToObjectStore(fetcher, upload, ciphertext, signal, onProgress),
+		) =>
+			uploadToObjectStore(
+				fetcher,
+				upload,
+				new Blob([base64ToBytes(ciphertext)]),
+				signal,
+				onProgress
+			),
 		async finalize(
 			id: string,
 			token: string,

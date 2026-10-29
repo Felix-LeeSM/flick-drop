@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import vectors from '../../../../tests/fixtures/request-crypto-v1.json';
+import { base64ToBytes, bytesToBase64 } from './encoding';
 import {
 	decryptRequestPayload,
 	encryptRequestPayload,
@@ -13,7 +14,6 @@ import {
 	type RequestPayload,
 	serializeRequestEnvelope
 } from './requests';
-import { base64ToBytes, bytesToBase64 } from './text';
 
 const limits = { maxTextBytes: 1_048_560, maxFileBytes: 52_428_800 };
 let publicKey: CryptoKey;

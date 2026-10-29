@@ -120,7 +120,7 @@ for (const model of ['a', 'b']) {
 			assert.equal(management.includes('#key='), false);
 			assert.equal(
 				model === 'b'
-					? /^#key=[\w-]{43}$/.test(new URL(recipient).hash)
+					? /^#key=AGE-SECRET-KEY-PQ-1[02-9AC-HJ-NP-Z]+$/.test(new URL(recipient).hash)
 					: new URL(recipient).hash === '',
 				true
 			);

@@ -21,6 +21,7 @@ import {
 	createShareUrl,
 	DEFAULT_API_BASE_URL,
 	type FileUploadProgress,
+	type PassphraseEnvelope,
 	SecretApiError,
 	type TtlSeconds
 } from '$lib/api/secrets';
@@ -47,17 +48,9 @@ import {
 	hasCredentialContent,
 	serializeCredential
 } from '$lib/credentials';
-import {
-	type AccessVerifierPayload,
-	createAccessVerifier,
-	type EncryptedFilePayload,
-	type EncryptedTextPayload,
-	encryptFile,
-	encryptFileWithKey,
-	encryptText,
-	encryptTextWithKey,
-	generateSecretKey
-} from '$lib/crypto/text';
+import { createAccessVerifier } from '$lib/crypto/access';
+import { generateSecretIdentity } from '$lib/crypto/age';
+import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '$lib/crypto/secret';
 import { bundleFiles } from '$lib/files/bundle';
 import { remainingSecondsFrom } from '$lib/lifetime.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '$lib/state/created-delivery';
@@ -172,12 +165,12 @@ async function createSecret(): Promise<void> {
 	statusKind = 'encrypting';
 
 	try {
-		const { created, key } = await createSelectedSecret();
+		const { created, identity } = await createSelectedSecret();
 		if (controller.signal.aborted || abortController !== controller) {
 			return;
 		}
 
-		shareUrl = createShareUrl(window.location.origin, created.id, key);
+		shareUrl = createShareUrl(window.location.origin, created.id, identity);
 		expiresAt = created.expires_at;
 		plaintext = '';
 		passphrase = '';
@@ -235,73 +228,56 @@ function cancelCreate(): void {
 
 type CreateResult = {
 	created: CreateSecretResponse;
-	// raw key for Model B; omitted for Model A (passphrase is the key source).
-	key?: Uint8Array;
+	// The age identity for Model B's URL fragment; omitted for Model A, whose
+	// identity travels wrapped by the passphrase.
+	identity?: string;
 };
 
+// One fresh age identity per secret (contracts/age-format-v1.md). Model A
+// sends it wrapped with the passphrase plus a separate access proof; Model B
+// puts it in the link.
 async function createSelectedSecret(): Promise<CreateResult> {
-	if (usePassphrase) {
-		const access = await createAccessVerifier(passphrase);
-		if (mode === 'text') {
-			return {
-				created: await createText(await encryptText(plaintext, passphrase), ttlSeconds, access)
-			};
-		}
-		if (mode === 'file') {
-			return {
-				created: await createFile(await encryptFile(requireSelectedFile(), passphrase), access)
-			};
-		}
-		return {
-			created: await createText(
-				await encryptText(serializeCredential(credentialEnvelope), passphrase),
-				ttlSeconds,
-				access
-			)
-		};
-	}
-
-	// Model B: random key, no passphrase. The key travels in the URL fragment.
-	const { key, raw } = await generateSecretKey();
-	if (mode === 'text') {
-		return {
-			created: await createText(await encryptTextWithKey(plaintext, key), ttlSeconds),
-			key: raw
-		};
-	}
+	const identity = await generateSecretIdentity();
+	const modelA = usePassphrase ? await passphraseEnvelope(identity, passphrase) : undefined;
+	let created: CreateSecretResponse;
 	if (mode === 'file') {
-		return {
-			created: await createFile(await encryptFileWithKey(requireSelectedFile(), key)),
-			key: raw
-		};
+		created = await createFile(await sealFile(identity, requireSelectedFile()), modelA);
+	} else {
+		const text = mode === 'text' ? plaintext : serializeCredential(credentialEnvelope);
+		created = await createText(await sealText(identity, text), ttlSeconds, modelA);
 	}
-	return {
-		created: await createText(
-			await encryptTextWithKey(serializeCredential(credentialEnvelope), key),
-			ttlSeconds
-		),
-		key: raw
-	};
+	return usePassphrase ? { created } : { created, identity };
+}
+
+async function passphraseEnvelope(
+	identity: string,
+	secretPassphrase: string
+): Promise<PassphraseEnvelope> {
+	const [access, wrappedIdentity] = await Promise.all([
+		createAccessVerifier(secretPassphrase),
+		wrapIdentityOffThread(identity, secretPassphrase)
+	]);
+	return { access, wrappedIdentity };
 }
 
 function createText(
-	payload: EncryptedTextPayload,
+	body: Uint8Array,
 	ttl: TtlSeconds,
-	access?: AccessVerifierPayload
+	modelA?: PassphraseEnvelope
 ): Promise<CreateSecretResponse> {
 	status = 'Creating link…';
 	statusKind = 'saving';
-	return api.createTextSecret(payload, ttl, access);
+	return api.createTextSecret(body, ttl, modelA);
 }
 
 function createFile(
-	payload: EncryptedFilePayload,
-	access?: AccessVerifierPayload
+	sealed: SealedFile,
+	modelA?: PassphraseEnvelope
 ): Promise<CreateSecretResponse> {
 	status = 'Creating link…';
 	statusKind = 'saving';
 	const controller = abortController;
-	return api.createFileSecret(payload, ttlSeconds, access, controller?.signal, (progress) => {
+	return api.createFileSecret(sealed, ttlSeconds, modelA, controller?.signal, (progress) => {
 		if (controller?.signal.aborted || abortController !== controller) {
 			return;
 		}
