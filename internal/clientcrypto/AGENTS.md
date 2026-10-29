@@ -22,7 +22,8 @@ browser also uses. Its twins in `web/src/lib/crypto/` are `age.ts`,
 - age itself comes from `filippo.io/age`; Flick adds no cipher, KDF, or chunk
   layout. Never hand-roll one here.
 - `WrapWorkFactor` (18) and `MaxWrapWorkFactor` (20) match the browser.
-- `KDFIterations` (600,000) and the server-enforced minimum,
+- `KDFIterations` (600,000), the server-enforced minimum, and
+  `KDFMaxIterations` (6,000,000),
   `KeyLengthBits`, `SaltBytes`, `AccessVerifierPurpose`, and the
   `purpose\0passphrase` material
 - base64 for the wire, the uppercase identity string for the fragment
@@ -43,6 +44,6 @@ other. So:
   client-side code and must not gain access the browser does not have.
 - KDF parameters arriving from the server are untrusted input: validate with
   `ValidateKDF` before deriving. A lowered iteration count is a downgrade
-  attempt.
+  attempt; a raised one past `KDFMaxIterations` would stall the opener.
 - A wrapped identity arrives from the server: `UnwrapIdentity` caps the scrypt
   work factor and the unwrapped size. Keep both caps.

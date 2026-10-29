@@ -109,7 +109,7 @@ Access proof KDF:
 
 ```text
 PBKDF2-HMAC-SHA256
-iterations: 600,000 or more
+iterations: 600,000 to 6,000,000 (the cap bounds what a stored block can make an opener compute)
 salt: random 128-bit or larger, stored with the secret
 output: 256-bit proof; the server keeps only its hash
 ```
