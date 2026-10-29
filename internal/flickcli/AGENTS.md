@@ -39,12 +39,14 @@ Anything that can fail should fail before step 3, including reserving the
 output destination. After it, the payload exists only in this process — a
 failure past that point loses the secret for good.
 
-- A text secret (bounded by the inline limit) is decrypted into memory, so a
-  failed write can still hand it to stdout.
+- A text secret is decrypted into memory, so a failed write can still hand it
+  to stdout. Its reported size is checked against the inline limit before the
+  open, since the server's number is otherwise the only bound.
 - A file secret is streamed: age decrypts the body into a `.flick-partial-*`
   staging file in the destination directory, and only after the final chunk
   authenticates is it moved into place (rename onto a reserved `-output`, or a
-  hard link to an unused name). A body that fails to authenticate leaves
+  hard link to an unused name, or an exclusive-create copy where hard links
+  are unavailable). A body that fails to authenticate leaves
   nothing behind. A staging file that cannot be moved into place is reported
   as `OpenResult.RescuedPath`. A disk that fails mid-stream loses the file;
   there is no second copy to fall back on.

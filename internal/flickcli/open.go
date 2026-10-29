@@ -104,6 +104,15 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		)
 	}
 
+	// A text secret is decrypted in memory, so its size is checked against the
+	// deployment's inline limit before anything is consumed: the reported size
+	// comes from the server and is otherwise the only bound.
+	if metadata.Kind != "file" {
+		if limit := ageFileBytes(client.Config(ctx).PayloadInlineMaxBytes); int64(metadata.SizeBytes) > limit {
+			return OpenResult{}, fmt.Errorf("text secret reports %d bytes, more than the %d this deployment stores inline", metadata.SizeBytes, limit)
+		}
+	}
+
 	// Reserved before the open, not after: a missing directory, a name already
 	// taken, or a read-only volume must cost nothing. Discarded if the open
 	// itself fails, so a refused open leaves no empty file behind.
@@ -168,9 +177,13 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		if errors.As(err, &writeErr) {
 			return result, fmt.Errorf("%w: %w", ErrWriteAfterConsume, writeErr.err)
 		}
-		return result, err
+		return result, consumedError(err)
 	}
 	if result.WrittenPath, err = reserved.place(opts, result.Filename, staged); err != nil {
+		if result.WrittenPath != "" {
+			// Saved; only the staging link could not be cleaned up.
+			return result, err
+		}
 		result.RescuedPath = staged.Name()
 		return result, fmt.Errorf("%w: %w", ErrWriteAfterConsume, err)
 	}
@@ -187,7 +200,7 @@ func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdent
 		// Nothing was recovered, so the reserved path must not be left behind
 		// as an empty file where the user asked for a secret.
 		reserved.discard()
-		return OpenResult{}, err
+		return OpenResult{}, consumedError(err)
 	}
 	result.Plaintext = plaintext
 	// A text secret with no -output belongs on the caller's stdout.
@@ -199,6 +212,20 @@ func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdent
 	}
 	result.WrittenPath = opts.OutputPath
 	return result, nil
+}
+
+// consumedError explains a body that failed to download or decrypt after the
+// server consumed the secret, so the user does not retry a link that is gone.
+func consumedError(err error) error {
+	return fmt.Errorf("the secret was opened and is gone from the server, but its contents could not be read: %w", err)
+}
+
+// ageFileBytes is the largest age file an n-byte input produces, per the size
+// formula in contracts/age-format-v1.md (internal/secrets.MaxCiphertextBytes,
+// which this client must not import): a 4 KiB header allowance, a 16-byte
+// nonce, and a 16-byte tag per started 64 KiB chunk.
+func ageFileBytes(n int64) int64 {
+	return 4096 + 16 + n + 16*max(1, (n+65535)/65536)
 }
 
 // stagingWriteError marks a local write failure while decrypting into the
@@ -397,7 +424,11 @@ func placeFile(opts OpenOptions, filename, staged string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		os.Remove(staged)
+		if err := os.Remove(staged); err != nil {
+			// The payload is in place; the staging name is a second link to
+			// it that must not linger unannounced.
+			return candidate, fmt.Errorf("saved %s, but could not remove the staging link %s: %w", candidate, staged, err)
+		}
 		return candidate, nil
 	}
 	return "", fmt.Errorf("could not find an unused filename near %s", target)

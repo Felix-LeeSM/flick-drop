@@ -202,6 +202,9 @@ func (c *Client) OpenSecret(ctx context.Context, id, accessProof string, sizeByt
 	if accessProof != "" {
 		body["access_proof"] = accessProof
 	}
+	if sizeBytes <= 0 {
+		return OpenedSecret{}, fmt.Errorf("secret metadata reports an impossible size %d", sizeBytes)
+	}
 	resp, err := c.send(ctx, http.MethodPost, "/api/secrets/"+url.PathEscape(id)+"/open", body)
 	if err != nil {
 		return OpenedSecret{}, err

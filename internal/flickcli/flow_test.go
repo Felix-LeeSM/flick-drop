@@ -1151,3 +1151,87 @@ func TestSendAndOpenModelAFile(t *testing.T) {
 		t.Error("file contents did not survive the round trip")
 	}
 }
+
+// A server reporting an impossible size must be refused before the consuming
+// open: a negative size used to reach a slice bound after consumption.
+func TestOpenRefusesAnImpossibleReportedSize(t *testing.T) {
+	for name, size := range map[string]int{"negative": -1, "zero": 0, "text over inline": 1 << 30} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			fake.mu.Lock()
+			fake.secrets[sent.ID].sizeBytes = size
+			fake.mu.Unlock()
+			link, err := ParseShareLink(sent.Link)
+			if err != nil {
+				t.Fatalf("parse link: %v", err)
+			}
+			if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link}); err == nil {
+				t.Fatal("opened a secret with an impossible reported size")
+			}
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if fake.openCalls != 0 {
+				t.Errorf("open calls = %d, want the secret left unconsumed", fake.openCalls)
+			}
+		})
+	}
+}
+
+// A placed file secret is 0600 and leaves no staging file behind.
+func TestOpenFilePlacesAPrivateFileAndCleansUp(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 64
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		FileName: "report.pdf",
+		File:     bytes.NewReader(bytes.Repeat([]byte("x"), 70_000)),
+		TTL:      DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	dir := t.TempDir()
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	info, err := os.Stat(opened.WrittenPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "report.pdf" {
+		t.Errorf("output directory holds %v, want only report.pdf", entries)
+	}
+}
+
+func TestCopyExclusiveNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyExclusive(src, dst); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "payload" {
+		t.Errorf("copied %q", got)
+	}
+	if err := copyExclusive(src, dst); !errors.Is(err, os.ErrExist) {
+		t.Errorf("second copy err = %v, want os.ErrExist", err)
+	}
+}
