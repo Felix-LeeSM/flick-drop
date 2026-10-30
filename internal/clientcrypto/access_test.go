@@ -41,7 +41,7 @@ func TestGoldenVectorAccessProof(t *testing.T) {
 	}
 }
 
-func TestValidateKDFRejectsDowngrades(t *testing.T) {
+func TestValidateKDFRejectsInvalidParams(t *testing.T) {
 	valid := KDFParams{
 		Algorithm:     KDFAlgorithm,
 		Salt:          base64.StdEncoding.EncodeToString(make([]byte, SaltBytes)),

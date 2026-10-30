@@ -229,8 +229,8 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 		// The clamp leaves room for the age overhead: a 1 MiB age file holds
 		// at most 1 MiB minus the 4096-byte header allowance, the 16-byte
 		// payload nonce, and sixteen 16-byte chunk tags.
-		{"large storage off clamps below the inline threshold", false, 1048576, 52428800, 1044208},
-		{"large storage on keeps the configured limit", true, 1048576, 52428800, 52428800},
+		{"large storage off clamps below the inline threshold", false, 1048576, 268435456, 1044208},
+		{"large storage on keeps the configured limit", true, 1048576, 268435456, 268435456},
 		{"limit already below the clamp is left alone", false, 1048576, 4096, 4096},
 		{"limit inside the age margin is clamped", false, 1048576, 1048570, 1044208},
 	}
