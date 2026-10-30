@@ -46,10 +46,16 @@ spec:
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
           volumeMounts:
             - name: worker-data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: worker-data
           persistentVolumeClaim:
             claimName: flick-worker-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
