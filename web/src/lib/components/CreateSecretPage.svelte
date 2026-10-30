@@ -8,7 +8,8 @@ import {
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
-	XIcon
+	XIcon,
+	ZapIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import { type ClientLimits, defaultLimits, getConfig } from '#lib/api/config.js';
@@ -27,6 +28,7 @@ import CredentialForm from '#lib/components/CredentialForm.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import LifetimePicker from '#lib/components/LifetimePicker.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
+import PipeWaitingPanel from '#lib/components/PipeWaitingPanel.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
 import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
 import SuccessCheck from '#lib/components/SuccessCheck.svelte';
@@ -48,6 +50,15 @@ import {
 } from '#lib/credentials/index.js';
 import { createAccessVerifier } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
+import {
+	computePipePassphrase,
+	deriveConfirmationCode,
+	encryptPipeStream,
+	initPipeRendezvous,
+	sendPipeStream,
+	streamToBytes,
+	waitForReceiver
+} from '#lib/crypto/pipe.js';
 import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
 import { bundleFiles } from '#lib/files/bundle.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
@@ -102,7 +113,24 @@ let isCreating = $state(false);
 // One controller identifies the current attempt and suppresses stale callbacks.
 let abortController = $state<AbortController | null>(null);
 let uploadProgress = $state<FileUploadProgress | null>(null);
-onDestroy(() => abortController?.abort());
+
+// Live Pipe Relay (Send with code)
+let pipeActiveCode = $state<string | null>(null);
+let pipeSalt = $state('');
+let pipeStatus = $state('Waiting for receiver to enter code...');
+let pipeProgress = $state(0);
+let pipeCompleted = $state(false);
+let pipeRequireApproval = $state(true);
+let pipeApprovalStatus = $state<'idle' | 'pending' | 'approved' | 'rejected'>('idle');
+let pipeMatchCode = $state('482');
+let pipeExpiresIn = $state(180);
+let isHoveringPipe = $state(false);
+let pipeAbortController = $state<AbortController | null>(null);
+
+onDestroy(() => {
+	abortController?.abort();
+	pipeAbortController?.abort();
+});
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
 
@@ -143,6 +171,13 @@ const canCreate = $derived(
 		ttlSeconds <= MAX_TTL_SECONDS &&
 		!isCreating &&
 		!bundling
+);
+const canPipe = $derived(
+	hasCreatePayload &&
+		(!usePassphrase || passphrase.length > 0) &&
+		!isCreating &&
+		!bundling &&
+		pipeActiveCode === null
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -438,6 +473,152 @@ function createAnother(): void {
 	qrOpen = false;
 }
 
+async function startPipeSend(): Promise<void> {
+	if (!canPipe) {
+		return;
+	}
+	pipeAbortController?.abort();
+	pipeAbortController = new AbortController();
+	const signal = pipeAbortController.signal;
+
+	try {
+		pipeStatus = 'Initializing live transfer session...';
+		const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, fetch);
+		pipeActiveCode = session.code;
+		pipeSalt = session.salt;
+		pipeMatchCode = deriveConfirmationCode(session.code);
+		pipeExpiresIn = session.expiresIn;
+		pipeApprovalStatus = 'idle';
+		pipeCompleted = false;
+		pipeProgress = 0;
+		pipeStatus = pipeRequireApproval
+			? 'Waiting for receiver to enter code... (confirmation required)'
+			: 'Waiting for receiver to enter code...';
+
+		await waitForReceiver(DEFAULT_API_BASE_URL, session.code, fetch, signal);
+
+		if (pipeRequireApproval) {
+			pipeApprovalStatus = 'pending';
+			pipeStatus = 'Receiver connected. Please confirm transfer.';
+		} else {
+			await executePipeStream();
+		}
+	} catch (err) {
+		if (signal.aborted) {
+			return;
+		}
+		pipeStatus = err instanceof Error ? err.message : 'Live transfer failed';
+		pipeApprovalStatus = 'rejected';
+	}
+}
+
+async function handlePipeApprove(): Promise<void> {
+	pipeApprovalStatus = 'approved';
+	pipeStatus = 'Approved. Encrypting and streaming chunks...';
+	await executePipeStream();
+}
+
+function handlePipeReject(): void {
+	pipeApprovalStatus = 'rejected';
+	pipeStatus = 'Transfer denied. Session wiped from memory.';
+	pipeAbortController?.abort();
+}
+
+async function executePipeStream(): Promise<void> {
+	if (!pipeActiveCode) {
+		return;
+	}
+	const signal = pipeAbortController?.signal;
+
+	try {
+		const pipePassphrase = computePipePassphrase(
+			pipeActiveCode,
+			pipeSalt,
+			usePassphrase ? passphrase : ''
+		);
+
+		let rawStream: ReadableStream<Uint8Array>;
+		let kind: 'text' | 'file' = 'text';
+		let filename: string | undefined;
+
+		if (mode === 'file' && selectedFile) {
+			kind = 'file';
+			filename = selectedFile.name;
+			rawStream = selectedFile.stream();
+		} else if (mode === 'text') {
+			kind = 'text';
+			const encoded = new TextEncoder().encode(plaintext);
+			rawStream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoded);
+					controller.close();
+				}
+			});
+		} else {
+			kind = 'text';
+			const serialized = serializeCredential(credentialEnvelope);
+			const encoded = new TextEncoder().encode(serialized);
+			rawStream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoded);
+					controller.close();
+				}
+			});
+		}
+
+		pipeStatus = 'Encrypting stream on-the-fly (age format)...';
+		pipeProgress = 25;
+		const encryptedStream = await encryptPipeStream(rawStream, pipePassphrase);
+
+		pipeStatus = 'Streaming encrypted bytes directly to receiver...';
+		pipeProgress = 50;
+
+		let encFilenameHeader: string | undefined;
+		if (filename) {
+			const filenameBytes = new TextEncoder().encode(filename);
+			const encryptedFilenameStream = await encryptPipeStream(filenameBytes, pipePassphrase);
+			const encBytes = await streamToBytes(encryptedFilenameStream);
+			encFilenameHeader = btoa(String.fromCharCode(...encBytes));
+		}
+
+		await sendPipeStream({
+			baseUrl: DEFAULT_API_BASE_URL,
+			code: pipeActiveCode,
+			stream: encryptedStream,
+			kind,
+			encryptedFilename: encFilenameHeader,
+			fetcher: fetch,
+			signal
+		});
+
+		pipeProgress = 100;
+		pipeCompleted = true;
+		pipeStatus = 'Transfer complete!';
+	} catch (err) {
+		if (signal?.aborted) {
+			return;
+		}
+		pipeStatus = err instanceof Error ? err.message : 'Streaming failed';
+		pipeApprovalStatus = 'rejected';
+	}
+}
+
+function cancelPipe(): void {
+	pipeAbortController?.abort();
+	pipeActiveCode = null;
+	pipeStatus = '';
+	pipeProgress = 0;
+	pipeCompleted = false;
+	pipeApprovalStatus = 'idle';
+}
+
+function resetPipeAndForm(): void {
+	cancelPipe();
+	createAnother();
+	plaintext = '';
+	clearSelectedFile();
+}
+
 function formatRemaining(seconds: number): string {
 	const safe = Math.max(0, seconds);
 	const minutes = Math.floor(safe / 60);
@@ -467,8 +648,26 @@ function modeLabel(value: CreateMode): string {
 
 <DeliveryFrame
 	link={{ href: resolve('request'), label: 'Request a secret' }}
+	showEnterCode={true}
 >
-	{#if hasResult}
+	{#if pipeActiveCode !== null}
+		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
+			<PipeWaitingPanel
+				code={pipeActiveCode}
+				expiresInSeconds={pipeExpiresIn}
+				statusText={pipeStatus}
+				progressPercent={pipeProgress}
+				completed={pipeCompleted}
+				requireApproval={pipeRequireApproval}
+				matchCode={pipeMatchCode}
+				approvalStatus={pipeApprovalStatus}
+				onApprove={handlePipeApprove}
+				onReject={handlePipeReject}
+				onCancel={cancelPipe}
+				onReset={resetPipeAndForm}
+			/>
+		</section>
+	{:else if hasResult}
 		<section class="grid gap-7">
 			<div class="grid place-items-center gap-4 text-center">
 				<SuccessCheck />
@@ -719,13 +918,77 @@ function modeLabel(value: CreateMode): string {
 					{/if}
 				</div>
 
+				<!-- Live transfer confirmation option -->
+				<div class="grid gap-2.5 rounded-xl border border-border/80 bg-muted/20 p-4">
+					<div class="flex items-start gap-2.5">
+						<Checkbox id="require-confirmation" bind:checked={pipeRequireApproval} disabled={isCreating} class="mt-0.5" />
+						<div class="grid gap-1">
+							<Label for="require-confirmation" class="cursor-pointer text-sm font-medium text-foreground flex items-center gap-1.5">
+								<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
+								<span>Require confirmation before transfer</span>
+							</Label>
+							<p class="text-[0.8125rem] text-muted-foreground">
+								{#if pipeRequireApproval}
+									Requires verifying the 3-digit confirmation code on both devices before transmitting.
+								{:else}
+									Streams encrypted data immediately when the receiver enters the code.
+								{/if}
+							</p>
+						</div>
+					</div>
+				</div>
+
+				<!-- Lifetime picker with hover feedback -->
+				<div class={cn('transition-opacity duration-200', isHoveringPipe && 'opacity-40')}>
+					<div class="flex items-center justify-between pb-1">
+						<span class="text-xs font-medium text-muted-foreground">Link expiration</span>
+						{#if isHoveringPipe}
+							<span class="flex items-center gap-1 text-[11px] font-semibold text-burn animate-pulse">
+								<FlameIcon class="size-3 text-burn" aria-hidden="true" />
+								Code transfer uses fixed 3-minute in-memory relay
+							</span>
+						{/if}
+					</div>
 					<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" />
+				</div>
 
 				<div class="grid gap-3">
-					<Button type="submit" size="cta" disabled={!canCreate}>
-						<LockKeyholeIcon class="size-4" aria-hidden="true" />
-						{isCreating ? 'Creating' : 'Create link'}
-					</Button>
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+						<Button type="submit" size="cta" disabled={!canCreate}>
+							<LockKeyholeIcon class="size-4" aria-hidden="true" />
+							{isCreating ? 'Creating' : 'Create link'}
+						</Button>
+
+						<Button
+							type="button"
+							variant="outline"
+							size="cta"
+							disabled={!canPipe}
+							class="gap-2 font-bold border-primary/40 bg-primary/5 hover:bg-primary/10 text-primary shadow-xs"
+							onmouseenter={() => {
+								isHoveringPipe = true;
+							}}
+							onmouseleave={() => {
+								isHoveringPipe = false;
+							}}
+							onfocus={() => {
+								isHoveringPipe = true;
+							}}
+							onblur={() => {
+								isHoveringPipe = false;
+							}}
+							onclick={startPipeSend}
+						>
+							<ZapIcon class="size-4 text-primary" aria-hidden="true" />
+							<span>Send with code</span>
+						</Button>
+					</div>
+
+					<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
+						<FlameIcon class="size-3.5 text-burn" aria-hidden="true" />
+						<span>Send with code streams directly in-memory with 0B storage</span>
+					</p>
+
 					<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
 					{#if statusKind === 'uploading'}
 						<Button
@@ -733,9 +996,9 @@ function modeLabel(value: CreateMode): string {
 							variant="outline"
 							class="h-11 w-full"
 							onclick={cancelCreate}
-							>
-								Cancel
-							</Button>
+						>
+							Cancel
+						</Button>
 						<progress
 							class="h-2 w-full accent-primary"
 							aria-label="Encrypted file upload progress"
@@ -750,9 +1013,9 @@ function modeLabel(value: CreateMode): string {
 							class:text-destructive={statusKind === 'error'}
 							role={statusKind === 'error' ? 'alert' : 'status'}
 							aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
-							>
-								{status}
-							</p>
+						>
+							{status}
+						</p>
 					{/if}
 					<p
 						class="micro flex items-center justify-center gap-1.5"

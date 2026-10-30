@@ -3,8 +3,11 @@ export type HeaderLink = { href: string; label: string };
 </script>
 
 <script lang="ts">
-import { LockKeyholeIcon } from '@lucide/svelte';
+import { LockKeyholeIcon, ZapIcon } from '@lucide/svelte';
+import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
+import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
 import { cn } from '#lib/utils.js';
@@ -13,7 +16,36 @@ import { cn } from '#lib/utils.js';
 // With large text the link and toggle wrap below the wordmark instead of widening the page.
 // The link and toggle can also wrap onto separate rows from each other: a long link label at a
 // large text-size setting must not push the toggle past the viewport edge either.
-let { link }: { link?: HeaderLink } = $props();
+let { link, showEnterCode = false }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
+let receiveModalOpen = $state(false);
+let initialReceiveCode = $state('');
+
+$effect(() => {
+	if (!receiveModalOpen) {
+		initialReceiveCode = '';
+	}
+});
+
+onMount(() => {
+	function checkHash(): void {
+		if (typeof window === 'undefined') return;
+		if (window.location.pathname !== '/') return;
+		const hash = window.location.hash;
+		if (hash.startsWith('#code=')) {
+			const code = hash.slice('#code='.length);
+			if (code) {
+				initialReceiveCode = code;
+				receiveModalOpen = true;
+				history.replaceState(null, '', window.location.pathname + window.location.search);
+			}
+		}
+	}
+	checkHash();
+	window.addEventListener('hashchange', checkHash);
+	return () => {
+		window.removeEventListener('hashchange', checkHash);
+	};
+});
 </script>
 
 <header class="flex min-w-0 min-h-10 flex-wrap items-center justify-between gap-3">
@@ -30,5 +62,19 @@ let { link }: { link?: HeaderLink } = $props();
 			</nav>
 		{/if}
 		<ThemeToggle />
+		{#if showEnterCode}
+			<button
+				type="button"
+				class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card gap-1.5 hidden sm:inline-flex')}
+				onclick={() => {
+					receiveModalOpen = true;
+				}}
+			>
+				<ZapIcon class="size-3.5 text-primary" aria-hidden="true" />
+				<span>Enter code</span>
+			</button>
+		{/if}
 	</div>
 </header>
+
+<ReceiveCodeModal bind:open={receiveModalOpen} initialCode={initialReceiveCode} apiBaseUrl={DEFAULT_API_BASE_URL} />

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	computePipePassphrase,
 	decryptPipeStream,
+	deriveConfirmationCode,
 	encryptPipeStream,
 	formatPipeCode,
 	initPipeRendezvous,
@@ -32,6 +33,14 @@ describe('pipe code normalization and formatting', () => {
 		expect(formatPipeCode('123456')).toBe('123-456');
 		expect(formatPipeCode('987-654')).toBe('987-654');
 		expect(formatPipeCode(' 555 444 ')).toBe('555-444');
+	});
+
+	it('derives a consistent 3-digit confirmation code from 6-digit codes', () => {
+		const code1 = deriveConfirmationCode('123456');
+		const code2 = deriveConfirmationCode('123-456');
+		expect(code1).toBe(code2);
+		expect(code1).toMatch(/^\d{3}$/);
+		expect(deriveConfirmationCode('987654')).toMatch(/^\d{3}$/);
 	});
 });
 
