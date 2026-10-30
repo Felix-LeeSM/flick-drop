@@ -49,7 +49,7 @@ let {
 	approvalStatus = 'idle',
 	onApprove,
 	onReject,
-	deviceInfo = 'Chrome on Mobile'
+	deviceInfo = 'Connected device'
 }: Props = $props();
 
 let remainingSeconds = $state(180);

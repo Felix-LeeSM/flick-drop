@@ -980,7 +980,7 @@ function modeLabel(value: CreateMode): string {
 							onclick={startPipeSend}
 						>
 							<ZapIcon class="size-4 text-primary" aria-hidden="true" />
-							<span>Send with code ({pipeRequireApproval ? '10m' : '3m'})</span>
+							<span>Send with code</span>
 						</Button>
 					</div>
 

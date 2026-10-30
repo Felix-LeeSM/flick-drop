@@ -20,6 +20,12 @@ let { link, showEnterCode = false }: { link?: HeaderLink; showEnterCode?: boolea
 let receiveModalOpen = $state(false);
 let initialReceiveCode = $state('');
 
+$effect(() => {
+	if (!receiveModalOpen) {
+		initialReceiveCode = '';
+	}
+});
+
 onMount(() => {
 	function checkHash(): void {
 		if (typeof window === 'undefined') return;
