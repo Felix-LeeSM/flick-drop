@@ -89,8 +89,13 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 			return SendResult{}, err
 		}
 		defer sealed.remove()
-	} else if body, err = seal(identity, []byte(opts.Text)); err != nil {
-		return SendResult{}, fmt.Errorf("encrypt payload: %w", err)
+	} else {
+		if limits.PayloadInlineMaxBytes > 0 && int64(len(opts.Text)) > limits.PayloadInlineMaxBytes {
+			return SendResult{}, fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(opts.Text), limits.PayloadInlineMaxBytes)
+		}
+		if body, err = seal(identity, []byte(opts.Text)); err != nil {
+			return SendResult{}, fmt.Errorf("encrypt payload: %w", err)
+		}
 	}
 
 	req := CreateSecretRequest{

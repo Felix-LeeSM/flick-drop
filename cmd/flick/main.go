@@ -116,6 +116,9 @@ func runSend(ctx context.Context, args []string) error {
 	opts := flickcli.SendOptions{TTL: *ttl, ShareOrigin: *shareURL}
 	wantPassphrase := *askPassphrase
 
+	client := flickcli.NewClient(*apiURL, nil)
+	limits := client.Config(ctx)
+
 	switch {
 	case *filePath != "":
 		if flags.NArg() > 0 {
@@ -149,7 +152,7 @@ func runSend(ctx context.Context, args []string) error {
 			}
 		}
 	default:
-		text, err := readText(flags.Args())
+		text, err := readText(flags.Args(), limits.PayloadInlineMaxBytes)
 		if err != nil {
 			return err
 		}
@@ -164,7 +167,7 @@ func runSend(ctx context.Context, args []string) error {
 		opts.Passphrase = passphrase
 	}
 
-	result, err := flickcli.Send(ctx, flickcli.NewClient(*apiURL, nil), opts)
+	result, err := flickcli.Send(ctx, client, opts)
 	if err != nil {
 		return err
 	}
@@ -277,22 +280,35 @@ func salvage(result flickcli.OpenResult, cause error) error {
 // readText takes the payload from the argument, or from stdin when none is
 // given. Reading from stdin is what makes `... | flick send` work. A terminal
 // with no argument never reaches here; runSend asks for the text instead.
-func readText(args []string) (string, error) {
+func readText(args []string, limit int64) (string, error) {
 	if len(args) > 1 {
 		return "", errors.New("give the text as one argument, or pipe it on stdin")
 	}
 	if len(args) == 1 {
+		if limit > 0 && int64(len(args[0])) > limit {
+			return "", fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(args[0]), limit)
+		}
 		return args[0], nil
 	}
-	piped, err := io.ReadAll(os.Stdin)
+	reader := io.Reader(os.Stdin)
+	if limit > 0 {
+		reader = io.LimitReader(os.Stdin, limit+1)
+	}
+	piped, err := io.ReadAll(reader)
 	if err != nil {
 		return "", err
+	}
+	if limit > 0 && int64(len(piped)) > limit {
+		return "", fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(piped), limit)
 	}
 	// A trailing newline is the shell's, not the secret's — an API key echoed
 	// through a pipe should not arrive with one attached.
 	text := strings.TrimRight(string(piped), "\r\n")
 	if text == "" {
 		return "", errors.New("stdin was empty")
+	}
+	if limit > 0 && int64(len(text)) > limit {
+		return "", fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(text), limit)
 	}
 	return text, nil
 }

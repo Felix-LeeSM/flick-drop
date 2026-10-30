@@ -534,6 +534,43 @@ func TestSendRejectsFilesOverTheDeploymentLimit(t *testing.T) {
 	}
 }
 
+func TestSendRejectsTextOverTheInlineLimit(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 100
+
+	ctx := context.Background()
+
+	// Text at exactly the limit succeeds.
+	_, err := Send(ctx, fake.client(), SendOptions{
+		Text: strings.Repeat("a", 100),
+		TTL:  DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("text at the inline limit failed: %v", err)
+	}
+
+	fake.mu.Lock()
+	if len(fake.createBodies) != 1 {
+		t.Fatalf("expected 1 create call for text at limit, got %d", len(fake.createBodies))
+	}
+	fake.mu.Unlock()
+
+	// Text 1 byte over the limit fails before any create request is made.
+	_, err = Send(ctx, fake.client(), SendOptions{
+		Text: strings.Repeat("a", 101),
+		TTL:  DefaultTTL,
+	})
+	if err == nil {
+		t.Fatal("expected text 1 byte over limit to be rejected")
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.createBodies) != 1 {
+		t.Errorf("expected still 1 create call, got %d (oversized text made a request)", len(fake.createBodies))
+	}
+}
+
 // A sender-supplied filename must not be able to write outside the output
 // directory. The name is decrypted from the payload, so it is attacker input.
 func TestOpenConfinesSenderSuppliedFilename(t *testing.T) {

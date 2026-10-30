@@ -122,7 +122,7 @@ func TestHoistFlagsLeavesUnknownFlagsForParseToReject(t *testing.T) {
 }
 
 func TestReadTextTakesASingleArgument(t *testing.T) {
-	text, err := readText([]string{"sk-live-value"})
+	text, err := readText([]string{"sk-live-value"}, 0)
 	if err != nil {
 		t.Fatalf("readText: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestReadTextTakesASingleArgument(t *testing.T) {
 }
 
 func TestReadTextRejectsMultipleArguments(t *testing.T) {
-	if _, err := readText([]string{"one", "two"}); err == nil {
+	if _, err := readText([]string{"one", "two"}, 0); err == nil {
 		t.Error("accepted two positional arguments")
 	}
 }
@@ -141,7 +141,7 @@ func TestReadTextReadsPipedStdin(t *testing.T) {
 	// A trailing newline belongs to the shell, not the secret: an API key
 	// echoed through a pipe must not arrive with one attached.
 	withStdin(t, "sk-live-piped\n", func() {
-		text, err := readText(nil)
+		text, err := readText(nil, 0)
 		if err != nil {
 			t.Fatalf("readText: %v", err)
 		}
@@ -153,8 +153,42 @@ func TestReadTextReadsPipedStdin(t *testing.T) {
 
 func TestReadTextRejectsEmptyStdin(t *testing.T) {
 	withStdin(t, "", func() {
-		if _, err := readText(nil); err == nil {
+		if _, err := readText(nil, 0); err == nil {
 			t.Error("accepted empty stdin")
+		}
+	})
+}
+
+func TestReadTextEnforcesInlineLimit(t *testing.T) {
+	// Argument at limit
+	text, err := readText([]string{strings.Repeat("a", 10)}, 10)
+	if err != nil {
+		t.Fatalf("readText at limit: %v", err)
+	}
+	if len(text) != 10 {
+		t.Errorf("len(text) = %d, want 10", len(text))
+	}
+
+	// Argument 1 byte over limit
+	if _, err := readText([]string{strings.Repeat("a", 11)}, 10); err == nil {
+		t.Error("accepted argument text over limit")
+	}
+
+	// Piped stdin at limit
+	withStdin(t, strings.Repeat("b", 10), func() {
+		text, err := readText(nil, 10)
+		if err != nil {
+			t.Fatalf("readText stdin at limit: %v", err)
+		}
+		if len(text) != 10 {
+			t.Errorf("len(text) = %d, want 10", len(text))
+		}
+	})
+
+	// Piped stdin 1 byte over limit (fails fast)
+	withStdin(t, strings.Repeat("b", 11), func() {
+		if _, err := readText(nil, 10); err == nil {
+			t.Error("accepted stdin text over limit")
 		}
 	})
 }
