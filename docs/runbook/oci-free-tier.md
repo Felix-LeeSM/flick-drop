@@ -331,7 +331,7 @@ commands without a backup and a maintenance window. See
 
 When deploying Flick behind Cloudflare or a similar CDN/edge proxy in front of
 an OCI instance (for example, in the Osaka `ap-osaka-1` region), streaming large
-encrypted payloads (up to `FLICK_PAYLOAD_MAX_BYTES`, default 256 MiB) across
+encrypted payloads (up to `FLICK_MAX_FILE_BYTES`, default 256 MiB) across
 international edge-to-origin transit routes requires specific proxy settings.
 
 ### Edge-to-Origin Download Slowdowns
