@@ -359,6 +359,7 @@ async function copyText(): Promise<void> {
 					<div class="relative">
 						<textarea
 							readonly
+							aria-label="Decrypted secret content"
 							class="min-h-36 w-full rounded-xl border border-border bg-muted/30 p-3 font-mono text-xs text-foreground focus:outline-none"
 							value={receivedText}
 						></textarea>

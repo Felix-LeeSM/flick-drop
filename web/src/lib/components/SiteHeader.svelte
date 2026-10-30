@@ -16,16 +16,17 @@ import { cn } from '#lib/utils.js';
 // With large text the link and toggle wrap below the wordmark instead of widening the page.
 // The link and toggle can also wrap onto separate rows from each other: a long link label at a
 // large text-size setting must not push the toggle past the viewport edge either.
-let { link, showEnterCode = true }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
+let { link, showEnterCode = false }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
 let receiveModalOpen = $state(false);
 let initialReceiveCode = $state('');
 
 onMount(() => {
 	function checkHash(): void {
 		if (typeof window === 'undefined') return;
+		if (window.location.pathname !== '/') return;
 		const hash = window.location.hash;
-		if (hash.startsWith('#receive=')) {
-			const code = hash.slice('#receive='.length);
+		if (hash.startsWith('#code=')) {
+			const code = hash.slice('#code='.length);
 			if (code) {
 				initialReceiveCode = code;
 				receiveModalOpen = true;
@@ -49,10 +50,16 @@ onMount(() => {
 		<span class="font-serif text-[1.6875rem] leading-none tracking-[-0.005em]">Flick</span>
 	</a>
 	<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+		{#if link}
+			<nav aria-label="Site" class="flex">
+				<a class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card')} href={link.href}>{link.label}</a>
+			</nav>
+		{/if}
+		<ThemeToggle />
 		{#if showEnterCode}
 			<button
 				type="button"
-				class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card gap-1.5')}
+				class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card gap-1.5 hidden sm:inline-flex')}
 				onclick={() => {
 					receiveModalOpen = true;
 				}}
@@ -61,12 +68,6 @@ onMount(() => {
 				<span>Enter code</span>
 			</button>
 		{/if}
-		{#if link}
-			<nav aria-label="Site" class="flex">
-				<a class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card')} href={link.href}>{link.label}</a>
-			</nav>
-		{/if}
-		<ThemeToggle />
 	</div>
 </header>
 

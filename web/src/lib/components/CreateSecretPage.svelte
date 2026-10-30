@@ -123,7 +123,7 @@ let pipeCompleted = $state(false);
 let pipeRequireApproval = $state(true);
 let pipeApprovalStatus = $state<'idle' | 'pending' | 'approved' | 'rejected'>('idle');
 let pipeMatchCode = $state('482');
-let pipeExpiresIn = $state(600);
+let pipeExpiresIn = $state(180);
 let isHoveringPipe = $state(false);
 let pipeAbortController = $state<AbortController | null>(null);
 
@@ -648,6 +648,7 @@ function modeLabel(value: CreateMode): string {
 
 <DeliveryFrame
 	link={{ href: resolve('request'), label: 'Request a secret' }}
+	showEnterCode={true}
 >
 	{#if pipeActiveCode !== null}
 		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
@@ -928,9 +929,9 @@ function modeLabel(value: CreateMode): string {
 							</Label>
 							<p class="text-[0.8125rem] text-muted-foreground">
 								{#if pipeRequireApproval}
-									Active for 10 min. You must verify and approve the matching code on your screen before sending.
+									Requires verifying the 3-digit confirmation code on both devices before transmitting.
 								{:else}
-									Direct transfer. Active for 3 min and streams immediately when the code is entered.
+									Streams encrypted data immediately when the receiver enters the code.
 								{/if}
 							</p>
 						</div>
@@ -944,7 +945,7 @@ function modeLabel(value: CreateMode): string {
 						{#if isHoveringPipe}
 							<span class="flex items-center gap-1 text-[11px] font-semibold text-burn animate-pulse">
 								<FlameIcon class="size-3 text-burn" aria-hidden="true" />
-								Code transfer uses fixed {pipeRequireApproval ? '10 min' : '3 min'} in-memory relay
+								Code transfer uses fixed 3-minute in-memory relay
 							</span>
 						{/if}
 					</div>

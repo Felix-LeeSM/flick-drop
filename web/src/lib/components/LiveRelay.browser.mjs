@@ -98,7 +98,7 @@ test('CreateSecretPage: Send with code validation, confirmation toggle, and stat
 	}
 });
 
-test('QR scan direct hash navigation: navigating to /#receive=123456 auto-opens Receive modal', async () => {
+test('QR scan direct hash navigation: navigating to /#code=123456 auto-opens Receive modal', async () => {
 	const page = await browser.newPage();
 	try {
 		await page.route(
@@ -120,7 +120,7 @@ test('QR scan direct hash navigation: navigating to /#receive=123456 auto-opens 
 			}
 		);
 
-		await page.goto(`${baseUrl}/#receive=123456`);
+		await page.goto(`${baseUrl}/#code=123456`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
 		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });

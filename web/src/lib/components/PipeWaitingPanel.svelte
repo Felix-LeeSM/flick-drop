@@ -99,8 +99,8 @@ const secondHalf = $derived(formattedCode.slice(4));
 // Direct receive URL that can be encoded in QR code
 let directReceiveUrl = $derived(
 	typeof window === 'undefined'
-		? `https://flick.drop/#receive=${code}`
-		: `${window.location.origin}/#receive=${code}`
+		? `https://flick.drop/#code=${code}`
+		: `${window.location.origin}/#code=${code}`
 );
 </script>
 
