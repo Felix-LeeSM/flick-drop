@@ -128,7 +128,15 @@ function capped(
 	kind: RequestKind,
 	limits: RequestLimits
 ): ReadableStream<Uint8Array> {
-	const max = limitOf(kind, limits);
+	let max: number;
+	try {
+		max = limitOf(kind, limits);
+	} catch (error) {
+		stream.cancel().catch(() => {
+			// Best-effort cancellation if the stream was already cancelled or consumed.
+		});
+		throw error;
+	}
 	let seen = 0;
 	return stream.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -201,33 +209,40 @@ export async function decryptRequestPayload(
 	opened: OpenedRequestBody,
 	limits: RequestLimits
 ): Promise<OpenedRequestContent> {
-	if (opened.kind === 'text') {
-		if (opened.encryptedFilename) {
+	try {
+		if (opened.kind === 'text') {
+			if (opened.encryptedFilename) {
+				invalid();
+			}
+			const decryptedStream = await decryptWith(identity, opened.body);
+			const plaintext = new Uint8Array(
+				await new Response(capped(decryptedStream, 'text', limits)).arrayBuffer()
+			);
+			return { kind: 'text', text: decoder.decode(plaintext) };
+		}
+		if (opened.kind !== 'file' || !opened.encryptedFilename) {
 			invalid();
 		}
-		const plaintext = new Uint8Array(
-			await new Response(
-				capped(await decryptWith(identity, opened.body), 'text', limits)
-			).arrayBuffer()
-		);
-		return { kind: 'text', text: decoder.decode(plaintext) };
+		const decryptedStream = await decryptWith(identity, opened.body);
+		const decrypted = await new Response(capped(decryptedStream, 'file', limits)).blob();
+		const name = await decryptWith(identity, opened.encryptedFilename);
+		if (name.length < 1 || name.length > NAME_MAX_BYTES) {
+			invalid();
+		}
+		const filename = decoder.decode(name);
+		return {
+			kind: 'file',
+			blob: decrypted.slice(0, decrypted.size, 'application/octet-stream'),
+			filename
+		};
+	} catch (error) {
+		try {
+			await opened.body.cancel();
+		} catch {
+			// Ignore cancellation errors when cancelling a failed or consumed body.
+		}
+		throw error;
 	}
-	if (opened.kind !== 'file' || !opened.encryptedFilename) {
-		invalid();
-	}
-	const decrypted = await new Response(
-		capped(await decryptWith(identity, opened.body), 'file', limits)
-	).blob();
-	const name = await decryptWith(identity, opened.encryptedFilename);
-	if (name.length < 1 || name.length > NAME_MAX_BYTES) {
-		invalid();
-	}
-	const filename = decoder.decode(name);
-	return {
-		kind: 'file',
-		blob: decrypted.slice(0, decrypted.size, 'application/octet-stream'),
-		filename
-	};
 }
 
 // Decodes the Flick-Encrypted-Filename header value.

@@ -52,7 +52,7 @@ async function fixture(page, hold = false) {
 			const path = new URL(request.url()).pathname;
 			if (path === '/api/config' && request.method() === 'GET') {
 				return route.fulfill({
-					json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 52_428_800 }
+					json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
 				});
 			}
 			assert.ok(['/api/secrets', '/api/requests'].includes(path), `Unexpected API path: ${path}`);
