@@ -327,6 +327,50 @@ or freelist pages until checkpoint or vacuum. Do not run manual maintenance
 commands without a backup and a maintenance window. See
 [SQLite maintenance](sqlite-maintenance.md) and [backup and restore](backup-restore.md).
 
+## Edge Proxy and Cloudflare Routing
+
+When deploying Flick behind Cloudflare or a similar CDN/edge proxy in front of
+an OCI instance (for example, in the Osaka `ap-osaka-1` region), streaming large
+encrypted payloads (up to `FLICK_PAYLOAD_MAX_BYTES`, default 256 MiB) across
+international edge-to-origin transit routes requires specific proxy settings.
+
+### Edge-to-Origin Download Slowdowns
+
+Without traffic optimization, edge PoPs distant from the origin (e.g., Hong
+Kong `HKG` or US edges reaching an Osaka origin) can experience intermittent
+single-stream throughput collapse down to ~300 KB/s due to cross-border public
+transit congestion and TCP packet loss. At 300 KB/s, a 256 MiB download takes
+~15 minutes, approaching the 30-minute streaming limit
+(`secrets.OpenStreamTimeout`, `requests.OpenStreamTimeout`).
+
+### Recommended Cloudflare Configuration
+
+1. **Cache Rules for Open Endpoints**:
+   Add a Cache Rule matching secret and request open paths:
+   - Match: `(http.request.uri.path contains "/api/" and http.request.uri.path ends_with "/open")`.
+   - Cache Eligibility: **Bypass Cache**. Secret and request ciphertext payloads
+     are one-time ephemeral streams; caching must be bypassed.
+   - Response Buffering: **Bypass / Off**. Cloudflare edge response buffering
+     must be disabled so ciphertext streams directly to the client without
+     accumulating at the edge buffer.
+2. **Argo Smart Routing**:
+   Enable Cloudflare Argo Smart Routing for the zone. Argo routes edge-to-origin
+   transit across Cloudflare's private backbone instead of congested public
+   transit, stabilizing cross-border throughput between regional PoPs and the
+   origin.
+3. **Host TCP Congestion Control (BBR)**:
+   On the OCI host, enable BBR congestion control to improve single-stream
+   throughput recovery over lossy international transit:
+   ```sh
+   sudo sysctl -w net.core.default_qdisc=fq
+   sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+   ```
+4. **Direct Storage Routing (Cross-Reference Issue #259)**:
+   For deployments where origin egress or international transit remains a
+   bottleneck, consider direct storage delivery via presigned URLs or CDN-fronted
+   object storage (e.g., Cloudflare R2 or multi-bucket routing), which avoids
+   proxying large ciphertext through the single origin instance.
+
 ## Smoke Test
 
 Use the application UI to create and open:
