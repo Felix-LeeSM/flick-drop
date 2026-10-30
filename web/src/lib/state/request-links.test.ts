@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { generateRequestKeys } from '$lib/crypto/requests';
+import { generateRequestKeys } from '#lib/crypto/requests.js';
 import {
 	clearRequestHandoff,
 	handOffRequest,

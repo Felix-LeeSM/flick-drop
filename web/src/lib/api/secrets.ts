@@ -1,7 +1,7 @@
-import type { AccessVerifierPayload, KdfParams } from '$lib/crypto/access';
-import { base64ToBytes, bytesToBase64 } from '$lib/crypto/encoding';
-import { encodeKeyFragment } from '$lib/crypto/fragment';
-import type { SealedFile } from '$lib/crypto/secret';
+import type { AccessVerifierPayload, KdfParams } from '#lib/crypto/access.js';
+import { base64ToBytes, bytesToBase64 } from '#lib/crypto/encoding.js';
+import { encodeKeyFragment } from '#lib/crypto/fragment.js';
+import type { SealedFile } from '#lib/crypto/secret.js';
 import { type ClientLimits, defaultLimits } from './config';
 
 export const DEFAULT_API_BASE_URL =

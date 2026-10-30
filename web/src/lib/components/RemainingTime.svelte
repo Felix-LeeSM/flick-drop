@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { HTMLAttributes } from 'svelte/elements';
-import { formatRemaining } from '$lib/lifetime';
-import { cn } from '$lib/utils';
+import { formatRemaining } from '#lib/lifetime.js';
+import { cn } from '#lib/utils.js';
 
 // One remaining-time chip for the management, requester, and submit pages.
 let {

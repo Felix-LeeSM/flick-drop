@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { Snippet } from 'svelte';
-import { base, resolve } from '$app/paths';
-import SiteHeader from '$lib/components/SiteHeader.svelte';
-import SponsorSlot from '$lib/components/SponsorSlot.svelte';
+import SiteHeader from '#lib/components/SiteHeader.svelte';
+import SponsorSlot from '#lib/components/SponsorSlot.svelte';
+import { resolve } from '$app/paths';
 
 let {
 	title,
@@ -20,7 +20,7 @@ let {
 <svelte:head>
 	<title>{title} - Flick</title>
 	<meta name="description" content={description} />
-	<link rel="canonical" href={`${base}${path}`} />
+	<link rel="canonical" href={resolve((path.startsWith('/') ? path : `/${path}`) as any)} />
 </svelte:head>
 
 <div class="mx-auto max-w-3xl px-5 py-6 text-foreground sm:px-8 sm:py-10">
@@ -36,10 +36,25 @@ let {
 		</article>
 		<SponsorSlot />
 	</main>
-	<nav aria-label="Sharing guides" class="flex flex-wrap gap-x-6 gap-y-2 border-t pt-5 text-sm text-muted-foreground">
-		<a href={`${base}/guides/password-sharing/`} class="py-2 underline underline-offset-4">Sharing passwords</a>
-		<a href={`${base}/guides/temporary-file-sharing/`} class="py-2 underline underline-offset-4">Sharing temporary files</a>
-		<a href={resolve('/')} class="py-2 underline underline-offset-4">Open Flick</a>
+
+	<nav
+		aria-label="Sharing guides"
+		class="flex flex-wrap gap-x-6 gap-y-2 border-t pt-5 text-sm text-muted-foreground"
+	>
+		<a
+			href={resolve('/guides/password-sharing')}
+			class="py-2 underline underline-offset-4"
+		>Sharing passwords</a>
+
+		<a
+			href={resolve('/guides/temporary-file-sharing')}
+			class="py-2 underline underline-offset-4"
+		>Sharing temporary files</a>
+
+		<a
+			href={resolve('/')}
+			class="py-2 underline underline-offset-4"
+		>Open Flick</a>
 	</nav>
 </div>
 

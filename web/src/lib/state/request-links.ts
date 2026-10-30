@@ -1,4 +1,4 @@
-import { isManagementToken } from '$lib/api/management';
+import { isManagementToken } from '#lib/api/management.js';
 
 export function submissionFromFragment(
 	fragment: string

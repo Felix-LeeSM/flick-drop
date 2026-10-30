@@ -1,10 +1,10 @@
 <script lang="ts">
 import { EyeIcon, EyeOffIcon, PlusIcon, Trash2Icon } from '@lucide/svelte';
 import type { HTMLInputAttributes, HTMLInputTypeAttribute } from 'svelte/elements';
-import { Button } from '$lib/components/ui/button';
-import { Input } from '$lib/components/ui/input';
-import { Label } from '$lib/components/ui/label';
-import { Textarea } from '$lib/components/ui/textarea';
+import { Button } from '#lib/components/ui/button/index.js';
+import { Input } from '#lib/components/ui/input/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
 import {
 	addCustomField,
 	type CredentialEnvelope,
@@ -13,7 +13,7 @@ import {
 	getCredentialTemplate,
 	removeField,
 	setFieldValue
-} from '$lib/credentials';
+} from '#lib/credentials/index.js';
 
 type Props = {
 	envelope: CredentialEnvelope;

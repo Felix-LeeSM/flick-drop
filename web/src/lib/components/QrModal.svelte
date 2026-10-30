@@ -1,10 +1,10 @@
 <script lang="ts">
 import { XIcon } from '@lucide/svelte';
 import { Dialog } from 'bits-ui';
-import QrCode from '$lib/components/QrCode.svelte';
-import UrlField from '$lib/components/UrlField.svelte';
-import { buttonVariants } from '$lib/components/ui/button';
-import { cn } from '$lib/utils.js';
+import QrCode from '#lib/components/QrCode.svelte';
+import UrlField from '#lib/components/UrlField.svelte';
+import { buttonVariants } from '#lib/components/ui/button/index.js';
+import { cn } from '#lib/utils.js';
 
 type Props = {
 	open?: boolean;

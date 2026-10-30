@@ -1,7 +1,6 @@
 <script lang="ts">
 import { QrCodeIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { resolve } from '$app/paths';
 import {
 	createManagementApiClient,
 	createManagementUrl,
@@ -9,16 +8,17 @@ import {
 	type ManagementSnapshot,
 	type ManagementStatus,
 	managementTokenFromFragment
-} from '$lib/api/management';
-import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
-import NativeShareButton from '$lib/components/NativeShareButton.svelte';
-import QrModal from '$lib/components/QrModal.svelte';
-import RemainingTime from '$lib/components/RemainingTime.svelte';
-import UrlField from '$lib/components/UrlField.svelte';
-import { Button } from '$lib/components/ui/button';
-import { remainingSecondsFrom } from '$lib/lifetime';
-import { clearCreatedDelivery, takeCreatedDelivery } from '$lib/state/created-delivery';
-import { cn } from '$lib/utils';
+} from '#lib/api/management.js';
+import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import NativeShareButton from '#lib/components/NativeShareButton.svelte';
+import QrModal from '#lib/components/QrModal.svelte';
+import RemainingTime from '#lib/components/RemainingTime.svelte';
+import UrlField from '#lib/components/UrlField.svelte';
+import { Button } from '#lib/components/ui/button/index.js';
+import { remainingSecondsFrom } from '#lib/lifetime.js';
+import { clearCreatedDelivery, takeCreatedDelivery } from '#lib/state/created-delivery.js';
+import { cn } from '#lib/utils.js';
+import { resolve } from '$app/paths';
 
 let { secretId }: { secretId: string } = $props();
 const api = createManagementApiClient();

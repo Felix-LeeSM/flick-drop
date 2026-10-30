@@ -5,8 +5,8 @@ import {
 	type RequestInstructions,
 	type ReservedUpload,
 	type Submission
-} from '$lib/api/requests';
-import type { FileUploadProgress } from '$lib/api/secrets';
+} from '#lib/api/requests.js';
+import type { FileUploadProgress } from '#lib/api/secrets.js';
 
 type RequestApi = ReturnType<typeof createRequestApiClient>;
 export type AttemptOutcome =

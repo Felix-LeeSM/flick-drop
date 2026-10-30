@@ -1,6 +1,6 @@
 <script lang="ts">
 import { CheckIcon } from '@lucide/svelte';
-import { cn } from '$lib/utils.js';
+import { cn } from '#lib/utils.js';
 
 type Props = {
 	class?: string;

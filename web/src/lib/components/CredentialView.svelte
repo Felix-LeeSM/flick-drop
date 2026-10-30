@@ -1,12 +1,12 @@
 <script lang="ts">
 import { CheckIcon, CopyIcon, EyeIcon, EyeOffIcon } from '@lucide/svelte';
-import { Badge } from '$lib/components/ui/badge';
-import { Button } from '$lib/components/ui/button';
+import { Badge } from '#lib/components/ui/badge/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import {
 	type CredentialEnvelope,
 	type CredentialField,
 	getCredentialTemplate
-} from '$lib/credentials';
+} from '#lib/credentials/index.js';
 
 type Props = {
 	credential: CredentialEnvelope;

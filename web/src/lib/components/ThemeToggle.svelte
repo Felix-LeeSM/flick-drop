@@ -1,8 +1,8 @@
 <script lang="ts">
 import { MoonIcon, SunIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { Button } from '$lib/components/ui/button';
-import { initializeTheme, resolvedTheme, toggleResolvedTheme } from '$lib/state/theme';
+import { Button } from '#lib/components/ui/button/index.js';
+import { initializeTheme, resolvedTheme, toggleResolvedTheme } from '#lib/state/theme.js';
 
 let isMounted = $state(false);
 let isDark = $state(false);

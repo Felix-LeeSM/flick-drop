@@ -1,6 +1,6 @@
 <script lang="ts">
 import { renderSVG } from 'uqr';
-import { cn } from '$lib/utils.js';
+import { cn } from '#lib/utils.js';
 
 type Props = {
 	value: string;

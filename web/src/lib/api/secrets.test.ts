@@ -4,9 +4,9 @@ import {
 	KDF_ALGORITHM,
 	KDF_ITERATIONS,
 	KEY_LENGTH_BITS
-} from '$lib/crypto/access';
-import { generateSecretIdentity } from '$lib/crypto/age';
-import type { SealedFile } from '$lib/crypto/secret';
+} from '#lib/crypto/access.js';
+import { generateSecretIdentity } from '#lib/crypto/age.js';
+import type { SealedFile } from '#lib/crypto/secret.js';
 import {
 	createSecretApiClient,
 	createShareUrl,

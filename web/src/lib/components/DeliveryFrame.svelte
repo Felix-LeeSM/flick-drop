@@ -1,6 +1,6 @@
 <script lang="ts">
 import type { Snippet } from 'svelte';
-import SiteHeader, { type HeaderLink } from '$lib/components/SiteHeader.svelte';
+import SiteHeader, { type HeaderLink } from '#lib/components/SiteHeader.svelte';
 
 let { children, link }: { children: Snippet; link?: HeaderLink } = $props();
 </script>
