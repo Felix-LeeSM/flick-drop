@@ -203,7 +203,7 @@ while IFS= read -r file; do
     .github/workflows/review-gate.yml | scripts/ci/review-gate.sh | .agents/skills/pr-review/SKILL.md)
       requires_high_risk=1
       ;;
-    docs/architecture/security-model.md | internal/secrets/* | web/src/lib/crypto/*)
+    docs/architecture/security-model.md | contracts/age-format-v1.md | internal/clientcrypto/* | internal/secrets/* | web/src/lib/crypto/*)
       require_label "area:security" "$file changed"
       requires_medium_or_high_risk=1
       ;;
