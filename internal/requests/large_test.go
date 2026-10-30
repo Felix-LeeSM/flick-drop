@@ -675,3 +675,140 @@ func TestLargeFinalizeWaitsForACopySlotBeforeOpening(t *testing.T) {
 		t.Fatal("freed slot was not used and released", receipt, err, opens, len(f.store.copies))
 	}
 }
+
+// Concurrent finalizes for the same request attempt must perform exactly one
+// copy (one Open, one PutStream) and yield the same receipt to both callers.
+func TestLargeConcurrentFinalizeDeduplicatesCopy(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	c := f.create(t)
+	in, data := largeInput()
+	reserve(t, f, o, c, in, data)
+
+	var mu sync.Mutex
+	opens := 0
+	puts := 0
+	putStarted := make(chan struct{})
+	releasePut := make(chan struct{})
+
+	o.getHook = func(string) {
+		mu.Lock()
+		opens++
+		mu.Unlock()
+	}
+	o.putHook = func(string) error {
+		mu.Lock()
+		puts++
+		mu.Unlock()
+		close(putStarted)
+		<-releasePut
+		return nil
+	}
+
+	type result struct {
+		receipt Receipt
+		err     error
+	}
+	res1 := make(chan result, 1)
+	res2 := make(chan result, 1)
+
+	go func() {
+		r, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in))
+		res1 <- result{r, err}
+	}()
+
+	// Wait until the first call enters PutStream (meaning it has acquired the lock,
+	// registered in finalizing map, and started the copy).
+	<-putStarted
+
+	// Now launch the second finalize for the same attempt.
+	go func() {
+		r, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in))
+		res2 <- result{r, err}
+	}()
+
+	// Give the second goroutine time to enter Finalize and block on call.done.
+	time.Sleep(20 * time.Millisecond)
+
+	// Release the leader's PUT.
+	close(releasePut)
+
+	r1 := <-res1
+	r2 := <-res2
+
+	if r1.err != nil {
+		t.Fatalf("first finalize failed: %v", r1.err)
+	}
+	if r2.err != nil {
+		t.Fatalf("second finalize failed: %v", r2.err)
+	}
+	if r1.receipt != r2.receipt {
+		t.Fatalf("receipt mismatch: r1=%+v, r2=%+v", r1.receipt, r2.receipt)
+	}
+	if r1.receipt.State != "submitted" {
+		t.Fatalf("state = %q, want submitted", r1.receipt.State)
+	}
+	mu.Lock()
+	gotOpens := opens
+	gotPuts := puts
+	mu.Unlock()
+	if gotOpens != 1 {
+		t.Errorf("opens = %d, want 1", gotOpens)
+	}
+	if gotPuts != 1 {
+		t.Errorf("puts = %d, want 1", gotPuts)
+	}
+}
+
+// Concurrent finalizes for different requests copy in parallel up to maxCopies.
+func TestLargeConcurrentFinalizeDifferentRequestsCopyInParallel(t *testing.T) {
+	ctx := context.Background()
+	f, o := largeFixture(t)
+	c1 := f.create(t)
+	c2 := f.create(t)
+	in1, data1 := largeInput()
+	in2, data2 := largeInput()
+	reserve(t, f, o, c1, in1, data1)
+	reserve(t, f, o, c2, in2, data2)
+
+	var mu sync.Mutex
+	inFlight := 0
+	maxInFlight := 0
+	barrier := make(chan struct{})
+
+	o.putHook = func(string) error {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		ready := inFlight == 2
+		mu.Unlock()
+		if ready {
+			close(barrier)
+		} else {
+			<-barrier
+		}
+		return nil
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := f.store.Finalize(ctx, c1.ID, c1.SubmissionToken, attemptInput(in1))
+		errs <- err
+	}()
+	go func() {
+		_, err := f.store.Finalize(ctx, c2.ID, c2.SubmissionToken, attemptInput(in2))
+		errs <- err
+	}()
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("finalize failed: %v", err)
+		}
+	}
+
+	if maxInFlight != 2 {
+		t.Fatalf("maxInFlight = %d, want 2 (copies must run in parallel)", maxInFlight)
+	}
+}

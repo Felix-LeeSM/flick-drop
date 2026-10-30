@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -22,12 +23,22 @@ import (
 // Fixed-width UTC timestamps preserve indexed subsecond deadline ordering.
 const timeFormat = "2006-01-02T15:04:05.000000000Z"
 
+type finalizeCall struct {
+	done    chan struct{}
+	receipt Receipt
+	err     error
+}
+
 type Store struct {
 	db   *sql.DB
 	opts Options
 	now  func() time.Time
 	// copies holds one slot per running finalize copy; see maxCopies.
 	copies chan struct{}
+	// finalizeMu guards finalizing, which coalesces concurrent finalizes
+	// for the same request attempt into a single copy.
+	finalizeMu sync.Mutex
+	finalizing map[string]*finalizeCall
 }
 
 // maxCopies bounds concurrent finalize copies. Each spools one object (about
@@ -57,7 +68,13 @@ func NewStore(db *sql.DB, opts Options) (*Store, error) {
 	if db == nil || opts.PayloadInlineMaxBytes < int64(len(AgeMagic)) || opts.MaxObjectBytes <= 0 || (opts.Objects != nil && opts.Outbox == nil) || opts.MinTTLSeconds <= 0 || opts.DefaultTTLSeconds < opts.MinTTLSeconds || opts.DefaultTTLSeconds > opts.MaxTTLSeconds || int64(opts.MaxTTLSeconds) > int64((1<<63-1)/time.Second) {
 		return nil, fmt.Errorf("invalid request store configuration")
 	}
-	return &Store{db: db, opts: opts, now: func() time.Time { return time.Now().UTC() }, copies: make(chan struct{}, maxCopies)}, nil
+	return &Store{
+		db:         db,
+		opts:       opts,
+		now:        func() time.Time { return time.Now().UTC() },
+		copies:     make(chan struct{}, maxCopies),
+		finalizing: make(map[string]*finalizeCall),
+	}, nil
 }
 
 func (s *Store) SetNowForTest(now func() time.Time) { s.now = now }

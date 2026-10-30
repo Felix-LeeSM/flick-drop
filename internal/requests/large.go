@@ -195,10 +195,39 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 		return Receipt{}, err
 	}
 	tx.close()
+
+	s.finalizeMu.Lock()
+	if call, inFlight := s.finalizing[id]; inFlight {
+		s.finalizeMu.Unlock()
+		select {
+		case <-call.done:
+			return call.receipt, call.err
+		case <-ctx.Done():
+			return Receipt{}, ctx.Err()
+		}
+	}
+	call := &finalizeCall{done: make(chan struct{})}
+	s.finalizing[id] = call
+	s.finalizeMu.Unlock()
+
+	defer func() {
+		s.finalizeMu.Lock()
+		delete(s.finalizing, id)
+		close(call.done)
+		s.finalizeMu.Unlock()
+	}()
+
+	receipt, err := s.finalizeAttempt(ctx, id, token, in, a, attempt)
+	call.receipt = receipt
+	call.err = err
+	return receipt, err
+}
+
+func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in AttemptInput, a objectAttempt, attempt []byte) (Receipt, error) {
 	if err := s.copyVerified(ctx, a); err != nil {
 		return Receipt{}, err
 	}
-	tx, row, err = s.begin(ctx, id, token, false)
+	tx, row, err := s.begin(ctx, id, token, false)
 	if err != nil {
 		return Receipt{}, err
 	}
