@@ -4,7 +4,9 @@ export type HeaderLink = { href: string; label: string };
 
 <script lang="ts">
 import { LockKeyholeIcon, ZapIcon } from '@lucide/svelte';
+import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
+import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
@@ -16,6 +18,27 @@ import { cn } from '#lib/utils.js';
 // large text-size setting must not push the toggle past the viewport edge either.
 let { link, showEnterCode = true }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
 let receiveModalOpen = $state(false);
+let initialReceiveCode = $state('');
+
+onMount(() => {
+	function checkHash(): void {
+		if (typeof window === 'undefined') return;
+		const hash = window.location.hash;
+		if (hash.startsWith('#receive=')) {
+			const code = hash.slice('#receive='.length);
+			if (code) {
+				initialReceiveCode = code;
+				receiveModalOpen = true;
+				history.replaceState(null, '', window.location.pathname + window.location.search);
+			}
+		}
+	}
+	checkHash();
+	window.addEventListener('hashchange', checkHash);
+	return () => {
+		window.removeEventListener('hashchange', checkHash);
+	};
+});
 </script>
 
 <header class="flex min-w-0 min-h-10 flex-wrap items-center justify-between gap-3">
@@ -47,4 +70,4 @@ let receiveModalOpen = $state(false);
 	</div>
 </header>
 
-<ReceiveCodeModal bind:open={receiveModalOpen} />
+<ReceiveCodeModal bind:open={receiveModalOpen} initialCode={initialReceiveCode} apiBaseUrl={DEFAULT_API_BASE_URL} />

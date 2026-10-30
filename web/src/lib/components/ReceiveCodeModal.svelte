@@ -10,10 +10,13 @@ import {
 	ZapIcon
 } from '@lucide/svelte';
 import { Dialog } from 'bits-ui';
+import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
 import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
 import {
 	computePipePassphrase,
 	decryptPipeStream,
+	deriveConfirmationCode,
 	formatPipeCode,
 	normalizePipeCode,
 	receivePipeStream,
@@ -25,18 +28,16 @@ import { cn, formatBytes } from '#lib/utils.js';
 type Props = {
 	open?: boolean;
 	apiBaseUrl?: string;
+	initialCode?: string;
 };
 
-let { open = $bindable(false), apiBaseUrl = '' }: Props = $props();
+let {
+	open = $bindable(false),
+	apiBaseUrl = DEFAULT_API_BASE_URL,
+	initialCode = ''
+}: Props = $props();
 
-type ReceiveState =
-	| 'input'
-	| 'connecting'
-	| 'waiting-approval'
-	| 'streaming'
-	| 'done-file'
-	| 'done-text'
-	| 'error';
+type ReceiveState = 'input' | 'connecting' | 'streaming' | 'done-file' | 'done-text' | 'error';
 
 let rawCode = $state('');
 let optionalPassphrase = $state('');
@@ -46,7 +47,7 @@ let currentState = $state<ReceiveState>('input');
 let progressPercent = $state(0);
 let errorMessage = $state('');
 let statusMessage = $state('');
-let matchCode = $state('482');
+let matchCode = $state('');
 
 // Result payloads
 let receivedText = $state('');
@@ -72,22 +73,27 @@ function reset(): void {
 	receivedFileSize = 0;
 	receivedFileBlob = null;
 	copiedText = false;
+	matchCode = '';
 }
 
 $effect(() => {
 	if (!open) {
 		reset();
+	} else if (initialCode && rawCode === '') {
+		const digits = initialCode.replace(/\D/g, '').slice(0, 6);
+		rawCode = digits;
+		if (digits.length === 6) {
+			void startReceive();
+		}
 	}
 });
 
 function handleCodeInput(event: Event): void {
-	const input = event.target as HTMLInputElement;
-	// Extract digits only, up to 6 digits
-	const digits = input.value.replace(/\D/g, '').slice(0, 6);
-	rawCode = digits;
+	const target = event.target as HTMLInputElement;
+	const sanitized = target.value.replace(/\D/g, '').slice(0, 6);
+	rawCode = sanitized;
 
-	if (digits.length === 6) {
-		// Auto-submit when 6 digits are complete
+	if (sanitized.length === 6) {
 		void startReceive();
 	}
 }
@@ -102,36 +108,48 @@ async function startReceive(): Promise<void> {
 		return;
 	}
 
+	matchCode = deriveConfirmationCode(normalized);
 	currentState = 'connecting';
 	statusMessage = 'Connecting to transfer pipe...';
 	errorMessage = '';
 	abortController = new AbortController();
 
 	try {
-		// Attempt real receive if apiBaseUrl is available
-		if (apiBaseUrl) {
-			const result = await receivePipeStream(apiBaseUrl, normalized, fetch, abortController.signal);
+		const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
+		const result = await receivePipeStream(
+			targetBaseUrl,
+			normalized,
+			fetch,
+			abortController.signal
+		);
 
-			currentState = 'streaming';
-			statusMessage = 'Decrypting live age stream...';
+		currentState = 'streaming';
+		statusMessage = 'Decrypting live stream...';
 
-			const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
-			const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
+		const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
+		const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
 
-			if (result.kind === 'file') {
-				const bytes = await streamToBytes(decryptedStream);
-				receivedFileSize = bytes.length;
-				receivedFileName = result.encryptedFilename ?? 'downloaded-file';
-				receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
-				currentState = 'done-file';
-				downloadFile();
+		if (result.kind === 'file') {
+			const bytes = await streamToBytes(decryptedStream);
+			receivedFileSize = bytes.length;
+			if (result.encryptedFilename) {
+				try {
+					const encBytes = Uint8Array.from(atob(result.encryptedFilename), (c) => c.charCodeAt(0));
+					receivedFileName = await streamToText(
+						await decryptPipeStream(encBytes, derivedPassphrase)
+					);
+				} catch {
+					receivedFileName = 'downloaded-file';
+				}
 			} else {
-				receivedText = await streamToText(decryptedStream);
-				currentState = 'done-text';
+				receivedFileName = 'downloaded-file';
 			}
+			receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+			currentState = 'done-file';
+			downloadFile();
 		} else {
-			// Demo simulation mode when running without backend
-			await simulateDemoReceive(normalized);
+			receivedText = await streamToText(decryptedStream);
+			currentState = 'done-text';
 		}
 	} catch (err) {
 		if (abortController.signal.aborted) {
@@ -139,47 +157,6 @@ async function startReceive(): Promise<void> {
 		}
 		currentState = 'error';
 		errorMessage = err instanceof Error ? err.message : 'Transfer failed';
-	}
-}
-
-async function simulateDemoReceive(code: string): Promise<void> {
-	currentState = 'connecting';
-	statusMessage = `Connecting to pipe ${formatPipeCode(code)}...`;
-	await new Promise((r) => setTimeout(r, 600));
-
-	// If code is 741928, simulate 2-step SAS waiting for sender approval
-	if (code === '741928') {
-		currentState = 'waiting-approval';
-		matchCode = '482';
-		return;
-	}
-
-	await continueStreamingAfterApproval(code);
-}
-
-async function continueStreamingAfterApproval(code = rawCode): Promise<void> {
-	currentState = 'streaming';
-	statusMessage = 'Authenticating 64 KiB chunks on-the-fly...';
-	for (let i = 20; i <= 100; i += 20) {
-		progressPercent = i;
-		await new Promise((r) => setTimeout(r, 150));
-	}
-
-	// If code ends with 0, simulate file; otherwise simulate secret text
-	if (code.endsWith('0')) {
-		receivedFileName = 'quarterly-audit-report-2026.pdf';
-		receivedFileSize = 2_840_000;
-		receivedFileBlob = new Blob(['Mock PDF binary stream content for prototype'], {
-			type: 'application/pdf'
-		});
-		currentState = 'done-file';
-	} else {
-		receivedText =
-			`DEMO-SECRET-PAYLOAD-FOR-CODE-${formatPipeCode(code)}\n\n` +
-			'API_TOKEN=flick_live_pipe_b73e89a42\n' +
-			'DATABASE_URL=postgres://app:ephemeral@10.0.4.12:5432/live\n' +
-			'Decrypted directly in browser memory without intermediate storage.';
-		currentState = 'done-text';
 	}
 }
 
@@ -208,7 +185,7 @@ async function copyText(): Promise<void> {
 			copiedText = false;
 		}, 2000);
 	} catch {
-		// Fallback ignored in prototype
+		// Fallback ignored
 	}
 }
 </script>
@@ -226,7 +203,7 @@ async function copyText(): Promise<void> {
 					<span class="grid size-6 place-items-center rounded-md bg-primary/10 text-primary">
 						<ZapIcon class="size-3.5" aria-hidden="true" />
 					</span>
-					<Dialog.Title class="font-serif text-xl tracking-tight">Receive Code Drop</Dialog.Title>
+					<Dialog.Title class="font-serif text-xl tracking-tight">Receive secret with code</Dialog.Title>
 				</div>
 				<Dialog.Close
 					class="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -248,6 +225,7 @@ async function copyText(): Promise<void> {
 
 					<!-- Visual Code Input Formatter -->
 					<div class="grid gap-2">
+						<Label for="pipe-code-input" class="sr-only">6-digit transfer code</Label>
 						<div class="relative flex justify-center">
 							<input
 								id="pipe-code-input"
@@ -279,7 +257,9 @@ async function copyText(): Promise<void> {
 						</button>
 						{#if showPassphraseField}
 							<div class="mt-2">
+								<Label for="pipe-passphrase" class="sr-only">Optional secret passphrase</Label>
 								<input
+									id="pipe-passphrase"
 									type="password"
 									bind:value={optionalPassphrase}
 									placeholder="Optional sender passphrase"
@@ -296,77 +276,8 @@ async function copyText(): Promise<void> {
 						onclick={() => startReceive()}
 					>
 						<ZapIcon class="size-4" aria-hidden="true" />
-						Connect & Receive
+						Connect & receive
 					</button>
-
-					<!-- Quick simulation helper for prototype reviewers -->
-					<div class="rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground">
-						<span>💡 Review test: </span>
-						<button
-							type="button"
-							class="underline hover:text-primary"
-							onclick={() => {
-								rawCode = '741928';
-								void startReceive();
-							}}
-						>
-							Code: 741928 (Text)
-						</button>
-						<span> | </span>
-						<button
-							type="button"
-							class="underline hover:text-primary"
-							onclick={() => {
-								rawCode = '882140';
-								void startReceive();
-							}}
-						>
-							Code: 882140 (File)
-						</button>
-					</div>
-				</div>
-			{:else if currentState === 'waiting-approval'}
-				<div class="grid place-items-center gap-4 py-3 text-center animate-in fade-in zoom-in-95">
-					<div class="grid size-12 place-items-center rounded-full bg-primary/15 text-primary">
-						<ShieldCheckIcon class="size-6" aria-hidden="true" />
-					</div>
-
-					<div class="space-y-1">
-						<h4 class="font-serif text-lg font-semibold text-foreground">Waiting for sender approval</h4>
-						<p class="text-xs text-muted-foreground">
-							Verify that this code matches the sender's screen:
-						</p>
-					</div>
-
-					<!-- Big Match Code -->
-					<div class="w-full rounded-xl border border-primary/30 bg-primary/5 p-3">
-						<span class="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Confirmation Code</span>
-						<div class="font-mono text-3xl font-extrabold text-primary tracking-widest pt-0.5">
-							{matchCode}
-						</div>
-					</div>
-
-					<div class="flex items-center gap-2 text-xs text-muted-foreground">
-						<div class="size-2 rounded-full bg-primary animate-ping"></div>
-						<span>Transfer begins automatically once approved by the sender.</span>
-					</div>
-
-					<div class="w-full pt-2 space-y-2">
-						<Button
-							type="button"
-							class="w-full h-10 font-bold bg-primary text-primary-foreground hover:bg-primary/90 text-xs shadow-sm"
-							onclick={() => continueStreamingAfterApproval()}
-						>
-							Simulate sender approval
-						</Button>
-						<button
-							type="button"
-							class="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
-							onclick={() => reset()}
-						>
-							Cancel
-						</button>
-					</div>
 				</div>
 			{:else if currentState === 'connecting' || currentState === 'streaming'}
 				<div class="grid place-items-center gap-4 py-4 text-center">
@@ -375,6 +286,19 @@ async function copyText(): Promise<void> {
 						<h4 class="font-medium text-sm text-foreground">{statusMessage}</h4>
 						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
 					</div>
+
+					{#if matchCode}
+						<div class="w-full rounded-xl border border-primary/30 bg-primary/5 p-3">
+							<span class="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Confirmation Code</span>
+							<div class="font-mono text-3xl font-extrabold text-primary tracking-widest pt-0.5">
+								{matchCode}
+							</div>
+						</div>
+						<p class="text-[11px] text-muted-foreground">
+							Verify this code matches the sender's screen.
+						</p>
+					{/if}
+
 					{#if currentState === 'streaming'}
 						<div class="w-full space-y-1">
 							<div class="h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -386,13 +310,15 @@ async function copyText(): Promise<void> {
 							<p class="text-[11px] font-mono text-muted-foreground">{progressPercent}% received</p>
 						</div>
 					{/if}
-					<button
+					<Button
 						type="button"
+						variant="ghost"
+						size="sm"
 						class="text-xs text-muted-foreground hover:text-foreground"
 						onclick={() => reset()}
 					>
 						Cancel
-					</button>
+					</Button>
 				</div>
 			{:else if currentState === 'done-file'}
 				<div class="grid place-items-center gap-4 text-center">
@@ -408,72 +334,62 @@ async function copyText(): Promise<void> {
 							<p class="truncate text-xs font-semibold text-foreground">{receivedFileName}</p>
 							<p class="text-[11px] text-muted-foreground">{formatBytes(receivedFileSize)}</p>
 						</div>
-						<button
-							type="button"
-							class={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'shrink-0 gap-1.5')}
-							onclick={() => downloadFile()}
-						>
+						<Button type="button" size="sm" variant="outline" class="gap-1.5" onclick={downloadFile}>
 							<DownloadIcon class="size-3.5" aria-hidden="true" />
-							Save again
-						</button>
+							Download again
+						</Button>
 					</div>
-					<p class="flex items-center gap-1.5 text-[11px] text-burn">
-						<FlameIcon class="size-3.5" aria-hidden="true" />
-						In-memory stream burned. Cannot be opened again.
-					</p>
-					<Dialog.Close class={cn(buttonVariants({ variant: 'default' }), 'w-full')}>
+					<Button type="button" class="w-full mt-2" onclick={() => { open = false; reset(); }}>
 						Done
-					</Dialog.Close>
+					</Button>
 				</div>
 			{:else if currentState === 'done-text'}
-				<div class="grid gap-4 text-center">
-					<div class="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/15 text-emerald-500">
-						<CheckIcon class="size-6" aria-hidden="true" />
+				<div class="grid gap-4 text-left">
+					<div class="flex items-center justify-between">
+						<div class="flex items-center gap-1.5 text-xs font-semibold text-emerald-500">
+							<CheckIcon class="size-4" aria-hidden="true" />
+							<span>Secret decrypted directly in memory</span>
+						</div>
+						<span class="micro flex items-center gap-1 text-burn">
+							<FlameIcon class="size-3" aria-hidden="true" />
+							burned
+						</span>
 					</div>
-					<div class="grid gap-1">
-						<h4 class="font-serif text-xl">Secret Received</h4>
-						<p class="text-xs text-muted-foreground">Decrypted directly in browser memory.</p>
+
+					<div class="relative">
+						<textarea
+							readonly
+							class="min-h-36 w-full rounded-xl border border-border bg-muted/30 p-3 font-mono text-xs text-foreground focus:outline-none"
+							value={receivedText}
+						></textarea>
+						<Button
+							type="button"
+							size="sm"
+							variant="secondary"
+							class="absolute right-2.5 top-2.5 gap-1.5 h-8 text-xs font-medium"
+							onclick={copyText}
+						>
+							<CopyIcon class="size-3.5" aria-hidden="true" />
+							{copiedText ? 'Copied!' : 'Copy'}
+						</Button>
 					</div>
-					<div class="max-h-48 overflow-y-auto rounded-xl border border-border bg-muted/50 p-3 text-left font-mono text-xs text-foreground whitespace-pre-wrap break-all">
-						{receivedText}
-					</div>
-					<button
-						type="button"
-						class={cn(buttonVariants({ variant: 'outline' }), 'w-full gap-2')}
-						onclick={() => copyText()}
-					>
-						<CopyIcon class="size-4" aria-hidden="true" />
-						{copiedText ? 'Copied to clipboard!' : 'Copy secret text'}
-					</button>
-					<p class="flex items-center justify-center gap-1.5 text-[11px] text-burn">
-						<FlameIcon class="size-3.5" aria-hidden="true" />
-						Burned from server memory. Close tab when finished.
-					</p>
-					<Dialog.Close class={cn(buttonVariants({ variant: 'default' }), 'w-full')}>
-						Close
-					</Dialog.Close>
+
+					<Button type="button" class="w-full mt-2" onclick={() => { open = false; reset(); }}>
+						Done
+					</Button>
 				</div>
 			{:else if currentState === 'error'}
-				<div class="grid place-items-center gap-4 text-center">
+				<div class="grid place-items-center gap-3 py-4 text-center">
 					<div class="grid size-12 place-items-center rounded-full bg-destructive/15 text-destructive">
 						<XIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-semibold text-sm text-foreground">Transfer Failed</h4>
+						<h4 class="font-serif text-lg text-foreground">Transfer Failed</h4>
 						<p class="text-xs text-destructive">{errorMessage}</p>
 					</div>
-					<p class="text-[11px] text-muted-foreground">
-						Codes expire in 3 minutes or burn after 3 failed attempts to protect against brute-force attacks.
-					</p>
-					<button
-						type="button"
-						class={cn(buttonVariants({ variant: 'default' }), 'w-full')}
-						onclick={() => {
-							currentState = 'input';
-						}}
-					>
-						Try another code
-					</button>
+					<Button type="button" variant="outline" class="w-full mt-2" onclick={() => reset()}>
+						Try again
+					</Button>
 				</div>
 			{/if}
 		</Dialog.Content>

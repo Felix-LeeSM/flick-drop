@@ -143,7 +143,7 @@ let directReceiveUrl = $derived(
 			</p>
 
 			<!-- 6-digit display boxes -->
-			<div class="flex items-center justify-center gap-2 pt-2">
+			<div class="flex items-center justify-center gap-2 pt-2" aria-label="Transfer code {formattedCode}">
 				<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-3xl">
 					{#each firstHalf as digit}
 						<span class="grid size-12 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs">

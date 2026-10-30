@@ -52,9 +52,11 @@ import { createAccessVerifier } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
 import {
 	computePipePassphrase,
+	deriveConfirmationCode,
 	encryptPipeStream,
 	initPipeRendezvous,
 	sendPipeStream,
+	streamToBytes,
 	waitForReceiver
 } from '#lib/crypto/pipe.js';
 import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
@@ -484,9 +486,8 @@ async function startPipeSend(): Promise<void> {
 		const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, fetch);
 		pipeActiveCode = session.code;
 		pipeSalt = session.salt;
-		const seed = (Number.parseInt(session.code, 10) ^ session.salt.charCodeAt(0)) % 900;
-		pipeMatchCode = String(100 + Math.abs(seed));
-		pipeExpiresIn = pipeRequireApproval ? 600 : session.expiresIn;
+		pipeMatchCode = deriveConfirmationCode(session.code);
+		pipeExpiresIn = session.expiresIn;
 		pipeApprovalStatus = 'idle';
 		pipeCompleted = false;
 		pipeProgress = 0;
@@ -572,12 +573,20 @@ async function executePipeStream(): Promise<void> {
 		pipeStatus = 'Streaming encrypted bytes directly to receiver...';
 		pipeProgress = 50;
 
+		let encFilenameHeader: string | undefined;
+		if (filename) {
+			const filenameBytes = new TextEncoder().encode(filename);
+			const encryptedFilenameStream = await encryptPipeStream(filenameBytes, pipePassphrase);
+			const encBytes = await streamToBytes(encryptedFilenameStream);
+			encFilenameHeader = btoa(String.fromCharCode(...encBytes));
+		}
+
 		await sendPipeStream({
 			baseUrl: DEFAULT_API_BASE_URL,
 			code: pipeActiveCode,
 			stream: encryptedStream,
 			kind,
-			encryptedFilename: filename ? btoa(filename) : undefined,
+			encryptedFilename: encFilenameHeader,
 			fetcher: fetch,
 			signal
 		});

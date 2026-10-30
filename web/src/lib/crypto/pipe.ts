@@ -23,6 +23,17 @@ export function formatPipeCode(raw: string): string {
 }
 
 /**
+ * Derives a deterministic 3-digit confirmation code from the 6-digit pipe code
+ * for out-of-band visual verification between sender and receiver.
+ */
+export function deriveConfirmationCode(code: string): string {
+	const normalized = normalizePipeCode(code);
+	const num = Number.parseInt(normalized, 10);
+	const hash = Math.abs((num * 48_271) % 900) + 100;
+	return String(hash);
+}
+
+/**
  * Derives the symmetric encryption passphrase combining the 6-digit code,
  * the server-issued cryptographic salt, and an optional secret passphrase.
  */
@@ -78,11 +89,11 @@ export async function encryptPipeStream(
 }
 
 /**
- * Decrypts an age-formatted ciphertext stream using the derived passphrase.
+ * Decrypts an age-formatted ciphertext stream or byte array using the derived passphrase.
  * Authenticates each 64 KiB chunk on the fly; fails if wrong passphrase or corrupted chunk.
  */
 export async function decryptPipeStream(
-	stream: ReadableStream<Uint8Array>,
+	input: ReadableStream<Uint8Array> | Uint8Array,
 	passphrase: string
 ): Promise<ReadableStream<Uint8Array>> {
 	if (passphrase === '') {
@@ -91,6 +102,18 @@ export async function decryptPipeStream(
 
 	const decrypter = new Decrypter();
 	decrypter.addPassphrase(passphrase);
+
+	let stream: ReadableStream<Uint8Array>;
+	if (input instanceof Uint8Array) {
+		stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(input);
+				controller.close();
+			}
+		});
+	} else {
+		stream = input;
+	}
 
 	return await decrypter.decrypt(stream);
 }
