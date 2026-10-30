@@ -21,9 +21,10 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// tracer instruments the HTTP server. With tracing off (no OTLP endpoint) it is
-// OTel's no-op, so the middleware adds no measurable cost.
-var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
+// defaultTracer instruments the HTTP server when no Tracer or TracerProvider is
+// supplied via Options. With tracing off (no OTLP endpoint) it is OTel's no-op,
+// so the middleware adds no measurable cost.
+var defaultTracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
 
 type Server struct {
 	db                       *sql.DB
@@ -41,6 +42,7 @@ type Server struct {
 	createLimiter            *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
+	tracer                   trace.Tracer
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
 	// ponytail: a one-method closure beats dragging the whole driver type in here.
@@ -66,6 +68,8 @@ type Options struct {
 	NewJobID                 func() (string, error)
 	NATSConnected            func() bool
 	RequestStore             *requests.Store
+	Tracer                   trace.Tracer
+	TracerProvider           trace.TracerProvider
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -80,6 +84,15 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	maxFileBytes := opts.MaxFileBytes
 	if maxFileBytes <= 0 {
 		maxFileBytes = 268435456
+	}
+
+	tracer := opts.Tracer
+	if tracer == nil {
+		if opts.TracerProvider != nil {
+			tracer = opts.TracerProvider.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
+		} else {
+			tracer = defaultTracer
+		}
 	}
 
 	server := Server{
@@ -98,6 +111,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		tracer:                   tracer,
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -187,7 +201,11 @@ func (s Server) tracing(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx, span := tracer.Start(r.Context(), r.Method,
+		tr := s.tracer
+		if tr == nil {
+			tr = defaultTracer
+		}
+		ctx, span := tr.Start(r.Context(), r.Method,
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(attribute.String("http.request.method", r.Method)),
 		)

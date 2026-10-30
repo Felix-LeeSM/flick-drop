@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -15,19 +14,19 @@ import (
 // The tracing middleware's fragile, load-bearing bits: the matched chi route
 // template is read AFTER next() (so spans carry "/api/secrets/{id}", not the
 // high-cardinality concrete path), the status code is captured, and probe
-// endpoints get no span at all. A recording provider is installed globally so
-// the package's delegating tracer routes to it; restored after the test.
+// endpoints get no span at all. A recording provider is passed via Options
+// so tests do not mutate otel's global provider.
 func TestTracingMiddlewareRecordsRouteAndStatus(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	prev := otel.GetTracerProvider()
-	otel.SetTracerProvider(tp)
 	t.Cleanup(func() {
-		otel.SetTracerProvider(prev)
 		_ = tp.Shutdown(context.Background())
 	})
 
-	router := newTestRouter(t)
+	router := newTestRouterWithOptions(t, Options{
+		PayloadInlineMaxBytes: 1024,
+		TracerProvider:        tp,
+	})
 
 	// Unknown id still routes through the "/api/secrets/{id}" template (handler
 	// returns 404), so the matched route — not the concrete id — must be recorded.
