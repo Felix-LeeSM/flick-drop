@@ -13,6 +13,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/httpapi"
+	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
@@ -131,6 +132,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("create request store: %v", err)
 	}
+
+	var pipeCoordinator *piperelay.Coordinator
+	if cfg.PipeRelayEnabled {
+		pipeCoordinator = piperelay.NewCoordinator(piperelay.CoordinatorOptions{
+			MaxConcurrent: cfg.PipeMaxConcurrent,
+		})
+		defer pipeCoordinator.Close()
+		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d)", cfg.PipeMaxConcurrent)
+	}
+
 	server := &http.Server{
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
@@ -146,6 +157,8 @@ func main() {
 			OutboxStore:              outboxStore,
 			NATSConnected:            natsConn.IsConnected,
 			RequestStore:             requestStore,
+			PipeRelayEnabled:         cfg.PipeRelayEnabled,
+			PipeCoordinator:          pipeCoordinator,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

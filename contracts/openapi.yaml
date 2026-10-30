@@ -726,6 +726,140 @@ paths:
           $ref: "#/components/responses/RequestRateLimited"
         "503":
           $ref: "#/components/responses/RequestStorageUnavailable"
+  /api/pipe/init:
+    post:
+      operationId: initPipe
+      summary: Initialize live relay pipe rendezvous.
+      description: Generates a 6-digit numeric pairing code and 16-byte random salt for real-time in-memory pipe transfer.
+      responses:
+        "201":
+          description: Pipe rendezvous initialized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeInitResponse"
+        "429":
+          description: Server at maximum concurrent pipe relay capacity.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/wait:
+    get:
+      operationId: waitPipe
+      summary: Wait for receiver to connect.
+      description: Long-polls until the receiving device connects to the rendezvous session with matching code.
+      parameters:
+        - name: X-Flick-Pipe-Code
+          in: header
+          required: true
+          schema:
+            type: string
+          description: 6-digit numeric pairing code.
+      responses:
+        "200":
+          description: Receiver connected and ready to receive stream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeStatusResponse"
+        "400":
+          description: Missing or invalid X-Flick-Pipe-Code header.
+        "404":
+          description: Rendezvous not found or expired.
+        "410":
+          description: Rendezvous expired or burned.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/receive:
+    get:
+      operationId: receivePipe
+      summary: Receive live stream from sender.
+      description: Connects to the in-memory pipe and streams ciphertext chunks directly to the response writer.
+      parameters:
+        - name: X-Flick-Pipe-Code
+          in: header
+          required: true
+          schema:
+            type: string
+          description: 6-digit numeric pairing code.
+      responses:
+        "200":
+          description: Streaming raw ciphertext bytes.
+          headers:
+            X-Flick-Pipe-Salt:
+              schema:
+                type: string
+              description: Base64-encoded 16-byte cryptographic salt.
+            Flick-Kind:
+              schema:
+                type: string
+              description: Optional descriptor kind (text or file).
+            Flick-Encrypted-Filename:
+              schema:
+                type: string
+              description: Optional base64-encoded encrypted filename.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Missing or invalid X-Flick-Pipe-Code header.
+        "404":
+          description: Rendezvous not found or expired.
+        "409":
+          description: Receiver already connected.
+        "410":
+          description: Session burned due to excessive failed attempts.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/send:
+    post:
+      operationId: sendPipe
+      summary: Send live stream to receiver.
+      description: Streams incoming request body bytes directly into the in-memory pipe to the waiting receiver.
+      parameters:
+        - name: X-Flick-Pipe-Code
+          in: header
+          required: true
+          schema:
+            type: string
+          description: 6-digit numeric pairing code.
+        - name: Flick-Kind
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: Flick-Encrypted-Filename
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Stream completed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeSendResponse"
+        "400":
+          description: Missing or invalid X-Flick-Pipe-Code header.
+        "404":
+          description: Rendezvous not found or expired.
+        "409":
+          description: Sender already active on this session.
+        "410":
+          description: Session burned.
+        "502":
+          description: Stream transfer failed or receiver disconnected.
+        "503":
+          description: Live pipe relay is disabled.
 components:
   headers:
     RequestNoStore:
@@ -1088,6 +1222,43 @@ components:
           format: int64
           minimum: 0
           description: Absolute upper bound; files above this are rejected by client and server.
+        pipe_relay_enabled:
+          type: boolean
+          description: Whether live in-memory pipe relay transfer is enabled on this server.
+    PipeInitResponse:
+      type: object
+      additionalProperties: false
+      required: [code, salt, expires_in]
+      properties:
+        code:
+          type: string
+          description: 6-digit numeric pairing code.
+        salt:
+          type: string
+          description: Base64-encoded 16-byte cryptographic salt for key derivation.
+        expires_in:
+          type: integer
+          description: Session lifetime in seconds.
+    PipeStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready]
+    PipeSendResponse:
+      type: object
+      additionalProperties: false
+      required: [status, bytes_transferred]
+      properties:
+        status:
+          type: string
+          enum: [completed]
+        bytes_transferred:
+          type: integer
+          format: int64
+          description: Total bytes passed through the in-memory pipe.
     ErrorResponse:
       type: object
       additionalProperties: false

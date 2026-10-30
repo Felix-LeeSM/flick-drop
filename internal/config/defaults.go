@@ -12,4 +12,6 @@ const (
 	defaultCreateRatePerMinute   int   = 5
 	defaultReaperIntervalSeconds int   = 60
 	defaultReaperBatchSize       int   = 50
+	defaultPipeRelayEnabled      bool  = true
+	defaultPipeMaxConcurrent     int   = 100
 )

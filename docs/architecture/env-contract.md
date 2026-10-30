@@ -43,6 +43,8 @@ Local development:
 | `FLICK_CREATE_RATE_PER_MIN` | Max `/api/secrets` (presigned upload issuance) requests per client IP + path per minute. |
 | `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in api.db. |
 | `FLICK_REAPER_BATCH_SIZE` | Max secrets reclaimed per reaper tick. |
+| `FLICK_PIPE_RELAY_ENABLED` | Enable live in-memory pipe relay endpoints (`true`/`false`). Default `true`. |
+| `FLICK_PIPE_MAX_CONCURRENT` | Maximum concurrent live pipe rendezvous sessions. Default `100`. |
 | `FLICK_TRUSTED_PROXIES` | Comma-separated CIDRs whose peer may set X-Forwarded-For. Empty = direct peer IP only. |
 
 ## NATS

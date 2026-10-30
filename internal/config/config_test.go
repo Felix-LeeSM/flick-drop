@@ -68,6 +68,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.CreateRatePerMinute != 5 {
 		t.Fatalf("CreateRatePerMinute = %d, want 5", cfg.CreateRatePerMinute)
 	}
+	if !cfg.PipeRelayEnabled {
+		t.Fatalf("PipeRelayEnabled = false, want true by default")
+	}
+	if cfg.PipeMaxConcurrent != 100 {
+		t.Fatalf("PipeMaxConcurrent = %d, want 100", cfg.PipeMaxConcurrent)
+	}
 	if cfg.S3.Enabled {
 		t.Fatalf("S3.Enabled = true, want false by default")
 	}
@@ -118,6 +124,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_MAX_TTL_SECONDS",
 		"FLICK_OPEN_RATE_PER_MIN",
 		"FLICK_CREATE_RATE_PER_MIN",
+		"FLICK_PIPE_RELAY_ENABLED",
+		"FLICK_PIPE_MAX_CONCURRENT",
 		"FLICK_TRUSTED_PROXIES",
 		"FLICK_STORAGE_LARGE_BACKEND",
 		"FLICK_S3_ENDPOINT",
@@ -273,4 +281,41 @@ func TestLoadInlineThresholdFitsEmptyAgeFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadPipeRelayConfig(t *testing.T) {
+	t.Run("custom valid config", func(t *testing.T) {
+		clearFlickEnv(t)
+		t.Setenv("FLICK_PIPE_RELAY_ENABLED", "false")
+		t.Setenv("FLICK_PIPE_MAX_CONCURRENT", "50")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load(): %v", err)
+		}
+		if cfg.PipeRelayEnabled {
+			t.Fatalf("PipeRelayEnabled = true, want false")
+		}
+		if cfg.PipeMaxConcurrent != 50 {
+			t.Fatalf("PipeMaxConcurrent = %d, want 50", cfg.PipeMaxConcurrent)
+		}
+	})
+
+	t.Run("invalid boolean", func(t *testing.T) {
+		clearFlickEnv(t)
+		t.Setenv("FLICK_PIPE_RELAY_ENABLED", "not-a-bool")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("expected error for invalid FLICK_PIPE_RELAY_ENABLED")
+		}
+	})
+
+	t.Run("invalid max concurrent", func(t *testing.T) {
+		clearFlickEnv(t)
+		t.Setenv("FLICK_PIPE_MAX_CONCURRENT", "0")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("expected error for zero FLICK_PIPE_MAX_CONCURRENT")
+		}
+	})
 }
