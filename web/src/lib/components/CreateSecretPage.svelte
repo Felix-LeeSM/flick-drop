@@ -11,10 +11,8 @@ import {
 	XIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
-import { goto } from '$app/navigation';
-import { resolve } from '$app/paths';
-import { type ClientLimits, defaultLimits, getConfig } from '$lib/api/config';
-import { createManagementUrl, isManagementToken } from '$lib/api/management';
+import { type ClientLimits, defaultLimits, getConfig } from '#lib/api/config.js';
+import { createManagementUrl, isManagementToken } from '#lib/api/management.js';
 import {
 	type CreateSecretResponse,
 	createSecretApiClient,
@@ -24,21 +22,21 @@ import {
 	type PassphraseEnvelope,
 	SecretApiError,
 	type TtlSeconds
-} from '$lib/api/secrets';
-import CredentialForm from '$lib/components/CredentialForm.svelte';
-import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
-import LifetimePicker from '$lib/components/LifetimePicker.svelte';
-import NativeShareButton from '$lib/components/NativeShareButton.svelte';
-import QrModal from '$lib/components/QrModal.svelte';
-import SecretTypeSelector from '$lib/components/SecretTypeSelector.svelte';
-import SuccessCheck from '$lib/components/SuccessCheck.svelte';
-import UrlField from '$lib/components/UrlField.svelte';
-import { Button } from '$lib/components/ui/button';
-import { Checkbox } from '$lib/components/ui/checkbox';
-import { Input } from '$lib/components/ui/input';
-import { Label } from '$lib/components/ui/label';
-import { Textarea } from '$lib/components/ui/textarea';
-import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, MIN_TTL_SECONDS } from '$lib/config/ttl';
+} from '#lib/api/secrets.js';
+import CredentialForm from '#lib/components/CredentialForm.svelte';
+import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import LifetimePicker from '#lib/components/LifetimePicker.svelte';
+import NativeShareButton from '#lib/components/NativeShareButton.svelte';
+import QrModal from '#lib/components/QrModal.svelte';
+import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
+import SuccessCheck from '#lib/components/SuccessCheck.svelte';
+import UrlField from '#lib/components/UrlField.svelte';
+import { Button } from '#lib/components/ui/button/index.js';
+import { Checkbox } from '#lib/components/ui/checkbox/index.js';
+import { Input } from '#lib/components/ui/input/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
+import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, MIN_TTL_SECONDS } from '#lib/config/ttl.js';
 import {
 	buildEnvelope,
 	CREDENTIAL_TEMPLATES,
@@ -47,14 +45,16 @@ import {
 	type CredentialType,
 	hasCredentialContent,
 	serializeCredential
-} from '$lib/credentials';
-import { createAccessVerifier } from '$lib/crypto/access';
-import { generateSecretIdentity } from '$lib/crypto/age';
-import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '$lib/crypto/secret';
-import { bundleFiles } from '$lib/files/bundle';
-import { remainingSecondsFrom } from '$lib/lifetime.js';
-import { clearCreatedDelivery, handOffCreatedDelivery } from '$lib/state/created-delivery';
-import { cn, formatBytes } from '$lib/utils';
+} from '#lib/credentials/index.js';
+import { createAccessVerifier } from '#lib/crypto/access.js';
+import { generateSecretIdentity } from '#lib/crypto/age.js';
+import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
+import { bundleFiles } from '#lib/files/bundle.js';
+import { remainingSecondsFrom } from '#lib/lifetime.js';
+import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
+import { cn, formatBytes } from '#lib/utils.js';
+import { goto } from '$app/navigation';
+import { resolve } from '$app/paths';
 
 type StatusKind = 'idle' | 'encrypting' | 'saving' | 'error' | FileUploadProgress['stage'];
 type CreateMode = 'text' | 'file' | CredentialType;
@@ -465,302 +465,321 @@ function modeLabel(value: CreateMode): string {
 	<title>Create secret - Flick</title>
 </svelte:head>
 
-<DeliveryFrame link={{ href: resolve('/request'), label: 'Request a secret' }}>
-
-		{#if hasResult}
-			<section class="grid gap-7">
-				<div class="grid place-items-center gap-4 text-center">
-					<SuccessCheck />
-					<div class="grid gap-2">
+<DeliveryFrame
+	link={{ href: resolve('request'), label: 'Request a secret' }}
+>
+	{#if hasResult}
+		<section class="grid gap-7">
+			<div class="grid place-items-center gap-4 text-center">
+				<SuccessCheck />
+				<div class="grid gap-2">
 						<p class="micro flex items-center justify-center gap-1.5 text-burn">
-							<FlameIcon class="size-3.5" aria-hidden="true" />
-							one-time link
-						</p>
-						<h1
-							class="page-title"
-							tabindex="-1"
-							bind:this={successHeading}
+						<FlameIcon class="size-3.5" aria-hidden="true" />
+						one-time link
+					</p>
+					<h1
+						class="page-title"
+						tabindex="-1"
+						bind:this={successHeading}
 						>
 							Link created
 						</h1>
-						<p class="text-sm text-muted-foreground">Opens once, then burns. Forward it fast.</p>
-					</div>
-					<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
-						<ClockIcon class="size-4" aria-hidden="true" />
-						<span>EXPIRES IN</span>
-						<span class="tabular-nums text-foreground">{formatRemaining(remainingSeconds)}</span>
-					</div>
+					<p class="text-sm text-muted-foreground">Opens once, then burns. Forward it fast.</p>
 				</div>
+					<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
+					<ClockIcon class="size-4" aria-hidden="true" />
+					<span>EXPIRES IN</span>
+					<span class="tabular-nums text-foreground">{formatRemaining(remainingSeconds)}</span>
+				</div>
+			</div>
 
-				<div class="grid gap-3">
-					<UrlField value={shareUrl} id="share-url" />
-					<NativeShareButton recipientUrl={shareUrl} />
-					{#if managementUrl}
+			<div class="grid gap-3">
+				<UrlField value={shareUrl} id="share-url" />
+				<NativeShareButton recipientUrl={shareUrl} />
+				{#if managementUrl}
 						<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
-					{/if}
-					<Button
-						type="button"
-						variant="outline"
-						class="h-11 w-full"
-						onclick={() => {
-							qrOpen = true;
-						}}
-					>
-						<QrCodeIcon class="size-4" aria-hidden="true" />
-						Show QR
-					</Button>
+				{/if}
+				<Button
+					type="button"
+					variant="outline"
+					class="h-11 w-full"
+					onclick={() => {
+						qrOpen = true;
+					}}
+				>
+					<QrCodeIcon class="size-4" aria-hidden="true" />
+					Show QR
+				</Button>
 					<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
-						<LockKeyholeIcon
-							class="mt-0.5 size-4 shrink-0 text-muted-foreground"
-							aria-hidden="true"
-						/>
-						<div class="grid gap-1">
-							{#if usePassphrase}
-								<strong class="text-sm font-medium">Send the passphrase separately.</strong>
+					<LockKeyholeIcon
+						class="mt-0.5 size-4 shrink-0 text-muted-foreground"
+						aria-hidden="true"
+					/>
+					<div class="grid gap-1">
+						{#if usePassphrase}
+							<strong class="text-sm font-medium">Send the passphrase separately.</strong>
 								<p class="text-sm text-muted-foreground">
 									The recipient needs both the link and the passphrase to open this.
 								</p>
-							{:else}
-								<strong class="text-sm font-medium">Share only with your recipient.</strong>
+						{:else}
+							<strong class="text-sm font-medium">Share only with your recipient.</strong>
 								<p class="text-sm text-muted-foreground">
 									Anyone with this full link can open it once.
 								</p>
-							{/if}
-						</div>
-					</aside>
+						{/if}
+					</div>
+				</aside>
 					<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
 						Create another
 					</Button>
-				</div>
-			</section>
-		{:else}
-			<section class="grid gap-7">
-				<div class="grid gap-1.5">
+			</div>
+		</section>
+	{:else}
+		<section class="grid gap-7">
+			<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-muted-foreground">
-						<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-						end-to-end encrypted · burns after read
-					</p>
-					<h1 class="page-title">Create a secret</h1>
-				</div>
+					<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
+					end-to-end encrypted · burns after read
+				</p>
+				<h1 class="page-title">Create a secret</h1>
+			</div>
 
-				<form class="grid gap-6" autocomplete="off" onsubmit={submitCreate}>
+			<form
+				class="grid gap-6"
+				autocomplete="off"
+				onsubmit={submitCreate}
+			>
+				<SecretTypeSelector
+					value={mode}
+					disabled={!isHydrated || isCreating}
+					onSelect={switchMode}
+				/>
 
-					<SecretTypeSelector value={mode} disabled={!isHydrated || isCreating} onSelect={switchMode} />
-
-					{#if mode === 'text'}
-						<div class="grid gap-2.5">
-							<Label for="secret-text" class="text-sm font-medium">Message</Label>
-							<Textarea
-								id="secret-text"
-								class="min-h-44 resize-y px-3.5 py-3"
-								placeholder="Paste text"
-								bind:value={plaintext}
-								disabled={isCreating}
-								required
-							/>
-						</div>
-					{:else if mode === 'file'}
-						<div class="grid gap-2.5">
-							<span class="text-sm font-medium">Files</span>
-							<!-- Label wraps the input, so a click opens the picker natively and a
+				{#if mode === 'text'}
+					<div class="grid gap-2.5">
+						<Label for="secret-text" class="text-sm font-medium">Message</Label>
+						<Textarea
+							id="secret-text"
+							class="min-h-44 resize-y px-3.5 py-3"
+							placeholder="Paste text"
+							bind:value={plaintext}
+							disabled={isCreating}
+							required
+						/>
+					</div>
+				{:else if mode === 'file'}
+					<div class="grid gap-2.5">
+						<span class="text-sm font-medium">Files</span>
+						<!-- Label wraps the input, so a click opens the picker natively and a
 							     drop lands files without any wiring; focus-within surfaces the
 							     visually-hidden input's keyboard focus on the zone. -->
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<label
-								class={cn(
-									'grid cursor-pointer place-items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-ring',
-									dragActive
-										? 'border-primary bg-primary/5'
-										: 'border-border bg-muted/20 hover:bg-muted/40',
-									isCreating && 'pointer-events-none opacity-60'
-								)}
-								ondragover={onDragOver}
-								ondragenter={onDragOver}
-								ondragleave={onDragLeave}
-								ondrop={onDrop}
-							>
-								<FileUpIcon
-									class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
-									aria-hidden="true"
-								/>
-								<p class="text-sm">
-									<span class="font-medium text-foreground">Drop files</span>
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<label
+							class={cn(
+								'grid cursor-pointer place-items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-ring',
+								dragActive
+									? 'border-primary bg-primary/5'
+									: 'border-border bg-muted/20 hover:bg-muted/40',
+								isCreating && 'pointer-events-none opacity-60'
+							)}
+							ondragover={onDragOver}
+							ondragenter={onDragOver}
+							ondragleave={onDragLeave}
+							ondrop={onDrop}
+						>
+							<FileUpIcon
+								class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
+								aria-hidden="true"
+							/>
+							<p class="text-sm">
+								<span class="font-medium text-foreground">Drop files</span>
 									<span class="text-muted-foreground"> or click to browse</span>
-								</p>
-								<p class="micro text-muted-foreground">
-									<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
-									Multiple files are zipped into one · up to
-									<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
-								</p>
-								<input
-									bind:this={fileInput}
-									id="secret-file"
-									type="file"
-									multiple
-									class="sr-only"
-									aria-label="Add files to upload"
-									disabled={isCreating}
-									onchange={onFileInputChange}
-								/>
-							</label>
-							{#if pickedFiles.length > 0}
-								<ul class="grid gap-1.5">
-									{#each pickedFiles as file, index (fileKey(file))}
-										<li
-											class="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
-										>
-											<span class="truncate text-muted-foreground">{file.name}</span>
-											<span class="flex shrink-0 items-center gap-2">
+							</p>
+							<p class="micro text-muted-foreground">
+								<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
+								Multiple files are zipped into one · up to 
+								<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
+							</p>
+							<input
+								bind:this={fileInput}
+								id="secret-file"
+								type="file"
+								multiple
+								class="sr-only"
+								aria-label="Add files to upload"
+								disabled={isCreating}
+								onchange={onFileInputChange}
+							/>
+						</label>
+						{#if pickedFiles.length > 0}
+							<ul class="grid gap-1.5">
+								{#each pickedFiles as file, index (fileKey(file))}
+									<li
+										class="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+									>
+										<span class="truncate text-muted-foreground">{file.name}</span>
+										<span class="flex shrink-0 items-center gap-2">
 												<span class="font-mono text-xs text-muted-foreground">
 													{formatBytes(file.size)}
 												</span>
-												<button
-													type="button"
-													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-													aria-label={`Remove ${file.name}`}
-													disabled={isCreating}
-													onclick={() => {
-														removeFile(index);
-													}}
+											<button
+												type="button"
+												class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+												aria-label={`Remove ${file.name}`}
+												disabled={isCreating}
+												onclick={() => {
+													removeFile(index);
+												}}
 												>
 													<XIcon class="size-4" aria-hidden="true" />
 												</button>
-											</span>
-										</li>
-									{/each}
-								</ul>
-								{#if bundling}
-									<p
-										class="micro text-right text-muted-foreground"
-										role="status"
-										aria-live="polite"
+										</span>
+									</li>
+								{/each}
+							</ul>
+							{#if bundling}
+								<p
+									class="micro text-right text-muted-foreground"
+									role="status"
+									aria-live="polite"
 									>
 										Zipping {pickedFiles.length} files…
 									</p>
-								{:else if pickedFiles.length > 1 && selectedFile}
+							{:else if pickedFiles.length > 1 && selectedFile}
 									<p class="micro text-right normal-case text-muted-foreground">
 										{pickedFiles.length} files → {selectedFile.name} · {formatBytes(selectedFile.size)}
 									</p>
-								{/if}
 							{/if}
-							{#if selectedFileTooLarge}
+						{/if}
+						{#if selectedFileTooLarge}
 								<p class="text-sm text-destructive" role="alert" aria-live="assertive">
 									Choose files up to {formatBytes(limits.maxFileBytes)} total.
 								</p>
-							{/if}
-						</div>
-					{:else}
-						<div class="grid gap-2.5">
-							<span class="text-sm font-medium">{modeLabel(mode)}</span>
-							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
-						</div>
-					{/if}
-
+						{/if}
+					</div>
+				{:else}
 					<div class="grid gap-2.5">
-						<div class="flex min-h-9 items-center gap-2">
+						<span class="text-sm font-medium">{modeLabel(mode)}</span>
+							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
+					</div>
+				{/if}
+
+				<div class="grid gap-2.5">
+					<div class="flex min-h-9 items-center gap-2">
 							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
 							<Label for="use-passphrase" class="text-sm font-medium">
 								Protect with a passphrase
 							</Label>
-						</div>
-						{#if usePassphrase}
-							<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
+					</div>
+					{#if usePassphrase}
+						<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
 							<Label for="secret-passphrase" class="mt-0.5 -mb-1 text-[0.8125rem]/[1] font-medium text-muted-foreground">Passphrase</Label>
-							<div class="relative">
-								<Input
-									id="secret-passphrase"
-									name="flick-passphrase"
-									type={revealPassphrase ? 'text' : 'password'}
-									autocomplete="off"
-									autocapitalize="none"
-									spellcheck="false"
-									data-1p-ignore="true"
-									data-bwignore="true"
-									data-lpignore="true"
-									class="h-11 pr-11"
-									bind:value={passphrase}
-									disabled={isCreating}
-									required
-								/>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
-									aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-									title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-									onclick={() => {
-										revealPassphrase = !revealPassphrase;
-									}}
-								>
-									{#if revealPassphrase}
-										<EyeOffIcon class="size-4" aria-hidden="true" />
-									{:else}
-										<EyeIcon class="size-4" aria-hidden="true" />
-									{/if}
-								</Button>
-							</div>
+						<div class="relative">
+							<Input
+								id="secret-passphrase"
+								name="flick-passphrase"
+								type={revealPassphrase ? 'text' : 'password'}
+								autocomplete="off"
+								autocapitalize="none"
+								spellcheck="false"
+								data-1p-ignore="true"
+								data-bwignore="true"
+								data-lpignore="true"
+								class="h-11 pr-11"
+								bind:value={passphrase}
+								disabled={isCreating}
+								required
+							/>
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon"
+								class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
+								aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+								title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+								onclick={() => {
+									revealPassphrase = !revealPassphrase;
+								}}
+							>
+								{#if revealPassphrase}
+									<EyeOffIcon class="size-4" aria-hidden="true" />
+								{:else}
+									<EyeIcon class="size-4" aria-hidden="true" />
+								{/if}
+							</Button>
+						</div>
 							<p class="text-[0.8125rem] text-muted-foreground">
 								Your recipient will need this passphrase. Send it separately from the link.
 							</p>
-						{:else}
+					{:else}
 							<p class="text-[0.8125rem] text-muted-foreground">
 								Anyone with the link can open this once. The decryption key is embedded in the URL
 								fragment.
 							</p>
-						{/if}
-					</div>
+					{/if}
+				</div>
 
 					<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" />
 
-					<div class="grid gap-3">
-						<Button type="submit" size="cta" disabled={!canCreate}>
-							<LockKeyholeIcon class="size-4" aria-hidden="true" />
-							{isCreating ? 'Creating' : 'Create link'}
-						</Button>
-						<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
-						{#if statusKind === 'uploading'}
-							<Button
-								type="button"
-								variant="outline"
-								class="h-11 w-full"
-								onclick={cancelCreate}
+				<div class="grid gap-3">
+					<Button type="submit" size="cta" disabled={!canCreate}>
+						<LockKeyholeIcon class="size-4" aria-hidden="true" />
+						{isCreating ? 'Creating' : 'Create link'}
+					</Button>
+					<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
+					{#if statusKind === 'uploading'}
+						<Button
+							type="button"
+							variant="outline"
+							class="h-11 w-full"
+							onclick={cancelCreate}
 							>
 								Cancel
 							</Button>
-							<progress
-								class="h-2 w-full accent-primary"
-								aria-label="Encrypted file upload progress"
-								max={uploadProgress?.total ?? 1}
-								value={uploadProgress?.total ? uploadProgress.loaded : undefined}
-							></progress>
-						{/if}
-						{#if status.length > 0}
-							<p
-								class="text-sm"
-								class:text-muted-foreground={statusKind !== 'error'}
-								class:text-destructive={statusKind === 'error'}
-								role={statusKind === 'error' ? 'alert' : 'status'}
-								aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
+						<progress
+							class="h-2 w-full accent-primary"
+							aria-label="Encrypted file upload progress"
+							max={uploadProgress?.total ?? 1}
+							value={uploadProgress?.total ? uploadProgress.loaded : undefined}
+						></progress>
+					{/if}
+					{#if status.length > 0}
+						<p
+							class="text-sm"
+							class:text-muted-foreground={statusKind !== 'error'}
+							class:text-destructive={statusKind === 'error'}
+							role={statusKind === 'error' ? 'alert' : 'status'}
+							aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
 							>
 								{status}
 							</p>
-						{/if}
-						<p
-							class="micro flex items-center justify-center gap-1.5"
-							style="color: color-mix(in oklch, var(--burn) 70%, var(--muted-foreground))"
-						>
-							<FlameIcon class="size-3.5" aria-hidden="true" />
-							burns after a single open
-						</p>
-					</div>
-				</form>
-			</section>
-		{/if}
-		<nav aria-label="Sharing guides" class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground">
-			<a href={resolve('/guides/password-sharing/')} class="py-2 underline-offset-4 hover:underline">Sharing passwords</a>
-			<a href={resolve('/guides/temporary-file-sharing/')} class="py-2 underline-offset-4 hover:underline">Sharing temporary files</a>
-		</nav>
+					{/if}
+					<p
+						class="micro flex items-center justify-center gap-1.5"
+						style="color: color-mix(in oklch, var(--burn) 70%, var(--muted-foreground))"
+					>
+						<FlameIcon class="size-3.5" aria-hidden="true" />
+						burns after a single open
+					</p>
+				</div>
+			</form>
+		</section>
+	{/if}
+
+	<nav
+		aria-label="Sharing guides"
+		class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
+	>
+		<a
+			href={resolve('guides/password-sharing/')}
+			class="py-2 underline-offset-4 hover:underline"
+		>Sharing passwords</a>
+
+		<a
+			href={resolve('guides/temporary-file-sharing/')}
+			class="py-2 underline-offset-4 hover:underline"
+		>Sharing temporary files</a>
+	</nav>
 </DeliveryFrame>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />

@@ -1,5 +1,5 @@
 import { get, writable } from 'svelte/store';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
@@ -12,13 +12,8 @@ const resolved = writable<ResolvedTheme>('light');
 let initialized = false;
 let systemScheme: MediaQueryList | null = null;
 
-export const themePreference = {
-	subscribe: preference.subscribe
-};
-
-export const resolvedTheme = {
-	subscribe: resolved.subscribe
-};
+export const themePreference = { subscribe: preference.subscribe };
+export const resolvedTheme = { subscribe: resolved.subscribe };
 
 export function initializeTheme(): void {
 	if (!browser || initialized) {

@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { bytesToBase64 } from '$lib/crypto/encoding';
+import { bytesToBase64 } from '#lib/crypto/encoding.js';
 import {
 	encryptRequestPayload,
 	generateRequestKeys,
 	type SealedRequest
-} from '$lib/crypto/requests';
+} from '#lib/crypto/requests.js';
 import { createRequestApiClient, prepareSubmission, requestLimits } from './requests';
 
 const submitToken = 'A'.repeat(43);

@@ -8,9 +8,9 @@ import {
 	TypeIcon
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { Button } from '$lib/components/ui/button';
-import { CREDENTIAL_TEMPLATES, type CredentialType } from '$lib/credentials';
-import { cn } from '$lib/utils';
+import { Button } from '#lib/components/ui/button/index.js';
+import { CREDENTIAL_TEMPLATES, type CredentialType } from '#lib/credentials/index.js';
+import { cn } from '#lib/utils.js';
 
 type SecretType = 'text' | 'file' | CredentialType;
 let {

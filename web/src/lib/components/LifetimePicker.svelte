@@ -1,12 +1,12 @@
 <script lang="ts">
 import { untrack } from 'svelte';
-import { Button, buttonVariants } from '$lib/components/ui/button';
+import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 import {
 	DEFAULT_TTL_SECONDS,
 	formatTtlRange,
 	MAX_TTL_SECONDS,
 	MIN_TTL_SECONDS
-} from '$lib/config/ttl';
+} from '#lib/config/ttl.js';
 
 type Unit = 'minutes' | 'hours' | 'days';
 type Props = {

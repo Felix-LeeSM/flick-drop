@@ -1,7 +1,7 @@
 <script lang="ts">
 import { ShieldCheckIcon } from '@lucide/svelte';
 import { onMount, tick as render } from 'svelte';
-import { defaultLimits, getVerifiedConfig } from '$lib/api/config';
+import { defaultLimits, getVerifiedConfig } from '#lib/api/config.js';
 import {
 	createRequestApiClient,
 	prepareLargeSubmission,
@@ -11,16 +11,16 @@ import {
 	type ReservedUpload,
 	requestLimits,
 	type Submission
-} from '$lib/api/requests';
-import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '$lib/api/secrets';
-import CredentialForm from '$lib/components/CredentialForm.svelte';
-import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
-import RemainingTime from '$lib/components/RemainingTime.svelte';
-import SecretTypeSelector from '$lib/components/SecretTypeSelector.svelte';
-import { Button } from '$lib/components/ui/button';
-import { Input } from '$lib/components/ui/input';
-import { Label } from '$lib/components/ui/label';
-import { Textarea } from '$lib/components/ui/textarea';
+} from '#lib/api/requests.js';
+import { DEFAULT_API_BASE_URL, type FileUploadProgress, SecretApiError } from '#lib/api/secrets.js';
+import CredentialForm from '#lib/components/CredentialForm.svelte';
+import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import RemainingTime from '#lib/components/RemainingTime.svelte';
+import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
+import { Button } from '#lib/components/ui/button/index.js';
+import { Input } from '#lib/components/ui/input/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
 import {
 	buildEnvelope,
 	type CredentialEnvelope,
@@ -29,18 +29,18 @@ import {
 	hasCredentialContent,
 	isCredentialType,
 	serializeCredential
-} from '$lib/credentials';
-import { encryptRequestPayload, importRequestPublicKey } from '$lib/crypto/requests';
-import { remainingSecondsFrom } from '$lib/lifetime';
-import { submissionFromFragment } from '$lib/state/request-links';
+} from '#lib/credentials/index.js';
+import { encryptRequestPayload, importRequestPublicKey } from '#lib/crypto/requests.js';
+import { remainingSecondsFrom } from '#lib/lifetime.js';
+import { submissionFromFragment } from '#lib/state/request-links.js';
 import {
 	type AttemptOutcome,
 	cancelRequestUpload,
 	finishRequestUpload,
 	inspectRequestAttempt,
 	uploadExpired
-} from '$lib/state/request-upload';
-import { formatBytes } from '$lib/utils';
+} from '#lib/state/request-upload.js';
+import { formatBytes } from '#lib/utils.js';
 
 let { requestId }: { requestId: string } = $props();
 const api = createRequestApiClient();

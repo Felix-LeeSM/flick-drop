@@ -1,10 +1,10 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToBase64 } from '$lib/crypto/encoding';
+import { bytesToBase64 } from '#lib/crypto/encoding.js';
 import {
 	encryptedFilenameFromHeader,
 	type OpenedRequestBody,
 	type SealedRequest
-} from '$lib/crypto/requests';
+} from '#lib/crypto/requests.js';
 import type { ClientLimits } from './config';
 import { isManagementToken } from './management';
 import {

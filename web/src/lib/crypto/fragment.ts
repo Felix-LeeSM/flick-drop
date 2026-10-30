@@ -9,7 +9,7 @@
 // encodeKeyFragment returns the fragment body (`key=...`) without the leading
 // `#`; the caller assigns it to URL.hash, which (re)adds the `#`.
 
-import { IDENTITY_PREFIX, parseSecretIdentity } from '$lib/crypto/age';
+import { IDENTITY_PREFIX, parseSecretIdentity } from '#lib/crypto/age.js';
 
 export const FRAGMENT_KEY_PREFIX = 'key=';
 

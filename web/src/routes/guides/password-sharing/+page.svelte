@@ -1,5 +1,5 @@
 <script lang="ts">
-import GuidePage from '$lib/components/GuidePage.svelte';
+import GuidePage from '#lib/components/GuidePage.svelte';
 </script>
 
 <GuidePage

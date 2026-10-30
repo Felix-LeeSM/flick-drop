@@ -1,8 +1,8 @@
 <script lang="ts">
 import { Share2Icon } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { Button } from '$lib/components/ui/button';
-import { cn } from '$lib/utils';
+import { Button } from '#lib/components/ui/button/index.js';
+import { cn } from '#lib/utils.js';
 
 let { recipientUrl, class: className }: { recipientUrl: string; class?: string } = $props();
 let supported = $state(false);

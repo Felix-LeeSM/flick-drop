@@ -1,25 +1,25 @@
 <script lang="ts">
 import { LockKeyholeIcon, ShieldCheckIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { goto } from '$app/navigation';
-import { resolve } from '$app/paths';
-import { createRequestApiClient } from '$lib/api/requests';
-import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
-import LifetimePicker from '$lib/components/LifetimePicker.svelte';
-import { Button } from '$lib/components/ui/button';
+import { createRequestApiClient } from '#lib/api/requests.js';
+import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import LifetimePicker from '#lib/components/LifetimePicker.svelte';
+import { Button } from '#lib/components/ui/button/index.js';
 import {
 	DEFAULT_TTL_SECONDS,
 	formatTtlRange,
 	MAX_TTL_SECONDS,
 	MIN_TTL_SECONDS
-} from '$lib/config/ttl';
-import { generateRequestKeys } from '$lib/crypto/requests';
+} from '#lib/config/ttl.js';
+import { generateRequestKeys } from '#lib/crypto/requests.js';
 import {
 	clearRequestHandoff,
 	handOffRequest,
 	retrievalUrl,
 	submissionUrl
-} from '$lib/state/request-links';
+} from '#lib/state/request-links.js';
+import { goto } from '$app/navigation';
+import { resolve } from '$app/paths';
 
 const api = createRequestApiClient();
 let ttl = $state(DEFAULT_TTL_SECONDS);

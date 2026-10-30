@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SealedFile } from '$lib/crypto/secret';
+import type { SealedFile } from '#lib/crypto/secret.js';
 import { createSecretApiClient } from './secrets';
 
 // Above the inline limit below, so every case takes the presigned-upload path.

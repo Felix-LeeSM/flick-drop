@@ -5,12 +5,12 @@ import {
 	createRequestApiClient,
 	prepareLargeSubmission,
 	type ReservedUpload
-} from '$lib/api/requests';
+} from '#lib/api/requests.js';
 import {
 	encryptRequestPayload,
 	generateRequestKeys,
 	type SealedRequest
-} from '$lib/crypto/requests';
+} from '#lib/crypto/requests.js';
 import { cancelRequestUpload, finishRequestUpload, inspectRequestAttempt } from './request-upload';
 
 const token = 'A'.repeat(43);

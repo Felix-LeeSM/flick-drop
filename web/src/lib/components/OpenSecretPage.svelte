@@ -10,26 +10,26 @@ import {
 	LockKeyholeOpenIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
-import { resolve } from '$app/paths';
 import {
 	createSecretApiClient,
 	type GetSecretMetadataResponse,
 	type OpenedSecret,
 	SecretApiError,
 	type SecretKind
-} from '$lib/api/secrets';
-import CredentialView from '$lib/components/CredentialView.svelte';
-import SiteHeader from '$lib/components/SiteHeader.svelte';
-import { Button, buttonVariants } from '$lib/components/ui/button';
-import * as Card from '$lib/components/ui/card';
-import { Input } from '$lib/components/ui/input';
-import { Label } from '$lib/components/ui/label';
-import { Textarea } from '$lib/components/ui/textarea';
-import { type CredentialEnvelope, parseCredential } from '$lib/credentials';
-import { deriveAccessProof } from '$lib/crypto/access';
-import { decodeKeyFragment } from '$lib/crypto/fragment';
-import { openFile, openText, unwrapIdentityOffThread } from '$lib/crypto/secret';
-import { formatBytes } from '$lib/utils';
+} from '#lib/api/secrets.js';
+import CredentialView from '#lib/components/CredentialView.svelte';
+import SiteHeader from '#lib/components/SiteHeader.svelte';
+import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import * as Card from '#lib/components/ui/card/index.js';
+import { Input } from '#lib/components/ui/input/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
+import { type CredentialEnvelope, parseCredential } from '#lib/credentials/index.js';
+import { deriveAccessProof } from '#lib/crypto/access.js';
+import { decodeKeyFragment } from '#lib/crypto/fragment.js';
+import { openFile, openText, unwrapIdentityOffThread } from '#lib/crypto/secret.js';
+import { formatBytes } from '#lib/utils.js';
+import { resolve } from '$app/paths';
 
 type Props = {
 	secretId: string;

@@ -1,4 +1,4 @@
 <script lang="ts">
-import CreateRequestPage from '$lib/components/CreateRequestPage.svelte';
+import CreateRequestPage from '#lib/components/CreateRequestPage.svelte';
 </script>
 <CreateRequestPage />

@@ -1,8 +1,8 @@
 <script lang="ts">
 import { CopyIcon } from '@lucide/svelte';
-import { Button } from '$lib/components/ui/button';
-import { Input } from '$lib/components/ui/input';
-import { cn } from '$lib/utils.js';
+import { Button } from '#lib/components/ui/button/index.js';
+import { Input } from '#lib/components/ui/input/index.js';
+import { cn } from '#lib/utils.js';
 
 type Props = {
 	value: string;

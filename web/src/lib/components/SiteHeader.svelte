@@ -5,9 +5,9 @@ export type HeaderLink = { href: string; label: string };
 <script lang="ts">
 import { LockKeyholeIcon } from '@lucide/svelte';
 import { resolve } from '$app/paths';
-import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-import { buttonVariants } from '$lib/components/ui/button';
-import { cn } from '$lib/utils';
+import ThemeToggle from '#lib/components/ThemeToggle.svelte';
+import { buttonVariants } from '#lib/components/ui/button/index.js';
+import { cn } from '#lib/utils.js';
 
 // Every page renders this header, so the wordmark and the one optional link keep one size and place.
 // With large text the link and toggle wrap below the wordmark instead of widening the page.

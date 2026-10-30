@@ -1,37 +1,37 @@
 <script lang="ts">
 import { QrCodeIcon } from '@lucide/svelte';
 import { onMount, tick as render } from 'svelte';
-import { resolve } from '$app/paths';
-import { defaultLimits, getVerifiedConfig } from '$lib/api/config';
+import { defaultLimits, getVerifiedConfig } from '#lib/api/config.js';
 import {
 	createRequestApiClient,
 	RequestApiError,
 	type RequestOwner,
 	requestLimits
-} from '$lib/api/requests';
-import { DEFAULT_API_BASE_URL } from '$lib/api/secrets';
-import CredentialView from '$lib/components/CredentialView.svelte';
-import DeliveryFrame from '$lib/components/DeliveryFrame.svelte';
-import NativeShareButton from '$lib/components/NativeShareButton.svelte';
-import QrModal from '$lib/components/QrModal.svelte';
-import RemainingTime from '$lib/components/RemainingTime.svelte';
-import UrlField from '$lib/components/UrlField.svelte';
-import { Button } from '$lib/components/ui/button';
-import { Textarea } from '$lib/components/ui/textarea';
-import { parseCredential } from '$lib/credentials';
+} from '#lib/api/requests.js';
+import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import CredentialView from '#lib/components/CredentialView.svelte';
+import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import NativeShareButton from '#lib/components/NativeShareButton.svelte';
+import QrModal from '#lib/components/QrModal.svelte';
+import RemainingTime from '#lib/components/RemainingTime.svelte';
+import UrlField from '#lib/components/UrlField.svelte';
+import { Button } from '#lib/components/ui/button/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
+import { parseCredential } from '#lib/credentials/index.js';
 import {
 	decryptRequestPayload,
 	importRequestIdentity,
 	type OpenedRequestBody,
 	type OpenedRequestContent
-} from '$lib/crypto/requests';
-import { remainingSecondsFrom } from '$lib/lifetime';
+} from '#lib/crypto/requests.js';
+import { remainingSecondsFrom } from '#lib/lifetime.js';
 import {
 	clearRequestHandoff,
 	retrievalFromFragment,
 	retrievalUrl,
 	takeRequest
-} from '$lib/state/request-links';
+} from '#lib/state/request-links.js';
+import { resolve } from '$app/paths';
 
 let { requestId }: { requestId: string } = $props();
 const api = createRequestApiClient();
@@ -384,18 +384,37 @@ onMount(() => {
 		<div class="grid grow basis-32 gap-1">
 		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
 		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
-		{:else if snapshot}
-			<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
-			<p role="status" class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}>{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading' ? 'A file is uploading. It cannot be opened yet.' : snapshot.state === 'waiting' ? 'Waiting for the first submission.' : snapshot.state === 'submitted' ? (openLost || keyProblem ? 'A submission was accepted.' : 'You can open it once.') : snapshot.state === 'cancelled' ? 'Nothing more can be submitted or opened.' : content ? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.' : 'It was released once and cannot be opened again.'}</p>
-			{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
-				<p class="flex items-center gap-2.5 text-sm">
-					<span class="relative flex size-2" aria-hidden="true">
+			{:else if snapshot}
+				<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
+
+				<p
+					role="status"
+					class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}
+				>
+					{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading'
+						? 'A file is uploading. It cannot be opened yet.'
+						: snapshot.state === 'waiting'
+							? 'Waiting for the first submission.'
+							: snapshot.state === 'submitted'
+								? openLost || keyProblem
+									? 'A submission was accepted.'
+									: 'You can open it once.'
+								: snapshot.state === 'cancelled'
+									? 'Nothing more can be submitted or opened.'
+									: content
+										? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.'
+										: 'It was released once and cannot be opened again.'}
+				</p>
+
+				{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
+					<p class="flex items-center gap-2.5 text-sm">
+						<span class="relative flex size-2" aria-hidden="true">
 						<span class="absolute inline-flex size-full rounded-full bg-primary opacity-60 motion-safe:animate-ping"></span>
 						<span class="relative inline-flex size-2 rounded-full bg-primary"></span>
-					</span>
-					Checking automatically
-				</p>
-			{/if}
+						</span>
+						Checking automatically
+					</p>
+				{/if}
 			{#if !terminal || content}<RemainingTime seconds={remaining} aria-label="Time remaining" class="mt-1.5" />{/if}
 		{:else}<p role="status">{busy ? 'Loading request status…' : 'Request status is unknown.'}</p>{/if}
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
@@ -407,7 +426,7 @@ onMount(() => {
 	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
 	{#if decryptFailed}<p role="alert" class="text-sm text-destructive">The content was released, but decryption failed. It cannot be opened again. Ask the sender to use a new request.</p>{/if}
 	{#if credential}
-		<CredentialView {credential} />
+		<CredentialView credential={credential} />
 	{:else if content?.kind === 'text'}
 		<Textarea aria-label="Decrypted secret" value={content.text} readonly rows={8} />
 	{:else if content?.kind === 'file'}
@@ -434,7 +453,21 @@ onMount(() => {
 			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
 		</section>
 	{/if}
-	{#if snapshot && !terminal}<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel request</Button>{/if}
-	<a href={resolve('/request')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">Create another request</a>
+
+	{#if snapshot && !terminal}
+		<Button
+			variant="destructive"
+			class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent"
+			disabled={busy}
+			onclick={() => {
+				void refresh(true);
+			}}
+		>Cancel request</Button>
+	{/if}
+
+	<a
+		href={resolve('request')}
+		class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4"
+	>Create another request</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />
