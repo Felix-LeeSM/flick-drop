@@ -61,6 +61,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
           volumeMounts:
             - name: api-data
               mountPath: /data
