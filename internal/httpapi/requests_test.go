@@ -27,13 +27,26 @@ var requestKeyOnce sync.Once
 var requestTestKey string
 
 func requestFixture(t *testing.T, rate int) (http.Handler, *requests.Store, *sql.DB) {
+	return requestFixtureWithOptions(t, rate, Options{})
+}
+
+func requestFixtureWithOptions(t *testing.T, rate int, opts Options) (http.Handler, *requests.Store, *sql.DB) {
 	t.Helper()
 	conn := openHTTPTestDB(t, context.Background())
 	store, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewRouter(conn, nil, Options{RequestStore: store, PayloadInlineMaxBytes: 1024, OpenRatePerMinute: rate, CreateRatePerMinute: rate, AllowedOrigin: "https://web.example"}), store, conn
+	opts.RequestStore = store
+	if opts.PayloadInlineMaxBytes <= 0 {
+		opts.PayloadInlineMaxBytes = 1024
+	}
+	opts.OpenRatePerMinute = rate
+	opts.CreateRatePerMinute = rate
+	if opts.AllowedOrigin == "" {
+		opts.AllowedOrigin = "https://web.example"
+	}
+	return NewRouter(conn, nil, opts), store, conn
 }
 
 func createHTTPRequest(t *testing.T, router http.Handler) requests.Created {
@@ -243,14 +256,12 @@ func TestRequestRateLimitNoStoreAndCORS(t *testing.T) {
 func TestRequestTelemetryExcludesCapabilitiesKeysAndBodies(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	previous := tracer
-	tracer = tp.Tracer("request-http-test")
-	t.Cleanup(func() { tracer = previous; _ = tp.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	var logs bytes.Buffer
 	output := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(output) })
-	router, _, conn := requestFixture(t, 100)
+	router, _, conn := requestFixtureWithOptions(t, 100, Options{TracerProvider: tp})
 	c := createHTTPRequest(t, router)
 	in := requestSubmission()
 	path := "/api/requests/" + c.ID
