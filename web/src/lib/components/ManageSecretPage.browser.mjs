@@ -50,32 +50,35 @@ async function fixture(page, conflict = false) {
 			}
 		});
 	});
-	await page.route('**/api/**', (route) => {
-		const request = route.request();
-		const path = new URL(request.url()).pathname;
-		requests.push({ path, headers: request.headers(), body: request.postData() ?? '' });
-		if (path === '/api/config') {
-			return route.fulfill({ json: {} });
+	await page.route(
+		(url) => url.pathname.startsWith('/api/'),
+		(route) => {
+			const request = route.request();
+			const path = new URL(request.url()).pathname;
+			requests.push({ path, headers: request.headers(), body: request.postData() ?? '' });
+			if (path === '/api/config') {
+				return route.fulfill({ json: {} });
+			}
+			if (path === '/api/secrets') {
+				return route.fulfill({
+					json: {
+						id: active.id,
+						expires_at: active.expires_at,
+						management_token: token,
+						management_expires_at: active.expires_at
+					}
+				});
+			}
+			if (path.endsWith('/management')) {
+				return route.fulfill({ json: status });
+			}
+			if (path.endsWith('/revoke')) {
+				status = terminal;
+				return route.fulfill(cancellation);
+			}
+			return route.abort();
 		}
-		if (path === '/api/secrets') {
-			return route.fulfill({
-				json: {
-					id: active.id,
-					expires_at: active.expires_at,
-					management_token: token,
-					management_expires_at: active.expires_at
-				}
-			});
-		}
-		if (path.endsWith('/management')) {
-			return route.fulfill({ json: status });
-		}
-		if (path.endsWith('/revoke')) {
-			status = terminal;
-			return route.fulfill(cancellation);
-		}
-		return route.abort();
-	});
+	);
 	return requests;
 }
 

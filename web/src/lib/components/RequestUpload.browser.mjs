@@ -110,76 +110,83 @@ async function fixture(context, options = {}) {
 		// A held transport may already be aborted by the browser's cancellation.
 		await route.fulfill({ status: 200, body: '' }).catch(() => undefined);
 	});
-	await context.route('**/api/**', (route) => {
-		expire();
-		const request = route.request();
-		const path = new URL(request.url()).pathname;
-		calls.push({ path, body: request.postData() ?? '', headers: request.headers() });
-		const handlers = {
-			config: () =>
-				reply(route, { payload_inline_max_bytes: 64, max_file_bytes: options.disabled ? 64 : 128 }),
-			requests: () => {
-				publicKey = request.postDataJSON().public_key;
-				fingerprint = createHash('sha256').update(publicKey).digest('base64url');
-				return reply(
-					route,
-					{
-						id: 'large-fixture',
-						expires_at,
-						submission_token: submitToken,
-						retrieval_token: receiveToken
-					},
-					201
-				);
-			},
-			owner: () => reply(route, { ...metadata(), state }),
-			upload: () => reserve(route),
-			finalize: () => finalize(route),
-			attempt: () => {
-				if (request.postDataJSON().generation !== generation) {
-					return reply(route, {}, 404);
+	await context.route(
+		(url) => url.pathname.startsWith('/api/'),
+		(route) => {
+			expire();
+			const request = route.request();
+			const path = new URL(request.url()).pathname;
+			calls.push({ path, body: request.postData() ?? '', headers: request.headers() });
+			const handlers = {
+				config: () =>
+					reply(route, {
+						payload_inline_max_bytes: 64,
+						max_file_bytes: options.disabled ? 64 : 128
+					}),
+				requests: () => {
+					publicKey = request.postDataJSON().public_key;
+					fingerprint = createHash('sha256').update(publicKey).digest('base64url');
+					return reply(
+						route,
+						{
+							id: 'large-fixture',
+							expires_at,
+							submission_token: submitToken,
+							retrieval_token: receiveToken
+						},
+						201
+					);
+				},
+				owner: () => reply(route, { ...metadata(), state }),
+				upload: () => reserve(route),
+				finalize: () => finalize(route),
+				attempt: () => {
+					if (request.postDataJSON().generation !== generation) {
+						return reply(route, {}, 404);
+					}
+					return reply(route, { generation, state: state === 'submitted' ? 'accepted' : state });
+				},
+				abandon: () => {
+					assert.equal(request.postDataJSON().generation, generation);
+					generation++;
+					state = 'waiting';
+					envelope = undefined;
+					if (lostAbandon) {
+						lostAbandon = false;
+						return route.abort('failed');
+					}
+					return reply(route, { generation, state });
+				},
+				submit: () => {
+					const {
+						generation: unusedGeneration,
+						attempt_token: unusedToken,
+						...data
+					} = request.postDataJSON();
+					assert.equal(unusedGeneration, generation);
+					assert.ok(unusedToken);
+					accepted = data;
+					state = 'submitted';
+					return reply(route, { generation, state });
+				},
+				open: () => {
+					state = 'consumed';
+					return route.fulfill(openResponse(accepted));
 				}
-				return reply(route, { generation, state: state === 'submitted' ? 'accepted' : state });
-			},
-			abandon: () => {
-				assert.equal(request.postDataJSON().generation, generation);
-				generation++;
-				state = 'waiting';
-				envelope = undefined;
-				if (lostAbandon) {
-					lostAbandon = false;
-					return route.abort('failed');
-				}
-				return reply(route, { generation, state });
-			},
-			submit: () => {
-				const {
-					generation: unusedGeneration,
-					attempt_token: unusedToken,
-					...data
-				} = request.postDataJSON();
-				assert.equal(unusedGeneration, generation);
-				assert.ok(unusedToken);
-				accepted = data;
-				state = 'submitted';
-				return reply(route, { generation, state });
-			},
-			open: () => {
-				state = 'consumed';
-				return route.fulfill(openResponse(accepted));
-			}
-		};
-		const handle = handlers[path.split('/').at(-1)];
-		return handle
-			? handle()
-			: reply(route, { ...metadata(), generation, can_submit: state === 'waiting' });
-	});
+			};
+			const handle = handlers[path.split('/').at(-1)];
+			return handle
+				? handle()
+				: reply(route, { ...metadata(), generation, can_submit: state === 'waiting' });
+		}
+	);
 	return { calls, reservedBodies, uploads, putStarted, putGate, finalizeStarted, finalizeGate };
 }
 async function pages(context) {
 	const owner = await context.newPage();
 	const sender = await context.newPage();
 	await owner.goto(`${baseUrl}/request`);
+	await owner.locator('#svelte-announcer').waitFor();
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
 	await sender.getByRole('button', { name: 'File', exact: true }).click();

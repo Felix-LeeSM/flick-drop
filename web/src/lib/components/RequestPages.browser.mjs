@@ -77,58 +77,61 @@ function fixture(options = {}) {
 			});
 			Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
 		});
-		await context.route('**/api/**', (route) => {
-			const request = route.request();
-			const path = new URL(request.url()).pathname;
-			calls.push({ path, headers: request.headers(), body: request.postData() ?? '' });
-			const handlers = {
-				config: () =>
-					route.fulfill({
-						json: options.config ?? { payload_inline_max_bytes: 1024, max_file_bytes: 512 }
-					}),
-				requests: () => {
-					publicKey = request.postDataJSON().public_key;
-					fingerprint = createHash('sha256').update(publicKey).digest('base64url');
-					return route.fulfill({
-						json: {
-							id: vectors.request_id,
-							expires_at: expires,
-							submission_token: submitToken,
-							retrieval_token: receiveToken
+		await context.route(
+			(url) => url.pathname.startsWith('/api/'),
+			(route) => {
+				const request = route.request();
+				const path = new URL(request.url()).pathname;
+				calls.push({ path, headers: request.headers(), body: request.postData() ?? '' });
+				const handlers = {
+					config: () =>
+						route.fulfill({
+							json: options.config ?? { payload_inline_max_bytes: 1024, max_file_bytes: 512 }
+						}),
+					requests: () => {
+						publicKey = request.postDataJSON().public_key;
+						fingerprint = createHash('sha256').update(publicKey).digest('base64url');
+						return route.fulfill({
+							json: {
+								id: vectors.request_id,
+								expires_at: expires,
+								submission_token: submitToken,
+								retrieval_token: receiveToken
+							}
+						});
+					},
+					owner: () => {
+						if (statusError) {
+							const status = statusError;
+							statusError = undefined;
+							return route.fulfill({ status, json: {} });
 						}
-					});
-				},
-				owner: () => {
-					if (statusError) {
-						const status = statusError;
-						statusError = undefined;
-						return route.fulfill({ status, json: {} });
+						return route.fulfill({ json: { ...metadata(), state } });
+					},
+					submit: () => handleSubmission(route),
+					attempt: () =>
+						route.fulfill({
+							json: { generation: 1, state: state === 'submitted' ? 'accepted' : 'waiting' }
+						}),
+					open: () => {
+						assert.equal(request.postData(), null);
+						state = 'consumed';
+						return options.lostOpen ? route.abort('failed') : route.fulfill(openResponse(payload));
+					},
+					revoke: () => {
+						assert.equal(request.postData(), null);
+						state = options.cancelRace ? 'consumed' : 'cancelled';
+						return route.fulfill({ status: options.cancelRace ? 409 : 200, json: { state } });
 					}
-					return route.fulfill({ json: { ...metadata(), state } });
-				},
-				submit: () => handleSubmission(route),
-				attempt: () =>
-					route.fulfill({
-						json: { generation: 1, state: state === 'submitted' ? 'accepted' : 'waiting' }
-					}),
-				open: () => {
-					assert.equal(request.postData(), null);
-					state = 'consumed';
-					return options.lostOpen ? route.abort('failed') : route.fulfill(openResponse(payload));
-				},
-				revoke: () => {
-					assert.equal(request.postData(), null);
-					state = options.cancelRace ? 'consumed' : 'cancelled';
-					return route.fulfill({ status: options.cancelRace ? 409 : 200, json: { state } });
-				}
-			};
-			const handle = handlers[path.split('/').at(-1)];
-			return handle
-				? handle()
-				: route.fulfill({
-						json: { ...metadata(), generation: 1, can_submit: state === 'waiting' }
-					});
-		});
+				};
+				const handle = handlers[path.split('/').at(-1)];
+				return handle
+					? handle()
+					: route.fulfill({
+							json: { ...metadata(), generation: 1, can_submit: state === 'waiting' }
+						});
+			}
+		);
 	};
 	return { attach, calls, bodies };
 }
@@ -167,6 +170,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		const sender = await senderContext.newPage();
 		await owner.goto(baseUrl);
 		await owner.getByRole('link', { name: 'Request a secret', exact: true }).click();
+		await owner.locator('#svelte-announcer').waitFor();
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
@@ -505,6 +509,7 @@ test('failed runtime config cannot consume a custom 2 MiB inline request before 
 		const owner = await ownerContext.newPage();
 		const sender = await senderContext.newPage();
 		await owner.goto(`${baseUrl}/request`);
+		await owner.locator('#svelte-announcer').waitFor();
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.getByText('Could not verify size limits.', { exact: false }).waitFor();
 		assert.equal(await owner.getByRole('button', { name: 'Open once', exact: true }).count(), 0);
