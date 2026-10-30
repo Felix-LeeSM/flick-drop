@@ -5,6 +5,7 @@ import "net/http"
 type configResponse struct {
 	PayloadInlineMaxBytes int64 `json:"payload_inline_max_bytes"`
 	MaxFileBytes          int64 `json:"max_file_bytes"`
+	PipeRelayEnabled      bool  `json:"pipe_relay_enabled"`
 }
 
 // getConfig exposes the client-facing size limits so the browser can size-gate
@@ -17,5 +18,6 @@ func (s Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, configResponse{
 		PayloadInlineMaxBytes: s.advertisedInlineMaxBytes,
 		MaxFileBytes:          s.maxFileBytes,
+		PipeRelayEnabled:      s.pipeRelayEnabled,
 	})
 }

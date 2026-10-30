@@ -46,6 +46,8 @@ type Config struct {
 	CreateRatePerMinute   int
 	ReaperIntervalSeconds int
 	ReaperBatchSize       int
+	PipeRelayEnabled      bool
+	PipeMaxConcurrent     int
 	TrustedProxies        []*net.IPNet
 	S3                    S3Config
 }
@@ -82,6 +84,8 @@ func Load() (Config, error) {
 		// keeps the claim cheap even at high volume.
 		ReaperIntervalSeconds: defaultReaperIntervalSeconds,
 		ReaperBatchSize:       defaultReaperBatchSize,
+		PipeRelayEnabled:      defaultPipeRelayEnabled,
+		PipeMaxConcurrent:     defaultPipeMaxConcurrent,
 		S3: S3Config{
 			Enabled:         getenv("FLICK_STORAGE_LARGE_BACKEND", "disabled") == "s3",
 			Endpoint:        getenv("FLICK_S3_ENDPOINT", ""),
@@ -129,6 +133,12 @@ func Load() (Config, error) {
 	if cfg.ReaperBatchSize, err = envPositiveInt("FLICK_REAPER_BATCH_SIZE", cfg.ReaperBatchSize); err != nil {
 		return Config{}, err
 	}
+	if cfg.PipeRelayEnabled, err = envBool("FLICK_PIPE_RELAY_ENABLED", cfg.PipeRelayEnabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.PipeMaxConcurrent, err = envPositiveInt("FLICK_PIPE_MAX_CONCURRENT", cfg.PipeMaxConcurrent); err != nil {
+		return Config{}, err
+	}
 	if raw := os.Getenv("FLICK_TRUSTED_PROXIES"); raw != "" {
 		cfg.TrustedProxies, err = parseTrustedProxies(raw)
 		if err != nil {
@@ -156,6 +166,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ReaperBatchSize <= 0 {
 		return Config{}, fmt.Errorf("FLICK_REAPER_BATCH_SIZE must be a positive integer")
+	}
+	if cfg.PipeMaxConcurrent <= 0 {
+		return Config{}, fmt.Errorf("FLICK_PIPE_MAX_CONCURRENT must be a positive integer")
 	}
 	if cfg.S3.Enabled {
 		if cfg.S3.Bucket == "" || cfg.S3.Region == "" {

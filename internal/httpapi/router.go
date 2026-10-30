@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
@@ -42,6 +43,10 @@ type Server struct {
 	createLimiter            *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
+	pipeRelayEnabled         bool
+	pipeCoordinator          *piperelay.Coordinator
+	pipeInitLimiter          *rateLimiter
+	pipeReceiveLimiter       *rateLimiter
 	tracer                   trace.Tracer
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
@@ -68,6 +73,8 @@ type Options struct {
 	NewJobID                 func() (string, error)
 	NATSConnected            func() bool
 	RequestStore             *requests.Store
+	PipeRelayEnabled         bool
+	PipeCoordinator          *piperelay.Coordinator
 	Tracer                   trace.Tracer
 	TracerProvider           trace.TracerProvider
 }
@@ -95,6 +102,11 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		}
 	}
 
+	pipeCoordinator := opts.PipeCoordinator
+	if pipeCoordinator == nil && opts.PipeRelayEnabled {
+		pipeCoordinator = piperelay.NewCoordinator(piperelay.CoordinatorOptions{})
+	}
+
 	server := Server{
 		db:                       db,
 		secrets:                  secretStore,
@@ -111,6 +123,10 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		pipeRelayEnabled:         opts.PipeRelayEnabled,
+		pipeCoordinator:          pipeCoordinator,
+		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
+		pipeReceiveLimiter:       newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		tracer:                   tracer,
 	}
 	if opts.NewJobID != nil {
@@ -150,6 +166,14 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 			r.Post("/{id}/revoke", server.revokeRequest)
 		})
 	})
+	registerPipeRoutes := func(r chi.Router) {
+		r.With(server.pipeInitLimiter.middleware).Post("/init", server.initPipe)
+		r.Get("/wait", server.waitPipe)
+		r.With(server.pipeReceiveLimiter.middleware).Get("/receive", server.receivePipe)
+		r.Post("/send", server.sendPipe)
+	}
+	r.Route("/api/pipe", registerPipeRoutes)
+	r.Route("/api/v1/pipe", registerPipeRoutes)
 	r.Group(func(r chi.Router) {
 		r.Use(server.internalAuth)
 		r.Post("/internal/secrets/{id}/cleanup", server.cleanupSecret)
@@ -166,16 +190,16 @@ func (s Server) cors(next http.Handler) http.Handler {
 		// the ingress routes straight to flick-api (nginx headers cover only /).
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// Also covers preflight, unknown routes, rate limits and error responses.
-		if r.URL.Path == "/api/requests" || strings.HasPrefix(r.URL.Path, "/api/requests/") {
+		if r.URL.Path == "/api/requests" || strings.HasPrefix(r.URL.Path, "/api/requests/") || strings.HasPrefix(r.URL.Path, "/api/pipe/") || strings.HasPrefix(r.URL.Path, "/api/v1/pipe/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		origin := strings.TrimRight(r.Header.Get("Origin"), "/")
 		if s.allowedOrigin != "" && origin == s.allowedOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Flick-Pipe-Code")
 			// The open response carries its metadata in these headers.
-			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At")
+			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At, X-Flick-Pipe-Salt")
 			w.Header().Set("Vary", "Origin")
 		}
 
