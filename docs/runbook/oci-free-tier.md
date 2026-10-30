@@ -350,22 +350,25 @@ transit congestion and TCP packet loss. At 300 KB/s, a 256 MiB download takes
    - Match: `(http.request.uri.path contains "/api/" and http.request.uri.path ends_with "/open")`.
    - Cache Eligibility: **Bypass Cache**. Secret and request ciphertext payloads
      are one-time ephemeral streams; caching must be bypassed.
-   - Response Buffering: **Bypass / Off**. Cloudflare edge response buffering
-     must be disabled so ciphertext streams directly to the client without
-     accumulating at the edge buffer.
-2. **Argo Smart Routing**:
+2. **Configuration Rules for Response Body Buffering**:
+   Under Rules → Configuration Rules, add a rule matching the same open paths:
+   - Match: `(http.request.uri.path contains "/api/" and http.request.uri.path ends_with "/open")`.
+   - Response Body Buffering: **None / Off**. Disabling response body buffering
+     ensures ciphertext streams directly to the client without edge delay or
+     buffer accumulation.
+3. **Argo Smart Routing**:
    Enable Cloudflare Argo Smart Routing for the zone. Argo routes edge-to-origin
    transit across Cloudflare's private backbone instead of congested public
    transit, stabilizing cross-border throughput between regional PoPs and the
    origin.
-3. **Host TCP Congestion Control (BBR)**:
+4. **Host TCP Congestion Control (BBR)**:
    On the OCI host, enable BBR congestion control to improve single-stream
    throughput recovery over lossy international transit:
    ```sh
    sudo sysctl -w net.core.default_qdisc=fq
    sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
    ```
-4. **Direct Storage Routing (Cross-Reference Issue #259)**:
+5. **Direct Storage Routing (Cross-Reference Issue #259)**:
    For deployments where origin egress or international transit remains a
    bottleneck, consider direct storage delivery via presigned URLs or CDN-fronted
    object storage (e.g., Cloudflare R2 or multi-bucket routing), which avoids
