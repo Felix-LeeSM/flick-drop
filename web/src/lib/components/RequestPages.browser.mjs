@@ -170,7 +170,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		const sender = await senderContext.newPage();
 		await owner.goto(baseUrl);
 		await owner.getByRole('link', { name: 'Request a secret', exact: true }).click();
-		await owner.locator('#svelte-announcer').waitFor();
+		await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
@@ -509,7 +509,7 @@ test('failed runtime config cannot consume a custom 2 MiB inline request before 
 		const owner = await ownerContext.newPage();
 		const sender = await senderContext.newPage();
 		await owner.goto(`${baseUrl}/request`);
-		await owner.locator('#svelte-announcer').waitFor();
+		await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 		await owner.getByText('Could not verify size limits.', { exact: false }).waitFor();
 		assert.equal(await owner.getByRole('button', { name: 'Open once', exact: true }).count(), 0);

@@ -186,7 +186,7 @@ async function pages(context) {
 	const owner = await context.newPage();
 	const sender = await context.newPage();
 	await owner.goto(`${baseUrl}/request`);
-	await owner.locator('#svelte-announcer').waitFor();
+	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
 	await sender.getByRole('button', { name: 'File', exact: true }).click();

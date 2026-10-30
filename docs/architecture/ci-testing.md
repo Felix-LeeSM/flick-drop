@@ -114,7 +114,7 @@ access models, and terminal 404/410 responses. Run it locally:
 
 ```sh
 pnpm --dir web exec playwright install chromium
-pnpm --dir web build && pnpm --dir web preview --host 127.0.0.1
+pnpm --dir web build && pnpm --dir web preview --host 127.0.0.1 --port 5173
 # In another terminal, with the preview server running:
 pnpm --dir web test:browser
 ```
