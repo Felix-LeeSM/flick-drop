@@ -248,6 +248,12 @@ func TestPipeRelay_CORS(t *testing.T) {
 	if !bytes.Contains([]byte(allowHeaders), []byte("X-Flick-Pipe-Code")) {
 		t.Fatalf("Access-Control-Allow-Headers %q missing X-Flick-Pipe-Code", allowHeaders)
 	}
+	if !bytes.Contains([]byte(allowHeaders), []byte("Flick-Kind")) {
+		t.Fatalf("Access-Control-Allow-Headers %q missing Flick-Kind", allowHeaders)
+	}
+	if !bytes.Contains([]byte(allowHeaders), []byte("Flick-Encrypted-Filename")) {
+		t.Fatalf("Access-Control-Allow-Headers %q missing Flick-Encrypted-Filename", allowHeaders)
+	}
 	exposeHeaders := rec.Header().Get("Access-Control-Expose-Headers")
 	if !bytes.Contains([]byte(exposeHeaders), []byte("X-Flick-Pipe-Salt")) {
 		t.Fatalf("Access-Control-Expose-Headers %q missing X-Flick-Pipe-Salt", exposeHeaders)

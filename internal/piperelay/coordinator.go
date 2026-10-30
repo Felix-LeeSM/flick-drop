@@ -343,7 +343,10 @@ func (c *Coordinator) Send(ctx context.Context, rawCode string, meta SessionMeta
 
 	ptr := bufferPool.Get().(*[]byte)
 	buf := *ptr
-	defer bufferPool.Put(ptr)
+	defer func() {
+		clear(buf)
+		bufferPool.Put(ptr)
+	}()
 
 	n, copyErr := io.CopyBuffer(s.pipeWriter, body, buf)
 	if copyErr != nil {

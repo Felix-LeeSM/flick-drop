@@ -61,9 +61,10 @@ func (s Server) waitPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extend read deadline for waiting on receiver (up to 3.5 minutes)
+	// Extend deadlines for waiting on receiver and writing response (up to 4 minutes)
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(4 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(4 * time.Minute))
 
 	err := s.pipeCoordinator.WaitReceiver(r.Context(), code)
 	if err != nil {
@@ -102,8 +103,9 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extend write deadline to accommodate streaming large payloads (up to 15m)
+	// Extend deadlines to accommodate streaming large payloads (up to 15m)
 	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
 	pr, salt, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), code)
@@ -169,9 +171,10 @@ func (s Server) sendPipe(w http.ResponseWriter, r *http.Request) {
 	kind := r.Header.Get("Flick-Kind")
 	encryptedFilename := r.Header.Get("Flick-Encrypted-Filename")
 
-	// Extend read deadline to accommodate streaming large uploads (up to 15m)
+	// Extend deadlines to accommodate streaming large uploads and writing completion status (up to 15m)
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
 	n, err := s.pipeCoordinator.Send(r.Context(), code, piperelay.SessionMetadata{
 		Kind:              kind,
