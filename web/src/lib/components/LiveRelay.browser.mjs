@@ -54,6 +54,89 @@ test('SiteHeader displays accessible Enter code button and opens Receive dialog'
 	}
 });
 
+test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at 320px', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+	try {
+		await page.route(
+			(url) => url.pathname.startsWith('/api/'),
+			async (route) => {
+				const path = new URL(route.request().url()).pathname;
+				if (path === '/api/config') {
+					return route.fulfill({
+						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
+					});
+				}
+				// Never answered, so the dialog stays on step 2 waiting for the sender.
+				if (path === '/api/pipe/receive') {
+					return;
+				}
+				return route.continue();
+			}
+		);
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await page.getByRole('button', { name: 'Enter code' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		await dialog.getByText('STEP 1 OF 2', { exact: true }).waitFor();
+		await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
+
+		const input = page.locator('#pipe-code-input');
+		await input.focus();
+		await input.pressSequentially('74x1');
+		assert.equal(await input.inputValue(), '741');
+		// The key caps are decoration over the one transparent input; the next empty cap shows focus.
+		const caps = await input.evaluate((field) => {
+			const area = field.getBoundingClientRect();
+			const content = field.closest('[role="dialog"]').getBoundingClientRect();
+			return [...field.parentElement.querySelectorAll('span.rounded-lg')].map((cap) => {
+				const box = cap.getBoundingClientRect();
+				return {
+					text: cap.textContent.trim(),
+					hidden: cap.getAttribute('aria-hidden'),
+					ring: getComputedStyle(cap).boxShadow !== 'none',
+					covered: box.left >= area.left && box.right <= area.right,
+					inside: box.left >= content.left && box.right <= content.right
+				};
+			});
+		});
+		assert.deepEqual(
+			caps.map((cap) => cap.text),
+			['7', '4', '1', '0', '0', '0']
+		);
+		assert.deepEqual(
+			caps.map((cap) => cap.ring),
+			[false, false, false, true, false, false]
+		);
+		assert.ok(caps.every((cap) => cap.hidden === 'true' && cap.covered && cap.inside));
+
+		const toggle = dialog.getByRole('button', { name: 'Has an additional passphrase?' });
+		assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+		await toggle.click();
+		await dialog.getByLabel('Additional passphrase', { exact: true }).waitFor();
+		assert.equal(
+			await dialog
+				.getByRole('button', { name: 'Hide additional passphrase' })
+				.getAttribute('aria-expanded'),
+			'true'
+		);
+
+		await input.focus();
+		await input.pressSequentially('928');
+		await dialog.getByText('STEP 2 OF 2', { exact: true }).waitFor();
+		await dialog.getByRole('heading', { name: "Check sender's screen" }).waitFor();
+		assert.match(
+			await dialog.getByText('Confirmation Code').locator('xpath=..').innerText(),
+			/\d{3}\s*$/
+		);
+		assert.equal(
+			await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+			true
+		);
+	} finally {
+		await page.close();
+	}
+});
+
 test('CreateSecretPage: Send with code validation, confirmation toggle, and state transition', async () => {
 	const page = await browser.newPage();
 	try {
