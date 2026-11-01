@@ -26,7 +26,7 @@ async function prepare(page, bytes) {
 		mimeType: 'application/octet-stream',
 		buffer: bytes
 	});
-	await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
+	await page.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
 }
 
 for (const [name, size] of [

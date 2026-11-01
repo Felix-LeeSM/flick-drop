@@ -99,7 +99,7 @@ async function openForm(page, form, content = false) {
 	await page.evaluate(() => document.fonts.ready);
 	if (form.name === 'sender' && content) {
 		await page.getByLabel('Message', { exact: true }).fill('Synthetic lifetime regression');
-		await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
 	}
 }
 
@@ -687,21 +687,59 @@ for (const theme of ['light', 'dark']) {
 	});
 }
 
-test('passphrase field shows its own label without a placeholder', async () => {
+test('passphrase field shows its own label without a placeholder, indented under its checkbox', async () => {
 	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
 	try {
 		await fixture(page);
 		await openForm(page, forms[0]);
-		const field = page.getByLabel('Passphrase', { exact: true });
+		const field = page.getByLabel('Additional passphrase', { exact: true });
 		assert.equal(await field.getAttribute('placeholder'), null);
 		// A screen-reader-only label is a 1px box, which Playwright still reports as visible.
 		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
 		assert.ok(label.width > 40 && label.height > 10);
-		// The label and field start at the form's left edge, not indented under the checkbox.
-		const edge = (await page.locator('label[for="secret-text"]').boundingBox()).x;
-		assert.deepEqual([label.x, (await field.boundingBox()).x], [edge, edge]);
-		// A 13px line box keeps the label 6px above the field, as in direction A.
-		assert.equal(label.height, 13);
+		// The label and field line up with the checkbox's own label, so they read as its detail.
+		const indent = (await page.locator('label[for="use-passphrase"]').boundingBox()).x;
+		const box = await field.boundingBox();
+		assert.deepEqual([label.x, box.x], [indent, indent]);
+		// Generate sits at the end of the label's row, above the field's right edge.
+		const generate = await page
+			.getByRole('button', { name: 'Generate', exact: true })
+			.boundingBox();
+		assert.equal(generate.x + generate.width, box.x + box.width);
+		assert.ok(generate.y + generate.height <= box.y);
+		assert.equal(generate.y + generate.height / 2, label.y + label.height / 2);
+	} finally {
+		await page.close();
+	}
+});
+
+test('Generate fills a revealed passphrase that never reaches the API', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+	try {
+		const mock = await fixture(page);
+		await openForm(page, forms[0]);
+		const field = page.getByLabel('Additional passphrase', { exact: true });
+		const generate = page.getByRole('button', { name: 'Generate', exact: true });
+		await generate.click();
+		const first = await field.inputValue();
+		// Four groups of four Crockford base32 symbols: 80 random bits.
+		assert.match(first, /^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$/);
+		// The sender has to copy it, so it shows instead of staying masked.
+		assert.equal(await field.getAttribute('type'), 'text');
+		await generate.click();
+		const generated = await field.inputValue();
+		assert.notEqual(generated, first);
+		await page.getByLabel('Message', { exact: true }).fill('Synthetic generated passphrase');
+		const response = page.waitForResponse(
+			(reply) =>
+				reply.request().method() === 'POST' && new URL(reply.url()).pathname === '/api/secrets'
+		);
+		await submitButton(page).click();
+		// Model A sends an access proof and a scrypt-wrapped identity, never the passphrase.
+		const body = (await response).request().postData();
+		assert.equal(body.includes(generated), false);
+		assert.equal(body.includes(generated.replaceAll('-', '')), false);
+		assert.equal(mock.ttls.length, 1);
 	} finally {
 		await page.close();
 	}

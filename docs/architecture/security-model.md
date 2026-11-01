@@ -124,6 +124,12 @@ Security properties:
 - The server cannot return the ciphertext without a valid access proof.
 - Five invalid proof attempts mark the secret consumed and delete the payload.
 - Suitable when the receiver is expected to know a shared passphrase.
+- The create page can generate the passphrase in the browser
+  (`web/src/lib/crypto/passphrase.ts`): 16 Crockford base32 symbols, 80 bits
+  from `crypto.getRandomValues`, held only in page memory like a typed
+  passphrase. A user-chosen passphrase can be much weaker; its strength, with
+  the PBKDF2 cost, is what limits an offline guess against the stored
+  access-proof hash.
 
 ### Model B — Passphrase Optional (Link-Bearer)
 

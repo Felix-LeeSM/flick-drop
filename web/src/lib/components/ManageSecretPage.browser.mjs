@@ -92,9 +92,13 @@ for (const model of ['a', 'b']) {
 			await configured;
 			await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
 			if (model === 'a') {
-				await page.getByLabel('Passphrase', { exact: true }).fill('synthetic private passphrase');
+				await page
+					.getByLabel('Additional passphrase', { exact: true })
+					.fill('synthetic private passphrase');
 			} else {
-				await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+				await page
+					.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
+					.uncheck();
 			}
 			await page.getByRole('button', { name: 'Create link', exact: true }).click();
 			await page.waitForURL(`**${privatePath}`);

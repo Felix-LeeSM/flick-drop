@@ -82,7 +82,7 @@ test('CreateSecretPage: Send with code validation, confirmation toggle, and stat
 
 		// Type message
 		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
-		await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
 
 		// Enabled
 		assert.equal(await sendWithCodeBtn.isDisabled(), false);
@@ -267,7 +267,9 @@ test('Two-browser live relay transfer with 2-step confirmation and burn state', 
 		await senderPage
 			.getByLabel('Message', { exact: true })
 			.fill('Real-time live relay transfer test');
-		await senderPage.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await senderPage
+			.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
+			.uncheck();
 
 		// Keep confirmation checkbox checked
 		await senderPage.getByRole('button', { name: 'Send with code' }).click();

@@ -80,9 +80,13 @@ for (const [model, support, outcome] of [
 			await hydrated;
 			await page.getByLabel('Message', { exact: true }).fill('private synthetic content');
 			if (model === 'a') {
-				await page.getByLabel('Passphrase', { exact: true }).fill('private synthetic passphrase');
+				await page
+					.getByLabel('Additional passphrase', { exact: true })
+					.fill('private synthetic passphrase');
 			} else {
-				await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+				await page
+					.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
+					.uncheck();
 			}
 			await page.getByRole('button', { name: 'Create link', exact: true }).click();
 			await page.getByRole('heading', { name: 'Link created' }).waitFor();
