@@ -24,6 +24,8 @@ const presets = [
 	['7 days', 604_800]
 ];
 const typeNames = ['Text', 'File', 'Login', 'Card', 'Identity', 'Custom'];
+// Unselected cells too narrow for the full name at 320px show these instead.
+const shortTypeNames = { Identity: 'ID' };
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -249,28 +251,37 @@ function stable(actual, expected) {
 	});
 }
 
-// A name counts as shown when it renders wider than the 1px screen-reader-only box.
-function labelsShown(group) {
-	return group.getByRole('button').evaluateAll((buttons) =>
-		buttons.map((button) => {
-			const label = button.querySelector('span');
-			return label.getBoundingClientRect().width > 1 && getComputedStyle(label).opacity === '1';
-		})
-	);
+// The name each type cell shows. A short name is hidden from screen readers behind the full one.
+function shownNames(group) {
+	return group
+		.getByRole('button')
+		.evaluateAll((buttons) =>
+			buttons.map((button) => button.querySelector('span:not(.sr-only)').textContent.trim())
+		);
 }
 
-// Below 768px the selector is one row of icons; only the selected type shows its name,
-// so selecting reflows the row instead of keeping every cell fixed.
-async function phoneRow(page, group, selected) {
-	await indicatorAligned(page);
+// One row at every width: the selected type widens into its full name, every other cell is
+// narrower and keeps a short name that fits, and nothing crosses the selector or the viewport.
+async function typeRow(page, group, selected) {
+	// A selection animates the cell widths; measure once the transition settles.
+	await page.waitForFunction(
+		() =>
+			document.querySelector('[aria-label="Secret type"]').getAnimations({ subtree: true })
+				.length === 0
+	);
 	const row = await boxes(group);
 	assert.ok(
 		row.every((box) => Math.abs(box.y - row[0].y) < 1),
 		'type buttons wrapped'
 	);
 	assert.deepEqual(
-		await labelsShown(group),
-		typeNames.map((name) => name === selected)
+		await shownNames(group),
+		typeNames.map((name) => (name === selected ? name : (shortTypeNames[name] ?? name)))
+	);
+	const widest = row[typeNames.indexOf(selected)];
+	assert.ok(
+		row.every((box) => box === widest || box.width < widest.width),
+		`${selected} is not the widest type`
 	);
 	assert.equal(
 		await group.evaluate((pill) => {
@@ -279,12 +290,18 @@ async function phoneRow(page, group, selected) {
 				outer.right <= innerWidth &&
 				[...pill.querySelectorAll('button')].every((button) => {
 					const box = button.getBoundingClientRect();
-					return box.left >= outer.left && box.right <= outer.right;
+					const name = button.querySelector('span:not(.sr-only)').getBoundingClientRect();
+					return (
+						box.left >= outer.left &&
+						box.right <= outer.right &&
+						name.left >= box.left &&
+						name.right <= box.right
+					);
 				})
 			);
 		}),
 		true,
-		'type buttons overflow the selector'
+		'type names overflow their cells or the selector'
 	);
 }
 
@@ -301,49 +318,19 @@ async function editorVisible(page, name) {
 	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
 }
 
-async function indicatorAligned(page) {
-	await page.waitForFunction(
-		() => {
-			const group = document.querySelector('[aria-label="Secret type"]');
-			const indicator = group?.querySelector('.selection-indicator');
-			const selected = group?.querySelector('button[aria-pressed="true"]');
-			if (!indicator || !selected || getComputedStyle(indicator).visibility !== 'visible') {
-				return false;
-			}
-			const actual = indicator.getBoundingClientRect();
-			const expected = selected.getBoundingClientRect();
-			return ['x', 'y', 'width', 'height'].every(
-				(key) => Math.abs(actual[key] - expected[key]) < 1
-			);
-		},
-		undefined,
-		{ timeout: 3000 }
-	);
-}
-
 for (const reducedMotion of ['no-preference', 'reduce']) {
-	test(`selection background follows rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
+	test(`type selector settles on the last of rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
 		const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion });
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
 			const group = page.getByRole('group', { name: 'Secret type', exact: true });
-			const indicator = group.locator('.selection-indicator');
-			await indicatorAligned(page);
-			assert.equal(
-				await indicator.evaluate((node) => getComputedStyle(node).transitionDuration),
-				'0s'
-			);
+			await typeRow(page, group, 'Text');
 			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
-				await indicatorAligned(page);
-				const initial = await boxes(group);
-				// No wait for the background between clicks: the final choice must win.
+				// No wait for the widening between clicks: the final choice must win.
 				for (const name of ['Custom', 'File', 'Identity']) {
 					await group.getByRole('button', { name, exact: true }).click();
-					if (width >= 768) {
-						stable(await boxes(group), initial);
-					}
 				}
 				assert.equal(
 					await group
@@ -352,34 +339,22 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 					'true'
 				);
 				await editorVisible(page, 'Identity');
-				if (width >= 768) {
-					await indicatorAligned(page);
-					stable(await boxes(group), initial);
-				} else {
-					await phoneRow(page, group, 'Identity');
-					// Custom has the widest name, so it is the tightest fit on the narrowest phone.
-					await group.getByRole('button', { name: 'Custom', exact: true }).click();
-					await phoneRow(page, group, 'Custom');
-				}
-				const durations = await indicator.evaluate((node) =>
-					getComputedStyle(node).transitionDuration.split(',').map(Number.parseFloat)
-				);
-				assert.equal(
-					durations.some((duration) => duration > 0),
-					reducedMotion !== 'reduce'
-				);
-				if (reducedMotion === 'reduce') {
-					assert.equal(
-						await group.getByRole('button').evaluateAll((buttons) =>
-							buttons.every((button) =>
-								getComputedStyle(button)
-									.transitionDuration.split(',')
-									.every((duration) => Number.parseFloat(duration) === 0)
-							)
-						),
-						true
+				await typeRow(page, group, 'Identity');
+				// Custom has the widest name, so it is the tightest fit on the narrowest phone.
+				await group.getByRole('button', { name: 'Custom', exact: true }).click();
+				await typeRow(page, group, 'Custom');
+				// Reduced motion swaps the widening animation for an immediate change.
+				const transitions = await group
+					.getByRole('button')
+					.evaluateAll((buttons) =>
+						buttons.map((button) => getComputedStyle(button).transitionProperty)
 					);
-				}
+				assert.ok(
+					transitions.every((property) =>
+						reducedMotion === 'reduce' ? property === 'none' : property.includes('flex-grow')
+					),
+					transitions.join(' | ')
+				);
 			}
 		} finally {
 			await page.close();
@@ -437,7 +412,7 @@ test('type buttons stay disabled until hydration attaches their handlers', async
 
 for (const width of [375, 1280]) {
 	const phone = width < 768;
-	test(`${width}px type targets stay stationary on hover and focus, and ${phone ? 'stay in one row' : 'on selection'}`, async () => {
+	test(`${width}px type targets stay stationary on hover and focus, and widen the selected type in one row`, async () => {
 		const page = await browser.newPage({
 			viewport: { width, height: 1000 },
 			isMobile: width === 375,
@@ -447,11 +422,8 @@ for (const width of [375, 1280]) {
 			await fixture(page);
 			await openForm(page, forms[0]);
 			const group = page.getByRole('group', { name: 'Secret type', exact: true });
+			await typeRow(page, group, 'Text');
 			const initial = await boxes(group);
-			assert.deepEqual(
-				initial.map((box) => box.name),
-				typeNames
-			);
 			const file = await group.getByRole('button', { name: 'File', exact: true }).boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
 			await page.mouse.move(point.x, point.y);
@@ -481,15 +453,7 @@ for (const width of [375, 1280]) {
 					}
 					assert.equal(await button.getAttribute('aria-pressed'), 'true');
 					await editorVisible(page, name);
-					if (phone) {
-						await phoneRow(page, group, name);
-					} else {
-						stable(await boxes(group), initial);
-						assert.deepEqual(
-							await labelsShown(group),
-							typeNames.map(() => true)
-						);
-					}
+					await typeRow(page, group, name);
 					assert.equal(
 						await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 						true
@@ -609,9 +573,9 @@ for (const width of [320, 375]) {
 				await page.waitForFunction(
 					() => document.querySelector('header').getAnimations({ subtree: true }).length === 0
 				);
-				// Scoped to the header's own elements, not document.documentElement.scrollWidth: the
-				// create page has a pre-existing, unrelated type-selector overflow at large text sizes
-				// (main, before this PR stack) that would otherwise make this test flaky for forms[0].
+				// Scoped to the header's own elements, not document.documentElement.scrollWidth, so an
+				// overflow elsewhere on the page cannot fail this header check. (The type selector used
+				// to overflow here at large text sizes; its cells now share the row's width.)
 				const header = await page.evaluate(() => {
 					const box = (element) => element?.getBoundingClientRect().toJSON();
 					const root = document.querySelector('header');

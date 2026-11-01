@@ -8,7 +8,6 @@ import {
 	TypeIcon
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
-import { Button } from '#lib/components/ui/button/index.js';
 import { CREDENTIAL_TEMPLATES, type CredentialType } from '#lib/credentials/index.js';
 import { cn } from '#lib/utils.js';
 
@@ -38,107 +37,48 @@ const options: Array<{ type: SecretType; label: string; icon: typeof ListPlusIco
 		icon: icons[template.icon as keyof typeof icons] ?? ListPlusIcon
 	}))
 ];
+// At 320px an unselected cell is about 36px wide, too narrow for "Identity", so that cell shows
+// a short name until it is selected. Its accessible name stays the full name.
+const shortLabels: Partial<Record<SecretType, string>> = { identity: 'ID' };
 
-let selector: HTMLDivElement;
+// Server-rendered buttons stay disabled until hydration attaches their click handlers.
 let ready = $state(false);
-let animate = $state(false);
-let highlight = $state({ x: 0, y: 0, width: 0, height: 36 });
-
-function moveHighlight(button: HTMLButtonElement): void {
-	const parent = selector.getBoundingClientRect();
-	const target = button.getBoundingClientRect();
-	highlight = {
-		x: target.left - parent.left - selector.clientLeft,
-		y: target.top - parent.top - selector.clientTop,
-		width: target.width,
-		height: target.height
-	};
-}
-
-function measureSelected(): void {
-	const button = selector.querySelector<HTMLButtonElement>(`button[data-type="${value}"]`);
-	if (button) {
-		moveHighlight(button);
-	}
-}
 
 onMount(() => {
-	measureSelected();
 	ready = true;
-	const observer = new ResizeObserver(measureSelected);
-	observer.observe(selector);
-	for (const button of selector.querySelectorAll('button')) {
-		observer.observe(button);
-	}
-	return () => observer.disconnect();
-});
-
-// A remounted form or a parent-driven selection uses the current button geometry.
-$effect(() => {
-	if (ready) {
-		measureSelected();
-	}
 });
 </script>
 
-<!-- Phones get one row of icons; only the selected type shows its name, so all six fit at 360px. -->
+<!-- The selected type widens into its full name; the others share the rest of the row. -->
 <div
-	bind:this={selector}
-	class="selector relative isolate flex w-full gap-1 rounded-full border border-border bg-card p-1.5 md:w-fit md:max-w-full"
+	class="flex w-full gap-1 rounded-2xl border border-border bg-card p-1 shadow-2xs"
 	role="group"
 	aria-label="Secret type"
-	aria-busy={!ready}
 >
-	<span
-		class="selection-indicator pointer-events-none absolute left-0 top-0 rounded-full bg-foreground"
-		class:animate
-		aria-hidden="true"
-		style:transform={`translate(${highlight.x}px, ${highlight.y}px)`}
-		style:width={`${highlight.width}px`}
-		style:height={`${highlight.height}px`}
-		style:visibility={ready ? 'visible' : 'hidden'}
-	></span>
 	{#each options as option (option.type)}
 		{@const Icon = option.icon}
 		{@const selected = value === option.type}
-		<Button
+		{@const shown = selected ? option.label : (shortLabels[option.type] ?? option.label)}
+		<button
 			type="button"
-			size="seg"
-			variant="ghost"
 			class={cn(
-				'relative z-10 gap-2 rounded-full border-transparent bg-transparent px-2.5 hover:bg-transparent active:not-aria-[haspopup]:translate-y-0 dark:hover:bg-transparent',
+				'flex basis-0 flex-col items-center justify-center gap-1 rounded-xl py-2 outline-none transition-[flex-grow,background-color,color] duration-300 ease-out focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none',
 				selected
-					? 'text-background hover:text-background max-md:shrink-0 max-md:px-3'
-					: 'text-muted-foreground max-md:min-w-7 max-md:flex-1 max-md:px-0',
-				!ready && selected && 'bg-foreground'
+					? 'grow-[2.4] bg-foreground text-background'
+					: 'grow text-muted-foreground hover:bg-muted/60 hover:text-foreground'
 			)}
 			data-type={option.type}
 			aria-pressed={selected}
 			disabled={!ready || disabled}
-			onclick={() => {
-				animate = true;
-				onSelect(option.type);
-			}}
+			onclick={() => onSelect(option.type)}
 		>
 			<Icon class="size-4" aria-hidden="true" />
-			<span class={selected ? undefined : 'max-md:sr-only'}>{option.label}</span>
-		</Button>
+			{#if shown === option.label}
+				<span class="text-[0.6875rem] leading-none font-medium whitespace-nowrap">{shown}</span>
+			{:else}
+				<span class="text-[0.6875rem] leading-none font-medium whitespace-nowrap" aria-hidden="true">{shown}</span>
+				<span class="sr-only">{option.label}</span>
+			{/if}
+		</button>
 	{/each}
 </div>
-
-<style>
-.selection-indicator.animate {
-	transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), width 280ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.selector :global(button) {
-	transition: color 160ms ease;
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.selection-indicator.animate,
-	.selector :global(button) {
-		transition: none;
-	}
-}
-</style>
