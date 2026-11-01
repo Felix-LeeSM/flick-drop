@@ -24,6 +24,8 @@ const presets = [
 	['7 days', 604_800]
 ];
 const typeNames = ['Text', 'File', 'Login', 'Card', 'Identity', 'Custom'];
+// Unselected cells too narrow for the full name at 320px show these instead.
+const shortTypeNames = { Identity: 'ID' };
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -97,7 +99,7 @@ async function openForm(page, form, content = false) {
 	await page.evaluate(() => document.fonts.ready);
 	if (form.name === 'sender' && content) {
 		await page.getByLabel('Message', { exact: true }).fill('Synthetic lifetime regression');
-		await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
 	}
 }
 
@@ -249,28 +251,37 @@ function stable(actual, expected) {
 	});
 }
 
-// A name counts as shown when it renders wider than the 1px screen-reader-only box.
-function labelsShown(group) {
-	return group.getByRole('button').evaluateAll((buttons) =>
-		buttons.map((button) => {
-			const label = button.querySelector('span');
-			return label.getBoundingClientRect().width > 1 && getComputedStyle(label).opacity === '1';
-		})
-	);
+// The name each type cell shows. A short name is hidden from screen readers behind the full one.
+function shownNames(group) {
+	return group
+		.getByRole('button')
+		.evaluateAll((buttons) =>
+			buttons.map((button) => button.querySelector('span:not(.sr-only)').textContent.trim())
+		);
 }
 
-// Below 768px the selector is one row of icons; only the selected type shows its name,
-// so selecting reflows the row instead of keeping every cell fixed.
-async function phoneRow(page, group, selected) {
-	await indicatorAligned(page);
+// One row at every width: the selected type widens into its full name, every other cell is
+// narrower and keeps a short name that fits, and nothing crosses the selector or the viewport.
+async function typeRow(page, group, selected) {
+	// A selection animates the cell widths; measure once the transition settles.
+	await page.waitForFunction(
+		() =>
+			document.querySelector('[aria-label="Secret type"]').getAnimations({ subtree: true })
+				.length === 0
+	);
 	const row = await boxes(group);
 	assert.ok(
 		row.every((box) => Math.abs(box.y - row[0].y) < 1),
 		'type buttons wrapped'
 	);
 	assert.deepEqual(
-		await labelsShown(group),
-		typeNames.map((name) => name === selected)
+		await shownNames(group),
+		typeNames.map((name) => (name === selected ? name : (shortTypeNames[name] ?? name)))
+	);
+	const widest = row[typeNames.indexOf(selected)];
+	assert.ok(
+		row.every((box) => box === widest || box.width < widest.width),
+		`${selected} is not the widest type`
 	);
 	assert.equal(
 		await group.evaluate((pill) => {
@@ -279,12 +290,18 @@ async function phoneRow(page, group, selected) {
 				outer.right <= innerWidth &&
 				[...pill.querySelectorAll('button')].every((button) => {
 					const box = button.getBoundingClientRect();
-					return box.left >= outer.left && box.right <= outer.right;
+					const name = button.querySelector('span:not(.sr-only)').getBoundingClientRect();
+					return (
+						box.left >= outer.left &&
+						box.right <= outer.right &&
+						name.left >= box.left &&
+						name.right <= box.right
+					);
 				})
 			);
 		}),
 		true,
-		'type buttons overflow the selector'
+		'type names overflow their cells or the selector'
 	);
 }
 
@@ -301,49 +318,19 @@ async function editorVisible(page, name) {
 	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
 }
 
-async function indicatorAligned(page) {
-	await page.waitForFunction(
-		() => {
-			const group = document.querySelector('[aria-label="Secret type"]');
-			const indicator = group?.querySelector('.selection-indicator');
-			const selected = group?.querySelector('button[aria-pressed="true"]');
-			if (!indicator || !selected || getComputedStyle(indicator).visibility !== 'visible') {
-				return false;
-			}
-			const actual = indicator.getBoundingClientRect();
-			const expected = selected.getBoundingClientRect();
-			return ['x', 'y', 'width', 'height'].every(
-				(key) => Math.abs(actual[key] - expected[key]) < 1
-			);
-		},
-		undefined,
-		{ timeout: 3000 }
-	);
-}
-
 for (const reducedMotion of ['no-preference', 'reduce']) {
-	test(`selection background follows rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
+	test(`type selector settles on the last of rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
 		const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion });
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
 			const group = page.getByRole('group', { name: 'Secret type', exact: true });
-			const indicator = group.locator('.selection-indicator');
-			await indicatorAligned(page);
-			assert.equal(
-				await indicator.evaluate((node) => getComputedStyle(node).transitionDuration),
-				'0s'
-			);
+			await typeRow(page, group, 'Text');
 			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
-				await indicatorAligned(page);
-				const initial = await boxes(group);
-				// No wait for the background between clicks: the final choice must win.
+				// No wait for the widening between clicks: the final choice must win.
 				for (const name of ['Custom', 'File', 'Identity']) {
 					await group.getByRole('button', { name, exact: true }).click();
-					if (width >= 768) {
-						stable(await boxes(group), initial);
-					}
 				}
 				assert.equal(
 					await group
@@ -352,34 +339,22 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 					'true'
 				);
 				await editorVisible(page, 'Identity');
-				if (width >= 768) {
-					await indicatorAligned(page);
-					stable(await boxes(group), initial);
-				} else {
-					await phoneRow(page, group, 'Identity');
-					// Custom has the widest name, so it is the tightest fit on the narrowest phone.
-					await group.getByRole('button', { name: 'Custom', exact: true }).click();
-					await phoneRow(page, group, 'Custom');
-				}
-				const durations = await indicator.evaluate((node) =>
-					getComputedStyle(node).transitionDuration.split(',').map(Number.parseFloat)
-				);
-				assert.equal(
-					durations.some((duration) => duration > 0),
-					reducedMotion !== 'reduce'
-				);
-				if (reducedMotion === 'reduce') {
-					assert.equal(
-						await group.getByRole('button').evaluateAll((buttons) =>
-							buttons.every((button) =>
-								getComputedStyle(button)
-									.transitionDuration.split(',')
-									.every((duration) => Number.parseFloat(duration) === 0)
-							)
-						),
-						true
+				await typeRow(page, group, 'Identity');
+				// Custom has the widest name, so it is the tightest fit on the narrowest phone.
+				await group.getByRole('button', { name: 'Custom', exact: true }).click();
+				await typeRow(page, group, 'Custom');
+				// Reduced motion swaps the widening animation for an immediate change.
+				const transitions = await group
+					.getByRole('button')
+					.evaluateAll((buttons) =>
+						buttons.map((button) => getComputedStyle(button).transitionProperty)
 					);
-				}
+				assert.ok(
+					transitions.every((property) =>
+						reducedMotion === 'reduce' ? property === 'none' : property.includes('flex-grow')
+					),
+					transitions.join(' | ')
+				);
 			}
 		} finally {
 			await page.close();
@@ -437,7 +412,7 @@ test('type buttons stay disabled until hydration attaches their handlers', async
 
 for (const width of [375, 1280]) {
 	const phone = width < 768;
-	test(`${width}px type targets stay stationary on hover and focus, and ${phone ? 'stay in one row' : 'on selection'}`, async () => {
+	test(`${width}px type targets stay stationary on hover and focus, and widen the selected type in one row`, async () => {
 		const page = await browser.newPage({
 			viewport: { width, height: 1000 },
 			isMobile: width === 375,
@@ -447,11 +422,8 @@ for (const width of [375, 1280]) {
 			await fixture(page);
 			await openForm(page, forms[0]);
 			const group = page.getByRole('group', { name: 'Secret type', exact: true });
+			await typeRow(page, group, 'Text');
 			const initial = await boxes(group);
-			assert.deepEqual(
-				initial.map((box) => box.name),
-				typeNames
-			);
 			const file = await group.getByRole('button', { name: 'File', exact: true }).boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
 			await page.mouse.move(point.x, point.y);
@@ -481,15 +453,7 @@ for (const width of [375, 1280]) {
 					}
 					assert.equal(await button.getAttribute('aria-pressed'), 'true');
 					await editorVisible(page, name);
-					if (phone) {
-						await phoneRow(page, group, name);
-					} else {
-						stable(await boxes(group), initial);
-						assert.deepEqual(
-							await labelsShown(group),
-							typeNames.map(() => true)
-						);
-					}
+					await typeRow(page, group, name);
 					assert.equal(
 						await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 						true
@@ -525,11 +489,12 @@ for (const width of [375, 1280]) {
 							badge: box(badge),
 							wordmark: getComputedStyle(wordmark).fontSize,
 							link: box(header.querySelector('nav a')),
-							toggle: box(header.querySelector('button'))
+							toggle: box(header.querySelector('button[aria-label$=" theme"]'))
 						};
 					})
 				);
 				// The wordmark shrank twice in page-level edits; the shared header pins it and the link placement.
+				// The text link keeps the toggle's 36px height as its tap target.
 				const frame = frames.at(-1);
 				assert.deepEqual([frame.badge.width, frame.badge.height, frame.wordmark], [32, 32, '27px']);
 				assert.deepEqual([frame.link.height, frame.toggle.height], [36, 36]);
@@ -608,21 +573,33 @@ for (const width of [320, 375]) {
 				await page.waitForFunction(
 					() => document.querySelector('header').getAnimations({ subtree: true }).length === 0
 				);
-				// Scoped to the header's own elements, not document.documentElement.scrollWidth: the
-				// create page has a pre-existing, unrelated type-selector overflow at large text sizes
-				// (main, before this PR stack) that would otherwise make this test flaky for forms[0].
+				// Scoped to the header's own elements, not document.documentElement.scrollWidth, so an
+				// overflow elsewhere on the page cannot fail this header check. (The type selector used
+				// to overflow here at large text sizes; its cells now share the row's width.)
 				const header = await page.evaluate(() => {
-					const box = (element) => element.getBoundingClientRect().toJSON();
+					const box = (element) => element?.getBoundingClientRect().toJSON();
 					const root = document.querySelector('header');
+					// The code action is the only header button named by its text; the toggle has a label.
 					return {
 						brand: box(root.querySelector('a')),
+						code: box(root.querySelector('button:not([aria-label])')),
 						link: box(root.querySelector('nav a')),
-						toggle: box(root.querySelector('button'))
+						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
-				assert.ok(header.link.right <= width, form.path);
-				assert.ok(header.toggle.right <= width, form.path);
-				assert.ok(header.toggle.top >= header.brand.bottom, form.path);
+				// The text-sized actions may still fit beside the wordmark; each one either does or
+				// wraps below it, and none crosses the viewport edge.
+				const actions =
+					form.name === 'sender'
+						? [header.code, header.link, header.toggle]
+						: [header.link, header.toggle];
+				for (const action of actions) {
+					assert.ok(action.right <= width, form.path);
+					assert.ok(
+						action.left >= header.brand.right || action.top >= header.brand.bottom,
+						form.path
+					);
+				}
 			}
 		} finally {
 			await page.close();
@@ -630,24 +607,36 @@ for (const width of [320, 375]) {
 	});
 }
 
-test('320px shared header keeps the link beside the theme toggle without overflow', async () => {
+test('320px shared header keeps the code action and link beside the theme toggle without overflow', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
 		await fixture(page);
 		for (const form of forms) {
 			await openForm(page, form);
 			const header = await page.evaluate(() => {
-				const box = (element) => element.getBoundingClientRect().toJSON();
+				const box = (element) => element?.getBoundingClientRect().toJSON();
 				const root = document.querySelector('header');
 				return {
 					brand: box(root.querySelector('a')),
+					code: box(root.querySelector('button:not([aria-label])')),
 					link: box(root.querySelector('nav a')),
-					toggle: box(root.querySelector('button')),
+					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
 			});
 			assert.equal(header.overflow, false);
-			assert.ok(header.brand.right < header.link.left);
+			// The code action used to be hidden below 640px; phones open the receive dialog from it too.
+			const first = form.name === 'sender' ? header.code : header.link;
+			if (form.name === 'sender') {
+				assert.equal(await page.getByRole('button', { name: 'Enter code' }).isVisible(), true);
+				assert.ok(header.code.right <= header.link.left);
+				assert.equal(header.code.top, header.link.top);
+			} else {
+				assert.equal(header.code, undefined);
+			}
+			// One row: the first action shares the wordmark's vertical center.
+			assert.ok(header.brand.right < first.left);
+			assert.equal(first.top + first.height / 2, header.brand.top + header.brand.height / 2);
 			assert.ok(header.link.right <= header.toggle.left);
 			assert.equal(header.link.top, header.toggle.top);
 		}
@@ -698,21 +687,59 @@ for (const theme of ['light', 'dark']) {
 	});
 }
 
-test('passphrase field shows its own label without a placeholder', async () => {
+test('passphrase field shows its own label without a placeholder, indented under its checkbox', async () => {
 	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
 	try {
 		await fixture(page);
 		await openForm(page, forms[0]);
-		const field = page.getByLabel('Passphrase', { exact: true });
+		const field = page.getByLabel('Additional passphrase', { exact: true });
 		assert.equal(await field.getAttribute('placeholder'), null);
 		// A screen-reader-only label is a 1px box, which Playwright still reports as visible.
 		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
 		assert.ok(label.width > 40 && label.height > 10);
-		// The label and field start at the form's left edge, not indented under the checkbox.
-		const edge = (await page.locator('label[for="secret-text"]').boundingBox()).x;
-		assert.deepEqual([label.x, (await field.boundingBox()).x], [edge, edge]);
-		// A 13px line box keeps the label 6px above the field, as in direction A.
-		assert.equal(label.height, 13);
+		// The label and field line up with the checkbox's own label, so they read as its detail.
+		const indent = (await page.locator('label[for="use-passphrase"]').boundingBox()).x;
+		const box = await field.boundingBox();
+		assert.deepEqual([label.x, box.x], [indent, indent]);
+		// Generate sits at the end of the label's row, above the field's right edge.
+		const generate = await page
+			.getByRole('button', { name: 'Generate', exact: true })
+			.boundingBox();
+		assert.equal(generate.x + generate.width, box.x + box.width);
+		assert.ok(generate.y + generate.height <= box.y);
+		assert.equal(generate.y + generate.height / 2, label.y + label.height / 2);
+	} finally {
+		await page.close();
+	}
+});
+
+test('Generate fills a revealed passphrase that never reaches the API', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+	try {
+		const mock = await fixture(page);
+		await openForm(page, forms[0]);
+		const field = page.getByLabel('Additional passphrase', { exact: true });
+		const generate = page.getByRole('button', { name: 'Generate', exact: true });
+		await generate.click();
+		const first = await field.inputValue();
+		// Four groups of four Crockford base32 symbols: 80 random bits.
+		assert.match(first, /^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$/);
+		// The sender has to copy it, so it shows instead of staying masked.
+		assert.equal(await field.getAttribute('type'), 'text');
+		await generate.click();
+		const generated = await field.inputValue();
+		assert.notEqual(generated, first);
+		await page.getByLabel('Message', { exact: true }).fill('Synthetic generated passphrase');
+		const response = page.waitForResponse(
+			(reply) =>
+				reply.request().method() === 'POST' && new URL(reply.url()).pathname === '/api/secrets'
+		);
+		await submitButton(page).click();
+		// Model A sends an access proof and a scrypt-wrapped identity, never the passphrase.
+		const body = (await response).request().postData();
+		assert.equal(body.includes(generated), false);
+		assert.equal(body.includes(generated.replaceAll('-', '')), false);
+		assert.equal(mock.ttls.length, 1);
 	} finally {
 		await page.close();
 	}

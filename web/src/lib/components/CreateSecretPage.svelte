@@ -8,6 +8,7 @@ import {
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
+	WandSparklesIcon,
 	XIcon,
 	ZapIcon
 } from '@lucide/svelte';
@@ -50,6 +51,7 @@ import {
 } from '#lib/credentials/index.js';
 import { createAccessVerifier } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
+import { generatePassphrase } from '#lib/crypto/passphrase.js';
 import {
 	computePipePassphrase,
 	deriveConfirmationCode,
@@ -867,54 +869,76 @@ function modeLabel(value: CreateMode): string {
 					<div class="flex min-h-9 items-center gap-2">
 							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
 							<Label for="use-passphrase" class="text-sm font-medium">
-								Protect with a passphrase
+								Protect with an additional passphrase
 							</Label>
 					</div>
 					{#if usePassphrase}
-						<!-- The field keeps its own visible label; a placeholder would vanish on typing. -->
-							<Label for="secret-passphrase" class="mt-0.5 -mb-1 text-[0.8125rem]/[1] font-medium text-muted-foreground">Passphrase</Label>
-						<div class="relative">
-							<Input
-								id="secret-passphrase"
-								name="flick-passphrase"
-								type={revealPassphrase ? 'text' : 'password'}
-								autocomplete="off"
-								autocapitalize="none"
-								spellcheck="false"
-								data-1p-ignore="true"
-								data-bwignore="true"
-								data-lpignore="true"
-								class="h-11 pr-11"
-								bind:value={passphrase}
-								disabled={isCreating}
-								required
-							/>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
-								aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-								title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-								onclick={() => {
-									revealPassphrase = !revealPassphrase;
-								}}
-							>
-								{#if revealPassphrase}
-									<EyeOffIcon class="size-4" aria-hidden="true" />
-								{:else}
-									<EyeIcon class="size-4" aria-hidden="true" />
-								{/if}
-							</Button>
+						<!-- Indented to the checkbox label. The field keeps its own visible label; a
+						     placeholder would vanish on typing. -->
+						<div class="grid gap-2 pl-6">
+							<div class="flex items-center justify-between gap-3">
+								<Label for="secret-passphrase" class="text-xs font-medium text-muted-foreground">
+									Additional passphrase
+								</Label>
+								<button
+									type="button"
+									class="inline-flex min-h-6 items-center gap-1 rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-2 disabled:pointer-events-none disabled:opacity-50"
+									disabled={isCreating}
+									onclick={() => {
+										passphrase = generatePassphrase();
+										revealPassphrase = true;
+									}}
+								>
+									<WandSparklesIcon class="size-3" aria-hidden="true" />
+									Generate
+								</button>
+							</div>
+							<div class="relative">
+								<Input
+									id="secret-passphrase"
+									name="flick-passphrase"
+									type={revealPassphrase ? 'text' : 'password'}
+									autocomplete="off"
+									autocapitalize="none"
+									spellcheck="false"
+									data-1p-ignore="true"
+									data-bwignore="true"
+									data-lpignore="true"
+									class="h-11 pr-11 font-mono"
+									bind:value={passphrase}
+									disabled={isCreating}
+									required
+								/>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
+									aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+									title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+									onclick={() => {
+										revealPassphrase = !revealPassphrase;
+									}}
+								>
+									{#if revealPassphrase}
+										<EyeOffIcon class="size-4" aria-hidden="true" />
+									{:else}
+										<EyeIcon class="size-4" aria-hidden="true" />
+									{/if}
+								</Button>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Share this passphrase separately. Your recipient will need to enter it before the
+								secret unlocks.
+							</p>
 						</div>
-							<p class="text-[0.8125rem] text-muted-foreground">
-								Your recipient will need this passphrase. Send it separately from the link.
-							</p>
 					{:else}
-							<p class="text-[0.8125rem] text-muted-foreground">
-								Anyone with the link can open this once. The decryption key is embedded in the URL
-								fragment.
-							</p>
+						<!-- Not "end-to-end" here: the API issues a code transfer's code and salt, so only a
+						     passphrase keeps that transfer from the server. -->
+						<p class="pl-6 text-xs text-muted-foreground">
+							Already encrypted with the link key or the 6-digit code. Turn this on if you also want
+							the recipient to type a passphrase.
+						</p>
 					{/if}
 				</div>
 

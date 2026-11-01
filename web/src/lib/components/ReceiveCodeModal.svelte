@@ -11,7 +11,7 @@ import {
 } from '@lucide/svelte';
 import { Dialog } from 'bits-ui';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
 import {
 	computePipePassphrase,
@@ -40,10 +40,19 @@ let {
 type ReceiveState = 'input' | 'connecting' | 'streaming' | 'done-file' | 'done-text' | 'error';
 
 let rawCode = $state('');
+let codeFocused = $state(false);
 let optionalPassphrase = $state('');
 let showPassphraseField = $state(false);
 
 let currentState = $state<ReceiveState>('input');
+// Entering the code is step 1; waiting on the sender's confirmation and the transfer is step 2.
+const step = $derived(
+	currentState === 'input'
+		? 1
+		: currentState === 'connecting' || currentState === 'streaming'
+			? 2
+			: undefined
+);
 let progressPercent = $state(0);
 let errorMessage = $state('');
 let statusMessage = $state('');
@@ -90,7 +99,10 @@ $effect(() => {
 
 function handleCodeInput(event: Event): void {
 	const target = event.target as HTMLInputElement;
+	// Digits only, so a pasted "741-928" still fills all six caps. The field is invisible, so write
+	// the cleaned value back: a stray letter left in it would otherwise swallow the next Backspace.
 	const sanitized = target.value.replace(/\D/g, '').slice(0, 6);
+	target.value = sanitized;
 	rawCode = sanitized;
 
 	if (sanitized.length === 6) {
@@ -196,101 +208,139 @@ async function copyText(): Promise<void> {
 			class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
 		/>
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 grid w-[23rem] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+			class="fixed left-1/2 top-1/2 z-50 grid w-[23rem] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
-			<div class="relative flex items-center justify-between">
-				<div class="flex items-center gap-2">
-					<span class="grid size-6 place-items-center rounded-md bg-primary/10 text-primary">
-						<ZapIcon class="size-3.5" aria-hidden="true" />
-					</span>
-					<Dialog.Title class="font-serif text-xl tracking-tight">Receive secret with code</Dialog.Title>
-				</div>
+			<!-- The dialog keeps one name in every step; the visible heading names the step. -->
+			<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
+			<Dialog.Description class="sr-only">
+				Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
+			</Dialog.Description>
+
+			<div class="flex items-start justify-between gap-3">
+				{#if step}
+					<div class="grid gap-1">
+						<div class="flex items-center gap-1.5">
+							<span class="rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
+								STEP {step} OF 2
+							</span>
+							<span class="micro text-muted-foreground">0B disk relay</span>
+						</div>
+						<h3 class="font-serif text-2xl leading-tight">
+							{step === 1 ? 'Connect to sender' : "Check sender's screen"}
+						</h3>
+					</div>
+				{/if}
 				<Dialog.Close
-					class="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+					class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 					aria-label="Close"
 				>
 					<XIcon class="size-4" aria-hidden="true" />
 				</Dialog.Close>
 			</div>
 
-			<Dialog.Description class="sr-only">
-				Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
-			</Dialog.Description>
-
 			{#if currentState === 'input'}
-				<div class="grid gap-4 text-center">
-					<p class="text-xs text-muted-foreground">
-						Enter the 6-digit number displayed on the sender's screen:
-					</p>
-
-					<!-- Visual Code Input Formatter -->
+				<div class="grid gap-5 text-center">
 					<div class="grid gap-2">
 						<Label for="pipe-code-input" class="sr-only">6-digit transfer code</Label>
-						<div class="relative flex justify-center">
+						<!-- Six key caps mirror one transparent input laid over them, so typing, pasting,
+						     and the phone's number pad all go through a single real field. -->
+						<div class="relative flex items-center justify-center gap-1.5">
+							{#each [0, 1, 2, 3, 4, 5] as slot (slot)}
+								{@const digit = rawCode[slot] ?? ''}
+								<span
+									class={cn(
+										'grid h-12 min-w-0 max-w-11 flex-1 place-items-center rounded-lg border-x border-t border-b-3 font-mono text-xl font-bold transition-transform motion-reduce:transition-none',
+										digit
+											? '-translate-y-0.5 border-primary bg-primary/10 text-primary'
+											: 'border-border bg-muted/30 text-muted-foreground',
+										// The transparent outline shows only in forced colors, where the ring is dropped.
+										codeFocused &&
+											slot === Math.min(rawCode.length, 5) &&
+											'outline-2 outline-transparent ring-3 ring-ring/50'
+									)}
+									aria-hidden="true"
+								>
+									{digit || '0'}
+								</span>
+								{#if slot === 2}
+									<span class="font-mono text-muted-foreground" aria-hidden="true">-</span>
+								{/if}
+							{/each}
 							<input
 								id="pipe-code-input"
 								type="text"
 								inputmode="numeric"
 								pattern="[0-9]*"
-								maxlength="6"
+								autocomplete="off"
 								value={rawCode}
 								oninput={handleCodeInput}
-								placeholder="000000"
-								class="h-14 w-full rounded-xl border-2 border-primary/40 bg-muted/30 text-center font-mono text-2xl font-bold tracking-[0.4em] text-foreground transition-all focus:border-primary focus:bg-background focus:outline-none focus:ring-4 focus:ring-primary/10 sm:text-3xl"
+								onfocus={() => {
+									codeFocused = true;
+								}}
+								onblur={() => {
+									codeFocused = false;
+								}}
+								class="absolute inset-0 size-full cursor-text text-base opacity-0"
 							/>
 						</div>
-						<p class="text-[11px] text-muted-foreground">
+						<p class="text-[0.6875rem] text-muted-foreground">
 							Auto-connects immediately when 6 digits are typed.
 						</p>
 					</div>
 
 					<!-- Optional passphrase drawer -->
-					<div class="border-t border-border/60 pt-2 text-left">
+					<div class="text-left">
 						<button
 							type="button"
-							class="text-[11px] text-muted-foreground hover:text-foreground transition underline underline-offset-2"
+							class="text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground"
+							aria-expanded={showPassphraseField}
 							onclick={() => {
 								showPassphraseField = !showPassphraseField;
 							}}
 						>
-							{showPassphraseField ? 'Hide secret passphrase' : 'Has a secret passphrase?'}
+							{showPassphraseField ? 'Hide additional passphrase' : 'Has an additional passphrase?'}
 						</button>
 						{#if showPassphraseField}
 							<div class="mt-2">
-								<Label for="pipe-passphrase" class="sr-only">Optional secret passphrase</Label>
+								<Label for="pipe-passphrase" class="sr-only">Additional passphrase</Label>
 								<input
 									id="pipe-passphrase"
 									type="password"
 									bind:value={optionalPassphrase}
-									placeholder="Optional sender passphrase"
-									class="h-9 w-full rounded-lg border border-input bg-muted/30 px-3 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+									placeholder="Sender's additional passphrase"
+									class="h-10 w-full rounded-lg border border-input bg-muted/30 px-3 font-mono text-base text-foreground placeholder:font-sans placeholder:text-muted-foreground focus:border-primary focus:outline-none md:text-sm"
 								/>
 							</div>
 						{/if}
 					</div>
 
-					<button
-						type="button"
-						class={cn(buttonVariants({ size: 'default' }), 'w-full gap-2 font-semibold')}
-						disabled={rawCode.length !== 6}
-						onclick={() => startReceive()}
-					>
-						<ZapIcon class="size-4" aria-hidden="true" />
-						Connect & receive
-					</button>
+					<div class="grid gap-2">
+						<Button type="button" size="cta" disabled={rawCode.length !== 6} onclick={() => startReceive()}>
+							<ZapIcon class="size-4" aria-hidden="true" />
+							Verify & connect
+						</Button>
+						<p class="text-[0.6875rem] text-muted-foreground">
+							Next: you'll verify a 3-digit match code with the sender.
+						</p>
+					</div>
 				</div>
 			{:else if currentState === 'connecting' || currentState === 'streaming'}
-				<div class="grid place-items-center gap-4 py-4 text-center">
-					<div class="size-10 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+				<div class="grid place-items-center gap-4 text-center">
 					<div class="grid gap-1">
-						<h4 class="font-medium text-sm text-foreground">{statusMessage}</h4>
+						<div class="flex items-center justify-center gap-2.5">
+							<div
+								class="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none"
+								aria-hidden="true"
+							></div>
+							<h4 class="text-sm font-medium text-foreground">{statusMessage}</h4>
+						</div>
 						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
 					</div>
 
 					{#if matchCode}
-						<div class="w-full rounded-xl border border-primary/30 bg-primary/5 p-3">
-							<span class="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Confirmation Code</span>
-							<div class="font-mono text-3xl font-extrabold text-primary tracking-widest pt-0.5">
+						<div class="w-full rounded-2xl border border-primary/35 bg-primary/8 p-4">
+							<span class="micro text-muted-foreground">Confirmation Code</span>
+							<div class="pt-1 font-mono text-4xl font-extrabold tracking-widest text-primary">
 								{matchCode}
 							</div>
 						</div>

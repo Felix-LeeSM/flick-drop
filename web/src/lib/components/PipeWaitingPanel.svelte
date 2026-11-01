@@ -139,7 +139,7 @@ let directReceiveUrl = $derived(
 				Enter this code on receiving device
 			</h2>
 			<p class="text-xs text-muted-foreground max-w-sm">
-				Open Flick on the receiver device and click <strong class="text-foreground">Enter code</strong> in the header:
+				Open Flick on the receiver device and click <strong class="text-foreground">Code</strong> in the header:
 			</p>
 
 			<!-- 6-digit display boxes -->

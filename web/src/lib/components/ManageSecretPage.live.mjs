@@ -22,9 +22,13 @@ for (const model of ['a', 'b']) {
 				await configured;
 				await sender.getByLabel('Message', { exact: true }).fill('Synthetic managed delivery');
 				if (model === 'a') {
-					await sender.getByLabel('Passphrase', { exact: true }).fill('synthetic-passphrase');
+					await sender
+						.getByLabel('Additional passphrase', { exact: true })
+						.fill('synthetic-passphrase');
 				} else {
-					await sender.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+					await sender
+						.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
+						.uncheck();
 				}
 				await sender.getByRole('button', { name: 'Create link', exact: true }).click();
 				await sender.waitForURL('**/m/*#manage=*');

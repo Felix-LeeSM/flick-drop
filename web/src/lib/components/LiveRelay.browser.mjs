@@ -54,6 +54,116 @@ test('SiteHeader displays accessible Enter code button and opens Receive dialog'
 	}
 });
 
+test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at 320px', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+	try {
+		await page.route(
+			(url) => url.pathname.startsWith('/api/'),
+			async (route) => {
+				const path = new URL(route.request().url()).pathname;
+				if (path === '/api/config') {
+					return route.fulfill({
+						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
+					});
+				}
+				// Never answered, so the dialog stays on step 2 waiting for the sender.
+				if (path === '/api/pipe/receive') {
+					return;
+				}
+				return route.continue();
+			}
+		);
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await page.getByRole('button', { name: 'Enter code' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		await dialog.getByText('STEP 1 OF 2', { exact: true }).waitFor();
+		await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
+
+		// The dialog moves focus to Close when it opens; typing before that lands would lose keys.
+		await page.waitForFunction(
+			() => document.activeElement?.getAttribute('aria-label') === 'Close'
+		);
+		const input = page.locator('#pipe-code-input');
+		await input.focus();
+		await input.pressSequentially('74x1');
+		assert.equal(await input.inputValue(), '741');
+		// The invisible field holds only digits, so Backspace after a stray letter removes a digit.
+		await input.press('x');
+		await input.press('Backspace');
+		assert.equal(await input.inputValue(), '74');
+		await input.press('1');
+		// Measure after the dialog's zoom-in and the caps' lift settle.
+		await page.waitForFunction(
+			() => document.querySelector('[role="dialog"]').getAnimations({ subtree: true }).length === 0
+		);
+		// The key caps are decoration over the one transparent input; the next empty cap shows focus.
+		const caps = await input.evaluate((field) => {
+			const area = field.getBoundingClientRect();
+			const content = field.closest('[role="dialog"]').getBoundingClientRect();
+			return [...field.parentElement.querySelectorAll('span.rounded-lg')].map((cap) => {
+				const box = cap.getBoundingClientRect();
+				return {
+					text: cap.textContent.trim(),
+					hidden: cap.getAttribute('aria-hidden'),
+					ring: getComputedStyle(cap).boxShadow !== 'none',
+					covered: box.left >= area.left && box.right <= area.right,
+					inside: box.left >= content.left && box.right <= content.right
+				};
+			});
+		});
+		assert.deepEqual(
+			caps.map((cap) => cap.text),
+			['7', '4', '1', '0', '0', '0']
+		);
+		assert.deepEqual(
+			caps.map((cap) => cap.ring),
+			[false, false, false, true, false, false]
+		);
+		assert.ok(caps.every((cap) => cap.hidden === 'true' && cap.covered && cap.inside));
+		// Forced colors drop the ring, so the focused cap also carries an outline that stays
+		// transparent until forced colors repaint it.
+		const outline = () =>
+			input.evaluate((field) => {
+				const style = getComputedStyle(field.parentElement.querySelectorAll('span.rounded-lg')[3]);
+				return [style.outlineStyle, style.outlineWidth, style.outlineColor];
+			});
+		assert.deepEqual(await outline(), ['solid', '2px', 'rgba(0, 0, 0, 0)']);
+		await page.emulateMedia({ forcedColors: 'active' });
+		const [style, width, color] = await outline();
+		assert.deepEqual([style, width], ['solid', '2px']);
+		assert.notEqual(color, 'rgba(0, 0, 0, 0)');
+		await page.emulateMedia({ forcedColors: 'none' });
+
+		const toggle = dialog.getByRole('button', { name: 'Has an additional passphrase?' });
+		assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+		await toggle.click();
+		await dialog.getByLabel('Additional passphrase', { exact: true }).waitFor();
+		assert.equal(
+			await dialog
+				.getByRole('button', { name: 'Hide additional passphrase' })
+				.getAttribute('aria-expanded'),
+			'true'
+		);
+
+		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
+		await input.fill('741-928');
+		await dialog.getByText('STEP 2 OF 2', { exact: true }).waitFor();
+		await dialog.getByText('Pipe: 741-928', { exact: true }).waitFor();
+		await dialog.getByRole('heading', { name: "Check sender's screen" }).waitFor();
+		assert.match(
+			await dialog.getByText('Confirmation Code').locator('xpath=..').innerText(),
+			/\d{3}\s*$/
+		);
+		assert.equal(
+			await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+			true
+		);
+	} finally {
+		await page.close();
+	}
+});
+
 test('CreateSecretPage: Send with code validation, confirmation toggle, and state transition', async () => {
 	const page = await browser.newPage();
 	try {
@@ -82,7 +192,7 @@ test('CreateSecretPage: Send with code validation, confirmation toggle, and stat
 
 		// Type message
 		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
-		await page.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
 
 		// Enabled
 		assert.equal(await sendWithCodeBtn.isDisabled(), false);
@@ -267,7 +377,9 @@ test('Two-browser live relay transfer with 2-step confirmation and burn state', 
 		await senderPage
 			.getByLabel('Message', { exact: true })
 			.fill('Real-time live relay transfer test');
-		await senderPage.getByRole('checkbox', { name: 'Protect with a passphrase' }).uncheck();
+		await senderPage
+			.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
+			.uncheck();
 
 		// Keep confirmation checkbox checked
 		await senderPage.getByRole('button', { name: 'Send with code' }).click();
