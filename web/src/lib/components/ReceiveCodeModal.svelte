@@ -99,7 +99,10 @@ $effect(() => {
 
 function handleCodeInput(event: Event): void {
 	const target = event.target as HTMLInputElement;
+	// Digits only, so a pasted "741-928" still fills all six caps. The field is invisible, so write
+	// the cleaned value back: a stray letter left in it would otherwise swallow the next Backspace.
 	const sanitized = target.value.replace(/\D/g, '').slice(0, 6);
+	target.value = sanitized;
 	rawCode = sanitized;
 
 	if (sanitized.length === 6) {
@@ -207,6 +210,12 @@ async function copyText(): Promise<void> {
 		<Dialog.Content
 			class="fixed left-1/2 top-1/2 z-50 grid w-[23rem] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
+			<!-- The dialog keeps one name in every step; the visible heading names the step. -->
+			<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
+			<Dialog.Description class="sr-only">
+				Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
+			</Dialog.Description>
+
 			<div class="flex items-start justify-between gap-3">
 				{#if step}
 					<div class="grid gap-1">
@@ -229,12 +238,6 @@ async function copyText(): Promise<void> {
 				</Dialog.Close>
 			</div>
 
-			<!-- The dialog keeps one name in every step; the visible heading names the step. -->
-			<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
-			<Dialog.Description class="sr-only">
-				Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
-			</Dialog.Description>
-
 			{#if currentState === 'input'}
 				<div class="grid gap-5 text-center">
 					<div class="grid gap-2">
@@ -250,7 +253,10 @@ async function copyText(): Promise<void> {
 										digit
 											? '-translate-y-0.5 border-primary bg-primary/10 text-primary'
 											: 'border-border bg-muted/30 text-muted-foreground',
-										codeFocused && slot === Math.min(rawCode.length, 5) && 'ring-3 ring-ring/50'
+										// The transparent outline shows only in forced colors, where the ring is dropped.
+										codeFocused &&
+											slot === Math.min(rawCode.length, 5) &&
+											'outline-2 outline-transparent ring-3 ring-ring/50'
 									)}
 									aria-hidden="true"
 								>
@@ -265,8 +271,7 @@ async function copyText(): Promise<void> {
 								type="text"
 								inputmode="numeric"
 								pattern="[0-9]*"
-								maxlength="6"
-								autocomplete="one-time-code"
+								autocomplete="off"
 								value={rawCode}
 								oninput={handleCodeInput}
 								onfocus={() => {

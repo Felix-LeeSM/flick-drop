@@ -84,6 +84,11 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 		await input.focus();
 		await input.pressSequentially('74x1');
 		assert.equal(await input.inputValue(), '741');
+		// The invisible field holds only digits, so Backspace after a stray letter removes a digit.
+		await input.press('x');
+		await input.press('Backspace');
+		assert.equal(await input.inputValue(), '74');
+		await input.press('1');
 		// The key caps are decoration over the one transparent input; the next empty cap shows focus.
 		const caps = await input.evaluate((field) => {
 			const area = field.getBoundingClientRect();
@@ -108,6 +113,19 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 			[false, false, false, true, false, false]
 		);
 		assert.ok(caps.every((cap) => cap.hidden === 'true' && cap.covered && cap.inside));
+		// Forced colors drop the ring, so the focused cap also carries an outline that stays
+		// transparent until forced colors repaint it.
+		const outline = () =>
+			input.evaluate((field) => {
+				const style = getComputedStyle(field.parentElement.querySelectorAll('span.rounded-lg')[3]);
+				return [style.outlineStyle, style.outlineWidth, style.outlineColor];
+			});
+		assert.deepEqual(await outline(), ['solid', '2px', 'rgba(0, 0, 0, 0)']);
+		await page.emulateMedia({ forcedColors: 'active' });
+		const [style, width, color] = await outline();
+		assert.deepEqual([style, width], ['solid', '2px']);
+		assert.notEqual(color, 'rgba(0, 0, 0, 0)');
+		await page.emulateMedia({ forcedColors: 'none' });
 
 		const toggle = dialog.getByRole('button', { name: 'Has an additional passphrase?' });
 		assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
@@ -120,9 +138,10 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 			'true'
 		);
 
-		await input.focus();
-		await input.pressSequentially('928');
+		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
+		await input.fill('741-928');
 		await dialog.getByText('STEP 2 OF 2', { exact: true }).waitFor();
+		await dialog.getByText('Pipe: 741-928', { exact: true }).waitFor();
 		await dialog.getByRole('heading', { name: "Check sender's screen" }).waitFor();
 		assert.match(
 			await dialog.getByText('Confirmation Code').locator('xpath=..').innerText(),
