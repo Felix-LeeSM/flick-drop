@@ -525,11 +525,12 @@ for (const width of [375, 1280]) {
 							badge: box(badge),
 							wordmark: getComputedStyle(wordmark).fontSize,
 							link: box(header.querySelector('nav a')),
-							toggle: box(header.querySelector('button'))
+							toggle: box(header.querySelector('button[aria-label$=" theme"]'))
 						};
 					})
 				);
 				// The wordmark shrank twice in page-level edits; the shared header pins it and the link placement.
+				// The text link keeps the toggle's 36px height as its tap target.
 				const frame = frames.at(-1);
 				assert.deepEqual([frame.badge.width, frame.badge.height, frame.wordmark], [32, 32, '27px']);
 				assert.deepEqual([frame.link.height, frame.toggle.height], [36, 36]);
@@ -612,17 +613,29 @@ for (const width of [320, 375]) {
 				// create page has a pre-existing, unrelated type-selector overflow at large text sizes
 				// (main, before this PR stack) that would otherwise make this test flaky for forms[0].
 				const header = await page.evaluate(() => {
-					const box = (element) => element.getBoundingClientRect().toJSON();
+					const box = (element) => element?.getBoundingClientRect().toJSON();
 					const root = document.querySelector('header');
+					// The code action is the only header button named by its text; the toggle has a label.
 					return {
 						brand: box(root.querySelector('a')),
+						code: box(root.querySelector('button:not([aria-label])')),
 						link: box(root.querySelector('nav a')),
-						toggle: box(root.querySelector('button'))
+						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
-				assert.ok(header.link.right <= width, form.path);
-				assert.ok(header.toggle.right <= width, form.path);
-				assert.ok(header.toggle.top >= header.brand.bottom, form.path);
+				// The text-sized actions may still fit beside the wordmark; each one either does or
+				// wraps below it, and none crosses the viewport edge.
+				const actions =
+					form.name === 'sender'
+						? [header.code, header.link, header.toggle]
+						: [header.link, header.toggle];
+				for (const action of actions) {
+					assert.ok(action.right <= width, form.path);
+					assert.ok(
+						action.left >= header.brand.right || action.top >= header.brand.bottom,
+						form.path
+					);
+				}
 			}
 		} finally {
 			await page.close();
@@ -630,24 +643,36 @@ for (const width of [320, 375]) {
 	});
 }
 
-test('320px shared header keeps the link beside the theme toggle without overflow', async () => {
+test('320px shared header keeps the code action and link beside the theme toggle without overflow', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
 		await fixture(page);
 		for (const form of forms) {
 			await openForm(page, form);
 			const header = await page.evaluate(() => {
-				const box = (element) => element.getBoundingClientRect().toJSON();
+				const box = (element) => element?.getBoundingClientRect().toJSON();
 				const root = document.querySelector('header');
 				return {
 					brand: box(root.querySelector('a')),
+					code: box(root.querySelector('button:not([aria-label])')),
 					link: box(root.querySelector('nav a')),
-					toggle: box(root.querySelector('button')),
+					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
 			});
 			assert.equal(header.overflow, false);
-			assert.ok(header.brand.right < header.link.left);
+			// The code action used to be hidden below 640px; phones open the receive dialog from it too.
+			const first = form.name === 'sender' ? header.code : header.link;
+			if (form.name === 'sender') {
+				assert.equal(await page.getByRole('button', { name: 'Enter code' }).isVisible(), true);
+				assert.ok(header.code.right <= header.link.left);
+				assert.equal(header.code.top, header.link.top);
+			} else {
+				assert.equal(header.code, undefined);
+			}
+			// One row: the first action shares the wordmark's vertical center.
+			assert.ok(header.brand.right < first.left);
+			assert.equal(first.top + first.height / 2, header.brand.top + header.brand.height / 2);
 			assert.ok(header.link.right <= header.toggle.left);
 			assert.equal(header.link.top, header.toggle.top);
 		}

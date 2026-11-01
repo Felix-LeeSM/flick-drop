@@ -3,19 +3,19 @@ export type HeaderLink = { href: string; label: string };
 </script>
 
 <script lang="ts">
-import { LockKeyholeIcon, ZapIcon } from '@lucide/svelte';
+import { LockKeyholeIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
-import { buttonVariants } from '#lib/components/ui/button/index.js';
-import { cn } from '#lib/utils.js';
 
 // Every page renders this header, so the wordmark and the one optional link keep one size and place.
 // With large text the link and toggle wrap below the wordmark instead of widening the page.
 // The link and toggle can also wrap onto separate rows from each other: a long link label at a
 // large text-size setting must not push the toggle past the viewport edge either.
+// The code action and the link read as plain text, but each keeps the toggle's 36px row height
+// as its tap target.
 let { link, showEnterCode = false }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
 let receiveModalOpen = $state(false);
 let initialReceiveCode = $state('');
@@ -55,25 +55,27 @@ onMount(() => {
 		</span>
 		<span class="font-serif text-[1.6875rem] leading-none tracking-[-0.005em]">Flick</span>
 	</a>
-	<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-		{#if link}
-			<nav aria-label="Site" class="flex">
-				<a class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card')} href={link.href}>{link.label}</a>
-			</nav>
-		{/if}
-		<ThemeToggle />
+	<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
 		{#if showEnterCode}
 			<button
 				type="button"
-				class={cn(buttonVariants({ variant: 'outline', size: 'seg' }), 'bg-card dark:bg-card gap-1.5 hidden sm:inline-flex')}
+				class="inline-flex h-9 items-center rounded-sm text-xs font-medium text-foreground underline decoration-primary decoration-2 underline-offset-[6px] focus-visible:outline-2"
 				onclick={() => {
 					receiveModalOpen = true;
 				}}
 			>
-				<ZapIcon class="size-3.5 text-primary" aria-hidden="true" />
-				<span>Enter code</span>
+				<span class="sr-only">Enter </span>Code
 			</button>
 		{/if}
+		{#if link}
+			<nav aria-label="Site" class="flex">
+				<a
+					class="inline-flex h-9 items-center rounded-sm text-xs font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2"
+					href={link.href}>{link.label}</a
+				>
+			</nav>
+		{/if}
+		<ThemeToggle />
 	</div>
 </header>
 
