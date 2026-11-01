@@ -80,6 +80,10 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 		await dialog.getByText('STEP 1 OF 2', { exact: true }).waitFor();
 		await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
 
+		// The dialog moves focus to Close when it opens; typing before that lands would lose keys.
+		await page.waitForFunction(
+			() => document.activeElement?.getAttribute('aria-label') === 'Close'
+		);
 		const input = page.locator('#pipe-code-input');
 		await input.focus();
 		await input.pressSequentially('74x1');
@@ -89,6 +93,10 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 		await input.press('Backspace');
 		assert.equal(await input.inputValue(), '74');
 		await input.press('1');
+		// Measure after the dialog's zoom-in and the caps' lift settle.
+		await page.waitForFunction(
+			() => document.querySelector('[role="dialog"]').getAnimations({ subtree: true }).length === 0
+		);
 		// The key caps are decoration over the one transparent input; the next empty cap shows focus.
 		const caps = await input.evaluate((field) => {
 			const area = field.getBoundingClientRect();
