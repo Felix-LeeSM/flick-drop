@@ -27,10 +27,12 @@ import {
 } from '#lib/api/secrets.js';
 import CredentialForm from '#lib/components/CredentialForm.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
+import DeliveryTabs from '#lib/components/DeliveryTabs.svelte';
 import LifetimePicker from '#lib/components/LifetimePicker.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
 import PipeWaitingPanel from '#lib/components/PipeWaitingPanel.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
+import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
 import SuccessCheck from '#lib/components/SuccessCheck.svelte';
 import UrlField from '#lib/components/UrlField.svelte';
@@ -88,12 +90,18 @@ onMount(() => {
 const api = $derived(createSecretApiClient({ limits }));
 
 let mode = $state<CreateMode>('text');
+// The delivery choice is the first control of the page; the heading and the
+// option/submit blocks below adapt to it.
+let delivery = $state<'link' | 'code'>('link');
+let receiveModalOpen = $state(false);
 let plaintext = $state('');
 let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
 let passphrase = $state('');
 // Model A (true) derives key + access proof from a passphrase; Model B (false)
 // generates a random key carried in the URL fragment. See security-model.md.
-let usePassphrase = $state(true);
+// Both toggles default OFF: the link key / 6-digit code already encrypts, and
+// the confirmation step is opt-in.
+let usePassphrase = $state(false);
 let revealPassphrase = $state(false);
 let ttlSeconds = $state(DEFAULT_TTL_SECONDS);
 // pickedFiles is what the user chose; selectedFile is what actually uploads —
@@ -122,11 +130,10 @@ let pipeSalt = $state('');
 let pipeStatus = $state('Waiting for receiver to enter code...');
 let pipeProgress = $state(0);
 let pipeCompleted = $state(false);
-let pipeRequireApproval = $state(true);
+let pipeRequireApproval = $state(false);
 let pipeApprovalStatus = $state<'idle' | 'pending' | 'approved' | 'rejected'>('idle');
 let pipeMatchCode = $state('482');
 let pipeExpiresIn = $state(180);
-let isHoveringPipe = $state(false);
 let pipeAbortController = $state<AbortController | null>(null);
 
 onDestroy(() => {
@@ -186,6 +193,11 @@ const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 
 function submitCreate(event: SubmitEvent): void {
 	event.preventDefault();
+	// On the code tab the form has no visible submit button; an implicit Enter
+	// submit there would silently create a link the user is not asking for.
+	if (delivery === 'code') {
+		return;
+	}
 	void createSecret();
 }
 
@@ -648,10 +660,7 @@ function modeLabel(value: CreateMode): string {
 	<title>Create secret - Flick</title>
 </svelte:head>
 
-<DeliveryFrame
-	link={{ href: resolve('request'), label: 'Request a secret' }}
-	showEnterCode={true}
->
+<DeliveryFrame>
 	{#if pipeActiveCode !== null}
 		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
 			<PipeWaitingPanel
@@ -742,7 +751,29 @@ function modeLabel(value: CreateMode): string {
 					<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 					end-to-end encrypted · burns after read
 				</p>
-				<h1 class="page-title">Create a secret</h1>
+				<!-- The heading adapts to the delivery choice: each tab names its own flow,
+				     and the sublink under it is that flow's other entry point. -->
+				<h1 class="page-title">{delivery === 'code' ? 'Send a secret' : 'Create a secret'}</h1>
+				{#if delivery === 'code'}
+					<p class="text-sm text-muted-foreground">
+						Received a 6-digit code?
+						<button
+							type="button"
+							class="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+							onclick={() => {
+								receiveModalOpen = true;
+							}}
+						>Enter it here</button>
+					</p>
+				{:else}
+					<p class="text-sm text-muted-foreground">
+						Need one from someone else?
+						<a
+							class="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+							href={resolve('request')}
+						>Request a secret</a>
+					</p>
+				{/if}
 			</div>
 
 			<form
@@ -750,6 +781,8 @@ function modeLabel(value: CreateMode): string {
 				autocomplete="off"
 				onsubmit={submitCreate}
 			>
+				<DeliveryTabs bind:delivery={delivery} disabled={!isHydrated || isCreating} />
+
 				<SecretTypeSelector
 					value={mode}
 					disabled={!isHydrated || isCreating}
@@ -865,190 +898,168 @@ function modeLabel(value: CreateMode): string {
 					</div>
 				{/if}
 
-				<div class="grid gap-2.5">
-					<div class="flex min-h-9 items-center gap-2">
-							<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} />
-							<Label for="use-passphrase" class="text-sm font-medium">
+				{#if delivery === 'link'}
+					<div class="flex items-start gap-2.5">
+						<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} class="mt-0.5" />
+						<div class="grid gap-1">
+							<Label for="use-passphrase" class="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-foreground">
+								<LockKeyholeIcon class="size-3.5 text-primary" aria-hidden="true" />
 								Protect with an additional passphrase
 							</Label>
+							{#if !usePassphrase}
+								<!-- Not "end-to-end" here: the API issues a code transfer's code and salt, so
+								     only a passphrase keeps that transfer from the server. -->
+								<p class="text-[0.8125rem] text-muted-foreground">
+									The secret stays encrypted without it — this only adds a passphrase for your
+									recipient.
+								</p>
+							{/if}
+						</div>
 					</div>
 					{#if usePassphrase}
-						<!-- Indented to the checkbox label. The field keeps its own visible label; a
-						     placeholder would vanish on typing. -->
-						<div class="grid gap-2 pl-6">
-							<div class="flex items-center justify-between gap-3">
-								<Label for="secret-passphrase" class="text-xs font-medium text-muted-foreground">
-									Additional passphrase
-								</Label>
-								<button
-									type="button"
-									class="inline-flex min-h-6 items-center gap-1 rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-2 disabled:pointer-events-none disabled:opacity-50"
-									disabled={isCreating}
-									onclick={() => {
-										passphrase = generatePassphrase();
-										revealPassphrase = true;
-									}}
-								>
-									<WandSparklesIcon class="size-3" aria-hidden="true" />
-									Generate
-								</button>
-							</div>
+						<!-- Indented to the checkbox label. Single inline field: the placeholder is
+						     the visible name (the checkbox above already made "additional" clear), and
+						     both in-field icons keep the 44px row-height tap target. -->
+						<div class="pl-6">
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
 									name="flick-passphrase"
 									type={revealPassphrase ? 'text' : 'password'}
+									placeholder="Add a passphrase"
+									aria-label="Additional passphrase"
 									autocomplete="off"
 									autocapitalize="none"
 									spellcheck="false"
 									data-1p-ignore="true"
 									data-bwignore="true"
 									data-lpignore="true"
-									class="h-11 pr-11 font-mono"
+									class="h-11 pr-22 font-mono"
 									bind:value={passphrase}
 									disabled={isCreating}
 									required
 								/>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
-									aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-									title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-									onclick={() => {
-										revealPassphrase = !revealPassphrase;
-									}}
-								>
-									{#if revealPassphrase}
-										<EyeOffIcon class="size-4" aria-hidden="true" />
-									{:else}
-										<EyeIcon class="size-4" aria-hidden="true" />
-									{/if}
-								</Button>
+								<div class="absolute right-0 top-0 flex h-11 items-center">
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										class="size-11 text-muted-foreground hover:text-foreground"
+										aria-label="Generate passphrase"
+										title="Generate passphrase"
+										disabled={isCreating}
+										onclick={() => {
+											passphrase = generatePassphrase();
+											revealPassphrase = true;
+										}}
+									>
+										<WandSparklesIcon class="size-4" aria-hidden="true" />
+									</Button>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										class="size-11 text-muted-foreground hover:text-foreground"
+										aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+										title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+										onclick={() => {
+											revealPassphrase = !revealPassphrase;
+										}}
+									>
+										{#if revealPassphrase}
+											<EyeOffIcon class="size-4" aria-hidden="true" />
+										{:else}
+											<EyeIcon class="size-4" aria-hidden="true" />
+										{/if}
+									</Button>
+								</div>
 							</div>
-							<p class="text-xs text-muted-foreground">
-								Share this passphrase separately. Your recipient will need to enter it before the
-								secret unlocks.
-							</p>
 						</div>
-					{:else}
-						<!-- Not "end-to-end" here: the API issues a code transfer's code and salt, so only a
-						     passphrase keeps that transfer from the server. -->
-						<p class="pl-6 text-xs text-muted-foreground">
-							Already encrypted with the link key or the 6-digit code. Turn this on if you also want
-							the recipient to type a passphrase.
-						</p>
 					{/if}
-				</div>
 
-				<!-- Live transfer confirmation option -->
-				<div class="grid gap-2.5 rounded-xl border border-border/80 bg-muted/20 p-4">
+					<div class="grid gap-2.5">
+						<span class="flex items-center gap-1.5 text-sm font-medium">
+							<ClockIcon class="size-4" aria-hidden="true" />
+							Expires after
+						</span>
+						<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" label="" />
+					</div>
+
+					<div class="grid gap-3">
+						<Button type="submit" size="cta" disabled={!canCreate}>
+							<LockKeyholeIcon class="size-4" aria-hidden="true" />
+							{isCreating ? 'Creating' : 'Create link'}
+						</Button>
+						<p class="micro -mt-2 flex items-center justify-center gap-1.5 text-muted-foreground">
+							<FlameIcon class="size-3" aria-hidden="true" />
+							<span>burns after a single open</span>
+						</p>
+					</div>
+				{:else}
 					<div class="flex items-start gap-2.5">
 						<Checkbox id="require-confirmation" bind:checked={pipeRequireApproval} disabled={isCreating} class="mt-0.5" />
 						<div class="grid gap-1">
-							<Label for="require-confirmation" class="cursor-pointer text-sm font-medium text-foreground flex items-center gap-1.5">
+							<Label for="require-confirmation" class="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-foreground">
 								<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 								<span>Require confirmation before transfer</span>
 							</Label>
 							<p class="text-[0.8125rem] text-muted-foreground">
 								{#if pipeRequireApproval}
-									Requires verifying the 3-digit confirmation code on both devices before transmitting.
+									Verify the 3-digit code on both devices before sending.
 								{:else}
-									Streams encrypted data immediately when the receiver enters the code.
+									Streams immediately once the receiver enters the code.
 								{/if}
 							</p>
 						</div>
 					</div>
-				</div>
 
-				<!-- Lifetime picker with hover feedback -->
-				<div class={cn('transition-opacity duration-200', isHoveringPipe && 'opacity-40')}>
-					<div class="flex items-center justify-between pb-1">
-						<span class="text-xs font-medium text-muted-foreground">Link expiration</span>
-						{#if isHoveringPipe}
-							<span class="flex items-center gap-1 text-[11px] font-semibold text-burn animate-pulse">
-								<FlameIcon class="size-3 text-burn" aria-hidden="true" />
-								Code transfer uses fixed 3-minute in-memory relay
-							</span>
-						{/if}
-					</div>
-					<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" />
-				</div>
-
-				<div class="grid gap-3">
-					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-						<Button type="submit" size="cta" disabled={!canCreate}>
-							<LockKeyholeIcon class="size-4" aria-hidden="true" />
-							{isCreating ? 'Creating' : 'Create link'}
-						</Button>
-
+					<div class="grid gap-3">
 						<Button
 							type="button"
 							variant="outline"
 							size="cta"
 							disabled={!canPipe}
 							class="gap-2 font-bold border-primary/40 bg-primary/5 hover:bg-primary/10 text-primary shadow-xs"
-							onmouseenter={() => {
-								isHoveringPipe = true;
-							}}
-							onmouseleave={() => {
-								isHoveringPipe = false;
-							}}
-							onfocus={() => {
-								isHoveringPipe = true;
-							}}
-							onblur={() => {
-								isHoveringPipe = false;
-							}}
 							onclick={startPipeSend}
 						>
 							<ZapIcon class="size-4 text-primary" aria-hidden="true" />
-							<span>Send with code</span>
+							<span>Start live transfer</span>
 						</Button>
-					</div>
-
-					<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
-						<FlameIcon class="size-3.5 text-burn" aria-hidden="true" />
-						<span>Send with code streams directly in-memory with 0B storage</span>
-					</p>
-
-					<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
-					{#if statusKind === 'uploading'}
-						<Button
-							type="button"
-							variant="outline"
-							class="h-11 w-full"
-							onclick={cancelCreate}
-						>
-							Cancel
-						</Button>
-						<progress
-							class="h-2 w-full accent-primary"
-							aria-label="Encrypted file upload progress"
-							max={uploadProgress?.total ?? 1}
-							value={uploadProgress?.total ? uploadProgress.loaded : undefined}
-						></progress>
-					{/if}
-					{#if status.length > 0}
-						<p
-							class="text-sm"
-							class:text-muted-foreground={statusKind !== 'error'}
-							class:text-destructive={statusKind === 'error'}
-							role={statusKind === 'error' ? 'alert' : 'status'}
-							aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
-						>
-							{status}
+						<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
+							<ClockIcon class="size-3" aria-hidden="true" />
+							<span>fixed 3-minute in-memory relay · 0B storage</span>
 						</p>
-					{/if}
-					<p
-						class="micro flex items-center justify-center gap-1.5"
-						style="color: color-mix(in oklch, var(--burn) 70%, var(--muted-foreground))"
+					</div>
+				{/if}
+
+				<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
+				{#if statusKind === 'uploading'}
+					<Button
+						type="button"
+						variant="outline"
+						class="h-11 w-full"
+						onclick={cancelCreate}
 					>
-						<FlameIcon class="size-3.5" aria-hidden="true" />
-						burns after a single open
+						Cancel
+					</Button>
+					<progress
+						class="h-2 w-full accent-primary"
+						aria-label="Encrypted file upload progress"
+						max={uploadProgress?.total ?? 1}
+						value={uploadProgress?.total ? uploadProgress.loaded : undefined}
+					></progress>
+				{/if}
+				{#if status.length > 0}
+					<p
+						class="text-sm"
+						class:text-muted-foreground={statusKind !== 'error'}
+						class:text-destructive={statusKind === 'error'}
+						role={statusKind === 'error' ? 'alert' : 'status'}
+						aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
+					>
+						{status}
 					</p>
-				</div>
+				{/if}
 			</form>
 		</section>
 	{/if}
@@ -1070,3 +1081,11 @@ function modeLabel(value: CreateMode): string {
 </DeliveryFrame>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />
+
+<!-- Opened from the code tab's "Enter it here" sublink. SiteHeader keeps its own
+     instance for the #code= deep link; at most one is open at a time. -->
+<ReceiveCodeModal
+	bind:open={receiveModalOpen}
+	initialCode=""
+	apiBaseUrl={DEFAULT_API_BASE_URL}
+/>
