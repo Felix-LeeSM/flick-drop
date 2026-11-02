@@ -200,12 +200,14 @@ describe('client API hooks', () => {
 		let capturedMethod = '';
 		let capturedHeaders: Record<string, string> = {};
 		let capturedDuplex = '';
+		let capturedBody: unknown = null;
 
 		const mockFetch: typeof fetch = (_url, init) => {
 			capturedMethod = init?.method ?? '';
 			capturedHeaders = (init?.headers as Record<string, string>) ?? {};
 			// @ts-expect-error test inspection
 			capturedDuplex = init?.duplex ?? '';
+			capturedBody = init?.body ?? null;
 			return Promise.resolve(
 				new Response(JSON.stringify({ status: 'completed', bytes_transferred: 1024 }), {
 					status: 200
@@ -213,16 +215,19 @@ describe('client API hooks', () => {
 			);
 		};
 
-		const dummyStream = new ReadableStream<Uint8Array>({
-			start(c) {
-				c.close();
-			}
-		});
+		// A request body stream can be consumed only once, so each call gets a
+		// fresh one.
+		const makeStream = () =>
+			new ReadableStream<Uint8Array>({
+				start(c) {
+					c.close();
+				}
+			});
 
 		const bytes = await sendPipeStream({
 			baseUrl: 'http://localhost:8080',
 			code: '987-654',
-			stream: dummyStream,
+			stream: makeStream(),
 			kind: 'file',
 			encryptedFilename: 'enc_filename_token',
 			fetcher: mockFetch
@@ -233,6 +238,17 @@ describe('client API hooks', () => {
 		expect(capturedHeaders['X-Flick-Pipe-Code']).toBe('987654');
 		expect(capturedHeaders['Flick-Kind']).toBe('file');
 		expect(capturedHeaders['Flick-Encrypted-Filename']).toBe('enc_filename_token');
+		// Plaintext HTTP/1.1 targets get a buffered Blob body: Chromium refuses
+		// streaming uploads without HTTP/2.
+		expect(capturedDuplex).toBe('');
+		expect(capturedBody).toBeInstanceOf(Blob);
+
+		await sendPipeStream({
+			baseUrl: 'https://flick.example',
+			code: '987-654',
+			stream: makeStream(),
+			fetcher: mockFetch
+		});
 		expect(capturedDuplex).toBe('half');
 
 		const mockFetch502: typeof fetch = () =>
@@ -241,7 +257,7 @@ describe('client API hooks', () => {
 			sendPipeStream({
 				baseUrl: 'http://localhost:8080',
 				code: '987654',
-				stream: dummyStream,
+				stream: makeStream(),
 				fetcher: mockFetch502
 			})
 		).rejects.toThrow('Receiver disconnected during live transfer.');
