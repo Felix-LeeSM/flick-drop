@@ -26,7 +26,15 @@ async function prepare(page, bytes) {
 		mimeType: 'application/octet-stream',
 		buffer: bytes
 	});
+	// The passphrase field appears only after the option is checked (it ships OFF).
+	await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).click();
 	await page.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
+}
+
+// The Delivery tab is also named "Create link"; the form's submit button is the
+// one that starts the upload.
+function createLinkButton(page) {
+	return page.locator('button[type="submit"]', { hasText: 'Create link' });
 }
 
 for (const [name, size] of [
@@ -59,7 +67,7 @@ for (const [name, size] of [
 				});
 			}
 			await prepare(page, original);
-			await page.getByRole('button', { name: 'Create link', exact: true }).click();
+			await createLinkButton(page).click();
 			if (name === 'large') {
 				await page.getByRole('status').filter({ hasText: 'Finalizing link' }).waitFor();
 				assert.equal(await page.getByLabel('Share URL').count(), 0);
@@ -112,16 +120,13 @@ test('cancelled upload never finalizes or publishes a share URL', async () => {
 			}
 		});
 		await prepare(page, Buffer.alloc(2 * 1024 * 1024, 42));
-		await page.getByRole('button', { name: 'Create link', exact: true }).click();
+		await createLinkButton(page).click();
 		await page.getByRole('progressbar', { name: 'Encrypted file upload progress' }).waitFor();
 		await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 		await page.getByRole('status').filter({ hasText: 'Upload cancelled.' }).waitFor();
 		assert.equal(await page.getByLabel('Share URL').count(), 0);
 		assert.equal(await page.getByRole('progressbar').count(), 0);
-		assert.equal(
-			await page.getByRole('button', { name: 'Create link', exact: true }).isEnabled(),
-			true
-		);
+		assert.equal(await createLinkButton(page).isEnabled(), true);
 		assert.equal(finalizes, 0);
 	} finally {
 		await page.close();

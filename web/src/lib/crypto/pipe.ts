@@ -257,8 +257,9 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 	// not https — browsers negotiate HTTP/2 (or let Chromium stream) on https
 	// only, which is every publicly deployed Flick target.
 	const streamRequestBody = normalized.startsWith('https');
-	const body: BodyInit =
-		streamRequestBody ? stream : new Blob([(await streamToBytes(stream)) as Uint8Array<ArrayBuffer>]);
+	const body: BodyInit = streamRequestBody
+		? stream
+		: new Blob([(await streamToBytes(stream)) as Uint8Array<ArrayBuffer>]);
 
 	const init: RequestInit = { method: 'POST', headers, body, signal };
 	if (streamRequestBody) {
