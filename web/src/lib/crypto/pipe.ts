@@ -250,14 +250,24 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 		headers['Flick-Encrypted-Filename'] = encryptedFilename;
 	}
 
-	const response = await fetcher(`${normalized}/api/pipe/send`, {
-		method: 'POST',
-		headers,
-		body: stream,
+	// Chromium only allows streaming request bodies over HTTP/2; against a
+	// plaintext HTTP/1.1 API (local dev) the fetch fails with
+	// ERR_ALPN_NEGOTIATION_FAILED, and the rejected fetch has already consumed
+	// the stream. So buffer the encrypted bytes up front whenever the target is
+	// not https — browsers negotiate HTTP/2 (or let Chromium stream) on https
+	// only, which is every publicly deployed Flick target.
+	const streamRequestBody = normalized.startsWith('https');
+	const body: BodyInit = streamRequestBody
+		? stream
+		: new Blob([(await streamToBytes(stream)) as Uint8Array<ArrayBuffer>]);
+
+	const init: RequestInit = { method: 'POST', headers, body, signal };
+	if (streamRequestBody) {
 		// @ts-expect-error duplex option is standard in Fetch spec for streaming uploads
-		duplex: 'half',
-		signal
-	});
+		init.duplex = 'half';
+	}
+
+	const response = await fetcher(`${normalized}/api/pipe/send`, init);
 
 	if (!response.ok) {
 		if (response.status === 404) {

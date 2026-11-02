@@ -21,7 +21,8 @@
 		"test:guides": "node --test src/lib/components/Guides.live.mjs",
 		"test:sponsor": "node --test src/lib/components/SponsorSlot.live.mjs",
 		"test:requests": "node --test src/lib/components/RequestPages.live.mjs",
-		"test:request-storage": "node --test src/lib/components/RequestUpload.live.mjs"
+		"test:request-storage": "node --test src/lib/components/RequestUpload.live.mjs",
+		"test:pipe": "node --test ../tests/e2e/pipe-relay.live.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.0",
