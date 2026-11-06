@@ -24,8 +24,6 @@ const presets = [
 	['7 days', 604_800]
 ];
 const typeNames = ['Text', 'File', 'Login', 'Card', 'Identity', 'Custom'];
-// Unselected cells too narrow for the full name at 320px show these instead.
-const shortTypeNames = { Identity: 'ID' };
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -99,7 +97,6 @@ async function openForm(page, form, content = false) {
 	await page.evaluate(() => document.fonts.ready);
 	if (form.name === 'sender' && content) {
 		await page.getByLabel('Message', { exact: true }).fill('Synthetic lifetime regression');
-		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
 	}
 }
 
@@ -251,58 +248,57 @@ function stable(actual, expected) {
 	});
 }
 
-// The name each type cell shows. A short name is hidden from screen readers behind the full one.
-function shownNames(group) {
-	return group
-		.getByRole('button')
-		.evaluateAll((buttons) =>
-			buttons.map((button) => button.querySelector('span:not(.sr-only)').textContent.trim())
-		);
-}
+// The underline tablist holding the type tabs (prototype round 30, T8).
+const typeTablist = (page) => page.getByRole('tablist', { name: 'Secret type', exact: true });
+const typeTabs = (page) => typeTablist(page).getByRole('tab');
+const typeTab = (page, name) => typeTablist(page).getByRole('tab', { name, exact: true });
 
-// One row at every width: the selected type widens into its full name, every other cell is
-// narrower and keeps a short name that fits, and nothing crosses the selector or the viewport.
-async function typeRow(page, group, selected) {
-	// A selection animates the cell widths; measure once the transition settles.
+// One row at every width: exactly one active tab in the fixed order, the underline
+// sits under the active tab, and the row never widens the page — the tablist
+// scrolls horizontally where six labels do not fit.
+async function typeRow(page, selected) {
+	// A selection animates the underline; measure once the transition settles.
 	await page.waitForFunction(
 		() =>
-			document.querySelector('[aria-label="Secret type"]').getAnimations({ subtree: true })
-				.length === 0
+			document.querySelector('[role="tablist"][aria-label="Secret type"]').getAnimations({
+				subtree: true
+			}).length === 0
 	);
-	const row = await boxes(group);
-	assert.ok(
-		row.every((box) => Math.abs(box.y - row[0].y) < 1),
-		'type buttons wrapped'
+	const row = await typeTabs(page).evaluateAll((tabs) =>
+		tabs.map((tab) => {
+			const { x, y, width } = tab.getBoundingClientRect();
+			return { name: tab.textContent.trim(), x, y, width };
+		})
 	);
 	assert.deepEqual(
-		await shownNames(group),
-		typeNames.map((name) => (name === selected ? name : (shortTypeNames[name] ?? name)))
+		row.map((box) => box.name),
+		typeNames
 	);
-	const widest = row[typeNames.indexOf(selected)];
 	assert.ok(
-		row.every((box) => box === widest || box.width < widest.width),
-		`${selected} is not the widest type`
+		row.every((box) => Math.abs(box.y - row[0].y) < 1),
+		'type tabs wrapped'
 	);
-	assert.equal(
-		await group.evaluate((pill) => {
-			const outer = pill.getBoundingClientRect();
-			return (
-				outer.right <= innerWidth &&
-				[...pill.querySelectorAll('button')].every((button) => {
-					const box = button.getBoundingClientRect();
-					const name = button.querySelector('span:not(.sr-only)').getBoundingClientRect();
-					return (
-						box.left >= outer.left &&
-						box.right <= outer.right &&
-						name.left >= box.left &&
-						name.right <= box.right
-					);
-				})
-			);
-		}),
-		true,
-		'type names overflow their cells or the selector'
+	assert.deepEqual(
+		await typeTabs(page).evaluateAll((tabs) =>
+			tabs
+				.map((tab) =>
+					tab.getAttribute('aria-selected') === 'true' ? tab.textContent.trim() : null
+				)
+				.filter(Boolean)
+		),
+		[selected]
 	);
+	const indicator = await page.waitForFunction(() => {
+		const list = document.querySelector('[role="tablist"][aria-label="Secret type"]');
+		const bar = list.querySelector('span[aria-hidden="true"]').getBoundingClientRect();
+		const active = [...list.querySelectorAll('[role="tab"]')].find(
+			(tab) => tab.getAttribute('aria-selected') === 'true'
+		);
+		const tab = active.getBoundingClientRect();
+		return Math.abs(bar.left - tab.left) < 1 && Math.abs(bar.right - tab.right) < 1;
+	});
+	assert.ok(indicator, 'underline is not under the active tab');
+	assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 }
 
 async function editorVisible(page, name) {
@@ -319,39 +315,31 @@ async function editorVisible(page, name) {
 }
 
 for (const reducedMotion of ['no-preference', 'reduce']) {
-	test(`type selector settles on the last of rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
+	test(`type tabs settle on the last of rapid choices across viewport widths with motion ${reducedMotion}`, async () => {
 		const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion });
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			const group = page.getByRole('group', { name: 'Secret type', exact: true });
-			await typeRow(page, group, 'Text');
+			await typeRow(page, 'Text');
 			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
-				// No wait for the widening between clicks: the final choice must win.
+				// No wait between clicks: the final choice must win.
 				for (const name of ['Custom', 'File', 'Identity']) {
-					await group.getByRole('button', { name, exact: true }).click();
+					await typeTab(page, name).click();
 				}
-				assert.equal(
-					await group
-						.getByRole('button', { name: 'Identity', exact: true })
-						.getAttribute('aria-pressed'),
-					'true'
-				);
+				assert.equal(await typeTab(page, 'Identity').getAttribute('aria-selected'), 'true');
 				await editorVisible(page, 'Identity');
-				await typeRow(page, group, 'Identity');
-				// Custom has the widest name, so it is the tightest fit on the narrowest phone.
-				await group.getByRole('button', { name: 'Custom', exact: true }).click();
-				await typeRow(page, group, 'Custom');
-				// Reduced motion swaps the widening animation for an immediate change.
-				const transitions = await group
-					.getByRole('button')
-					.evaluateAll((buttons) =>
-						buttons.map((button) => getComputedStyle(button).transitionProperty)
-					);
+				await typeRow(page, 'Identity');
+				// Custom is the tightest fit on the narrowest phone; picking it scrolls the row.
+				await typeTab(page, 'Custom').click();
+				await typeRow(page, 'Custom');
+				// Reduced motion swaps the sliding underline for an immediate move.
+				const transitions = await typeTabs(page).evaluateAll((tabs) =>
+					tabs.map((tab) => getComputedStyle(tab).transitionProperty)
+				);
 				assert.ok(
 					transitions.every((property) =>
-						reducedMotion === 'reduce' ? property === 'none' : property.includes('flex-grow')
+						reducedMotion === 'reduce' ? property === 'none' : property.includes('color')
 					),
 					transitions.join(' | ')
 				);
@@ -362,7 +350,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 	});
 }
 
-test('type buttons stay disabled until hydration attaches their handlers', async () => {
+test('type tabs stay disabled until hydration attaches their handlers', async () => {
 	const page = await browser.newPage();
 	let releaseScripts;
 	let scriptRequested;
@@ -383,25 +371,21 @@ test('type buttons stay disabled until hydration attaches their handlers', async
 			return route.continue();
 		});
 		await page.goto(baseUrl, { waitUntil: 'commit' });
-		const group = page.getByRole('group', { name: 'Secret type', exact: true });
+		const group = typeTablist(page);
 		await group.waitFor();
 		await requested;
 		assert.equal(await page.locator('#svelte-announcer').count(), 0);
 		assert.deepEqual(
-			await group
-				.getByRole('button')
-				.evaluateAll((buttons) => buttons.map((button) => button.disabled)),
+			await typeTabs(page).evaluateAll((tabs) => tabs.map((tab) => tab.disabled)),
 			typeNames.map(() => true)
 		);
 		releaseScripts();
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		assert.deepEqual(
-			await group
-				.getByRole('button')
-				.evaluateAll((buttons) => buttons.map((button) => button.disabled)),
+			await typeTabs(page).evaluateAll((tabs) => tabs.map((tab) => tab.disabled)),
 			typeNames.map(() => false)
 		);
-		await group.getByRole('button', { name: 'File', exact: true }).click();
+		await typeTab(page, 'File').click();
 		await editorVisible(page, 'File');
 	} finally {
 		releaseScripts();
@@ -412,7 +396,7 @@ test('type buttons stay disabled until hydration attaches their handlers', async
 
 for (const width of [375, 1280]) {
 	const phone = width < 768;
-	test(`${width}px type targets stay stationary on hover and focus, and widen the selected type in one row`, async () => {
+	test(`${width}px type tabs stay stationary on hover and focus in one row`, async () => {
 		const page = await browser.newPage({
 			viewport: { width, height: 1000 },
 			isMobile: width === 375,
@@ -421,10 +405,9 @@ for (const width of [375, 1280]) {
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			const group = page.getByRole('group', { name: 'Secret type', exact: true });
-			await typeRow(page, group, 'Text');
-			const initial = await boxes(group);
-			const file = await group.getByRole('button', { name: 'File', exact: true }).boundingBox();
+			await typeRow(page, 'Text');
+			const initial = await boxes(typeTablist(page));
+			const file = await typeTab(page, 'File').boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
 			await page.mouse.move(point.x, point.y);
 			for (const delay of [50, 400]) {
@@ -436,24 +419,24 @@ for (const width of [375, 1280]) {
 					),
 					'File'
 				);
-				stable(await boxes(group), initial);
+				stable(await boxes(typeTablist(page)), initial);
 			}
 			const pointerAction = phone ? 'tap' : 'click';
 			for (const input of ['pointer', 'keyboard']) {
 				for (const name of typeNames) {
-					const button = group.getByRole('button', { name, exact: true });
+					const button = typeTab(page, name);
 					if (input === 'keyboard') {
-						const current = await boxes(group);
+						const current = await boxes(typeTablist(page));
 						await button.focus();
 						await page.waitForTimeout(400);
-						stable(await boxes(group), current);
+						stable(await boxes(typeTablist(page)), current);
 						await page.keyboard.press('Enter');
 					} else {
 						await button[pointerAction]();
 					}
-					assert.equal(await button.getAttribute('aria-pressed'), 'true');
+					assert.equal(await button.getAttribute('aria-selected'), 'true');
 					await editorVisible(page, name);
-					await typeRow(page, group, name);
+					await typeRow(page, name);
 					assert.equal(
 						await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 						true
@@ -488,17 +471,15 @@ for (const width of [375, 1280]) {
 							font: [font.fontFamily, font.fontSize, font.lineHeight],
 							badge: box(badge),
 							wordmark: getComputedStyle(wordmark).fontSize,
-							link: box(header.querySelector('nav a')),
 							toggle: box(header.querySelector('button[aria-label$=" theme"]'))
 						};
 					})
 				);
-				// The wordmark shrank twice in page-level edits; the shared header pins it and the link placement.
-				// The text link keeps the toggle's 36px height as its tap target.
+				// The wordmark shrank twice in page-level edits; the shared header pins it.
+				// The toggle keeps its 36px tap target at every width.
 				const frame = frames.at(-1);
 				assert.deepEqual([frame.badge.width, frame.badge.height, frame.wordmark], [32, 32, '27px']);
-				assert.deepEqual([frame.link.height, frame.toggle.height], [36, 36]);
-				assert.ok(frame.link.x + frame.link.width <= frame.toggle.x);
+				assert.equal(frame.toggle.height, 36);
 				if (screenshotDir) {
 					await page.screenshot({
 						path: join(screenshotDir, `${form.name}-${width}.png`),
@@ -579,21 +560,17 @@ for (const width of [320, 375]) {
 				const header = await page.evaluate(() => {
 					const box = (element) => element?.getBoundingClientRect().toJSON();
 					const root = document.querySelector('header');
-					// The code action is the only header button named by its text; the toggle has a label.
 					return {
 						brand: box(root.querySelector('a')),
-						code: box(root.querySelector('button:not([aria-label])')),
 						link: box(root.querySelector('nav a')),
 						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
-				// The text-sized actions may still fit beside the wordmark; each one either does or
-				// wraps below it, and none crosses the viewport edge.
-				const actions =
-					form.name === 'sender'
-						? [header.code, header.link, header.toggle]
-						: [header.link, header.toggle];
-				for (const action of actions) {
+				// Only the request page keeps a text link; the home header is brand + theme only
+				// (the request and code entries live in the adaptive heading, prototype R1).
+				// Each text-sized action either fits beside the wordmark or wraps below it, and
+				// none crosses the viewport edge.
+				for (const action of [header.link, header.toggle].filter(Boolean)) {
 					assert.ok(action.right <= width, form.path);
 					assert.ok(
 						action.left >= header.brand.right || action.top >= header.brand.bottom,
@@ -607,7 +584,7 @@ for (const width of [320, 375]) {
 	});
 }
 
-test('320px shared header keeps the code action and link beside the theme toggle without overflow', async () => {
+test('320px shared header stays one row beside the theme toggle without overflow', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
 		await fixture(page);
@@ -618,27 +595,25 @@ test('320px shared header keeps the code action and link beside the theme toggle
 				const root = document.querySelector('header');
 				return {
 					brand: box(root.querySelector('a')),
-					code: box(root.querySelector('button:not([aria-label])')),
 					link: box(root.querySelector('nav a')),
 					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
 			});
 			assert.equal(header.overflow, false);
-			// The code action used to be hidden below 640px; phones open the receive dialog from it too.
-			const first = form.name === 'sender' ? header.code : header.link;
-			if (form.name === 'sender') {
-				assert.equal(await page.getByRole('button', { name: 'Enter code' }).isVisible(), true);
-				assert.ok(header.code.right <= header.link.left);
-				assert.equal(header.code.top, header.link.top);
-			} else {
-				assert.equal(header.code, undefined);
+			// One row at the narrowest supported width: brand and toggle share the
+			// wordmark's vertical center, and the request page's text link sits between them.
+			const first = header.link ?? header.toggle;
+			assert.ok(header.brand.right < first.left, form.path);
+			assert.equal(
+				first.top + first.height / 2,
+				header.brand.top + header.brand.height / 2,
+				form.path
+			);
+			if (header.link) {
+				assert.ok(header.link.right <= header.toggle.left);
+				assert.equal(header.link.top, header.toggle.top);
 			}
-			// One row: the first action shares the wordmark's vertical center.
-			assert.ok(header.brand.right < first.left);
-			assert.equal(first.top + first.height / 2, header.brand.top + header.brand.height / 2);
-			assert.ok(header.link.right <= header.toggle.left);
-			assert.equal(header.link.top, header.toggle.top);
 		}
 	} finally {
 		await page.close();
@@ -652,33 +627,35 @@ for (const theme of ['light', 'dark']) {
 			await page.addInitScript((value) => localStorage.setItem('flick-theme', value), theme);
 			await fixture(page);
 			await openForm(page, forms[0]);
-			const button = page.getByRole('button', { name: 'Create link', exact: true });
+			const button = page.locator('form button[type="submit"]');
 			assert.equal(await button.isDisabled(), true);
 			assert.equal(
 				await page.evaluate(() => document.documentElement.classList.contains('dark')),
 				theme === 'dark'
 			);
-			// 50% opacity made it faded teal in light and nearly enabled-looking in dark.
+			// The solid foreground at half opacity — visibly off in both themes — and
+			// disabled:shadow-none drops the cta glow: disabled:shadow-none resets the
+			// shadow variables, so every remaining box-shadow layer reads as transparent.
 			const style = await button.evaluate((element) => {
 				const probe = document.createElement('span');
-				probe.style.backgroundColor = 'var(--muted)';
+				probe.style.backgroundColor = 'var(--foreground)';
 				document.body.append(probe);
-				const muted = getComputedStyle(probe).backgroundColor;
+				const foreground = getComputedStyle(probe).backgroundColor;
 				probe.remove();
 				const computed = getComputedStyle(element);
 				const layers =
 					computed.boxShadow === 'none' ? [] : computed.boxShadow.split(/,(?![^(]*\))/);
 				return {
-					muted,
+					foreground,
 					background: computed.backgroundColor,
 					opacity: computed.opacity,
 					shadow: layers.some((layer) => !layer.includes('rgba(0, 0, 0, 0)'))
 				};
 			});
 			assert.deepEqual(style, {
-				muted: style.muted,
-				background: style.muted,
-				opacity: '1',
+				foreground: style.foreground,
+				background: style.foreground,
+				opacity: '0.5',
 				shadow: false
 			});
 		} finally {
@@ -687,27 +664,28 @@ for (const theme of ['light', 'dark']) {
 	});
 }
 
-test('passphrase field shows its own label without a placeholder, indented under its checkbox', async () => {
+test('the passphrase switch reveals its field with in-field generate and reveal actions', async () => {
 	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
 	try {
 		await fixture(page);
 		await openForm(page, forms[0]);
 		const field = page.getByLabel('Additional passphrase', { exact: true });
-		assert.equal(await field.getAttribute('placeholder'), null);
-		// A screen-reader-only label is a 1px box, which Playwright still reports as visible.
-		const label = await page.locator('label[for="secret-passphrase"]').boundingBox();
-		assert.ok(label.width > 40 && label.height > 10);
-		// The label and field line up with the checkbox's own label, so they read as its detail.
-		const indent = (await page.locator('label[for="use-passphrase"]').boundingBox()).x;
+		assert.equal(await field.count(), 0);
+		const toggle = page.getByRole('switch', { name: 'Protect with an additional passphrase' });
+		await toggle.click();
+		await field.waitFor({ state: 'visible' });
+		// The placeholder names the field; the switch row above is its context.
+		assert.equal(await field.getAttribute('placeholder'), 'Add a passphrase');
+		// The field starts at the row's left edge — the switch row has no indent.
+		const rowLabel = await page.locator('label[for="use-passphrase"]').boundingBox();
 		const box = await field.boundingBox();
-		assert.deepEqual([label.x, box.x], [indent, indent]);
-		// Generate sits at the end of the label's row, above the field's right edge.
-		const generate = await page
-			.getByRole('button', { name: 'Generate', exact: true })
-			.boundingBox();
-		assert.equal(generate.x + generate.width, box.x + box.width);
-		assert.ok(generate.y + generate.height <= box.y);
-		assert.equal(generate.y + generate.height / 2, label.y + label.height / 2);
+		assert.ok(Math.abs(box.x - rowLabel.x) < 1);
+		// The in-field actions sit inside the field's right edge: reveal last,
+		// generate immediately to its left.
+		const reveal = await page.getByRole('button', { name: 'Show passphrase' }).boundingBox();
+		assert.equal(reveal.x + reveal.width, box.x + box.width);
+		const generate = await page.getByRole('button', { name: 'Generate passphrase' }).boundingBox();
+		assert.equal(generate.x + generate.width, reveal.x);
 	} finally {
 		await page.close();
 	}
@@ -718,8 +696,9 @@ test('Generate fills a revealed passphrase that never reaches the API', async ()
 	try {
 		const mock = await fixture(page);
 		await openForm(page, forms[0]);
+		await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 		const field = page.getByLabel('Additional passphrase', { exact: true });
-		const generate = page.getByRole('button', { name: 'Generate', exact: true });
+		const generate = page.getByRole('button', { name: 'Generate passphrase', exact: true });
 		await generate.click();
 		const first = await field.inputValue();
 		// Four groups of four Crockford base32 symbols: 80 random bits.
@@ -740,6 +719,81 @@ test('Generate fills a revealed passphrase that never reaches the API', async ()
 		assert.equal(body.includes(generated), false);
 		assert.equal(body.includes(generated.replaceAll('-', '')), false);
 		assert.equal(mock.ttls.length, 1);
+	} finally {
+		await page.close();
+	}
+});
+
+test('protection rows explain themselves through the info popovers', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		const popover = page.locator('#passphrase-privacy');
+		assert.equal(await popover.evaluate((node) => getComputedStyle(node).visibility), 'hidden');
+		await page.getByRole('button', { name: "Why the server can't see this secret" }).focus();
+		await page.waitForFunction(
+			() => getComputedStyle(document.querySelector('#passphrase-privacy')).visibility === 'visible'
+		);
+
+		// Switching to the code tab swaps in the confirmation procedure.
+		await page
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Send with code' })
+			.click();
+		const confirmPopover = page.locator('#confirmation-procedure');
+		assert.equal(
+			await confirmPopover.evaluate((node) => getComputedStyle(node).visibility),
+			'hidden'
+		);
+		// Hovering the info button shows it; the popover lives outside the label, so
+		// clicking its text cannot toggle the switch.
+		await page.getByRole('button', { name: 'How confirmation works' }).hover();
+		await confirmPopover.getByText('Check that they match.').click();
+		assert.equal(
+			await page
+				.getByRole('switch', { name: 'Require confirmation before transfer' })
+				.getAttribute('data-state'),
+			'unchecked'
+		);
+	} finally {
+		await page.close();
+	}
+});
+
+test('delivery tabs swap the heading and slide their underline', async () => {
+	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		const heading = page.locator('h1');
+		assert.equal((await heading.textContent()).trim(), 'Create a secret');
+		const tabs = page.getByRole('group', { name: 'Delivery method' });
+		const linkTab = tabs.getByRole('button', { name: 'Create link' });
+		const codeTab = tabs.getByRole('button', { name: 'Send with code' });
+		assert.equal(await linkTab.getAttribute('aria-pressed'), 'true');
+		await codeTab.click();
+		assert.equal(await codeTab.getAttribute('aria-pressed'), 'true');
+		assert.equal(await linkTab.getAttribute('aria-pressed'), 'false');
+		assert.equal((await heading.textContent()).trim(), 'Send a secret');
+		// The underline indicator slides under the active tab (each tab owns half the row).
+		await page.waitForFunction(
+			() =>
+				document.querySelector('[aria-label="Delivery method"]').getAnimations({
+					subtree: true
+				}).length === 0
+		);
+		const shift = await page.evaluate(() => {
+			const group = document.querySelector('[aria-label="Delivery method"]');
+			const bar = group.querySelector('span[aria-hidden="true"]').getBoundingClientRect();
+			const box = group.getBoundingClientRect();
+			return { left: bar.left - box.left, width: bar.width, groupWidth: box.width };
+		});
+		assert.ok(Math.abs(shift.width - shift.groupWidth / 2) < 1, 'underline is not half the row');
+		assert.ok(
+			Math.abs(shift.left - shift.groupWidth / 2) < 1,
+			'underline did not slide to the code tab'
+		);
 	} finally {
 		await page.close();
 	}

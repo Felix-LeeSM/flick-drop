@@ -78,17 +78,18 @@ for (const [model, support, outcome] of [
 			const hydrated = page.waitForResponse('**/api/config');
 			await page.goto(baseUrl);
 			await hydrated;
+			// The announcer mounts when hydration finishes; the config response can
+			// arrive from the SSR prefetch first, so this is the reliable gate.
+			await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			await page.getByLabel('Message', { exact: true }).fill('private synthetic content');
 			if (model === 'a') {
+				await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 				await page
 					.getByLabel('Additional passphrase', { exact: true })
 					.fill('private synthetic passphrase');
-			} else {
-				await page
-					.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
-					.uncheck();
 			}
-			await page.getByRole('button', { name: 'Create link', exact: true }).click();
+			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
+			await page.locator('form button[type="submit"]').click();
 			await page.getByRole('heading', { name: 'Link created' }).waitFor();
 			const recipientUrl = await page.getByRole('textbox', { name: 'Share URL' }).inputValue();
 			assert.equal(new URL(recipientUrl).pathname, '/s/native-share');

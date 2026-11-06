@@ -189,7 +189,7 @@ async function pages(context) {
 	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
-	await sender.getByRole('button', { name: 'File', exact: true }).click();
+	await sender.getByRole('tab', { name: 'File', exact: true }).click();
 	return { owner, sender };
 }
 async function submitFile(sender, size = 65) {
