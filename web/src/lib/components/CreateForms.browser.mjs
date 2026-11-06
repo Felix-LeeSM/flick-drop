@@ -252,6 +252,18 @@ function stable(actual, expected) {
 const typeTablist = (page) => page.getByRole('tablist', { name: 'Secret type', exact: true });
 const typeTabs = (page) => typeTablist(page).getByRole('tab');
 const typeTab = (page, name) => typeTablist(page).getByRole('tab', { name, exact: true });
+// Same shape as boxes(), but keyed on the tab role: the tabs are role="tab", which
+// getByRole('button') does not match.
+const tabBoxes = (page) =>
+	typeTabs(page).evaluateAll((tabs) => {
+		const scrollLeft = tabs[0]?.closest('[role="tablist"]').scrollLeft ?? 0;
+		return tabs.map((tab) => {
+			const { x, y, width, height } = tab.getBoundingClientRect();
+			// x adds the row's own scroll position back: focusing an off-screen tab
+			// legitimately scrolls the row into view, and that must not read as a move.
+			return { name: tab.textContent.trim(), x: x + scrollX + scrollLeft, y: y + scrollY, width, height };
+		});
+	});
 
 // One row at every width: exactly one active tab in the fixed order, the underline
 // sits under the active tab, and the row never widens the page — the tablist
@@ -264,12 +276,7 @@ async function typeRow(page, selected) {
 				subtree: true
 			}).length === 0
 	);
-	const row = await typeTabs(page).evaluateAll((tabs) =>
-		tabs.map((tab) => {
-			const { x, y, width } = tab.getBoundingClientRect();
-			return { name: tab.textContent.trim(), x, y, width };
-		})
-	);
+	const row = await tabBoxes(page);
 	assert.deepEqual(
 		row.map((box) => box.name),
 		typeNames
@@ -406,7 +413,7 @@ for (const width of [375, 1280]) {
 			await fixture(page);
 			await openForm(page, forms[0]);
 			await typeRow(page, 'Text');
-			const initial = await boxes(typeTablist(page));
+			const initial = await tabBoxes(page);
 			const file = await typeTab(page, 'File').boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
 			await page.mouse.move(point.x, point.y);
@@ -419,17 +426,17 @@ for (const width of [375, 1280]) {
 					),
 					'File'
 				);
-				stable(await boxes(typeTablist(page)), initial);
+				stable(await tabBoxes(page), initial);
 			}
 			const pointerAction = phone ? 'tap' : 'click';
 			for (const input of ['pointer', 'keyboard']) {
 				for (const name of typeNames) {
 					const button = typeTab(page, name);
 					if (input === 'keyboard') {
-						const current = await boxes(typeTablist(page));
+						const current = await tabBoxes(page);
 						await button.focus();
 						await page.waitForTimeout(400);
-						stable(await boxes(typeTablist(page)), current);
+						stable(await tabBoxes(page), current);
 						await page.keyboard.press('Enter');
 					} else {
 						await button[pointerAction]();

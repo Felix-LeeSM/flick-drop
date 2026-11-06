@@ -222,12 +222,9 @@ test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OF
 		// Back on the link tab, the passphrase switch does block the CTA until a
 		// passphrase exists.
 		await tabs.getByRole('button', { name: 'Create link' }).click();
-		const passphraseSwitchOnLink = page.getByRole('switch', {
-			name: 'Protect with an additional passphrase'
-		});
 		assert.equal(await createSubmit.isDisabled(), false);
-		await passphraseSwitchOnLink.click();
-		assert.equal(await passphraseSwitchOnLink.getAttribute('data-state'), 'checked');
+		await passphraseSwitch.click();
+		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'checked');
 		assert.equal(await createSubmit.isDisabled(), true);
 		await page.getByLabel('Additional passphrase', { exact: true }).fill('extra');
 		assert.equal(await createSubmit.isDisabled(), false);
