@@ -261,7 +261,13 @@ const tabBoxes = (page) =>
 			const { x, y, width, height } = tab.getBoundingClientRect();
 			// x adds the row's own scroll position back: focusing an off-screen tab
 			// legitimately scrolls the row into view, and that must not read as a move.
-			return { name: tab.textContent.trim(), x: x + scrollX + scrollLeft, y: y + scrollY, width, height };
+			return {
+				name: tab.textContent.trim(),
+				x: x + scrollX + scrollLeft,
+				y: y + scrollY,
+				width,
+				height
+			};
 		});
 	});
 
