@@ -16,7 +16,17 @@ after(async () => {
 	await browser?.close();
 });
 
-test('SiteHeader displays accessible Enter code button and opens Receive dialog', async () => {
+// The header carries no Enter code action (prototype round R1): the receive
+// dialog opens from the code tab's "Enter it here" link.
+async function openReceiveDialog(page) {
+	await page
+		.getByRole('group', { name: 'Delivery method' })
+		.getByRole('button', { name: 'Send with code' })
+		.click();
+	await page.getByRole('button', { name: 'Enter it here' }).click();
+}
+
+test('The code tab Enter-it-here button opens the Receive dialog', async () => {
 	const page = await browser.newPage();
 	try {
 		await page.route(
@@ -35,10 +45,7 @@ test('SiteHeader displays accessible Enter code button and opens Receive dialog'
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
-		const enterCodeBtn = page.getByRole('button', { name: 'Enter code' });
-		await assert.doesNotReject(enterCodeBtn.waitFor({ state: 'visible' }));
-
-		await enterCodeBtn.click();
+		await openReceiveDialog(page);
 		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
 		await assert.doesNotReject(dialog.waitFor({ state: 'visible' }));
 
@@ -75,7 +82,7 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 		);
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
-		await page.getByRole('button', { name: 'Enter code' }).click();
+		await openReceiveDialog(page);
 		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
 		await dialog.getByText('STEP 1 OF 2', { exact: true }).waitFor();
 		await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
@@ -164,7 +171,7 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 	}
 });
 
-test('CreateSecretPage: Send with code validation, confirmation toggle, and state transition', async () => {
+test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OFF', async () => {
 	const page = await browser.newPage();
 	try {
 		await page.route(
@@ -183,26 +190,44 @@ test('CreateSecretPage: Send with code validation, confirmation toggle, and stat
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
-		const sendWithCodeBtn = page.getByRole('button', { name: 'Send with code' });
-		const createLinkBtn = page.getByRole('button', { name: 'Create link' });
+		const tabs = page.getByRole('group', { name: 'Delivery method' });
+		const createSubmit = page.locator('form button[type="submit"]');
 
-		// Both buttons disabled when empty
-		assert.equal(await sendWithCodeBtn.isDisabled(), true);
-		assert.equal(await createLinkBtn.isDisabled(), true);
+		// The link tab's CTA stays disabled until there is something to send.
+		assert.equal(await createSubmit.isDisabled(), true);
 
-		// Type message
-		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
-		await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).uncheck();
+		// Both protection switches ship OFF — each tab owns one.
+		const passphraseSwitch = page.getByRole('switch', {
+			name: 'Protect with an additional passphrase'
+		});
+		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'unchecked');
 
-		// Enabled
-		assert.equal(await sendWithCodeBtn.isDisabled(), false);
-		assert.equal(await createLinkBtn.isDisabled(), false);
-
-		// Check confirmation toggle behavior
-		const confirmCheckbox = page.getByRole('checkbox', {
+		await tabs.getByRole('button', { name: 'Send with code' }).click();
+		const startPipe = page.getByRole('button', { name: 'Start live transfer' });
+		const confirmSwitch = page.getByRole('switch', {
 			name: 'Require confirmation before transfer'
 		});
-		assert.equal(await confirmCheckbox.isChecked(), true);
+		assert.equal(await confirmSwitch.getAttribute('data-state'), 'unchecked');
+		assert.equal(await startPipe.isDisabled(), true);
+
+		// Typing a message enables the tab's CTA.
+		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
+		assert.equal(await startPipe.isDisabled(), false);
+
+		// The confirmation switch alone does not block the CTA.
+		await confirmSwitch.click();
+		assert.equal(await confirmSwitch.getAttribute('data-state'), 'checked');
+		assert.equal(await startPipe.isDisabled(), false);
+
+		// Back on the link tab, the passphrase switch does block the CTA until a
+		// passphrase exists.
+		await tabs.getByRole('button', { name: 'Create link' }).click();
+		assert.equal(await createSubmit.isDisabled(), false);
+		await passphraseSwitch.click();
+		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'checked');
+		assert.equal(await createSubmit.isDisabled(), true);
+		await page.getByLabel('Additional passphrase', { exact: true }).fill('extra');
+		assert.equal(await createSubmit.isDisabled(), false);
 	} finally {
 		await page.close();
 	}
@@ -265,7 +290,7 @@ test('Receiver error state: displays actionable error on 404/expired code', asyn
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
-		await page.getByRole('button', { name: 'Enter code' }).click();
+		await openReceiveDialog(page);
 		const codeInput = page.locator('#pipe-code-input');
 		await codeInput.fill('999999');
 
@@ -378,11 +403,12 @@ test('Two-browser live relay transfer with 2-step confirmation and burn state', 
 			.getByLabel('Message', { exact: true })
 			.fill('Real-time live relay transfer test');
 		await senderPage
-			.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
-			.uncheck();
-
-		// Keep confirmation checkbox checked
-		await senderPage.getByRole('button', { name: 'Send with code' }).click();
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Send with code' })
+			.click();
+		// The 2-step scenario turns the opt-in confirmation on before starting.
+		await senderPage.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
+		await senderPage.getByRole('button', { name: 'Start live transfer' }).click();
 
 		// Waiting panel displays 6-digit code
 		const codeCard = senderPage.getByLabel('Transfer code 741-928');
@@ -392,7 +418,7 @@ test('Two-browser live relay transfer with 2-step confirmation and burn state', 
 		await receiverPage.goto(`${baseUrl}/`);
 		await receiverPage.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
-		await receiverPage.getByRole('button', { name: 'Enter code' }).click();
+		await openReceiveDialog(receiverPage);
 		await receiverPage.locator('#pipe-code-input').fill(sharedPipeCode);
 
 		// Step 3: Sender sees confirmation challenge card

@@ -286,7 +286,7 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		// field-sizing-content ignores rows={7}; the message field keeps the create page's height.
 		const message = await sender.getByLabel('Message', { exact: true }).boundingBox();
 		assert.ok(message.height >= 176, `message field is ${message.height}px tall`);
-		await sender.getByRole('button', { name: 'Login', exact: true }).click();
+		await sender.getByRole('tab', { name: 'Login', exact: true }).click();
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByText('Fill in at least one field.', { exact: true }).waitFor();
 		assert.equal(mock.bodies.length, 0);
@@ -414,7 +414,7 @@ test('pin mismatch, size ceiling, and 429 status remain actionable without consu
 		await page.getByText('The request key does not match this link.', { exact: false }).waitFor();
 		assert.equal(await page.getByLabel('Message', { exact: true }).count(), 0);
 		await page.goto(`${baseUrl}${submitPath}`);
-		await page.getByRole('button', { name: 'File', exact: true }).click();
+		await page.getByRole('tab', { name: 'File', exact: true }).click();
 		await page.locator('input[type="file"]').setInputFiles({
 			name: 'synthetic.bin',
 			mimeType: 'application/octet-stream',
@@ -515,7 +515,7 @@ test('failed runtime config cannot consume a custom 2 MiB inline request before 
 		assert.equal(await owner.getByRole('button', { name: 'Open once', exact: true }).count(), 0);
 		assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 		await sender.goto(await owner.getByLabel('Submission link', { exact: true }).inputValue());
-		await sender.getByRole('button', { name: 'File', exact: true }).click();
+		await sender.getByRole('tab', { name: 'File', exact: true }).click();
 		await sender.locator('input[type="file"]').setInputFiles({
 			name: 'synthetic-2m.bin',
 			mimeType: 'application/octet-stream',

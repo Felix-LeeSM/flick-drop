@@ -1,5 +1,6 @@
 <script lang="ts">
 import {
+	ArrowUpRightIcon,
 	ClockIcon,
 	EyeIcon,
 	EyeOffIcon,
@@ -9,8 +10,7 @@ import {
 	QrCodeIcon,
 	ShieldCheckIcon,
 	WandSparklesIcon,
-	XIcon,
-	ZapIcon
+	XIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import { type ClientLimits, defaultLimits, getConfig } from '#lib/api/config.js';
@@ -35,9 +35,9 @@ import QrModal from '#lib/components/QrModal.svelte';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
 import SuccessCheck from '#lib/components/SuccessCheck.svelte';
+import SwitchRow from '#lib/components/SwitchRow.svelte';
 import UrlField from '#lib/components/UrlField.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
-import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
@@ -190,6 +190,18 @@ const canPipe = $derived(
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
+
+// Round 22 pattern: a disabled action keeps pointer events so the cursor reads
+// "blocked", and the title tooltip states why. Both CTAs share one look, so
+// they share the blocked affordance too.
+const BLOCKED_CLASS = 'disabled:pointer-events-auto disabled:cursor-not-allowed';
+const blockedTitle = $derived(
+	hasCreatePayload
+		? usePassphrase && passphrase.length === 0
+			? 'Set a passphrase to finish protecting this secret'
+			: undefined
+		: 'Add a message, file or credential first'
+);
 
 function submitCreate(event: SubmitEvent): void {
 	event.preventDefault();
@@ -660,6 +672,9 @@ function modeLabel(value: CreateMode): string {
 	<title>Create secret - Flick</title>
 </svelte:head>
 
+<!-- The header keeps logo + theme only: the request and code entry points live in
+     the adaptive heading below (prototype round R1), so `link`/`showEnterCode`
+     stay unpassed. SiteHeader still owns the #code= deep-link modal. -->
 <DeliveryFrame>
 	{#if pipeActiveCode !== null}
 		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
@@ -899,28 +914,28 @@ function modeLabel(value: CreateMode): string {
 				{/if}
 
 				{#if delivery === 'link'}
-					<div class="flex items-start gap-2.5">
-						<Checkbox id="use-passphrase" bind:checked={usePassphrase} disabled={isCreating} class="mt-0.5" />
-						<div class="grid gap-1">
-							<Label for="use-passphrase" class="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-foreground">
-								<LockKeyholeIcon class="size-3.5 text-primary" aria-hidden="true" />
-								Protect with an additional passphrase
-							</Label>
-							{#if !usePassphrase}
-								<!-- Not "end-to-end" here: the API issues a code transfer's code and salt, so
-								     only a passphrase keeps that transfer from the server. -->
-								<p class="text-[0.8125rem] text-muted-foreground">
-									The secret stays encrypted without it — this only adds a passphrase for your
-									recipient.
-								</p>
-							{/if}
-						</div>
-					</div>
-					{#if usePassphrase}
-						<!-- Indented to the checkbox label. Single inline field: the placeholder is
-						     the visible name (the checkbox above already made "additional" clear), and
-						     both in-field icons keep the 44px row-height tap target. -->
-						<div class="pl-6">
+					<!-- U2 switch row: the always-visible paragraph moved behind the
+					     info icon (hover or keyboard focus). Not "end-to-end" here:
+					     the API issues a code transfer's code and salt, so only a
+					     passphrase keeps that transfer from the server. -->
+					<SwitchRow
+						id="use-passphrase"
+						bind:checked={usePassphrase}
+						label="Protect with an additional passphrase"
+						icon={LockKeyholeIcon}
+						infoLabel="Why the server can't see this secret"
+						describedBy="passphrase-privacy"
+						disabled={isCreating}
+					>
+						{#snippet details()}
+							<p class="mb-1 text-xs font-medium text-foreground">Why we can't read your secret</p>
+							<p class="text-[0.8125rem] leading-snug text-muted-foreground">It is locked on your device before sending.</p>
+							<p class="text-[0.8125rem] leading-snug text-muted-foreground">We never receive the passphrase.</p>
+						{/snippet}
+						{#snippet field()}
+							<!-- Single inline field: the placeholder is the visible name
+							     (the row above already made "additional" clear), and both
+							     in-field icons keep the 44px row-height tap target. -->
 							<div class="relative">
 								<Input
 									id="secret-passphrase"
@@ -928,12 +943,13 @@ function modeLabel(value: CreateMode): string {
 									type={revealPassphrase ? 'text' : 'password'}
 									placeholder="Add a passphrase"
 									aria-label="Additional passphrase"
-									autocomplete="off"
+									autocomplete="new-password"
 									autocapitalize="none"
 									spellcheck="false"
 									data-1p-ignore="true"
 									data-bwignore="true"
 									data-lpignore="true"
+									enterkeyhint="done"
 									class="h-11 pr-22 font-mono"
 									bind:value={passphrase}
 									disabled={isCreating}
@@ -974,8 +990,8 @@ function modeLabel(value: CreateMode): string {
 									</Button>
 								</div>
 							</div>
-						</div>
-					{/if}
+						{/snippet}
+					</SwitchRow>
 
 					<div class="grid gap-2.5">
 						<span class="flex items-center gap-1.5 text-sm font-medium">
@@ -986,8 +1002,14 @@ function modeLabel(value: CreateMode): string {
 					</div>
 
 					<div class="grid gap-3">
-						<Button type="submit" size="cta" disabled={!canCreate}>
-							<LockKeyholeIcon class="size-4" aria-hidden="true" />
+						<Button
+							type="submit"
+							variant="toggleActive"
+							size="cta"
+							disabled={!canCreate}
+							class={BLOCKED_CLASS}
+							title={!canCreate ? blockedTitle : undefined}
+						>
 							{isCreating ? 'Creating' : 'Create link'}
 						</Button>
 						<p class="micro -mt-2 flex items-center justify-center gap-1.5 text-muted-foreground">
@@ -996,37 +1018,40 @@ function modeLabel(value: CreateMode): string {
 						</p>
 					</div>
 				{:else}
-					<div class="flex items-start gap-2.5">
-						<Checkbox id="require-confirmation" bind:checked={pipeRequireApproval} disabled={isCreating} class="mt-0.5" />
-						<div class="grid gap-1">
-							<Label for="require-confirmation" class="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-foreground">
-								<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-								<span>Require confirmation before transfer</span>
-							</Label>
-							<p class="text-[0.8125rem] text-muted-foreground">
-								{#if pipeRequireApproval}
-									Verify the 3-digit code on both devices before sending.
-								{:else}
-									Streams immediately once the receiver enters the code.
-								{/if}
-							</p>
-						</div>
-					</div>
+					<SwitchRow
+						id="require-confirmation"
+						bind:checked={pipeRequireApproval}
+						label="Require confirmation before transfer"
+						icon={ShieldCheckIcon}
+						infoLabel="How confirmation works"
+						describedBy="confirmation-procedure"
+						disabled={isCreating}
+					>
+						{#snippet details()}
+							<p class="mb-1 text-xs font-medium text-foreground">How confirmation works</p>
+							<ol class="list-decimal space-y-1 pl-4 text-[0.8125rem] text-muted-foreground marker:text-foreground/60">
+								<li>Both screens show the same 3-digit number.</li>
+								<li>Check that they match.</li>
+								<li>Tap "Approve &amp; send".</li>
+							</ol>
+						{/snippet}
+					</SwitchRow>
 
 					<div class="grid gap-3">
+						<!-- Round 22: the same solid black as the link tab's Create
+						     link — this is the tab's primary action. -->
 						<Button
 							type="button"
-							variant="outline"
+							variant="toggleActive"
 							size="cta"
 							disabled={!canPipe}
-							class="gap-2 font-bold border-primary/40 bg-primary/5 hover:bg-primary/10 text-primary shadow-xs"
+							class={BLOCKED_CLASS}
+							title={!canPipe ? blockedTitle : undefined}
 							onclick={startPipeSend}
 						>
-							<ZapIcon class="size-4 text-primary" aria-hidden="true" />
-							<span>Start live transfer</span>
+							{isCreating ? 'Creating' : 'Start live transfer'}
 						</Button>
 						<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
-							<ClockIcon class="size-3" aria-hidden="true" />
 							<span>fixed 3-minute in-memory relay · 0B storage</span>
 						</p>
 					</div>
@@ -1064,19 +1089,28 @@ function modeLabel(value: CreateMode): string {
 		</section>
 	{/if}
 
+	<!-- Y1: guides open in a new tab so the in-progress form survives. -->
 	<nav
 		aria-label="Sharing guides"
 		class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
 	>
 		<a
+			target="_blank"
+			rel="noopener noreferrer"
 			href={resolve('guides/password-sharing/')}
-			class="py-2 underline-offset-4 hover:underline"
-		>Sharing passwords</a>
+			class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
+		>How password sharing works
+			<ArrowUpRightIcon class="size-3" aria-hidden="true" />
+		</a>
 
 		<a
+			target="_blank"
+			rel="noopener noreferrer"
 			href={resolve('guides/temporary-file-sharing/')}
-			class="py-2 underline-offset-4 hover:underline"
-		>Sharing temporary files</a>
+			class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
+		>How temporary file sharing works
+			<ArrowUpRightIcon class="size-3" aria-hidden="true" />
+		</a>
 	</nav>
 </DeliveryFrame>
 

@@ -38,7 +38,7 @@ async function create(owner, sender) {
 	const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 	const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
 	await sender.goto(submit);
-	await sender.getByRole('button', { name: 'File', exact: true }).click();
+	await sender.getByRole('tab', { name: 'File', exact: true }).click();
 	return {
 		submit,
 		receive,

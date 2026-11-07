@@ -92,15 +92,13 @@ for (const model of ['a', 'b']) {
 			await configured;
 			await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
 			if (model === 'a') {
+				await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 				await page
 					.getByLabel('Additional passphrase', { exact: true })
 					.fill('synthetic private passphrase');
-			} else {
-				await page
-					.getByRole('checkbox', { name: 'Protect with an additional passphrase' })
-					.uncheck();
 			}
-			await page.getByRole('button', { name: 'Create link', exact: true }).click();
+			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
+			await page.locator('form button[type="submit"]').click();
 			await page.waitForURL(`**${privatePath}`);
 			await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
 			// Copy is the one primary action; Refresh, Share, QR and Cancel stay compact at phone width.

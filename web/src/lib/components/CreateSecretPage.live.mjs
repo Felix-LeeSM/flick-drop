@@ -20,14 +20,14 @@ async function prepare(page, bytes) {
 		page.waitForResponse((response) => new URL(response.url()).pathname === '/api/config'),
 		page.goto(baseUrl)
 	]);
-	await page.getByRole('button', { name: 'File', exact: true }).click();
+	await page.getByRole('tab', { name: 'File', exact: true }).click();
 	await page.getByLabel('Add files to upload').setInputFiles({
 		name: 'fixture.bin',
 		mimeType: 'application/octet-stream',
 		buffer: bytes
 	});
 	// The passphrase field appears only after the option is checked (it ships OFF).
-	await page.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).click();
+	await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 	await page.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
 }
 
