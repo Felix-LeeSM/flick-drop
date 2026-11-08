@@ -42,8 +42,8 @@ type JobEvent struct {
 	// primary: jobs enqueued before multi-backend support delete from the
 	// primary bucket, which is where all pre-dual-backend objects live. A
 	// backend name is safe event metadata — never a private bucket name.
-	Backend     string            `json:"backend,omitempty"`
-	RequestedAt time.Time         `json:"requested_at"`
+	Backend     string    `json:"backend,omitempty"`
+	RequestedAt time.Time `json:"requested_at"`
 	// TraceContext carries the W3C trace-context of the span that enqueued this
 	// job, injected by the outbox at enqueue time so the worker can continue the
 	// producer's trace across the async outbox -> NATS hop (#133). Telemetry IDs

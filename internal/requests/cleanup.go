@@ -20,7 +20,7 @@ const (
 	openObjectGrace   = OpenStreamTimeout + 5*time.Minute
 )
 
-func enqueueObjectTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, key, reason string, now time.Time) error {
+func enqueueObjectTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, backend, key, reason string, now time.Time) error {
 	if !strings.HasPrefix(key, ObjectPrefix) || key == ObjectPrefix || outbox == nil {
 		return ErrStorage
 	}
@@ -28,18 +28,23 @@ func enqueueObjectTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, key
 	if err != nil {
 		return err
 	}
-	_, err = outbox.EnqueueTx(ctx, tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, ObjectKey: key, Reason: reason, RequestedAt: now})
+	_, err = outbox.EnqueueTx(ctx, tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, Backend: backend, ObjectKey: key, Reason: reason, RequestedAt: now})
 	return err
 }
 
 func enqueueRequestKeysTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, id, reason string, now time.Time) error {
+	var backend sql.NullString
 	var upload, final sql.NullString
-	if err := tx.QueryRowContext(ctx, `select upload_key, final_key from requests where id = ?`, id).Scan(&upload, &final); err != nil {
+	if err := tx.QueryRowContext(ctx, `select storage_backend, upload_key, final_key from requests where id = ?`, id).Scan(&backend, &upload, &final); err != nil {
 		return err
+	}
+	placedBackend := storage.PrimaryBackend
+	if backend.Valid && backend.String != "" {
+		placedBackend = backend.String
 	}
 	for _, key := range []sql.NullString{upload, final} {
 		if key.Valid {
-			if err := enqueueObjectTx(ctx, tx, outbox, key.String, reason, now); err != nil {
+			if err := enqueueObjectTx(ctx, tx, outbox, placedBackend, key.String, reason, now); err != nil {
 				return err
 			}
 		}
@@ -130,8 +135,9 @@ func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int, o
 	return nil
 }
 
-// ReconcileOnce owns only managed/requests/. Cursor and per-key pending claims
-// survive restarts and are independent of managed/secrets/ listing progress.
+// ReconcileOnce owns only managed/requests/, scanned per configured backend.
+// Cursor and per-key pending claims survive restarts and are independent of
+// managed/secrets/ listing progress — and of each other, per backend.
 func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 	if s.opts.Objects == nil {
 		return 0, nil
@@ -140,17 +146,33 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 		return 0, errors.New("invalid request reconciliation batch")
 	}
 	limit = min(limit, 1000)
+	total := 0
+	err := s.opts.Objects.Each(func(backend string, objects storage.ObjectStore) error {
+		count, err := s.reconcileBackend(ctx, objects, backend, limit)
+		if err != nil {
+			return err
+		}
+		total += count
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string, limit int) (int, error) {
 	var cursor string
 	var generation int64
-	if err := s.db.QueryRowContext(ctx, `select continuation_token, generation from request_reconciliation_cursor where id = 1`).Scan(&cursor, &generation); err != nil {
+	if err := s.db.QueryRowContext(ctx, `select continuation_token, generation from request_reconciliation_cursor_v2 where backend = ?`, backend).Scan(&cursor, &generation); err != nil {
 		return 0, err
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	page, err := s.opts.Objects.List(listCtx, ObjectPrefix, cursor, limit)
+	page, err := objects.List(listCtx, ObjectPrefix, cursor, limit)
 	cancel()
 	if err != nil {
 		if errors.Is(err, storage.ErrInvalidCursor) && cursor != "" {
-			if _, resetErr := s.db.ExecContext(ctx, `update request_reconciliation_cursor set continuation_token = '', generation = generation + 1 where id = 1 and generation = ?`, generation); resetErr != nil {
+			if _, resetErr := s.db.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token = '', generation = generation + 1 where backend = ? and generation = ?`, backend, generation); resetErr != nil {
 				return 0, resetErr
 			}
 		}
@@ -170,7 +192,7 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 	}
 	tx := &writeTx{Tx: transaction, conn: conn}
 	defer tx.close()
-	result, err := tx.ExecContext(ctx, `update request_reconciliation_cursor set continuation_token = ?, generation = generation + 1 where id = 1 and generation = ?`, page.NextCursor, generation)
+	result, err := tx.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token = ?, generation = generation + 1 where backend = ? and generation = ?`, page.NextCursor, backend, generation)
 	if err != nil {
 		return 0, err
 	}
@@ -203,7 +225,7 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		result, err := tx.ExecContext(ctx, `insert or ignore into request_reconciliation_pending (object_key, job_id) values (?, ?)`, key, jobID)
+		result, err := tx.ExecContext(ctx, `insert or ignore into request_reconciliation_pending_v2 (backend, object_key, job_id) values (?, ?, ?)`, backend, key, jobID)
 		if err != nil {
 			return 0, err
 		}
@@ -217,7 +239,7 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 		if s.opts.Outbox == nil {
 			return 0, ErrStorage
 		}
-		if _, err := s.opts.Outbox.EnqueueTx(ctx, tx.Tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, ObjectKey: key, Reason: events.ReasonOrphan, RequestedAt: now}); err != nil {
+		if _, err := s.opts.Outbox.EnqueueTx(ctx, tx.Tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, Backend: backend, ObjectKey: key, Reason: events.ReasonOrphan, RequestedAt: now}); err != nil {
 			return 0, err
 		}
 		count++
@@ -229,10 +251,15 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 	return count, nil
 }
 
-func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, jobID, key string) error {
+func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, key string) error {
 	if strings.TrimSpace(jobID) == "" || !strings.HasPrefix(key, ObjectPrefix) || key == ObjectPrefix {
 		return ErrInvalid
 	}
-	_, err := s.db.ExecContext(ctx, `delete from request_reconciliation_pending where object_key = ? and job_id = ?`, key, jobID)
+	if backend == "" {
+		// Workers built before dual-backend support never send a backend; their
+		// claims all live on the primary.
+		backend = storage.PrimaryBackend
+	}
+	_, err := s.db.ExecContext(ctx, `delete from request_reconciliation_pending_v2 where backend = ? and object_key = ? and job_id = ?`, backend, key, jobID)
 	return err
 }

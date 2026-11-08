@@ -34,7 +34,7 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			objects := &fakeObjectDeleter{}
-			handler, err := NewCleanupHandler(&fakeCleanupAPI{}, objects)
+			handler, err := NewCleanupHandler(&fakeCleanupAPI{}, objects, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

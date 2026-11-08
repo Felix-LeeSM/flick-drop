@@ -552,7 +552,7 @@ func newTestRouterFixtureWithObjects(t *testing.T, opts Options, objects storage
 		MaxObjectBytes:        1 << 20,
 		MinTTLSeconds:         300,
 		MaxTTLSeconds:         604800,
-		Objects:               objects,
+		Objects:               newTestRegistry(objects),
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1009,4 +1009,18 @@ func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 			assertOpenResponse(t, retry, objects.body, map[string]string{"Flick-Kind": secrets.KindFile})
 		})
 	}
+}
+
+// newTestRegistry wraps a test double as a single-backend storage registry.
+// Constructing a registry cannot fail for a non-nil primary, so a panic is
+// unreachable in practice.
+func newTestRegistry(primary storage.ObjectStore) *storage.Registry {
+	if primary == nil {
+		return nil // nil registry = object storage disabled, same as production wiring
+	}
+	registry, err := storage.NewRegistry(primary, nil)
+	if err != nil {
+		panic(err)
+	}
+	return registry
 }

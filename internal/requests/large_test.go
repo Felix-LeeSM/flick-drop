@@ -104,9 +104,13 @@ func largeFixture(t *testing.T) (fixture, *requestObjects) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	registry, err := storage.NewRegistry(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.store.opts.PayloadInlineMaxBytes = 64
 	f.store.opts.MaxObjectBytes = 100
-	f.store.opts.Objects = o
+	f.store.opts.Objects = registry
 	f.store.opts.Outbox = outbox
 	return f, o
 }

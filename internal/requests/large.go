@@ -42,14 +42,24 @@ type UploadResult struct {
 
 type objectAttempt struct {
 	attempt, bodyHash, checksum []byte
+	backend                     sql.NullString
 	uploadKey, finalKey         sql.NullString
 	size                        sql.NullInt64
 }
 
 func objectAttemptTx(ctx context.Context, tx *sql.Tx, id string) (objectAttempt, error) {
 	var a objectAttempt
-	err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash, ciphertext_sha256, upload_key, final_key, size_bytes from requests where id = ?`, id).Scan(&a.attempt, &a.bodyHash, &a.checksum, &a.uploadKey, &a.finalKey, &a.size)
+	err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash, ciphertext_sha256, storage_backend, upload_key, final_key, size_bytes from requests where id = ?`, id).Scan(&a.attempt, &a.bodyHash, &a.checksum, &a.backend, &a.uploadKey, &a.finalKey, &a.size)
 	return a, err
+}
+
+// backendOf resolves the backend a reservation row was written to. Empty means
+// the row predates dual-backend support and lives on the primary.
+func backendOf(a objectAttempt) string {
+	if a.backend.Valid && a.backend.String != "" {
+		return a.backend.String
+	}
+	return storage.PrimaryBackend
 }
 
 func validateAttempt(in AttemptInput) ([]byte, error) {
@@ -118,13 +128,19 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if _, err := rand.Read(random[:]); err != nil {
 			return UploadResult{}, err
 		}
+		// Placement decision lands here once the per-backend ceilings arrive:
+		// primary first, secondary takes the overflow. Until then every
+		// reservation places on the primary, exactly as single-backend
+		// deployments behave, and the chosen value flows through the row update
+		// and the presign below.
+		backend := storage.PrimaryBackend
 		uploadKey := ObjectPrefix + base64.RawURLEncoding.EncodeToString(random[:16]) + "/upload"
 		finalKey := ObjectPrefix + base64.RawURLEncoding.EncodeToString(random[16:]) + "/final"
 		deadline := s.now().UTC().Add(ReservationTTL)
 		if row.expires.Before(deadline) {
 			deadline = row.expires
 		}
-		result, err := tx.ExecContext(ctx, `update requests set state = 'uploading', storage_backend = 's3_object', attempt_token_hash = ?, attempt_body_hash = ?, kind = 'file', size_bytes = ?, envelope_json = ?, ciphertext_sha256 = ?, upload_key = ?, final_key = ?, reservation_expires_at = ? where id = ? and state = 'waiting' and generation = ?`, attempt, digest[:], in.SizeBytes, string(envelope), checksum, uploadKey, finalKey, deadline.Format(timeFormat), id, in.Generation)
+		result, err := tx.ExecContext(ctx, `update requests set state = 'uploading', storage_backend = ?, attempt_token_hash = ?, attempt_body_hash = ?, kind = 'file', size_bytes = ?, envelope_json = ?, ciphertext_sha256 = ?, upload_key = ?, final_key = ?, reservation_expires_at = ? where id = ? and state = 'waiting' and generation = ?`, backend, attempt, digest[:], in.SizeBytes, string(envelope), checksum, uploadKey, finalKey, deadline.Format(timeFormat), id, in.Generation)
 		if err != nil {
 			return UploadResult{}, err
 		}
@@ -148,7 +164,11 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if ttl <= 0 {
 		return UploadResult{}, ErrUnavailable
 	}
-	instruction, err := s.opts.Objects.PresignPUT(ctx, a.uploadKey.String, in.SizeBytes, ttl)
+	objects, err := s.opts.Objects.For(backendOf(a))
+	if err != nil {
+		return UploadResult{}, ErrStorage
+	}
+	instruction, err := objects.PresignPUT(ctx, a.uploadKey.String, in.SizeBytes, ttl)
 	if err != nil {
 		return UploadResult{}, ErrStorage
 	}
@@ -261,7 +281,7 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 	if err := requireTransition(result); err != nil {
 		return Receipt{}, err
 	}
-	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, a.uploadKey.String, events.ReasonOrphan, s.now().UTC()); err != nil {
+	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, backendOf(a), a.uploadKey.String, events.ReasonOrphan, s.now().UTC()); err != nil {
 		return Receipt{}, err
 	}
 	// Acceptance must still precede both deadlines after SQL/outbox work.
@@ -289,7 +309,11 @@ func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 	case <-ctx.Done():
 		return ErrStorage
 	}
-	body, length, err := s.opts.Objects.Open(ctx, a.uploadKey.String)
+	objects, err := s.opts.Objects.ForRequest(backendOf(a))
+	if err != nil {
+		return ErrStorage
+	}
+	body, length, err := objects.Open(ctx, a.uploadKey.String)
 	if err != nil {
 		return ErrStorage
 	}
@@ -306,7 +330,7 @@ func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 		}
 		return nil
 	}
-	if err := s.opts.Objects.PutStream(ctx, a.finalKey.String, src, length, verify); err != nil {
+	if err := objects.PutStream(ctx, a.finalKey.String, src, length, verify); err != nil {
 		if errors.Is(err, ErrInvalid) {
 			return ErrInvalid
 		}

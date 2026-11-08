@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
@@ -149,7 +150,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if err := recordManagementOutcomeTx(ctx, tx, id, "cancelled"); err != nil {
 		return ManagementStatus{}, err
 	}
-	if backend == StorageS3 {
+	if backend == StorageS3 || backend == storage.SecondaryBackend {
 		if s.outbox == nil {
 			return ManagementStatus{}, fmt.Errorf("cancellation outbox is required")
 		}
@@ -158,7 +159,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 			return ManagementStatus{}, err
 		}
 		if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject,
-			ObjectKey: key, Reason: events.ReasonManual, RequestedAt: s.now().UTC()}); err != nil {
+			Backend: backend, ObjectKey: key, Reason: events.ReasonManual, RequestedAt: s.now().UTC()}); err != nil {
 			return ManagementStatus{}, fmt.Errorf("enqueue cancellation cleanup: %w", err)
 		}
 	}
@@ -186,7 +187,7 @@ func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int
 	streaming := formatTime(now.Add(-openObjectGrace))
 	const expired = `select m.secret_id from secret_management m
 		where m.expires_at <= ? and not exists (select 1 from secrets s
-			where s.id = m.secret_id and s.storage_backend = 's3_object'
+			where s.id = m.secret_id and s.storage_backend in ('s3_object', 'r2_object')
 			and julianday(s.consumed_at) > julianday(?))
 		order by m.expires_at, m.secret_id limit ?`
 	if _, err := tx.ExecContext(ctx, `delete from secrets where consumed_at is not null and id in (`+expired+`)`, cutoff, streaming, limit); err != nil {

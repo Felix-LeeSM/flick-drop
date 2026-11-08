@@ -53,27 +53,27 @@ func TestRequestReconciliationRestartsAndFindsLatePUTAfterMetadataPurge(t *testi
 	if n, err := restarted.ReconcileOnce(ctx, 1); err != nil || n != 1 {
 		t.Fatal("cursor did not survive restart", n, err)
 	}
-	if count(t, f.db, "request_reconciliation_pending") != 2 {
+	if count(t, f.db, "request_reconciliation_pending_v2") != 2 {
 		t.Fatal("missing per-key claims")
 	}
 	if n, err := restarted.ReconcileOnce(ctx, 10); err != nil || n != 0 {
 		t.Fatal("duplicate pending jobs", n, err)
 	}
 	var previousJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending where object_key=?`, upload).Scan(&previousJob); err != nil {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=?`, upload).Scan(&previousJob); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.AcknowledgeObjectCleanup(ctx, previousJob, upload); err != nil {
+	if err := restarted.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, previousJob, upload); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := restarted.ReconcileOnce(ctx, 10); err != nil || n != 1 {
 		t.Fatal("terminal ACK did not allow a new job", n, err)
 	}
-	if err := restarted.AcknowledgeObjectCleanup(ctx, previousJob, upload); err != nil {
+	if err := restarted.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, previousJob, upload); err != nil {
 		t.Fatal(err)
 	}
 	var currentJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending where object_key=?`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=?`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
 		t.Fatal("stale ACK erased/reused claim", err)
 	}
 	for _, event := range outboxKeys(t, f.db) {
@@ -89,7 +89,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 			ctx := context.Background()
 			f, o := largeFixture(t)
 			o.write(ObjectPrefix+"orphan", []byte{1})
-			if _, err := f.db.Exec(`update request_reconciliation_cursor set continuation_token='prior'`); err != nil {
+			if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set continuation_token='prior' where backend = 's3_object'`); err != nil {
 				t.Fatal(err)
 			}
 			o.listHook = func(prefix, cursor string, limit int) (storage.ObjectPage, error) {
@@ -103,7 +103,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 					return storage.ObjectPage{}, storage.ErrInvalidCursor
 				}
 				if failure == "stale_page" {
-					if _, err := f.db.Exec(`update request_reconciliation_cursor set generation=generation+1, continuation_token='winner'`); err != nil {
+					if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set generation=generation+1, continuation_token='winner' where backend = 's3_object'`); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -119,7 +119,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "commit":
-				for _, sql := range []string{`create table deferred_failure(id text references requests(id) deferrable initially deferred)`, `create trigger fail after insert on request_reconciliation_pending begin insert into deferred_failure values('missing'); end`} {
+				for _, sql := range []string{`create table deferred_failure(id text references requests(id) deferrable initially deferred)`, `create trigger fail after insert on request_reconciliation_pending_v2 begin insert into deferred_failure values('missing'); end`} {
 					if _, err := f.db.Exec(sql); err != nil {
 						t.Fatal(err)
 					}
@@ -133,11 +133,11 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("failure treated as empty success")
 			}
-			if count(t, f.db, "request_reconciliation_pending") != 0 || count(t, f.db, "outbox_events") != 0 {
+			if count(t, f.db, "request_reconciliation_pending_v2") != 0 || count(t, f.db, "outbox_events") != 0 {
 				t.Fatal("failed scan committed claim/outbox")
 			}
 			var cursor string
-			if err := f.db.QueryRow(`select continuation_token from request_reconciliation_cursor`).Scan(&cursor); err != nil {
+			if err := f.db.QueryRow(`select continuation_token from request_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor); err != nil {
 				t.Fatal(err)
 			}
 			want := "prior"
@@ -318,14 +318,14 @@ func TestReconciliationReleasesUnfinishedOpenAfterGrace(t *testing.T) {
 	}
 	later := f.now.Add(openObjectGrace)
 	f.store.now = func() time.Time { return later }
-	if _, err := f.db.Exec(`update request_reconciliation_cursor set continuation_token = ''`); err != nil {
+	if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set continuation_token = '' where backend = 's3_object'`); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := f.store.ReconcileOnce(ctx, 10); err != nil || n != 1 {
 		t.Fatal("unfinished open never released", n, err)
 	}
 	var claimed string
-	if err := f.db.QueryRow(`select object_key from request_reconciliation_pending`).Scan(&claimed); err != nil || claimed != final {
+	if err := f.db.QueryRow(`select object_key from request_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&claimed); err != nil || claimed != final {
 		t.Fatal(claimed, err)
 	}
 }

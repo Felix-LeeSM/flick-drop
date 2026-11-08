@@ -192,7 +192,11 @@ func TestRevokeWinsAgainstInFlightObjectRead(t *testing.T) {
 				}
 			}
 			entered, release := make(chan struct{}), make(chan struct{})
-			store.objects = blockingObjects{objects, entered, release, operation == "open"}
+			wrapped, wrapErr := storage.NewRegistry(blockingObjects{objects, entered, release, operation == "open"}, nil)
+			if wrapErr != nil {
+				t.Fatal(wrapErr)
+			}
+			store.objects = wrapped
 			done := make(chan error, 1)
 			go func() {
 				if operation == "finalize" {

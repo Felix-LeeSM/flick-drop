@@ -57,9 +57,9 @@ func main() {
 		log.Fatalf("migrate api database: %v", err)
 	}
 
-	var objectStore storage.RequestObjectStore
+	var objectStore *storage.Registry
 	if cfg.S3.Enabled {
-		objClient, err := storage.New(storage.Config{
+		primary, err := storage.New(storage.Config{
 			Enabled:         true,
 			Endpoint:        cfg.S3.Endpoint,
 			Region:          cfg.S3.Region,
@@ -71,8 +71,29 @@ func main() {
 		if err != nil {
 			log.Fatalf("create object store: %v", err)
 		}
-		objectStore = objClient
+		var secondary storage.ObjectStore
+		if cfg.R2.Enabled {
+			secondary, err = storage.New(storage.Config{
+				Enabled:         true,
+				Endpoint:        cfg.R2.Endpoint,
+				Region:          cfg.R2.Region,
+				Bucket:          cfg.R2.Bucket,
+				AccessKeyID:     cfg.R2.AccessKeyID,
+				SecretAccessKey: cfg.R2.SecretAccessKey,
+				PathStyle:       cfg.R2.PathStyle,
+			})
+			if err != nil {
+				log.Fatalf("create secondary object store: %v", err)
+			}
+		}
+		objectStore, err = storage.NewRegistry(primary, secondary)
+		if err != nil {
+			log.Fatalf("create object registry: %v", err)
+		}
 		log.Printf("flick-api large-object storage enabled: bucket %s region %s", cfg.S3.Bucket, cfg.S3.Region)
+		if secondary != nil {
+			log.Printf("flick-api secondary object backend enabled: bucket %s region %s", cfg.R2.Bucket, cfg.R2.Region)
+		}
 	}
 	outboxStore, err := events.NewOutboxStore(conn, cfg.NATSJobSubject)
 	if err != nil {

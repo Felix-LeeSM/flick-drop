@@ -55,7 +55,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := requests.NewStore(conn, requests.Options{Objects: objects, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	store, err := requests.NewStore(conn, requests.Options{Objects: newTestRegistry(objects), Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if queued != 1 {
 		t.Fatal("open did not queue the final object", queued)
 	}
-	if _, err := conn.Exec(`insert into request_reconciliation_pending(object_key,job_id) values(?,?)`, final, "current-job"); err != nil {
+	if _, err := conn.Exec(`insert into request_reconciliation_pending_v2(backend,object_key,job_id) values('s3_object',?,?)`, final, "current-job"); err != nil {
 		t.Fatal(err)
 	}
 	ack := func(job string, headers map[string]string) *httptest.ResponseRecorder {
@@ -138,7 +138,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 		t.Fatal("stale ACK not idempotent")
 	}
 	var pending int
-	conn.QueryRow(`select count(*) from request_reconciliation_pending`).Scan(&pending)
+	conn.QueryRow(`select count(*) from request_reconciliation_pending_v2`).Scan(&pending)
 	if pending != 1 {
 		t.Fatal("stale ACK removed current claim")
 	}
@@ -147,7 +147,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 			t.Fatal("terminal ACK retry")
 		}
 	}
-	conn.QueryRow(`select count(*) from request_reconciliation_pending`).Scan(&pending)
+	conn.QueryRow(`select count(*) from request_reconciliation_pending_v2`).Scan(&pending)
 	if pending != 0 {
 		t.Fatal("ACK did not clear current claim")
 	}

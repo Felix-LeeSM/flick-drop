@@ -163,7 +163,7 @@ func TestCleanupClientRequiresConfiguration(t *testing.T) {
 
 func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedJobKind(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -223,7 +223,7 @@ func (f *fakeObjectDeleter) Delete(_ context.Context, key string) error {
 func TestCleanupHandlerDeletesObject(t *testing.T) {
 	api := &fakeCleanupAPI{}
 	obj := &fakeObjectDeleter{}
-	handler, err := NewCleanupHandler(api, obj)
+	handler, err := NewCleanupHandler(api, obj, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCleanupHandlerDeletesObject(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 func TestCleanupHandlerPropagatesClientError(t *testing.T) {
 	apiErr := errors.New("api unavailable")
 	api := &fakeCleanupAPI{err: apiErr}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestProcessorRunsCleanupHandler(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}

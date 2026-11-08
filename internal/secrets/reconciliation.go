@@ -12,24 +12,41 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
-// ReconcileOnce visits a single page independently of the expiry batch. The
-// cursor and pending claims commit with the outbox, and survive API restarts.
+// ReconcileOnce visits one page per configured backend, independently of the
+// expiry batch. Each backend keeps its own cursor and pending claims; both
+// commit with the outbox and survive API restarts.
 func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 	if r.store.objects == nil {
 		return 0, nil
 	}
+	total := 0
+	err := r.store.objects.Each(func(backend string, objects storage.ObjectStore) error {
+		count, err := r.reconcileBackend(ctx, objects, backend)
+		if err != nil {
+			return err
+		}
+		total += count
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string) (int, error) {
 	var cursor string
 	var generation int64
-	if err := r.db.QueryRowContext(ctx, `select continuation_token, generation from object_reconciliation_cursor where id = 1`).Scan(&cursor, &generation); err != nil {
+	if err := r.db.QueryRowContext(ctx, `select continuation_token, generation from object_reconciliation_cursor_v2 where backend = ?`, backend).Scan(&cursor, &generation); err != nil {
 		return 0, fmt.Errorf("read object reconciliation cursor: %w", err)
 	}
 	limit := min(r.batchSize, 1000) // ListObjectsV2 permits at most 1,000 keys per page.
 	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	page, err := r.store.objects.List(listCtx, managedObjectPrefix, cursor, limit)
+	page, err := objects.List(listCtx, managedObjectPrefix, cursor, limit)
 	cancel()
 	if err != nil {
 		if errors.Is(err, storage.ErrInvalidCursor) && cursor != "" {
-			if _, resetErr := r.db.ExecContext(ctx, `update object_reconciliation_cursor set continuation_token = '', generation = generation + 1 where id = 1 and generation = ?`, generation); resetErr != nil {
+			if _, resetErr := r.db.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = '', generation = generation + 1 where backend = ? and generation = ?`, backend, generation); resetErr != nil {
 				return 0, fmt.Errorf("reset object reconciliation cursor: %w", resetErr)
 			}
 		}
@@ -50,7 +67,7 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 	defer rollback(tx)
 	// Claim this generation before live-row reads. A concurrent scanner may have
 	// advanced the same page while List was in flight; only one result can commit.
-	result, err := tx.ExecContext(ctx, `update object_reconciliation_cursor set continuation_token = ?, generation = generation + 1 where id = 1 and generation = ?`, page.NextCursor, generation)
+	result, err := tx.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = ?, generation = generation + 1 where backend = ? and generation = ?`, page.NextCursor, backend, generation)
 	if err != nil {
 		return 0, fmt.Errorf("advance object reconciliation cursor: %w", err)
 	}
@@ -78,7 +95,7 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		result, err := tx.ExecContext(ctx, `insert or ignore into object_reconciliation_pending (object_key, job_id) values (?,?)`, key, jobID)
+		result, err := tx.ExecContext(ctx, `insert or ignore into object_reconciliation_pending_v2 (backend, object_key, job_id) values (?,?,?)`, backend, key, jobID)
 		if err != nil {
 			return 0, fmt.Errorf("claim object cleanup: %w", err)
 		}
@@ -89,7 +106,7 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 		if n == 0 {
 			continue
 		}
-		if _, err := r.outbox.EnqueueTx(ctx, tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, ObjectKey: key, Reason: events.ReasonOrphan, RequestedAt: now}); err != nil {
+		if _, err := r.outbox.EnqueueTx(ctx, tx, events.JobEvent{JobID: jobID, Kind: events.KindDeleteOCIObject, Backend: backend, ObjectKey: key, Reason: events.ReasonOrphan, RequestedAt: now}); err != nil {
 			return 0, fmt.Errorf("enqueue reconciled object: %w", err)
 		}
 		count++
@@ -104,7 +121,7 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, now time.Time) (bool, error) {
 	var state, expiresRaw, createdRaw string
 	var consumedRaw sql.NullString
-	err := tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend = 's3_object' and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
+	err := tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -142,12 +159,17 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 }
 
 // AcknowledgeObjectCleanup removes only the claim for this completed worker job.
-// Old or duplicate acknowledgements cannot clear a newer job for a late PUT.
-func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, jobID, key string) error {
+// Old or duplicate acknowledgements cannot clear a newer job for a late PUT. An
+// empty backend is a worker predating dual-backend support: its claims live on
+// the primary.
+func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, key string) error {
 	if strings.TrimSpace(jobID) == "" || !strings.HasPrefix(key, managedObjectPrefix) || key == managedObjectPrefix {
 		return ErrInvalidInput
 	}
-	_, err := s.db.ExecContext(ctx, `delete from object_reconciliation_pending where object_key = ? and job_id = ?`, key, jobID)
+	if backend == "" {
+		backend = storage.PrimaryBackend
+	}
+	_, err := s.db.ExecContext(ctx, `delete from object_reconciliation_pending_v2 where backend = ? and object_key = ? and job_id = ?`, backend, key, jobID)
 	if err != nil {
 		return fmt.Errorf("acknowledge object cleanup: %w", err)
 	}

@@ -111,7 +111,7 @@ func TestRevokeSharesManagementRateLimit(t *testing.T) {
 
 func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.T) {
 	f := newTestRouterFixture(t, Options{InternalToken: "test-token"})
-	_, err := f.db.Exec(`insert into object_reconciliation_pending values ('managed/secrets/key','new-job')`)
+	_, err := f.db.Exec(`insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/key','new-job')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.
 			t.Fatalf("ack: %d", resp.Code)
 		}
 		var pending int
-		if err := f.db.QueryRow(`select count(*) from object_reconciliation_pending`).Scan(&pending); err != nil {
+		if err := f.db.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&pending); err != nil {
 			t.Fatal(err)
 		}
 		want := 0

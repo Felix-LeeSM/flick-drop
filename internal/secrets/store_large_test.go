@@ -104,7 +104,7 @@ func newLargeTestStore(t *testing.T, conn *sql.DB, objects storage.ObjectStore) 
 		PendingTTL:            15 * time.Minute,
 		MinTTLSeconds:         300,
 		MaxTTLSeconds:         604800,
-		Objects:               objects,
+		Objects:               testRegistry(objects),
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -168,7 +168,7 @@ func TestStoreOpenTxLockoutEnqueuesObjectDeleteWithOutbox(t *testing.T) {
 		MaxObjectBytes:        4096,
 		MinTTLSeconds:         300,
 		MaxTTLSeconds:         604800,
-		Objects:               mock,
+		Objects:               testRegistry(mock),
 		Outbox:                outbox,
 	})
 	if err != nil {
@@ -637,4 +637,14 @@ func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
 			opened.Body.Close()
 		})
 	}
+}
+
+// testRegistry wraps a test double as a single-backend storage registry. The
+// error is unreachable for a non-nil primary.
+func testRegistry(primary storage.ObjectStore) *storage.Registry {
+	registry, err := storage.NewRegistry(primary, nil)
+	if err != nil {
+		panic(err)
+	}
+	return registry
 }

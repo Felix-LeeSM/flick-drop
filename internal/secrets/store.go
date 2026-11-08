@@ -120,7 +120,7 @@ type Store struct {
 	pendingTTL            time.Duration
 	minTTL                int
 	maxTTL                int
-	objects               storage.ObjectStore
+	objects               *storage.Registry
 	outbox                outboxEnqueuer
 }
 
@@ -131,7 +131,9 @@ type StoreOptions struct {
 	PendingTTL            time.Duration
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
-	Objects               storage.ObjectStore
+	// Objects resolves each row to the backend it was placed on. Nil means
+	// object storage is disabled for this deployment.
+	Objects *storage.Registry
 	// Outbox, when set, enqueues the lockout object-delete in the access tx
 	// instead of calling the object store inline. Optional: a Store built
 	// without one (e.g. in tests) falls back to a best-effort inline delete.
@@ -309,8 +311,15 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 
 	// Presign first (pure signing, no DB). A failure returns before any row is
 	// inserted, so no orphan pending_upload row is left for a reaper to clean.
+	// Placement lands on the primary until the per-backend ceilings arrive; the
+	// chosen backend flows into the presign, the row, and the metric label.
+	backend := StorageS3
+	objects, err := s.objects.For(backend)
+	if err != nil {
+		return CreateLargeResult{}, fmt.Errorf("resolve placement backend: %w", err)
+	}
 	storageKey := managedObjectPrefix + id
-	upload, err := s.objects.PresignPUT(ctx, storageKey, input.SizeBytes, s.presignTTL)
+	upload, err := objects.PresignPUT(ctx, storageKey, input.SizeBytes, s.presignTTL)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("presign upload: %w", err)
 	}
@@ -328,7 +337,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending_upload', ?, ?, ?)`,
 		id,
 		input.Kind,
-		StorageS3,
+		backend,
 		storageKey,
 		accessKDFParamsJSON,
 		accessProofHash,
@@ -377,10 +386,10 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	}
 	defer rollback(tx)
 
-	var state, storageKey, expiresRaw, createdRaw string
+	var state, storageBackend, storageKey, expiresRaw, createdRaw string
 	var sizeBytes int64
-	err = tx.QueryRowContext(ctx, `select state, storage_key, expires_at, created_at, size_bytes from secrets where id = ?`, id).
-		Scan(&state, &storageKey, &expiresRaw, &createdRaw, &sizeBytes)
+	err = tx.QueryRowContext(ctx, `select state, storage_backend, storage_key, expires_at, created_at, size_bytes from secrets where id = ?`, id).
+		Scan(&state, &storageBackend, &storageKey, &expiresRaw, &createdRaw, &sizeBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -409,7 +418,11 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 		return ErrExpired
 	}
 
-	info, err := s.objects.Head(ctx, storageKey)
+	objects, err := s.objects.For(storageBackend)
+	if err != nil {
+		return fmt.Errorf("resolve finalize backend: %w", err)
+	}
+	info, err := objects.Head(ctx, storageKey)
 	if err != nil {
 		return fmt.Errorf("head uploaded object: %w", err)
 	}
@@ -625,13 +638,17 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 // /finalize checked, because the caller announces that length before
 // streaming.
 func (s *Store) openBody(ctx context.Context, secret *Secret) error {
-	if secret.StorageBackend != StorageS3 {
+	if secret.StorageBackend != StorageS3 && secret.StorageBackend != storage.SecondaryBackend {
 		return nil
 	}
 	if s.objects == nil {
 		return ErrNotFound
 	}
-	body, size, err := s.objects.Open(ctx, secret.StorageKey)
+	objects, err := s.objects.For(secret.StorageBackend)
+	if err != nil {
+		return fmt.Errorf("open object payload: %w", err)
+	}
+	body, size, err := objects.Open(ctx, secret.StorageKey)
 	if err != nil {
 		return fmt.Errorf("open object payload: %w", err)
 	}
@@ -697,6 +714,7 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 			if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
 				JobID:       jobID,
 				Kind:        events.KindDeleteOCIObject,
+				Backend:     storageBackend,
 				ObjectKey:   storageKey,
 				Reason:      events.ReasonConsumed,
 				RequestedAt: now,
@@ -707,7 +725,10 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 			// No outbox wired (test-only Store): best-effort inline delete. A
 			// failed delete must not roll back the lockout count — that would
 			// gift the attacker another attempt.
-			_ = s.objects.Delete(ctx, storageKey)
+			objects, err := s.objects.For(storageBackend)
+			if err == nil {
+				_ = objects.Delete(ctx, storageKey)
+			}
 		}
 	}
 	return nil
