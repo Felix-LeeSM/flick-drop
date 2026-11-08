@@ -6,6 +6,13 @@ import { cn } from '#lib/utils.js';
 // code") already say what each flow is. The underline indicator slides to the
 // active tab, matching the secret type row's idiom (prototype round 30, H1).
 // The page owns `delivery` so the heading can adapt to it.
+//
+// ARIA idiom (#335): this pair stays role="group" + aria-pressed on purpose.
+// It looks like the type tablist below it, but it switches form-level
+// presentation (heading, toggles, CTA, footer) instead of swapping a
+// dedicated panel, so a tablist/tabpanel contract would have no panel to
+// point at; toggle buttons announce their pressed state directly. The type
+// row, which does swap an editor panel, is the real tablist.
 let {
 	delivery = $bindable('link'),
 	disabled = false

@@ -14,10 +14,15 @@ type SecretType = 'text' | 'file' | CredentialType;
 let {
 	value,
 	disabled = false,
+	panelId,
 	onSelect
 }: {
 	value: SecretType;
 	disabled?: boolean;
+	// Id of the panel a tab reveals, so each tab can carry aria-controls and
+	// the page can label its role="tabpanel" with this tab's own id
+	// (see CreateSecretPage.svelte / SubmitRequestPage.svelte).
+	panelId: (type: SecretType) => string;
 	onSelect: (value: SecretType) => void;
 } = $props();
 
@@ -104,7 +109,9 @@ function tabKeydown(event: KeyboardEvent): void {
 				<button
 					type="button"
 					role="tab"
+					id={`${panelId(option.type)}-tab`}
 					aria-selected={selected}
+					aria-controls={panelId(option.type)}
 					tabindex={index === focusIndex ? 0 : -1}
 					bind:this={tabEls[index]}
 					disabled={!ready || disabled}

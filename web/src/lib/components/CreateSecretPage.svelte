@@ -666,6 +666,12 @@ function modeLabel(value: CreateMode): string {
 	}
 	return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
 }
+
+// Shared with the type tablist: each tab's aria-controls and its panel's
+// role="tabpanel" aria-labelledby both derive from this id.
+function typePanelId(type: CreateMode): string {
+	return `secret-type-${type}`;
+}
 </script>
 
 <svelte:head>
@@ -801,11 +807,17 @@ function modeLabel(value: CreateMode): string {
 				<SecretTypeSelector
 					value={mode}
 					disabled={!isHydrated || isCreating}
+					panelId={typePanelId}
 					onSelect={switchMode}
 				/>
 
 				{#if mode === 'text'}
-					<div class="grid gap-2.5">
+					<div
+						class="grid gap-2.5"
+						id={typePanelId(mode)}
+						role="tabpanel"
+						aria-labelledby={`${typePanelId(mode)}-tab`}
+					>
 						<Label for="secret-text" class="text-sm font-medium">Message</Label>
 						<Textarea
 							id="secret-text"
@@ -817,7 +829,12 @@ function modeLabel(value: CreateMode): string {
 						/>
 					</div>
 				{:else if mode === 'file'}
-					<div class="grid gap-2.5">
+					<div
+						class="grid gap-2.5"
+						id={typePanelId(mode)}
+						role="tabpanel"
+						aria-labelledby={`${typePanelId(mode)}-tab`}
+					>
 						<span class="text-sm font-medium">Files</span>
 						<!-- Label wraps the input, so a click opens the picker natively and a
 							     drop lands files without any wiring; focus-within surfaces the
@@ -907,7 +924,12 @@ function modeLabel(value: CreateMode): string {
 						{/if}
 					</div>
 				{:else}
-					<div class="grid gap-2.5">
+					<div
+						class="grid gap-2.5"
+						id={typePanelId(mode)}
+						role="tabpanel"
+						aria-labelledby={`${typePanelId(mode)}-tab`}
+					>
 						<span class="text-sm font-medium">{modeLabel(mode)}</span>
 							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
 					</div>
