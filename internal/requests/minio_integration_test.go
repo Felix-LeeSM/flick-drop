@@ -23,7 +23,11 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.store.opts.Objects = objectStore
+	registry, err := storage.NewRegistry(objectStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.store.opts.Objects = registry
 	c := f.create(t)
 	in, data := largeInput()
 	reserved, err := f.store.Reserve(ctx, c.ID, c.SubmissionToken, in)
@@ -88,7 +92,7 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 			t.Fatal(err)
 		}
 		var n int
-		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending where object_key=?`, upload).Scan(&n); err != nil {
+		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending_v2 where backend=? and object_key=?`, storage.PrimaryBackend, upload).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n == 1 {
