@@ -444,12 +444,16 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 		await owner.evaluate(() =>
 			window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
 		);
-		await Promise.all([
-			owner.waitForEvent('load'),
-			owner.evaluate(() =>
+		// The persisted pageshow makes the page call location.reload(), which tears
+		// down the dispatching context mid-call — so the evaluate may reject, and
+		// racing it against the Page load event loses the event in CI. Wait for the
+		// reloaded page to re-hydrate (the announcer re-attaches after hydration).
+		await owner
+			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
 			)
-		]);
+			.catch(() => {});
+		await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await readyOwner(owner);
 		assert.equal(ownerMock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
@@ -469,12 +473,14 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 		await sender.evaluate(() =>
 			window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
 		);
-		await Promise.all([
-			sender.waitForEvent('load'),
-			sender.evaluate(() =>
+		// Same as the owner part above: the pageshow-triggered reload tears down the
+		// dispatching context and races the load event, so wait for re-hydration.
+		await sender
+			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
 			)
-		]);
+			.catch(() => {});
+		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await sender
 			.getByText('The previous in-memory attempt was discarded', { exact: false })
 			.waitFor();

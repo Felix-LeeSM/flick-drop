@@ -21,6 +21,9 @@ after(async () => {
 
 async function create(owner) {
 	await owner.goto(`${baseUrl}/request`);
+	// The announcer mounts after hydration; clicking before it lands submits the
+	// form as a plain GET instead of running the request-creation handler.
+	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await owner.waitForURL('**/receive#receive=*');
 	const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
@@ -101,11 +104,12 @@ for (const kind of ['text', 'file']) {
 			await owner.getByText('Waiting for the first submission.', { exact: true }).waitFor();
 			assert.equal(await owner.getByLabel('Submission link', { exact: true }).count(), 0);
 			await sender.goto(links.submit);
+			await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			const plaintext = `Synthetic request ${kind} bytes 안녕하세요`;
 			if (kind === 'text') {
 				await sender.getByLabel('Message', { exact: true }).fill(plaintext);
 			} else {
-				await sender.getByRole('button', { name: 'File', exact: true }).click();
+				await sender.getByRole('tab', { name: 'File', exact: true }).click();
 				await sender.locator('input[type="file"]').setInputFiles({
 					name: 'synthetic-private-filename.txt',
 					mimeType: 'text/plain',
@@ -125,6 +129,7 @@ for (const kind of ['text', 'file']) {
 			);
 			const resumed = await resumedContext.newPage();
 			await resumed.goto(links.receive);
+			await resumed.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			await resumed.getByRole('heading', { name: 'Ready to retrieve', exact: true }).waitFor();
 			assert.equal(await resumed.getByLabel('Submission link', { exact: true }).count(), 0);
 			await resumed.getByRole('button', { name: 'Open once', exact: true }).click();
@@ -167,6 +172,7 @@ test('real API: cancellation rejects a later submission and never fabricates con
 		const sender = await senderContext.newPage();
 		const links = await create(owner);
 		await sender.goto(links.submit);
+		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await sender.getByLabel('Message', { exact: true }).fill('Synthetic cancelled request');
 		owner.on('dialog', (dialog) => dialog.accept());
 		await owner.getByRole('button', { name: 'Cancel request', exact: true }).click();
@@ -191,6 +197,7 @@ test('real API: concurrent submitters and requester tabs each have only one winn
 		const senders = await Promise.all([senderContext.newPage(), senderContext.newPage()]);
 		for (const [index, sender] of senders.entries()) {
 			await sender.goto(links.submit);
+			await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			await sender.getByLabel('Message', { exact: true }).fill(`Synthetic race ${index}`);
 		}
 		const responses = senders.map((sender) => sender.waitForResponse('**/submit'));

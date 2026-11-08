@@ -110,7 +110,10 @@ test('cancelled upload never finalizes or publishes a share URL', async () => {
 		await session.send('Network.emulateNetworkConditions', {
 			offline: false,
 			latency: 20,
-			downloadThroughput: 1024 * 1024,
+			// The throttle exists to keep the upload in flight long enough to cancel;
+			// the download side stays fast so the fresh context still hydrates the
+			// dev page (dozens of unbundled Vite modules) within the config timeout.
+			downloadThroughput: 16 * 1024 * 1024,
 			uploadThroughput: 128 * 1024
 		});
 		let finalizes = 0;
