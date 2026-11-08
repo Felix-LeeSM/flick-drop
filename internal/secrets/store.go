@@ -287,7 +287,6 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ CreateLargeResult, err error) {
 	ctx, span := tracer.Start(ctx, "secrets.CreateLarge", trace.WithAttributes(
 		attribute.String("secret.kind", input.Kind),
-		attribute.String("storage.backend", StorageS3),
 	))
 	defer func() { telemetry.EndSpan(span, err) }()
 
@@ -316,8 +315,10 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 
 	// Placement: primary first, then whichever backend's ceiling still fits
 	// (see storage.ChooseBackend). The usage read happens before any write, so
-	// a rejection inserts no row and presigns nothing. The chosen backend
-	// flows into the presign, the row, and the metric label.
+	// a rejection inserts no row and presigns nothing. The read runs outside a
+	// transaction (the write tx opens below), so concurrent placements can
+	// transiently overshoot a ceiling — the documented soft cap (storage-model.md).
+	// The chosen backend flows into the presign, the row, and the metric label.
 	usage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC())
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
@@ -331,6 +332,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("resolve placement backend: %w", err)
 	}
+	span.SetAttributes(attribute.String("storage.backend", backend))
 	storageKey := managedObjectPrefix + id
 	upload, err := objects.PresignPUT(ctx, storageKey, input.SizeBytes, s.presignTTL)
 	if err != nil {
@@ -374,7 +376,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		return CreateLargeResult{}, fmt.Errorf("commit create large secret: %w", err)
 	}
 
-	telemetry.SecretCreated.WithLabelValues(input.Kind, StorageS3).Inc()
+	telemetry.SecretCreated.WithLabelValues(input.Kind, backend).Inc()
 	telemetry.ActiveUploads.Inc()
 
 	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload, ManagementToken: managementToken}, nil
@@ -529,7 +531,7 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 	err := s.db.QueryRowContext(ctx, `select
 			s.id, s.kind, s.access_kdf_params_json, s.size_bytes, s.expires_at, s.consumed_at
 		from secrets s
-		where s.id = ? and (s.storage_backend = 's3_object'
+		where s.id = ? and (s.storage_backend in ('s3_object', 'r2_object')
 			or exists (select 1 from secret_payloads p where p.secret_id = s.id))`,
 		id,
 	).Scan(
@@ -715,7 +717,7 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		// leak the object on a transient failure. The worker retries the job; an
 		// orphan is also swept by the expiration reaper (issue #76).
 		switch {
-		case storageBackend != StorageS3:
+		case storageBackend == StorageSQLite:
 			if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
 				return fmt.Errorf("delete locked secret payload: %w", err)
 			}
@@ -856,7 +858,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	// SQLite-backed secrets carry ciphertext inline; S3-backed secrets fetch it
 	// on demand from the object store, so an empty blob here is expected for
 	// pending/active s3_object rows.
-	if secret.StorageBackend != StorageS3 && len(ciphertext) == 0 && !consumedAt.Valid {
+	if secret.StorageBackend == StorageSQLite && len(ciphertext) == 0 && !consumedAt.Valid {
 		return Secret{}, sql.NullString{}, ErrNotFound
 	}
 	secret.Ciphertext = ciphertext

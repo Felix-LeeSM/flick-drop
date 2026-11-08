@@ -39,7 +39,7 @@ Local development:
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
-| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from api.db (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. |
+| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from api.db (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot a ceiling (soft cap; see storage-model.md). |
 | `FLICK_R2_MAX_TOTAL_BYTES` | Same cap for the secondary backend (`r2_object`). Default `9000000000` (9 GB = R2 free 10 GB × 9/10). |
 | `FLICK_R2_ENABLED` | `true` enables the secondary backend, used in parallel with the primary to pool free tiers. Independent of `FLICK_STORAGE_LARGE_BACKEND` (requires it to be `s3`; disabled storage disables both). |
 | `FLICK_OPEN_RATE_PER_MIN` | Max `/open` requests per client IP + path per minute. |

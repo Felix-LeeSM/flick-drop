@@ -74,7 +74,13 @@ resolve the same bucket. Each backend carries its own cumulative byte ceiling
 (`FLICK_S3_MAX_TOTAL_BYTES`, `FLICK_R2_MAX_TOTAL_BYTES`, default 90 percent of
 the provider free tier, `0` = unlimited) enforced against the api.db aggregate
 `db.StorageObjectBytes` at placement time; when no configured backend has room,
-placement fails with `503 storage_full`. Deletion jobs record the backend in the
+placement fails with `503 storage_full`. The ceiling is a soft cap: the usage
+read is check-then-act, so concurrent placements can transiently overshoot
+(`requests.Reserve` reads and writes inside one transaction, `secrets`
+`CreateLarge` reads before its transaction), and asynchronous deletes let the
+aggregate drift from true bucket usage. Both directions are bounded by the
+90-percent margin and the delete sweep, which is why the ceilings target free
+tiers rather than exact accounting. Deletion jobs record the backend in the
 event `backend` field, and per-backend reconciliation cursors
 (`*_reconciliation_cursor_v2`, `*_reconciliation_pending_v2`) keep the buckets
 independent.

@@ -54,8 +54,11 @@ bucket name. Workers hold both backends' delete credentials and resolve the
 target by this field; an unknown value is a permanent job failure. Rolling
 deployments must roll **workers first, API second**: an API that outpaces its
 workers would emit `r2_object` deletes that pre-dual workers would aim at the
-primary bucket. Reconciliation sweeps self-heal that leak, but the ordering
-keeps it out of normal operation. The JSON schema is
+primary bucket — and pre-dual workers permanently fail `backend`-carrying
+payloads outright, because payload decoding disallows unknown fields
+(`events.decodeJobEvent`), so a mixed-version window loses deletes until
+reconciliation sweeps them. Reconciliation sweeps self-heal both leak paths,
+but the ordering keeps them out of normal operation. The JSON schema is
 `contracts/events/job.schema.json`.
 
 ## Outbox
