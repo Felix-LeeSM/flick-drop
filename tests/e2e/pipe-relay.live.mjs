@@ -62,10 +62,10 @@ test('confirmation ON: manual code entry with passphrase, sender approves, text 
 	await sender.getByLabel('Message').fill(message);
 	// Passphrase ships OFF and lives on the link tab; the code flow reuses it
 	// (the pipe key derives from code + salt + passphrase), so set it there first.
-	await sender.getByRole('checkbox', { name: 'Protect with an additional passphrase' }).click();
+	await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 	await sender.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
 	await sender.getByRole('button', { name: 'Send with code' }).click();
-	await sender.getByRole('checkbox', { name: 'Require confirmation before transfer' }).click();
+	await sender.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
 	await sender.getByText('Enter this code on receiving device').waitFor();
 	const code = await readSenderCode(sender);

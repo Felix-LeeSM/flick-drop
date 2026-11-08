@@ -34,10 +34,14 @@ after(async () => {
 });
 async function create(owner, sender) {
 	await owner.goto(`${baseUrl}/request`);
+	// The announcer mounts after hydration; clicking before it lands submits the
+	// form as a plain GET instead of running the request-creation handler.
+	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 	const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
 	await sender.goto(submit);
+	await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await sender.getByRole('tab', { name: 'File', exact: true }).click();
 	return {
 		submit,

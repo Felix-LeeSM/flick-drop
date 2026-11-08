@@ -11,9 +11,11 @@ services:
     volumes:
       - nats-data:/data
 
+  # MinIO pulled its own images in 2025: minio/minio and minio/mc are gone from
+  # Docker Hub and quay.io rejects anonymous pulls, so the dev stack runs the
+  # last community image, which bundles the mc client for bucket provisioning.
   minio:
-    image: minio/minio:latest
-    command: ["server", "/data", "--console-address", ":9001"]
+    image: bitnamilegacy/minio:latest
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -21,17 +23,18 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
-      - minio-data:/data
+      - minio-data:/bitnami/minio/data
 
   # One-shot bucket provisioner: waits for MinIO, then creates the dev bucket.
   createbuckets:
-    image: minio/mc:latest
+    image: bitnamilegacy/minio:latest
     depends_on:
       - minio
+    environment:
+      MC_HOST_flick: http://minioadmin:minioadmin@minio:9000
     entrypoint: >
       /bin/sh -c "
-      until /usr/bin/mc alias set flick http://minio:9000 minioadmin minioadmin; do echo waiting for minio; sleep 1; done;
-      /usr/bin/mc mb --ignore-existing flick/flick-dev;
+      until /opt/bitnami/minio-client/bin/mc mb --ignore-existing flick/flick-dev; do echo waiting for minio; sleep 1; done;
       echo bucket ready;
       exit 0;
       "
