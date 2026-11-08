@@ -452,7 +452,7 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
 			)
-			.catch(() => {});
+			.catch(() => undefined);
 		await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await readyOwner(owner);
 		assert.equal(ownerMock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
@@ -479,7 +479,7 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
 			)
-			.catch(() => {});
+			.catch(() => undefined);
 		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await sender
 			.getByText('The previous in-memory attempt was discarded', { exact: false })
