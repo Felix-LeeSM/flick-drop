@@ -319,3 +319,136 @@ func TestLoadPipeRelayConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadR2DefaultsOff(t *testing.T) {
+	clearFlickEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.R2.Enabled {
+		t.Fatalf("R2.Enabled = true, want false by default")
+	}
+	if cfg.R2.Endpoint != "" {
+		t.Fatalf("R2.Endpoint = %q, want empty default", cfg.R2.Endpoint)
+	}
+	if cfg.R2.Region != "auto" {
+		t.Fatalf("R2.Region = %q, want auto", cfg.R2.Region)
+	}
+	if cfg.R2MaxTotalBytes != defaultR2MaxTotalBytes {
+		t.Fatalf("R2MaxTotalBytes = %d, want %d", cfg.R2MaxTotalBytes, defaultR2MaxTotalBytes)
+	}
+	if cfg.S3MaxTotalBytes != defaultS3MaxTotalBytes {
+		t.Fatalf("S3MaxTotalBytes = %d, want %d", cfg.S3MaxTotalBytes, defaultS3MaxTotalBytes)
+	}
+}
+
+func s3PrimaryEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("FLICK_STORAGE_LARGE_BACKEND", "s3")
+	t.Setenv("FLICK_S3_BUCKET", "flick-primary")
+	t.Setenv("FLICK_S3_REGION", "us-east-1")
+	t.Setenv("FLICK_S3_ACCESS_KEY_ID", "key")
+	t.Setenv("FLICK_S3_SECRET_ACCESS_KEY", "secret")
+}
+
+func r2SecondaryEnv(t *testing.T) {
+	t.Helper()
+	s3PrimaryEnv(t)
+	t.Setenv("FLICK_R2_ENABLED", "true")
+	t.Setenv("FLICK_R2_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+	t.Setenv("FLICK_R2_BUCKET", "flick-secondary")
+	t.Setenv("FLICK_R2_ACCESS_KEY_ID", "r2key")
+	t.Setenv("FLICK_R2_SECRET_ACCESS_KEY", "r2secret")
+}
+
+func TestLoadR2EnabledRequiresS3(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_R2_ENABLED", "true")
+	t.Setenv("FLICK_R2_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+	t.Setenv("FLICK_R2_BUCKET", "flick-secondary")
+	t.Setenv("FLICK_R2_ACCESS_KEY_ID", "r2key")
+	t.Setenv("FLICK_R2_SECRET_ACCESS_KEY", "r2secret")
+
+	if _, err := Load(); err == nil {
+		t.Fatalf("load config: want error when R2 is enabled without the primary backend")
+	}
+}
+
+func TestLoadR2EnabledRequiresFields(t *testing.T) {
+	clearFlickEnv(t)
+	s3PrimaryEnv(t)
+	t.Setenv("FLICK_R2_ENABLED", "true")
+	// Endpoint and bucket deliberately absent.
+
+	if _, err := Load(); err == nil {
+		t.Fatalf("load config: want error when R2 lacks endpoint and bucket")
+	}
+}
+
+func TestLoadR2EnabledFull(t *testing.T) {
+	clearFlickEnv(t)
+	r2SecondaryEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.R2.Enabled {
+		t.Fatalf("R2.Enabled = false, want true")
+	}
+	if cfg.R2.Endpoint != "https://acct.r2.cloudflarestorage.com" {
+		t.Fatalf("R2.Endpoint = %q", cfg.R2.Endpoint)
+	}
+	if cfg.R2.Bucket != "flick-secondary" {
+		t.Fatalf("R2.Bucket = %q, want flick-secondary", cfg.R2.Bucket)
+	}
+	if cfg.R2.Region != "auto" {
+		t.Fatalf("R2.Region = %q, want auto default", cfg.R2.Region)
+	}
+	if !cfg.R2.PathStyle {
+		t.Fatalf("R2.PathStyle = false, want true default")
+	}
+
+	t.Setenv("FLICK_R2_PATH_STYLE", "false")
+	t.Setenv("FLICK_R2_REGION", "apac")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.R2.PathStyle {
+		t.Fatalf("R2.PathStyle = true, want false after override")
+	}
+	if cfg.R2.Region != "apac" {
+		t.Fatalf("R2.Region = %q, want apac", cfg.R2.Region)
+	}
+}
+
+func TestLoadMaxTotalBytesOverrides(t *testing.T) {
+	clearFlickEnv(t)
+	// 0 means unlimited for a backend.
+	t.Setenv("FLICK_S3_MAX_TOTAL_BYTES", "0")
+	t.Setenv("FLICK_R2_MAX_TOTAL_BYTES", "5000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.S3MaxTotalBytes != 0 {
+		t.Fatalf("S3MaxTotalBytes = %d, want 0 (unlimited)", cfg.S3MaxTotalBytes)
+	}
+	if cfg.R2MaxTotalBytes != 5000 {
+		t.Fatalf("R2MaxTotalBytes = %d, want 5000", cfg.R2MaxTotalBytes)
+	}
+}
+
+func TestLoadRejectsNegativeMaxTotalBytes(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_R2_MAX_TOTAL_BYTES", "-1")
+
+	_, err := Load()
+	if err == nil || err.Error() != "FLICK_R2_MAX_TOTAL_BYTES must be a non-negative integer" {
+		t.Fatalf("load config error = %v, want non-negative integer message", err)
+	}
+}

@@ -250,7 +250,7 @@ describe('secret API client', () => {
 	});
 
 	it('maps API errors to client-safe messages', async () => {
-		expect.assertions(8);
+		expect.assertions(10);
 
 		const cases = [
 			{
@@ -258,6 +258,12 @@ describe('secret API client', () => {
 				message: 'encrypted payload is too large',
 				status: 413,
 				expected: 'This file is too large.'
+			},
+			{
+				code: 'storage_full',
+				message: 'object storage is at capacity; try again later',
+				status: 503,
+				expected: 'Object storage is at capacity. Try again later.'
 			},
 			{
 				code: 'invalid_access',

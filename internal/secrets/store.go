@@ -13,6 +13,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
@@ -116,6 +117,7 @@ type Store struct {
 	now                   func() time.Time
 	payloadInlineMaxBytes int64
 	maxObjectBytes        int64
+	maxTotalBytes         map[string]int64
 	presignTTL            time.Duration
 	pendingTTL            time.Duration
 	minTTL                int
@@ -127,13 +129,15 @@ type Store struct {
 type StoreOptions struct {
 	PayloadInlineMaxBytes int64
 	MaxObjectBytes        int64
-	PresignTTL            time.Duration
-	PendingTTL            time.Duration
-	MinTTLSeconds         int
-	MaxTTLSeconds         int
-	// Objects resolves each row to the backend it was placed on. Nil means
-	// object storage is disabled for this deployment.
-	Objects *storage.Registry
+	// MaxTotalBytes caps each backend's cumulative staged+active object bytes;
+	// a zero or missing entry means unlimited. Read in CreateLarge before any
+	// row is written (see storage.ChooseBackend).
+	MaxTotalBytes map[string]int64
+	PresignTTL    time.Duration
+	PendingTTL    time.Duration
+	MinTTLSeconds int
+	MaxTTLSeconds int
+	Objects       *storage.Registry
 	// Outbox, when set, enqueues the lockout object-delete in the access tx
 	// instead of calling the object store inline. Optional: a Store built
 	// without one (e.g. in tests) falls back to a best-effort inline delete.
@@ -171,6 +175,7 @@ func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
 		now:                   func() time.Time { return time.Now().UTC() },
 		payloadInlineMaxBytes: opts.PayloadInlineMaxBytes,
 		maxObjectBytes:        opts.MaxObjectBytes,
+		maxTotalBytes:         opts.MaxTotalBytes,
 		presignTTL:            presignTTL,
 		pendingTTL:            pendingTTL,
 		minTTL:                opts.MinTTLSeconds,
@@ -309,11 +314,19 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		return CreateLargeResult{}, err
 	}
 
-	// Presign first (pure signing, no DB). A failure returns before any row is
-	// inserted, so no orphan pending_upload row is left for a reaper to clean.
-	// Placement lands on the primary until the per-backend ceilings arrive; the
-	// chosen backend flows into the presign, the row, and the metric label.
-	backend := StorageS3
+	// Placement: primary first, then whichever backend's ceiling still fits
+	// (see storage.ChooseBackend). The usage read happens before any write, so
+	// a rejection inserts no row and presigns nothing. The chosen backend
+	// flows into the presign, the row, and the metric label.
+	usage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC())
+	if err != nil {
+		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
+	}
+	telemetry.SetStorageBytesUsed(usage)
+	backend := storage.ChooseBackend(s.objects, usage, s.maxTotalBytes, input.SizeBytes)
+	if backend == "" {
+		return CreateLargeResult{}, ErrStorageFull
+	}
 	objects, err := s.objects.For(backend)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("resolve placement backend: %w", err)

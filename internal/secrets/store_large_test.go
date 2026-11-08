@@ -648,3 +648,121 @@ func testRegistry(primary storage.ObjectStore) *storage.Registry {
 	}
 	return registry
 }
+
+// dualLargeTestStore builds a two-backend store over two independent mocks, so
+// a test can tell which backend a secret was placed on.
+func dualLargeTestStore(t *testing.T, conn *sql.DB, ceilings map[string]int64) (*Store, *mockObjectStore, *mockObjectStore) {
+	t.Helper()
+	primary := newMockObjectStore()
+	secondary := newMockObjectStore()
+	registry, err := storage.NewRegistry(primary, secondary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(conn, StoreOptions{
+		PayloadInlineMaxBytes: 1024,
+		MaxObjectBytes:        4096,
+		MaxTotalBytes:         ceilings,
+		PresignTTL:            5 * time.Minute,
+		PendingTTL:            15 * time.Minute,
+		MinTTLSeconds:         300,
+		MaxTTLSeconds:         604800,
+		Objects:               registry,
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	return store, primary, secondary
+}
+
+func secretBackend(t *testing.T, ctx context.Context, conn *sql.DB, id string) string {
+	t.Helper()
+	var backend string
+	if err := conn.QueryRowContext(ctx, `select storage_backend from secrets where id = ?`, id).Scan(&backend); err != nil {
+		t.Fatal(err)
+	}
+	return backend
+}
+
+func largeCreateInput() CreateLargeInput {
+	return CreateLargeInput{
+		Kind:              KindFile,
+		EncryptedFilename: ageField(200),
+		SizeBytes:         1000,
+		TTLSeconds:        600,
+	}
+}
+
+func TestCreateLargeRoutesPrimaryWhileItFits(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
+		storage.PrimaryBackend:   4096,
+		storage.SecondaryBackend: 4096,
+	})
+
+	res, err := store.CreateLarge(ctx, largeCreateInput())
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+	if got := secretBackend(t, ctx, conn, res.ID); got != storage.PrimaryBackend {
+		t.Fatalf("storage_backend = %q, want primary while it has headroom", got)
+	}
+}
+
+func TestCreateLargeSpillsToSecondaryWhenPrimaryIsFull(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store, _, secondary := dualLargeTestStore(t, conn, map[string]int64{
+		storage.PrimaryBackend:   999, // below the 1000-byte body
+		storage.SecondaryBackend: 4096,
+	})
+
+	res, err := store.CreateLarge(ctx, largeCreateInput())
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+	if got := secretBackend(t, ctx, conn, res.ID); got != storage.SecondaryBackend {
+		t.Fatalf("storage_backend = %q, want secondary once the primary is over ceiling", got)
+	}
+	if secondary.presignedSize != 1000 {
+		t.Fatalf("secondary presigned size = %d, want 1000", secondary.presignedSize)
+	}
+}
+
+func TestCreateLargeRejectsWhenEveryBackendIsFull(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
+		storage.PrimaryBackend:   100,
+		storage.SecondaryBackend: 100,
+	})
+
+	if _, err := store.CreateLarge(ctx, largeCreateInput()); !errors.Is(err, ErrStorageFull) {
+		t.Fatalf("err = %v, want ErrStorageFull", err)
+	}
+	var count int
+	if err := conn.QueryRowContext(ctx, `select count(*) from secrets`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("a rejection left %d secret rows behind", count)
+	}
+}
+
+func TestCreateLargeZeroCeilingMeansUnlimited(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
+		storage.PrimaryBackend:   0,
+		storage.SecondaryBackend: 4096,
+	})
+
+	res, err := store.CreateLarge(ctx, largeCreateInput())
+	if err != nil {
+		t.Fatalf("create large: %v", err)
+	}
+	if got := secretBackend(t, ctx, conn, res.ID); got != storage.PrimaryBackend {
+		t.Fatalf("storage_backend = %q, want primary when its ceiling is zero (unlimited)", got)
+	}
+}

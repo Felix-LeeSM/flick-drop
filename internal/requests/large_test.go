@@ -816,3 +816,97 @@ func TestLargeConcurrentFinalizeDifferentRequestsCopyInParallel(t *testing.T) {
 		t.Fatalf("maxInFlight = %d, want 2 (copies must run in parallel)", maxInFlight)
 	}
 }
+
+func dualFixture(t *testing.T, ceilings map[string]int64) (fixture, *requestObjects, *requestObjects) {
+	t.Helper()
+	f := newFixture(t)
+	primary := &requestObjects{bodies: map[string][]byte{}}
+	secondary := &requestObjects{bodies: map[string][]byte{}}
+	outbox, err := events.NewOutboxStore(f.db, "flick.jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := storage.NewRegistry(primary, secondary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.store.opts.PayloadInlineMaxBytes = 64
+	f.store.opts.MaxObjectBytes = 1000000
+	f.store.opts.MaxTotalBytes = ceilings
+	f.store.opts.Objects = registry
+	f.store.opts.Outbox = outbox
+	return f, primary, secondary
+}
+
+func reservedBackend(t *testing.T, f fixture, id string) string {
+	t.Helper()
+	var backend string
+	if err := f.db.QueryRow(`select storage_backend from requests where id = ?`, id).Scan(&backend); err != nil {
+		t.Fatal(err)
+	}
+	return backend
+}
+
+func TestReserveRoutesPrimaryWhileItFits(t *testing.T) {
+	f, primary, _ := dualFixture(t, map[string]int64{
+		storage.PrimaryBackend:   1000,
+		storage.SecondaryBackend: 1000,
+	})
+	c := f.create(t)
+	in, data := largeInput()
+	_, _, _ = reserve(t, f, primary, c, in, data)
+
+	if got := reservedBackend(t, f, c.ID); got != storage.PrimaryBackend {
+		t.Fatalf("storage_backend = %q, want primary while it has headroom", got)
+	}
+}
+
+func TestReserveSpillsToSecondaryWhenPrimaryIsFull(t *testing.T) {
+	// 49 < secondary ceiling; the primary cap is below the object size.
+	f, _, secondary := dualFixture(t, map[string]int64{
+		storage.PrimaryBackend:   10,
+		storage.SecondaryBackend: 1000,
+	})
+	c := f.create(t)
+	in, data := largeInput()
+	_, _, _ = reserve(t, f, secondary, c, in, data)
+
+	if got := reservedBackend(t, f, c.ID); got != storage.SecondaryBackend {
+		t.Fatalf("storage_backend = %q, want secondary once the primary is over ceiling", got)
+	}
+}
+
+func TestReserveRejectsWhenEveryBackendIsFull(t *testing.T) {
+	f, _, _ := dualFixture(t, map[string]int64{
+		storage.PrimaryBackend:   10,
+		storage.SecondaryBackend: 10,
+	})
+	c := f.create(t)
+	in, _ := largeInput()
+
+	_, err := f.store.Reserve(context.Background(), c.ID, c.SubmissionToken, in)
+	if !errors.Is(err, ErrStorageFull) {
+		t.Fatalf("err = %v, want ErrStorageFull", err)
+	}
+	var backend string
+	if err := f.db.QueryRow(`select storage_backend from requests where id = ?`, c.ID).Scan(&backend); err != nil {
+		t.Fatal(err)
+	}
+	if backend != "sqlite_blob" {
+		t.Fatalf("a rejection wrote backend %q onto the waiting row", backend)
+	}
+}
+
+func TestReserveZeroCeilingMeansUnlimited(t *testing.T) {
+	f, primary, _ := dualFixture(t, map[string]int64{
+		storage.PrimaryBackend:   0,
+		storage.SecondaryBackend: 1000,
+	})
+	c := f.create(t)
+	in, data := largeInput()
+	_, _, _ = reserve(t, f, primary, c, in, data)
+
+	if got := reservedBackend(t, f, c.ID); got != storage.PrimaryBackend {
+		t.Fatalf("storage_backend = %q, want primary when its ceiling is zero (unlimited)", got)
+	}
+}

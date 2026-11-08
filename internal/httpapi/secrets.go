@@ -483,6 +483,8 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "invalid_access", "access proof is invalid")
 	case errors.Is(err, secrets.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload is too large")
+	case errors.Is(err, secrets.ErrStorageFull):
+		writeError(w, http.StatusServiceUnavailable, "storage_full", "object storage is at capacity; try again later")
 	case errors.Is(err, secrets.ErrUnsupportedKind):
 		writeError(w, http.StatusBadRequest, "unsupported_kind", "only text and file secrets are supported")
 	case errors.Is(err, secrets.ErrUnsupportedViews):

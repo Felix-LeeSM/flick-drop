@@ -63,6 +63,10 @@ Rationale:
 - Large payloads are written through the S3 API directly via the AWS SDK for Go
   v2, so any S3-compatible provider works — MinIO dev, OCI S3-compatibility prod,
   AWS S3, Cloudflare R2. See `internal/storage/AGENTS.md` and `env-contract.md`.
+- Backends are named and parallel: the primary (`s3_object`) and an optional
+  secondary (`r2_object`) resolved through `storage.Registry`, so free-tier
+  capacity pools without moving existing objects. Placement honors per-backend
+  byte ceilings (`storage.ChooseBackend`); see `storage-model.md`.
 - MinIO is the integration-test double: it is the only proof the manual presigned
   POST signing (`internal/storage/presigned.go`) interoperates with a real S3
   endpoint. The AWS SDK v2 only supports presigned PUT, hence the manual path.

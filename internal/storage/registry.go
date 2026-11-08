@@ -80,6 +80,24 @@ func (r *Registry) ForRequest(backend string) (RequestObjectStore, error) {
 // Primary returns the primary backend's store without resolving by name.
 func (r *Registry) Primary() ObjectStore { return r.primary }
 
+// ChooseBackend picks the placement backend for a new object: the primary
+// first, then the secondary for whatever the primary's ceiling cannot fit.
+// usage maps backend -> bytes already plausibly in the bucket (see db's
+// StorageObjectBytes); ceilings maps backend -> the cumulative byte cap, where
+// a zero or missing entry means unlimited. Backends the registry cannot
+// resolve are skipped. It returns "" when no configured backend has room.
+func ChooseBackend(r *Registry, usage, ceilings map[string]int64, size int64) string {
+	for _, backend := range []string{PrimaryBackend, SecondaryBackend} {
+		if _, err := r.For(backend); err != nil {
+			continue
+		}
+		if ceiling := ceilings[backend]; ceiling == 0 || usage[backend]+size <= ceiling {
+			return backend
+		}
+	}
+	return ""
+}
+
 // Len reports how many backends are configured (1 or 2 for a non-empty
 // registry).
 func (r *Registry) Len() int {

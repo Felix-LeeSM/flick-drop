@@ -105,10 +105,16 @@ func main() {
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
-		MinTTLSeconds:         cfg.MinTTLSeconds,
-		MaxTTLSeconds:         cfg.MaxTTLSeconds,
-		Objects:               objectStore,
-		Outbox:                outboxStore,
+		// Per-backend cumulative ceilings (0 = unlimited); see
+		// docs/architecture/storage-model.md for the free-tier defaults.
+		MaxTotalBytes: map[string]int64{
+			storage.PrimaryBackend:   cfg.S3MaxTotalBytes,
+			storage.SecondaryBackend: cfg.R2MaxTotalBytes,
+		},
+		MinTTLSeconds: cfg.MinTTLSeconds,
+		MaxTTLSeconds: cfg.MaxTTLSeconds,
+		Objects:       objectStore,
+		Outbox:        outboxStore,
 	})
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
@@ -122,6 +128,14 @@ func main() {
 		log.Printf("seed active uploads gauge: %v", err)
 	} else {
 		telemetry.ActiveUploads.Set(float64(n))
+	}
+	// Seed the per-backend storage-usage gauge the same way: the DB aggregate is
+	// what ceiling enforcement reads, so /metrics should not show zeros between
+	// boot and the first placement read.
+	if usage, err := db.StorageObjectBytes(ctx, conn, time.Now().UTC()); err != nil {
+		log.Printf("seed storage bytes gauge: %v", err)
+	} else {
+		telemetry.SetStorageBytesUsed(usage)
 	}
 	natsConn, err := events.ConnectNATS(cfg.NATSURL)
 	if err != nil {
@@ -146,9 +160,13 @@ func main() {
 		Outbox:                outboxStore,
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
-		MinTTLSeconds:         cfg.MinTTLSeconds,
-		DefaultTTLSeconds:     cfg.DefaultTTLSeconds,
-		MaxTTLSeconds:         cfg.MaxTTLSeconds,
+		MaxTotalBytes: map[string]int64{
+			storage.PrimaryBackend:   cfg.S3MaxTotalBytes,
+			storage.SecondaryBackend: cfg.R2MaxTotalBytes,
+		},
+		MinTTLSeconds:     cfg.MinTTLSeconds,
+		DefaultTTLSeconds: cfg.DefaultTTLSeconds,
+		MaxTTLSeconds:     cfg.MaxTTLSeconds,
 	})
 	if err != nil {
 		log.Fatalf("create request store: %v", err)

@@ -12,8 +12,10 @@ import (
 	"io"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 const ObjectPrefix = "managed/requests/"
@@ -128,12 +130,20 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if _, err := rand.Read(random[:]); err != nil {
 			return UploadResult{}, err
 		}
-		// Placement decision lands here once the per-backend ceilings arrive:
-		// primary first, secondary takes the overflow. Until then every
-		// reservation places on the primary, exactly as single-backend
-		// deployments behave, and the chosen value flows through the row update
-		// and the presign below.
-		backend := storage.PrimaryBackend
+		// Placement: primary first; the secondary takes objects the primary's
+		// ceiling cannot fit. The aggregate joins the reservation's own
+		// connection (RowQueryer) because the pool is single-conn — a separate
+		// read would wait on this transaction and deadlock. No row is written
+		// before the backend passes its ceiling.
+		usage, err := db.StorageObjectBytes(ctx, tx.Tx, s.now().UTC())
+		if err != nil {
+			return UploadResult{}, ErrStorage
+		}
+		telemetry.SetStorageBytesUsed(usage)
+		backend := storage.ChooseBackend(s.opts.Objects, usage, s.opts.MaxTotalBytes, in.SizeBytes)
+		if backend == "" {
+			return UploadResult{}, ErrStorageFull
+		}
 		uploadKey := ObjectPrefix + base64.RawURLEncoding.EncodeToString(random[:16]) + "/upload"
 		finalKey := ObjectPrefix + base64.RawURLEncoding.EncodeToString(random[16:]) + "/final"
 		deadline := s.now().UTC().Add(ReservationTTL)

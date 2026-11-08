@@ -9,6 +9,7 @@ package telemetry
 import (
 	"net/http"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -77,15 +78,25 @@ var (
 	// ActiveUploads gauges pending_upload secrets: staged by /api/secrets
 	// (CreateLarge) but not yet confirmed by /finalize. It is Inc'd on stage and
 	// Dec'd on both finalize-activate and reaper orphan reclaim, so it never
-	// drifts as long as both paths are wired. A bucket-size gauge is intentionally
-	// omitted: computing it needs a full S3 ListObjectsV2 scan on every scrape,
-	// which is too costly for a health endpoint — deferred until a dedicated
-	// inventory sweep is justified.
+	// drifts as long as both paths are wired.
 	ActiveUploads = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "flick_active_uploads",
 			Help: "Pending large-secret uploads awaiting /finalize.",
 		},
+	)
+
+	// StorageBytesUsed gauges each backend's cumulative object bytes as
+	// aggregated from api.db (see db.StorageObjectBytes) — not a bucket scan.
+	// The placement checks in requests.Reserve and secrets.CreateLarge refresh
+	// it alongside every usage read, and process wiring seeds it at boot, so
+	// scrapes see the same numbers the ceiling enforcement uses.
+	StorageBytesUsed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "flick_storage_bytes_used",
+			Help: "Object bytes per backend, aggregated from api.db.",
+		},
+		[]string{labelStorage},
 	)
 )
 
@@ -96,6 +107,7 @@ func init() {
 		SecretReaped,
 		JobsProcessed,
 		ActiveUploads,
+		StorageBytesUsed,
 	)
 }
 
@@ -104,4 +116,17 @@ func init() {
 // internal/httpapi); the worker does not yet expose /metrics.
 func MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{})
+}
+
+// SetStorageBytesUsed publishes the per-backend usage aggregates a ceiling
+// check just read (see db.StorageObjectBytes). Keys are storage_backend
+// column values; unknown keys would mint unbounded label series and are
+// dropped.
+func SetStorageBytesUsed(usage map[string]int64) {
+	for backend, total := range usage {
+		switch backend {
+		case storage.PrimaryBackend, storage.SecondaryBackend:
+			StorageBytesUsed.WithLabelValues(backend).Set(float64(total))
+		}
+	}
 }

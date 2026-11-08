@@ -22,8 +22,11 @@
 - `cleanup.go:PurgeExpiredTx` shares the API expiry reaper transaction and enqueues
   required object jobs with metadata removal or reservation invalidation.
   `Store.ReconcileOnce` scans only `managed/requests/`, protects live request
-  references, and owns `request_reconciliation_cursor` and
-  `request_reconciliation_pending`. Sender scans remain in `internal/secrets`.
+  references, and owns the per-backend `request_reconciliation_cursor_v2` and
+  `request_reconciliation_pending_v2` tables (`backend` + object key; the legacy
+  single-row `request_reconciliation_cursor`/`..._pending` tables remain only
+  for pre-dual-backend rows and are no longer written). Sender scans remain in
+  `internal/secrets`.
 - `Store.AcknowledgeObjectCleanup` clears only matching request key/job-ID claims.
   Every worker must acknowledge both managed namespaces before the API scanner
   is deployed; `docs/architecture/event-contract.md` defines rollout order.

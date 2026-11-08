@@ -73,10 +73,13 @@ with `kubectl top`, pod restarts, and real upload/download smoke tests.
 The service avoids a managed database dependency. SQLite and NATS data can live
 on Kubernetes persistent volumes, and larger encrypted files can live in
 S3-compatible object storage (for example, OCI Object Storage in
-S3-compatibility mode).
+S3-compatibility mode). An optional second S3-compatible backend (for example
+Cloudflare R2) can run in parallel with the primary to pool provider free
+tiers; see `docs/architecture/storage-model.md` and `env-contract.md`.
 
 Operators must verify current OCI tenancy limits, Object Storage quota, request
-limits, and available block volume capacity before production use.
+limits, and available block volume capacity before production use, plus the
+corresponding free-tier limits for any secondary backend.
 
 ## Scaling Boundaries
 

@@ -62,6 +62,23 @@ Large-object storage speaks the S3 API via the AWS SDK for Go v2
 S3-compatibility prod, AWS S3, Cloudflare R2 — and MinIO is the integration-test
 double (`minio_integration_test.go`).
 
+A deployment can run a primary and an optional secondary backend in parallel
+(`storage.Registry`) to pool provider free tiers: the primary is OCI S3-compat
+(`s3_object`) and the secondary is Cloudflare R2 (`r2_object`), enabled by
+`FLICK_R2_ENABLED=true`. New objects land on the primary first and spill to the
+secondary once the primary's remaining ceiling cannot fit the object
+(`storage.ChooseBackend`); existing objects never move, and the row's
+`storage_backend` column (default `s3_object`, widened to accept `r2_object`)
+records the choice so opens, finalize copies, deletes, and reconciliation all
+resolve the same bucket. Each backend carries its own cumulative byte ceiling
+(`FLICK_S3_MAX_TOTAL_BYTES`, `FLICK_R2_MAX_TOTAL_BYTES`, default 90 percent of
+the provider free tier, `0` = unlimited) enforced against the api.db aggregate
+`db.StorageObjectBytes` at placement time; when no configured backend has room,
+placement fails with `503 storage_full`. Deletion jobs record the backend in the
+event `backend` field, and per-backend reconciliation cursors
+(`*_reconciliation_cursor_v2`, `*_reconciliation_pending_v2`) keep the buckets
+independent.
+
 Object Storage receives client-encrypted age files only. Uploads are presigned
 PUTs signed at the exact age file length. Downloads never use a presigned GET:
 the open call streams the object through the API, starting the bucket read

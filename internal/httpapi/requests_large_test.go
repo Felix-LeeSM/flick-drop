@@ -159,3 +159,36 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	newRequest := createHTTPRequest(t, disabledRouter)
 	assertRequestStatus(t, performJSON(t, disabledRouter, "POST", "/api/requests/"+newRequest.ID+"/upload", in, auth(newRequest.SubmissionToken)), 503, "storage_unavailable")
 }
+
+func TestRequestUploadReportsStorageFullWhenBothBackendsAreAtCeiling(t *testing.T) {
+	ctx := context.Background()
+	conn := openHTTPTestDB(t, ctx)
+	primary := &requestHTTPObjects{bodies: map[string][]byte{}}
+	secondary := &requestHTTPObjects{bodies: map[string][]byte{}}
+	outbox, err := events.NewOutboxStore(conn, "flick.jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := storage.NewRegistry(primary, secondary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both ceilings sit below the 40-byte body, so placement has no room.
+	full, err := requests.NewStore(conn, requests.Options{Objects: registry, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MaxTotalBytes: map[string]int64{storage.PrimaryBackend: 10, storage.SecondaryBackend: 10}, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(conn, nil, Options{RequestStore: full, PayloadInlineMaxBytes: 32, OpenRatePerMinute: 100, CreateRatePerMinute: 100})
+	c := createHTTPRequest(t, router)
+	input := requestSubmission()
+	var envelope requests.Envelope
+	if err := json.Unmarshal(input.Envelope, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.EncryptedFilename = base64.StdEncoding.EncodeToString(requestAgeBody(40, 4))
+	raw, _ := json.Marshal(envelope)
+	body := requestAgeBody(40, 8)
+	checksum := sha256.Sum256(body)
+	in := requests.UploadInput{Generation: 1, AttemptToken: input.AttemptToken, Kind: "file", SizeBytes: 40, Envelope: raw, CiphertextSHA256: base64.StdEncoding.EncodeToString(checksum[:])}
+	assertRequestStatus(t, performJSON(t, router, "POST", "/api/requests/"+c.ID+"/upload", in, auth(c.SubmissionToken)), 503, "storage_full")
+}

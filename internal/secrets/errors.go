@@ -13,4 +13,5 @@ var (
 	ErrUnsupportedViews = errors.New("unsupported max views")
 	ErrNotPending       = errors.New("secret is not pending upload")
 	ErrObjectMissing    = errors.New("uploaded object is missing or oversized")
+	ErrStorageFull      = errors.New("secret object storage is at capacity")
 )

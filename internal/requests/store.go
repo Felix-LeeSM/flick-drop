@@ -60,7 +60,12 @@ type Options struct {
 	PayloadInlineMaxBytes int64
 	// MaxObjectBytes caps an uploaded age file: the largest one a
 	// FLICK_MAX_FILE_BYTES input produces (secrets.MaxCiphertextBytes).
-	MaxObjectBytes    int64
+	MaxObjectBytes int64
+	// MaxTotalBytes bounds the cumulative stored bytes per backend
+	// (backend -> ceiling). A backend missing from the map is unlimited; a
+	// ceiling of 0 means unlimited. Reserves prefer the primary and fall to
+	// whichever backend still has headroom.
+	MaxTotalBytes     map[string]int64
 	MinTTLSeconds     int
 	DefaultTTLSeconds int
 	MaxTTLSeconds     int
