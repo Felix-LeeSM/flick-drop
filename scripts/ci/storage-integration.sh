@@ -17,10 +17,15 @@ project="flick-storage-ci-$(date +%s)-$$"
 container="$project-minio"
 image="$project:local"
 tmp_dir="$(mktemp -d)"
+# The overlay replaces images only. Entry point and command come from this
+# fixture on purpose: the base compose.yaml serves the development stack and
+# may switch MinIO images freely without breaking this fixture.
 cat >"$tmp_dir/compose.yaml" <<YAML
 services:
   minio:
     image: $image
+    entrypoint: ["minio"]
+    command: ["server", "/data"]
   createbuckets:
     image: $image
 YAML
