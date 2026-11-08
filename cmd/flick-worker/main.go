@@ -77,6 +77,7 @@ func main() {
 		log.Fatalf("create cleanup client: %v", err)
 	}
 	var objectDeleter worker.ObjectDeleter
+	var secondaryDeleter worker.ObjectDeleter
 	if cfg.S3.Enabled {
 		objClient, err := storage.New(storage.Config{
 			Enabled:         true,
@@ -92,8 +93,24 @@ func main() {
 		}
 		objectDeleter = objClient
 		log.Printf("flick-worker object deletion enabled: bucket %s", cfg.S3.Bucket)
+		if cfg.R2.Enabled {
+			secondary, err := storage.New(storage.Config{
+				Enabled:         true,
+				Endpoint:        cfg.R2.Endpoint,
+				Region:          cfg.R2.Region,
+				Bucket:          cfg.R2.Bucket,
+				AccessKeyID:     cfg.R2.AccessKeyID,
+				SecretAccessKey: cfg.R2.SecretAccessKey,
+				PathStyle:       cfg.R2.PathStyle,
+			})
+			if err != nil {
+				log.Fatalf("create secondary object store: %v", err)
+			}
+			secondaryDeleter = secondary
+			log.Printf("flick-worker secondary object backend enabled: bucket %s", cfg.R2.Bucket)
+		}
 	}
-	cleanupHandler, err := worker.NewCleanupHandler(cleanupClient, objectDeleter)
+	cleanupHandler, err := worker.NewCleanupHandler(cleanupClient, objectDeleter, secondaryDeleter)
 	if err != nil {
 		log.Fatalf("create cleanup handler: %v", err)
 	}

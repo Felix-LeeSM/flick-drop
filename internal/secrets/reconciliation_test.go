@@ -122,13 +122,13 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("late object missed: %d %v", n, err)
 	}
 	var firstJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending where object_key = ?`, key).Scan(&firstJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&firstJob); err != nil {
 		t.Fatal(err)
 	}
 	if firstJob == immediate.JobID {
 		t.Fatal("reused completed immediate job")
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, immediate.JobID, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, immediate.JobID, key); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := reaper.ReconcileOnce(ctx); err != nil || n != 0 {
@@ -138,7 +138,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := store.AcknowledgeObjectCleanup(ctx, firstJob, key); err != nil {
+		if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, firstJob, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -147,23 +147,23 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("second late object missed: %d %v", n, err)
 	}
 	var secondJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending where object_key = ?`, key).Scan(&secondJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&secondJob); err != nil {
 		t.Fatal(err)
 	}
 	if secondJob == firstJob {
 		t.Fatal("reused terminal reconciliation job")
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, firstJob, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, firstJob, key); err != nil {
 		t.Fatal(err)
 	}
 	var remaining string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending where object_key = ?`, key).Scan(&remaining); err != nil || remaining != secondJob {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&remaining); err != nil || remaining != secondJob {
 		t.Fatalf("stale ack removed new job: %s %v", remaining, err)
 	}
 	if err := objects.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, secondJob, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, secondJob, key); err != nil {
 		t.Fatal(err)
 	}
 	if len(objects.objects) != 0 {
@@ -179,11 +179,11 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			objects := newMockObjectStore()
 			store := newLargeTestStore(t, conn, objects)
 			reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
-			_, err := conn.Exec(`update object_reconciliation_cursor set continuation_token = 'old'; insert into object_reconciliation_pending values ('managed/secrets/existing','existing-job')`)
+			_, err := conn.Exec(`update object_reconciliation_cursor_v2 set continuation_token = 'old' where backend = 's3_object'; insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/existing','existing-job')`)
 			if err != nil {
 				t.Fatal(err)
 			}
-			store.objects = listingObjects{objects, func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+			wrapped, wrapErr := storage.NewRegistry(listingObjects{objects, func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
 				if prefix != managedObjectPrefix || cursor != "old" || limit != 1 {
 					t.Fatal("listing escaped its bounds")
 				}
@@ -198,14 +198,18 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 					key = "managed/requests/foreign"
 				}
 				return storage.ObjectPage{Keys: []string{key}, NextCursor: "next"}, nil
-			}}
+			}}, nil)
+			if wrapErr != nil {
+				t.Fatal(wrapErr)
+			}
+			store.objects = wrapped
 			switch failure {
 			case "lookup":
 				_, err = conn.Exec(`drop table secrets`)
 			case "outbox":
 				reaper.outbox = &fakeOutbox{err: errors.New("enqueue failed")}
 			case "commit":
-				_, err = conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_claim after insert on object_reconciliation_pending begin insert into fail_commit values (new.job_id); end;`)
+				_, err = conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_claim after insert on object_reconciliation_pending_v2 begin insert into fail_commit values (new.job_id); end;`)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -216,7 +220,7 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			}
 			var cursor string
 			var generation int
-			if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor where id = 1`).Scan(&cursor, &generation); err != nil {
+			if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor, &generation); err != nil {
 				t.Fatal(err)
 			}
 			want := "old"
@@ -233,7 +237,7 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 				t.Fatalf("cursor advanced despite failure: %q %d", cursor, generation)
 			}
 			var pending int
-			if err := conn.QueryRow(`select count(*) from object_reconciliation_pending`).Scan(&pending); err != nil || pending != 1 {
+			if err := conn.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&pending); err != nil || pending != 1 {
 				t.Fatalf("pending claims changed: %d %v", pending, err)
 			}
 			if len(readOutboxEvents(t, ctx, conn)) != 0 {
@@ -264,17 +268,21 @@ func TestReconciliationRunsAlongsideExpiryBacklogAndFencesStalePages(t *testing.
 		t.Fatal("expiry backlog starved listing pages")
 	}
 	// A second instance commits while the first page listing is in flight.
-	store.objects = listingObjects{objects, func(ctx context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
-		if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor set continuation_token = 'newer',generation=generation+1`); err != nil {
+	wrapped, wrapErr := storage.NewRegistry(listingObjects{objects, func(ctx context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+		if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = 'newer',generation=generation+1 where backend = 's3_object'`); err != nil {
 			t.Fatal(err)
 		}
 		return storage.ObjectPage{Keys: []string{managedObjectPrefix + "stale"}, NextCursor: "stale"}, nil
-	}}
+	}}, nil)
+	if wrapErr != nil {
+		t.Fatal(wrapErr)
+	}
+	store.objects = wrapped
 	if n, err := reaper.ReconcileOnce(ctx); err != nil || n != 0 {
 		t.Fatalf("stale listing committed: %d %v", n, err)
 	}
 	var cursor string
-	if err := conn.QueryRow(`select continuation_token from object_reconciliation_cursor`).Scan(&cursor); err != nil || cursor != "newer" {
+	if err := conn.QueryRow(`select continuation_token from object_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor); err != nil || cursor != "newer" {
 		t.Fatalf("newer cursor lost: %s %v", cursor, err)
 	}
 }
@@ -301,7 +309,7 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 		}
 		return storage.ObjectPage{}, senderFailure
 	}}
-	senderStore, err := NewStore(conn, StoreOptions{PayloadInlineMaxBytes: 32, MaxObjectBytes: 116, MinTTLSeconds: 300, MaxTTLSeconds: 3600, Objects: senderObjects, Outbox: outbox})
+	senderStore, err := NewStore(conn, StoreOptions{PayloadInlineMaxBytes: 32, MaxObjectBytes: 116, MinTTLSeconds: 300, MaxTTLSeconds: 3600, Objects: testRegistry(senderObjects), Outbox: outbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +320,7 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 		}
 		return storage.ObjectPage{Keys: []string{requests.ObjectPrefix + "orphan"}}, nil
 	}}
-	requestStore, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600, Objects: requestObjects, Outbox: outbox})
+	requestStore, err := requests.NewStore(conn, requests.Options{PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600, Objects: requestTestRegistry(requestObjects), Outbox: outbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,4 +424,14 @@ func TestPurgeKeepsStreamingObjectProtected(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("row count after the grace = %d (%v), want purged", rows, err)
 	}
+}
+
+// requestTestRegistry wraps a requests-side test double as a single-backend
+// storage registry. The error is unreachable for a non-nil primary.
+func requestTestRegistry(primary storage.ObjectStore) *storage.Registry {
+	registry, err := storage.NewRegistry(primary, nil)
+	if err != nil {
+		panic(err)
+	}
+	return registry
 }

@@ -202,7 +202,11 @@ func TestManagementOpenCannotOutliveExpiryDuringObjectRead(t *testing.T) {
 	id := createFinalizedS3Secret(t, ctx, store, objects)
 	deadline := now.Add(600 * time.Second)
 	now = deadline.Add(-time.Second)
-	store.objects = clockAdvancingObjects{objects, func() { now = deadline }}
+	wrapped, wrapErr := storage.NewRegistry(clockAdvancingObjects{objects, func() { now = deadline }}, nil)
+	if wrapErr != nil {
+		t.Fatal(wrapErr)
+	}
+	store.objects = wrapped
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +257,11 @@ func TestManagementPendingUploadDeadlineAndReclaim(t *testing.T) {
 				deadline = created.ExpiresAt
 			}
 			now = deadline.Add(-time.Second)
-			store.objects = clockAdvancingObjects{objects, func() { now = deadline }}
+			wrapped, wrapErr := storage.NewRegistry(clockAdvancingObjects{objects, func() { now = deadline }}, nil)
+			if wrapErr != nil {
+				t.Fatal(wrapErr)
+			}
+			store.objects = wrapped
 			if err := store.Finalize(ctx, created.ID); !errors.Is(err, ErrExpired) {
 				t.Fatalf("HEAD crossed deadline: %v", err)
 			}

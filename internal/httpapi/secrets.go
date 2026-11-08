@@ -483,6 +483,8 @@ func (s Server) writeSecretError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "invalid_access", "access proof is invalid")
 	case errors.Is(err, secrets.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload is too large")
+	case errors.Is(err, secrets.ErrStorageFull):
+		writeError(w, http.StatusServiceUnavailable, "storage_full", "object storage is at capacity; try again later")
 	case errors.Is(err, secrets.ErrUnsupportedKind):
 		writeError(w, http.StatusBadRequest, "unsupported_kind", "only text and file secrets are supported")
 	case errors.Is(err, secrets.ErrUnsupportedViews):
@@ -630,6 +632,10 @@ func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
 	decoder.DisallowUnknownFields()
 	var req struct {
+		// Backend names the bucket the finished delete ran against. Workers
+		// built before dual-backend support omit it; an empty value means the
+		// primary.
+		Backend   string `json:"backend,omitempty"`
 		JobID     string `json:"job_id"`
 		ObjectKey string `json:"object_key"`
 	}
@@ -642,12 +648,12 @@ func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request)
 		if s.requests == nil {
 			err = requests.ErrStorage
 		} else {
-			err = s.requests.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
+			err = s.requests.AcknowledgeObjectCleanup(r.Context(), req.Backend, req.JobID, req.ObjectKey)
 		}
 	} else if s.secrets == nil {
 		err = requests.ErrStorage
 	} else {
-		err = s.secrets.AcknowledgeObjectCleanup(r.Context(), req.JobID, req.ObjectKey)
+		err = s.secrets.AcknowledgeObjectCleanup(r.Context(), req.Backend, req.JobID, req.ObjectKey)
 	}
 	if errors.Is(err, secrets.ErrInvalidInput) || errors.Is(err, requests.ErrInvalid) {
 		writeError(w, http.StatusBadRequest, "invalid_cleanup", "invalid cleanup acknowledgement")

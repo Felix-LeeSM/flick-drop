@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 const defaultCleanupClientTimeout = 10 * time.Second
@@ -117,15 +118,17 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil
 }
 
-// AcknowledgeObjectCleanup fences API-owned bookkeeping by both key and job ID.
+// AcknowledgeObjectCleanup fences API-owned bookkeeping by backend, key, and
+// job ID.
 func (c *CleanupClient) AcknowledgeObjectCleanup(ctx context.Context, event events.JobEvent) error {
 	if event.Kind != events.KindDeleteOCIObject || event.JobID == "" || !requiresObjectAcknowledgement(event.ObjectKey) {
 		return fmt.Errorf("%w: invalid object cleanup acknowledgement", ErrInvalidJob)
 	}
 	body, err := json.Marshal(struct {
+		Backend   string `json:"backend,omitempty"`
 		JobID     string `json:"job_id"`
 		ObjectKey string `json:"object_key"`
-	}{event.JobID, event.ObjectKey})
+	}{event.Backend, event.JobID, event.ObjectKey})
 	if err != nil {
 		return err
 	}
@@ -152,16 +155,26 @@ type ObjectDeleter interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// CleanupHandler deletes objects from whichever backend the delete job names
+// (empty = primary). Unknown backend names fail the job permanently — deleting
+// from the wrong bucket silently would leak the real object.
 type CleanupHandler struct {
-	api     CleanupAPI
-	objects ObjectDeleter
+	api      CleanupAPI
+	backends map[string]ObjectDeleter
 }
 
-func NewCleanupHandler(api CleanupAPI, objects ObjectDeleter) (*CleanupHandler, error) {
+func NewCleanupHandler(api CleanupAPI, primary ObjectDeleter, secondary ObjectDeleter) (*CleanupHandler, error) {
 	if api == nil {
 		return nil, fmt.Errorf("cleanup api is required")
 	}
-	return &CleanupHandler{api: api, objects: objects}, nil
+	// A nil primary means object storage is disabled for this deployment; the
+	// handler keeps running so a stray delete event is acknowledged as no-op
+	// instead of failing the worker.
+	backends := map[string]ObjectDeleter{"": primary, storage.PrimaryBackend: primary}
+	if secondary != nil {
+		backends[storage.SecondaryBackend] = secondary
+	}
+	return &CleanupHandler{api: api, backends: backends}, nil
 }
 
 func (h *CleanupHandler) HandleJob(ctx context.Context, event events.JobEvent) error {
@@ -197,14 +210,18 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 	if strings.TrimSpace(event.ObjectKey) == "" {
 		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
 	}
-	if h.objects == nil {
+	objects, ok := h.backends[event.Backend]
+	if !ok {
+		return fmt.Errorf("%w: object delete names unconfigured backend %q", ErrInvalidJob, event.Backend)
+	}
+	if objects == nil {
 		if requiresObjectAcknowledgement(event.ObjectKey) {
 			return errors.New("managed object deletion requires object storage")
 		}
 		// Object storage is disabled — a stray delete event has no target.
 		return nil
 	}
-	if err := h.objects.Delete(ctx, event.ObjectKey); err != nil {
+	if err := objects.Delete(ctx, event.ObjectKey); err != nil {
 		return fmt.Errorf("delete object %q: %w", event.ObjectKey, err)
 	}
 	return nil

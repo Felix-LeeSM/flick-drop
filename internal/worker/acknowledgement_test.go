@@ -123,7 +123,7 @@ func TestCleanupClientAcknowledgementContract(t *testing.T) {
 			t.Fatalf("status %d error %v", status, err)
 		}
 	}
-	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, nil)
+	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

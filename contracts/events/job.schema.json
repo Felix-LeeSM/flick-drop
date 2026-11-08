@@ -29,6 +29,11 @@
       "type": "string",
       "enum": ["consumed", "expired", "orphan", "manual", "retry"]
     },
+    "backend": {
+      "type": "string",
+      "description": "Object-storage backend the object lives on ('s3_object' primary or 'r2_object' secondary). Absent means the primary: jobs enqueued before multi-backend support delete from the primary bucket.",
+      "enum": ["s3_object", "r2_object"]
+    },
     "requested_at": {
       "type": "string",
       "format": "date-time"

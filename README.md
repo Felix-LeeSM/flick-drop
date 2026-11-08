@@ -24,6 +24,8 @@ and removed.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.
 - Supports local SQLite storage for small encrypted payloads.
 - Supports S3-compatible object storage for larger encrypted files when enabled.
+- Can run a second S3-compatible backend (for example Cloudflare R2) in parallel
+  with the primary to pool provider free tiers, with per-backend byte ceilings.
 
 Example links:
 
@@ -111,7 +113,8 @@ The intended production shape is:
 - SQLite files on persistent volume for metadata, small ciphertext payloads,
   and worker state.
 - S3-compatible object storage bucket (MinIO dev, OCI S3-compatibility prod)
-  for larger encrypted files.
+  for larger encrypted files, optionally plus a second S3-compatible bucket
+  (Cloudflare R2) running in parallel with per-backend byte ceilings.
 
 The service avoids a managed database requirement. That keeps the baseline small
 enough for an OCI Free Tier-style deployment, using compute, block volume/PVC,

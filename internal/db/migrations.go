@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 func MigrateAPI(ctx context.Context, conn *sql.DB) error {
@@ -15,7 +16,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		`create table if not exists secrets (
 			id text primary key,
 			kind text not null check (kind in ('text', 'file')),
-			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
+			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
 			storage_key text not null,
 			access_kdf_params_json text,
 			access_proof_hash text,
@@ -55,6 +56,24 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
             object_key text primary key,
             job_id text not null unique
         )`,
+		// Per-backend reconciliation state: the single-row legacy cursor cannot
+		// track two buckets, and the legacy pending table keys on object_key
+		// alone, which collides when both backends hold the same key. Legacy
+		// tables stay in place; both backends are seeded so scans start from the
+		// first page each.
+		`create table if not exists object_reconciliation_cursor_v2 (
+			backend text primary key check (backend in ('s3_object', 'r2_object')),
+			continuation_token text not null default '',
+			generation integer not null default 0
+		)`,
+		`insert or ignore into object_reconciliation_cursor_v2 (backend) values ('s3_object')`,
+		`insert or ignore into object_reconciliation_cursor_v2 (backend) values ('r2_object')`,
+		`create table if not exists object_reconciliation_pending_v2 (
+			backend text not null,
+			object_key text not null,
+			job_id text not null unique,
+			primary key (backend, object_key)
+		)`,
 		`create index if not exists idx_secrets_storage_key on secrets(storage_key)`,
 		// No FK: early payload reclamation must preserve the sender outcome.
 		`create table if not exists secret_management (
@@ -101,6 +120,12 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			return fmt.Errorf("apply api migration: %w", err)
 		}
 	}
+	// The dual-backend placement values are new; tables written before them
+	// carry CHECK constraints that reject 'r2_object' and must be rebuilt in
+	// place.
+	if err := widenSecretsBackends(ctx, conn); err != nil {
+		return err
+	}
 	// Covers both reaper conditions (active expiry + pending_upload orphan) in a
 	// single partial index over the rows still awaiting reclaim.
 	if _, err := conn.ExecContext(ctx, `create index if not exists idx_secrets_reclaim_pending
@@ -146,7 +171,107 @@ func dropAESGCMSecrets(ctx context.Context, conn *sql.DB) error {
 	return nil
 }
 
-// columnExists reports whether table has a column named column.
+// widenSecretsBackends rebuilds the secrets table in place when its CHECK
+// constraint predates the 'r2_object' placement value. SQLite cannot alter a
+// CHECK, so the rebuild follows the documented 12-step table-rebuild procedure
+// (create copy -> column-explicit insert -> drop -> rename) on a single
+// connection with foreign keys off, because secret_payloads references this
+// table and a plain drop would cascade-delete payloads.
+func widenSecretsBackends(ctx context.Context, db *sql.DB) error {
+	needsRebuild, err := tableSQLLacksValue(ctx, db, "secrets", "'r2_object'")
+	if err != nil || !needsRebuild {
+		return err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("widen secrets backends: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `pragma foreign_keys = off`); err != nil {
+		return fmt.Errorf("widen secrets backends: disable foreign keys: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `pragma foreign_keys = on`)
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("widen secrets backends: begin: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	for _, statement := range []string{
+		`create table secrets_widen (
+			id text primary key,
+			kind text not null check (kind in ('text', 'file')),
+			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
+			storage_key text not null,
+			access_kdf_params_json text,
+			access_proof_hash text,
+			wrapped_identity text,
+			encrypted_filename text,
+			content_type text,
+			size_bytes integer not null check (size_bytes >= 0),
+			max_views integer not null default 1 check (max_views > 0),
+			view_count integer not null default 0 check (view_count >= 0),
+			failed_access_count integer not null default 0 check (failed_access_count >= 0),
+			state text not null default 'active' check (state in ('active', 'pending_upload')),
+			expires_at datetime not null,
+			consumed_at datetime,
+			created_at datetime not null,
+			updated_at datetime not null,
+			reclaim_enqueued_at datetime,
+			check ((access_kdf_params_json is null) = (access_proof_hash is null)
+				and (access_proof_hash is null) = (wrapped_identity is null))
+		)`,
+		`insert into secrets_widen (id, kind, storage_backend, storage_key, access_kdf_params_json,
+			access_proof_hash, wrapped_identity, encrypted_filename, content_type, size_bytes,
+			max_views, view_count, failed_access_count, state, expires_at, consumed_at, created_at,
+			updated_at, reclaim_enqueued_at)
+			select id, kind, storage_backend, storage_key, access_kdf_params_json,
+			access_proof_hash, wrapped_identity, encrypted_filename, content_type, size_bytes,
+			max_views, view_count, failed_access_count, state, expires_at, consumed_at, created_at,
+			updated_at, reclaim_enqueued_at from secrets`,
+		`drop table secrets`,
+		`alter table secrets_widen rename to secrets`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("widen secrets backends: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("widen secrets backends: commit: %w", err)
+	}
+	for _, statement := range []string{
+		`create index if not exists idx_secrets_expires_at on secrets(expires_at)`,
+		`create index if not exists idx_secrets_consumed_at on secrets(consumed_at)`,
+		`create index if not exists idx_secrets_storage_key on secrets(storage_key)`,
+		`create index if not exists idx_secrets_reclaim_pending
+			on secrets(state, expires_at, created_at)
+			where reclaim_enqueued_at is null and consumed_at is null`,
+	} {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("widen secrets backends: restore indexes: %w", err)
+		}
+	}
+	return nil
+}
+
+// tableSQLLacksValue reports whether table's CREATE statement in sqlite_master
+// does not contain the given quoted SQL literal, i.e. the table predates the
+// schema change that introduced it. A missing table is a no-op (the create
+// statements in MigrateAPI build the widened shape).
+func tableSQLLacksValue(ctx context.Context, db *sql.DB, table, literal string) (bool, error) {
+	var sqlText string
+	err := db.QueryRowContext(ctx, `select sql from sqlite_master where type = 'table' and name = ?`, table).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	return !strings.Contains(sqlText, literal), nil
+}
 func columnExists(ctx context.Context, conn *sql.DB, table, column string) (bool, error) {
 	rows, err := conn.QueryContext(ctx, "pragma table_info("+table+")")
 	if err != nil {

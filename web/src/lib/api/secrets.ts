@@ -468,6 +468,8 @@ function clientErrorMessage(code: string, status: number): string {
 			return 'This secret is no longer available.';
 		case 'payload_too_large':
 			return 'This file is too large.';
+		case 'storage_full':
+			return 'Object storage is at capacity. Try again later.';
 		case 'upload_failed':
 			return 'Upload failed. Try again.';
 		case 'unauthorized':

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -228,7 +229,7 @@ func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now t
 	if err := r.store.ReclaimTx(ctx, tx, c.id); err != nil {
 		return err
 	}
-	if c.storageBackend != StorageS3 {
+	if c.storageBackend != StorageS3 && c.storageBackend != storage.SecondaryBackend {
 		return nil
 	}
 	jobID, err := events.NewJobID()
@@ -242,6 +243,7 @@ func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now t
 	if _, err := r.outbox.EnqueueTx(ctx, tx, events.JobEvent{
 		JobID:       jobID,
 		Kind:        events.KindDeleteOCIObject,
+		Backend:     c.storageBackend,
 		ObjectKey:   c.storageKey,
 		Reason:      reason,
 		RequestedAt: now,

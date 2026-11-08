@@ -57,9 +57,9 @@ func main() {
 		log.Fatalf("migrate api database: %v", err)
 	}
 
-	var objectStore storage.RequestObjectStore
+	var objectStore *storage.Registry
 	if cfg.S3.Enabled {
-		objClient, err := storage.New(storage.Config{
+		primary, err := storage.New(storage.Config{
 			Enabled:         true,
 			Endpoint:        cfg.S3.Endpoint,
 			Region:          cfg.S3.Region,
@@ -71,8 +71,29 @@ func main() {
 		if err != nil {
 			log.Fatalf("create object store: %v", err)
 		}
-		objectStore = objClient
+		var secondary storage.ObjectStore
+		if cfg.R2.Enabled {
+			secondary, err = storage.New(storage.Config{
+				Enabled:         true,
+				Endpoint:        cfg.R2.Endpoint,
+				Region:          cfg.R2.Region,
+				Bucket:          cfg.R2.Bucket,
+				AccessKeyID:     cfg.R2.AccessKeyID,
+				SecretAccessKey: cfg.R2.SecretAccessKey,
+				PathStyle:       cfg.R2.PathStyle,
+			})
+			if err != nil {
+				log.Fatalf("create secondary object store: %v", err)
+			}
+		}
+		objectStore, err = storage.NewRegistry(primary, secondary)
+		if err != nil {
+			log.Fatalf("create object registry: %v", err)
+		}
 		log.Printf("flick-api large-object storage enabled: bucket %s region %s", cfg.S3.Bucket, cfg.S3.Region)
+		if secondary != nil {
+			log.Printf("flick-api secondary object backend enabled: bucket %s region %s", cfg.R2.Bucket, cfg.R2.Region)
+		}
 	}
 	outboxStore, err := events.NewOutboxStore(conn, cfg.NATSJobSubject)
 	if err != nil {
@@ -84,10 +105,16 @@ func main() {
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
-		MinTTLSeconds:         cfg.MinTTLSeconds,
-		MaxTTLSeconds:         cfg.MaxTTLSeconds,
-		Objects:               objectStore,
-		Outbox:                outboxStore,
+		// Per-backend cumulative ceilings (0 = unlimited); see
+		// docs/architecture/storage-model.md for the free-tier defaults.
+		MaxTotalBytes: map[string]int64{
+			storage.PrimaryBackend:   cfg.S3MaxTotalBytes,
+			storage.SecondaryBackend: cfg.R2MaxTotalBytes,
+		},
+		MinTTLSeconds: cfg.MinTTLSeconds,
+		MaxTTLSeconds: cfg.MaxTTLSeconds,
+		Objects:       objectStore,
+		Outbox:        outboxStore,
 	})
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
@@ -101,6 +128,14 @@ func main() {
 		log.Printf("seed active uploads gauge: %v", err)
 	} else {
 		telemetry.ActiveUploads.Set(float64(n))
+	}
+	// Seed the per-backend storage-usage gauge the same way: the DB aggregate is
+	// what ceiling enforcement reads, so /metrics should not show zeros between
+	// boot and the first placement read.
+	if usage, err := db.StorageObjectBytes(ctx, conn, time.Now().UTC()); err != nil {
+		log.Printf("seed storage bytes gauge: %v", err)
+	} else {
+		telemetry.SetStorageBytesUsed(usage)
 	}
 	natsConn, err := events.ConnectNATS(cfg.NATSURL)
 	if err != nil {
@@ -125,9 +160,13 @@ func main() {
 		Outbox:                outboxStore,
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
 		MaxObjectBytes:        maxObjectBytes,
-		MinTTLSeconds:         cfg.MinTTLSeconds,
-		DefaultTTLSeconds:     cfg.DefaultTTLSeconds,
-		MaxTTLSeconds:         cfg.MaxTTLSeconds,
+		MaxTotalBytes: map[string]int64{
+			storage.PrimaryBackend:   cfg.S3MaxTotalBytes,
+			storage.SecondaryBackend: cfg.R2MaxTotalBytes,
+		},
+		MinTTLSeconds:     cfg.MinTTLSeconds,
+		DefaultTTLSeconds: cfg.DefaultTTLSeconds,
+		MaxTTLSeconds:     cfg.MaxTTLSeconds,
 	})
 	if err != nil {
 		log.Fatalf("create request store: %v", err)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 func TestCleanupClientSendsInternalCleanupRequest(t *testing.T) {
@@ -163,7 +164,7 @@ func TestCleanupClientRequiresConfiguration(t *testing.T) {
 
 func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedJobKind(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -223,7 +224,7 @@ func (f *fakeObjectDeleter) Delete(_ context.Context, key string) error {
 func TestCleanupHandlerDeletesObject(t *testing.T) {
 	api := &fakeCleanupAPI{}
 	obj := &fakeObjectDeleter{}
-	handler, err := NewCleanupHandler(api, obj)
+	handler, err := NewCleanupHandler(api, obj, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestCleanupHandlerDeletesObject(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 func TestCleanupHandlerPropagatesClientError(t *testing.T) {
 	apiErr := errors.New("api unavailable")
 	api := &fakeCleanupAPI{err: apiErr}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -279,7 +280,7 @@ func TestProcessorRunsCleanupHandler(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil)
+	handler, err := NewCleanupHandler(api, nil, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -337,4 +338,59 @@ func (a *fakeCleanupAPI) CleanupSecret(_ context.Context, req CleanupRequest) (C
 		return CleanupResponse{}, a.err
 	}
 	return CleanupResponse{Cleaned: true}, nil
+}
+
+func TestCleanupHandlerRoutesObjectDeleteByBackend(t *testing.T) {
+	api := &fakeCleanupAPI{}
+	primary := &fakeObjectDeleter{}
+	secondary := &fakeObjectDeleter{}
+	handler, err := NewCleanupHandler(api, primary, secondary)
+	if err != nil {
+		t.Fatalf("new cleanup handler: %v", err)
+	}
+	at := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+
+	if err := handler.HandleJob(context.Background(), events.JobEvent{
+		JobID: "job_r2", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-r2",
+		Backend: storage.SecondaryBackend, RequestedAt: at,
+	}); err != nil {
+		t.Fatalf("handle secondary delete: %v", err)
+	}
+	if len(secondary.deleted) != 1 || secondary.deleted[0] != "obj-r2" {
+		t.Fatalf("secondary deleted = %v, want [obj-r2]", secondary.deleted)
+	}
+	if len(primary.deleted) != 0 {
+		t.Fatalf("primary deleted = %v, want nothing for a secondary object", primary.deleted)
+	}
+
+	if err := handler.HandleJob(context.Background(), events.JobEvent{
+		JobID: "job_s3", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-s3",
+		Backend: storage.PrimaryBackend, RequestedAt: at,
+	}); err != nil {
+		t.Fatalf("handle primary delete: %v", err)
+	}
+	if len(primary.deleted) != 1 || primary.deleted[0] != "obj-s3" {
+		t.Fatalf("primary deleted = %v, want [obj-s3]", primary.deleted)
+	}
+}
+
+func TestCleanupHandlerFailsUnknownBackendPermanently(t *testing.T) {
+	api := &fakeCleanupAPI{}
+	primary := &fakeObjectDeleter{}
+	handler, err := NewCleanupHandler(api, primary, nil)
+	if err != nil {
+		t.Fatalf("new cleanup handler: %v", err)
+	}
+
+	err = handler.HandleJob(context.Background(), events.JobEvent{
+		JobID: "job_x", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-x",
+		Backend:     "gcs_object",
+		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
+	})
+	if !errors.Is(err, ErrInvalidJob) {
+		t.Fatalf("err = %v, want ErrInvalidJob for an unconfigured backend", err)
+	}
+	if len(primary.deleted) != 0 {
+		t.Fatalf("primary deleted = %v, want nothing", primary.deleted)
+	}
 }

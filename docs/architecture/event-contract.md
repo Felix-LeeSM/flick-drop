@@ -41,10 +41,25 @@ Example:
   "kind": "delete_secret",
   "secret_id": "sec_01hxx",
   "reason": "expired",
+  "backend": "s3_object",
   "requested_at": "2026-06-16T03:00:00Z",
   "trace_id": "trc_01hxz"
 }
 ```
+
+`backend` names the object-storage bucket the object lives on
+(`s3_object` primary, `r2_object` secondary; absent = primary, where every
+pre-multi-backend object lives). It is bounded enum metadata, never a private
+bucket name. Workers hold both backends' delete credentials and resolve the
+target by this field; an unknown value is a permanent job failure. Rolling
+deployments must roll **workers first, API second**: an API that outpaces its
+workers would emit `r2_object` deletes that pre-dual workers would aim at the
+primary bucket — and pre-dual workers permanently fail `backend`-carrying
+payloads outright, because payload decoding disallows unknown fields
+(`events.decodeJobEvent`), so a mixed-version window loses deletes until
+reconciliation sweeps them. Reconciliation sweeps self-heal both leak paths,
+but the ordering keeps them out of normal operation. The JSON schema is
+`contracts/events/job.schema.json`.
 
 ## Outbox
 

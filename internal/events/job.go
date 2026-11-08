@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 const (
@@ -30,11 +32,17 @@ func NewJobID() (string, error) {
 }
 
 type JobEvent struct {
-	JobID       string    `json:"job_id"`
-	Kind        string    `json:"kind"`
-	SecretID    string    `json:"secret_id,omitempty"`
-	ObjectKey   string    `json:"object_key,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
+	JobID     string `json:"job_id"`
+	Kind      string `json:"kind"`
+	SecretID  string `json:"secret_id,omitempty"`
+	ObjectKey string `json:"object_key,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	// Backend names the object-storage backend the object lives on (see
+	// storage.PrimaryBackend / storage.SecondaryBackend). Empty means the
+	// primary: jobs enqueued before multi-backend support delete from the
+	// primary bucket, which is where all pre-dual-backend objects live. A
+	// backend name is safe event metadata — never a private bucket name.
+	Backend     string    `json:"backend,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
 	// TraceContext carries the W3C trace-context of the span that enqueued this
 	// job, injected by the outbox at enqueue time so the worker can continue the
@@ -66,6 +74,11 @@ func (e JobEvent) Validate() error {
 
 	if e.Reason != "" && !validReason(e.Reason) {
 		return fmt.Errorf("%w: unsupported reason %q", ErrInvalidEvent, e.Reason)
+	}
+	switch e.Backend {
+	case "", storage.PrimaryBackend, storage.SecondaryBackend:
+	default:
+		return fmt.Errorf("%w: unsupported backend %q", ErrInvalidEvent, e.Backend)
 	}
 	return nil
 }

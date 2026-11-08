@@ -214,6 +214,8 @@ func writeRequestError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "input does not match the request contract")
 	case errors.Is(err, requests.ErrTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request payload exceeds the configured limit")
+	case errors.Is(err, requests.ErrStorageFull):
+		writeError(w, http.StatusServiceUnavailable, "storage_full", "object storage is at capacity; try again later")
 	case errors.Is(err, requests.ErrConflict):
 		writeError(w, http.StatusConflict, "request_conflict", "request state or attempt conflicts")
 	default:

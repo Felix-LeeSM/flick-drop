@@ -24,21 +24,41 @@ type S3Config struct {
 	PathStyle       bool
 }
 
+// R2Config configures the optional secondary object backend (Cloudflare R2).
+// It is independent of FLICK_STORAGE_LARGE_BACKEND: enabling it adds a second
+// backend to route new objects onto alongside the primary, it never replaces
+// the primary. Auth is an R2 API token (static key pair).
+type R2Config struct {
+	Enabled         bool
+	Endpoint        string
+	Region          string
+	Bucket          string
+	AccessKeyID     string
+	SecretAccessKey string
+	PathStyle       bool
+}
+
 type Config struct {
-	Env                   string
-	PublicBaseURL         string
-	InternalToken         string
-	MetricsToken          string
-	OTLPEndpoint          string
-	InternalAPIBaseURL    string
-	APIAddr               string
-	APIDBPath             string
-	WorkerDBPath          string
-	NATSURL               string
-	NATSStream            string
-	NATSJobSubject        string
+	Env                string
+	PublicBaseURL      string
+	InternalToken      string
+	MetricsToken       string
+	OTLPEndpoint       string
+	InternalAPIBaseURL string
+	APIAddr            string
+	APIDBPath          string
+	WorkerDBPath       string
+	NATSURL            string
+	NATSStream         string
+	NATSJobSubject     string
+	// PayloadInlineMaxBytes bounds one encrypted secret; MaxFileBytes bounds the
+	// file the browser may pick. MaxTotalBytes bounds the cumulative stored
+	// bytes per backend (0 = unlimited) so multi-backend deployments stay inside
+	// the provider free tiers; see storage-model.md.
 	PayloadInlineMaxBytes int64
 	MaxFileBytes          int64
+	S3MaxTotalBytes       int64
+	R2MaxTotalBytes       int64
 	DefaultTTLSeconds     int
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
@@ -50,6 +70,7 @@ type Config struct {
 	PipeMaxConcurrent     int
 	TrustedProxies        []*net.IPNet
 	S3                    S3Config
+	R2                    R2Config
 }
 
 func Load() (Config, error) {
@@ -70,6 +91,8 @@ func Load() (Config, error) {
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
 		PayloadInlineMaxBytes: defaultPayloadInlineMaxBytes,
 		MaxFileBytes:          defaultMaxFileBytes,
+		S3MaxTotalBytes:       defaultS3MaxTotalBytes,
+		R2MaxTotalBytes:       defaultR2MaxTotalBytes,
 		DefaultTTLSeconds:     defaultDefaultTTLSeconds,
 		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
 		// offer an editable "custom" lifetime, not just fixed presets.
@@ -97,13 +120,34 @@ func Load() (Config, error) {
 			// PathStyle is resolved below from FLICK_S3_PATH_STYLE.
 			PathStyle: false,
 		},
+		R2: R2Config{
+			Enabled:         false,
+			Endpoint:        getenv("FLICK_R2_ENDPOINT", ""),
+			Region:          getenv("FLICK_R2_REGION", "auto"),
+			Bucket:          getenv("FLICK_R2_BUCKET", ""),
+			AccessKeyID:     getenv("FLICK_R2_ACCESS_KEY_ID", ""),
+			SecretAccessKey: getenv("FLICK_R2_SECRET_ACCESS_KEY", ""),
+			PathStyle:       false,
+		},
 	}
 
 	var err error
 	if cfg.S3.PathStyle, err = envBool("FLICK_S3_PATH_STYLE", true); err != nil {
 		return Config{}, err
 	}
+	if cfg.R2.PathStyle, err = envBool("FLICK_R2_PATH_STYLE", true); err != nil {
+		return Config{}, err
+	}
+	if cfg.R2.Enabled, err = envBool("FLICK_R2_ENABLED", cfg.R2.Enabled); err != nil {
+		return Config{}, err
+	}
 	if cfg.PayloadInlineMaxBytes, err = envPositiveInt64("FLICK_PAYLOAD_INLINE_MAX_BYTES", cfg.PayloadInlineMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.S3MaxTotalBytes, err = envNonNegativeInt64("FLICK_S3_MAX_TOTAL_BYTES", cfg.S3MaxTotalBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.R2MaxTotalBytes, err = envNonNegativeInt64("FLICK_R2_MAX_TOTAL_BYTES", cfg.R2MaxTotalBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.PayloadInlineMaxBytes < secrets.MaxCiphertextBytes(0) {
@@ -178,6 +222,17 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("FLICK_S3_ACCESS_KEY_ID and FLICK_S3_SECRET_ACCESS_KEY are required when FLICK_STORAGE_LARGE_BACKEND=s3")
 		}
 	}
+	if cfg.R2.Enabled {
+		if !cfg.S3.Enabled {
+			return Config{}, fmt.Errorf("FLICK_R2_ENABLED requires FLICK_STORAGE_LARGE_BACKEND=s3 (the secondary backend extends the primary)")
+		}
+		if cfg.R2.Bucket == "" || cfg.R2.Endpoint == "" {
+			return Config{}, fmt.Errorf("FLICK_R2_BUCKET and FLICK_R2_ENDPOINT are required when FLICK_R2_ENABLED=true")
+		}
+		if cfg.R2.AccessKeyID == "" || cfg.R2.SecretAccessKey == "" {
+			return Config{}, fmt.Errorf("FLICK_R2_ACCESS_KEY_ID and FLICK_R2_SECRET_ACCESS_KEY are required when FLICK_R2_ENABLED=true")
+		}
+	}
 
 	return cfg, nil
 }
@@ -243,6 +298,24 @@ func envPositiveInt64(name string, cur int64) (int64, error) {
 		return cur, nil
 	}
 	return parsePositiveInt64(name, raw)
+}
+
+// parseNonNegativeInt64 accepts 0 (documented as "unlimited" for the cumulative
+// storage ceilings) but rejects negatives, which are a config typo.
+func parseNonNegativeInt64(name, raw string) (int64, error) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return value, nil
+}
+
+func envNonNegativeInt64(name string, cur int64) (int64, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return cur, nil
+	}
+	return parseNonNegativeInt64(name, raw)
 }
 
 // envBool parses a "true"/"false" env var (case- and whitespace-insensitive).

@@ -39,6 +39,9 @@ Local development:
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
+| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from api.db (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot a ceiling (soft cap; see storage-model.md). |
+| `FLICK_R2_MAX_TOTAL_BYTES` | Same cap for the secondary backend (`r2_object`). Default `9000000000` (9 GB = R2 free 10 GB × 9/10). |
+| `FLICK_R2_ENABLED` | `true` enables the secondary backend, used in parallel with the primary to pool free tiers. Independent of `FLICK_STORAGE_LARGE_BACKEND` (requires it to be `s3`; disabled storage disables both). |
 | `FLICK_OPEN_RATE_PER_MIN` | Max `/open` requests per client IP + path per minute. |
 | `FLICK_CREATE_RATE_PER_MIN` | Max `/api/secrets` (presigned upload issuance) requests per client IP + path per minute. |
 | `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in api.db. |
@@ -76,7 +79,7 @@ Runtime env for the nginx-served web container (distinct from the build-time
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when the large-file S3 backend is disabled. Set to the `FLICK_S3_ENDPOINT` origin (`scheme://host[:port]`) when `FLICK_STORAGE_LARGE_BACKEND=s3`, so the browser's direct presigned upload passes CSP. Rendered into nginx by the envsubst entrypoint. |
+| `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when the large-file S3 backend is disabled. When `FLICK_STORAGE_LARGE_BACKEND=s3`, set the `FLICK_S3_ENDPOINT` origin (`scheme://host[:port]`); when `FLICK_R2_ENABLED=true` is also set, list both backend origins so the browser's direct presigned uploads pass CSP. Rendered into nginx by the envsubst entrypoint. |
 
 ## S3
 
@@ -104,3 +107,18 @@ permission. No new environment variable or startup permission probe is introduce
 listing failures are reported by the reaper and retried without disabling existing
 S3 upload/open operation. Provider versions, retention locks, replicas, and backups
 remain operator-owned; listing only reconciles current objects.
+
+## R2 (secondary backend)
+
+Used only when `FLICK_R2_ENABLED=true` and the primary backend (`FLICK_STORAGE_LARGE_BACKEND=s3`) is enabled. New objects land on the primary first and spill to the secondary once the primary's remaining ceiling cannot fit (`storage.ChooseBackend`); existing objects never move. Auth is an R2 API token (static key pair); region stays `auto`.
+
+| Variable | Purpose |
+| --- | --- |
+| `FLICK_R2_ENDPOINT` | R2 S3 endpoint, `https://<account>.r2.cloudflarestorage.com`. |
+| `FLICK_R2_REGION` | Region literal; `auto` (default) is the R2 value. |
+| `FLICK_R2_BUCKET` | Secondary bucket name. |
+| `FLICK_R2_ACCESS_KEY_ID` | R2 API token access key. |
+| `FLICK_R2_SECRET_ACCESS_KEY` | R2 API token secret. |
+| `FLICK_R2_PATH_STYLE` | `true` (default) — R2 accepts path-style. |
+
+The secondary needs the same permission set as the primary (signed PUT for browser uploads, GET for finalize copy and opens, PUT for finalize, DELETE, ListObjectsV2 for reconciliation). Delete jobs carry the backend name in the `backend` field of the NATS payload (event-contract.md); the worker needs both backends' credentials. R2 has no hard spending cap (budget alerts are notification-only), which is why the code-side ceiling is the enforcement layer.

@@ -155,6 +155,19 @@ describe('request API capability and retry boundary', () => {
 		expect(String(error)).not.toContain(identity);
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	});
+	it('reports storage_full distinctly when every backend is at ceiling', async () => {
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(
+				Response.json({ error: { code: 'storage_full', message: identity } }, { status: 503 })
+			);
+		const api = createRequestApiClient({ fetcher });
+		const error = await api.open('fixture', receiveToken).catch((cause: unknown) => cause);
+		expect(error).toMatchObject({ code: 'storage_full', status: 503 });
+		expect(String(error)).toContain('capacity');
+		expect(String(error)).not.toContain(identity);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
 	it('rejects receipt confusion, noncanonical tokens and malformed metadata', async () => {
 		const fetcher = vi
 			.fn<typeof fetch>()

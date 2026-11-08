@@ -18,6 +18,7 @@ var (
 	ErrUnavailable = errors.New("request unavailable")
 	ErrConflict    = errors.New("request conflict")
 	ErrStorage     = errors.New("request object storage unavailable")
+	ErrStorageFull = errors.New("request object storage is at capacity")
 )
 
 const (

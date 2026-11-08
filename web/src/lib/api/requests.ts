@@ -245,15 +245,26 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			);
 		}
 		if (!response.ok) {
-			const messages: Record<number, string> = {
+			const code = await serverErrorCode(response);
+			const byCode: Record<string, string> = {
+				request_unavailable: 'Request unavailable. The link may be invalid or expired.',
+				request_conflict: 'The request changed. Refresh its status.',
+				payload_too_large: 'The content exceeds the supported size limit.',
+				rate_limited: 'Too many requests. Wait a moment before trying again.',
+				storage_full: 'Object storage is at capacity. Try again later.',
+				storage_unavailable: 'The server is temporarily unavailable. Try again later.'
+			};
+			const byStatus: Record<number, string> = {
 				404: 'Request unavailable. The link may be invalid or expired.',
 				409: 'The request changed. Refresh its status.',
 				413: 'The content exceeds the supported size limit.',
 				429: 'Too many requests. Wait a moment before trying again.'
 			};
 			throw new RequestApiError(
-				messages[response.status] ?? 'The server is temporarily unavailable. Try again later.',
-				'request_failed',
+				byCode[code] ??
+					byStatus[response.status] ??
+					'The server is temporarily unavailable. Try again later.',
+				code,
 				response.status
 			);
 		}
@@ -441,4 +452,17 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			}
 		}
 	};
+}
+
+// serverErrorCode lifts the machine-readable error code out of an error body.
+// Server-provided prose is deliberately dropped (same rule as the secrets
+// client): the body is not rendered, so a hostile response cannot inject UI
+// text. A body without a code falls back to the generic code.
+async function serverErrorCode(response: Response): Promise<string> {
+	try {
+		const body = (await response.json()) as { error?: { code?: string } };
+		return body.error?.code ?? 'request_failed';
+	} catch {
+		return 'request_failed';
+	}
 }

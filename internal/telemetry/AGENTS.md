@@ -27,15 +27,20 @@ on `DefaultRegistry` in `init()`:
   `finishFailed`.
 - `flick_active_uploads` (gauge) — `Inc` in `CreateLarge`, `Dec` in `Finalize`
   (upload confirmed) and in the reaper (pending_upload orphan reclaimed).
+- `flick_storage_bytes_used` (gauge, label `storage` `s3_object`|`r2_object`) —
+  set from the api.db aggregate (`db.StorageObjectBytes`, see
+  `telemetry.SetStorageBytesUsed`) at every placement read in
+  `requests.Store.Reserve` and `secrets.Store.CreateLarge`, plus once at API
+  boot (`cmd/flick-api/main.go`). It reflects what ceiling enforcement reads,
+  not a bucket scan.
 
 `MetricsHandler()` serves the Prometheus text exposition format; mounted on
 `/metrics` by `internal/httpapi/router.go` in the API process. (The worker
 process increments `flick_jobs_processed_total` but does not run an HTTP
 server today, so that counter is only exposed when a future worker `/metrics`
-endpoint is added.) A bucket-size gauge is intentionally
-omitted: computing it needs a full `ListObjectsV2` scan on every scrape, too
-costly for a health endpoint — deferred until a dedicated inventory sweep is
-justified.
+endpoint is added.) Bucket usage is gauged from the api.db size aggregate
+(`flick_storage_bytes_used`), deliberately not from a `ListObjectsV2` scan: a
+scan on every scrape is too costly for a health endpoint.
 
 `tracing.go` wires OpenTelemetry. `SetupTracing` installs a global OTLP/HTTP
 tracer provider **only when `FLICK_OTLP_ENDPOINT` is set**; empty leaves OTel's

@@ -140,7 +140,7 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := secrets.NewStore(conn, secrets.StoreOptions{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 4096, MinTTLSeconds: 300, MaxTTLSeconds: 604800, Objects: objects})
+	store, err := secrets.NewStore(conn, secrets.StoreOptions{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 4096, MinTTLSeconds: 300, MaxTTLSeconds: 604800, Objects: newTestRegistry(objects)})
 	if err != nil {
 		t.Fatal(err)
 	}
