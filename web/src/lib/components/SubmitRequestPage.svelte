@@ -107,6 +107,11 @@ function switchMode(next: typeof mode): void {
 		clearInput();
 	}
 }
+// Shared with the type tablist: each tab's aria-controls and its panel's
+// role="tabpanel" aria-labelledby both derive from this id.
+function typePanelId(type: typeof mode): string {
+	return `request-type-${type}`;
+}
 // Credential templates travel as FLCR1 text, exactly like credential secrets on the create page.
 function textContent(): string {
 	return mode === 'text' ? message : serializeCredential(credential);
@@ -556,13 +561,13 @@ onMount(() => {
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
 		<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
-			<SecretTypeSelector value={mode} disabled={busy} onSelect={switchMode} />
+			<SecretTypeSelector value={mode} disabled={busy} panelId={typePanelId} onSelect={switchMode} />
 			{#if mode === 'text'}
-				<div class="grid gap-2"><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} class="min-h-44 resize-y px-3.5 py-3" bind:value={message} disabled={busy} required autocomplete="off" /></div>
+				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} class="min-h-44 resize-y px-3.5 py-3" bind:value={message} disabled={busy} required autocomplete="off" /></div>
 			{:else if mode === 'file'}
-				<div class="grid gap-2"><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
+				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
 			{:else}
-				<div class="grid gap-2.5"><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
+				<div class="grid gap-2.5" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
 			{/if}
 			{#if mode === 'file'}<p class="text-sm text-muted-foreground">One file, up to {formatBytes(limits.maxFileBytes)}.</p>{/if}
 			<Button type="submit" size="cta" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>

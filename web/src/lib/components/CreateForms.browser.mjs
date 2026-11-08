@@ -314,6 +314,20 @@ async function typeRow(page, selected) {
 	assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 }
 
+// #335: the selected type tab must point at the visible editor panel via
+// aria-controls, and the role="tabpanel" must name its tab back via
+// aria-labelledby — checked together so no mode can ship half the contract.
+async function assertTypePanelWiring(page, name) {
+	const tab = typeTab(page, name);
+	const tabId = await tab.getAttribute('id');
+	const controls = await tab.getAttribute('aria-controls');
+	assert.ok(tabId && controls, `tab ${name} is missing id/aria-controls`);
+	const panel = page.locator(`#${controls}`);
+	await panel.waitFor({ state: 'visible' });
+	assert.equal(await panel.getAttribute('role'), 'tabpanel');
+	assert.equal(await panel.getAttribute('aria-labelledby'), tabId);
+}
+
 async function editorVisible(page, name) {
 	const editors = {
 		Text: page.getByLabel('Message', { exact: true }),
@@ -325,6 +339,7 @@ async function editorVisible(page, name) {
 	};
 	await editors[name].waitFor({ state: 'visible' });
 	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
+	await assertTypePanelWiring(page, name);
 }
 
 for (const reducedMotion of ['no-preference', 'reduce']) {
