@@ -409,3 +409,190 @@ func TestMigrateAPIDropsRSARequests(t *testing.T) {
 		t.Fatal("FK enforcement not restored", err)
 	}
 }
+
+// legacySecretsTableSQL is the secrets DDL exactly as written before the
+// 'r2_object' placement value existed, including its CHECK constraints.
+const legacySecretsTableSQL = `create table secrets (
+			id text primary key,
+			kind text not null check (kind in ('text', 'file')),
+			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
+			storage_key text not null,
+			access_kdf_params_json text,
+			access_proof_hash text,
+			wrapped_identity text,
+			encrypted_filename text,
+			content_type text,
+			size_bytes integer not null check (size_bytes >= 0),
+			max_views integer not null default 1 check (max_views > 0),
+			view_count integer not null default 0 check (view_count >= 0),
+			failed_access_count integer not null default 0 check (failed_access_count >= 0),
+			state text not null default 'active' check (state in ('active', 'pending_upload')),
+			expires_at datetime not null,
+			consumed_at datetime,
+			created_at datetime not null,
+			updated_at datetime not null,
+			reclaim_enqueued_at datetime,
+			check ((access_kdf_params_json is null) = (access_proof_hash is null)
+				and (access_proof_hash is null) = (wrapped_identity is null))
+		)`
+
+func TestMigrateWidensSecretsBackends(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	// Replace secrets with the pre-widen shape (secret_payloads cascades with
+	// the drop and is recreated with the legacy shape for the reinsert).
+	if _, err := conn.Exec(`drop table secret_payloads; drop table secrets`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(legacySecretsTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create table secret_payloads (
+			secret_id text primary key,
+			ciphertext blob not null,
+			created_at datetime not null,
+			foreign key (secret_id) references secrets(id) on delete cascade
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	inserts := []string{
+		`insert into secrets (id,kind,storage_backend,storage_key,size_bytes,expires_at,created_at,updated_at)
+			values ('inline','text','sqlite_blob','inline',1,'2026-01-01','2026-01-01','2026-01-01')`,
+		`insert into secrets (id,kind,storage_backend,storage_key,size_bytes,expires_at,created_at,updated_at)
+			values ('object','file','s3_object','managed/secrets/obj',100,'2026-01-01','2026-01-01','2026-01-01')`,
+		`insert into secret_payloads values ('inline', x'00', '2026-01-01')`,
+	}
+	for _, statement := range inserts {
+		if _, err := conn.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatalf("widen migration: %v", err)
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from secrets`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("legacy rows lost: %d %v", count, err)
+	}
+	if err := conn.QueryRow(`select count(*) from secret_payloads`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("payload rows lost by the widen rebuild: %d %v", count, err)
+	}
+	// The widened CHECK accepts the new placement value.
+	if _, err := conn.Exec(`insert into secrets (id,kind,storage_backend,storage_key,size_bytes,expires_at,created_at,updated_at)
+		values ('secondary','file','r2_object','managed/secrets/r2',100,'2026-01-01','2026-01-01','2026-01-01')`); err != nil {
+		t.Fatalf("r2_object rejected after widen: %v", err)
+	}
+	// The index set survives the rebuild.
+	indexes := []string{"idx_secrets_expires_at", "idx_secrets_consumed_at", "idx_secrets_storage_key", "idx_secrets_reclaim_pending"}
+	for _, index := range indexes {
+		if err := conn.QueryRow(`select count(*) from sqlite_master where type = 'index' and name = ?`, index).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("index %s missing after widen: %d %v", index, count, err)
+		}
+	}
+	// Re-running the migration is a no-op.
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from secrets`).Scan(&count); err != nil || count != 3 {
+		t.Fatalf("rows lost on idempotent re-run: %d %v", count, err)
+	}
+}
+
+// legacyRequestsTableSQL is the requests DDL exactly as written before the
+// 'r2_object' placement value existed, including its CHECK constraints.
+const legacyRequestsTableSQL = `create table requests (
+			id text primary key,
+			public_key text not null,
+			fingerprint text not null,
+			submission_token_hash blob not null check (length(submission_token_hash) = 32),
+			retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
+			state text not null default 'waiting' check (state in ('waiting', 'uploading', 'submitted', 'consumed', 'cancelled', 'unavailable')),
+			generation integer not null default 1 check (generation between 1 and 16),
+			attempt_token_hash blob check (length(attempt_token_hash) = 32),
+			attempt_body_hash blob check (length(attempt_body_hash) = 32),
+			kind text check (kind in ('text', 'file')),
+			size_bytes integer check (size_bytes >= 0),
+			envelope_json text,
+			storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object')),
+			upload_key text,
+			final_key text,
+			ciphertext_sha256 blob check (length(ciphertext_sha256) = 32),
+			reservation_expires_at text,
+			consumed_at text,
+			expires_at text not null,
+			check ((attempt_token_hash is null) = (attempt_body_hash is null)),
+			check (state != 'uploading' or (storage_backend = 's3_object' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
+			check (state != 'submitted' or storage_backend != 's3_object' or (final_key is not null and ciphertext_sha256 is not null)),
+			check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
+		)`
+
+func TestMigrateWidensRequestsBackends(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop table request_payloads; drop table requests`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(legacyRequestsTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create table request_payloads (
+			request_id text primary key,
+			ciphertext blob not null,
+			foreign key (request_id) references requests(id) on delete cascade
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into requests (id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,expires_at)
+		values ('r',x'0101010101010101010101010101010101010101010101010101010101010101','fp',x'0101010101010101010101010101010101010101010101010101010101010101',x'0202020202020202020202020202020202020202020202020202020202020202','2026-01-01')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into request_payloads values ('r', x'00')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatalf("widen migration: %v", err)
+	}
+	var count int
+	if err := conn.QueryRow(`select count(*) from requests`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("legacy rows lost: %d %v", count, err)
+	}
+	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("payload rows lost by the widen rebuild: %d %v", count, err)
+	}
+	if _, err := conn.Exec(`insert into requests (id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,generation,attempt_token_hash,attempt_body_hash,kind,size_bytes,envelope_json,storage_backend,upload_key,final_key,ciphertext_sha256,reservation_expires_at,expires_at)
+		values ('r2',x'0101010101010101010101010101010101010101010101010101010101010101','fp',x'0101010101010101010101010101010101010101010101010101010101010101',x'0202020202020202020202020202020202020202020202020202020202020202','uploading',2,x'0101010101010101010101010101010101010101010101010101010101010101',x'0101010101010101010101010101010101010101010101010101010101010101','file',100,'{}','r2_object','managed/requests/u','managed/requests/f',x'0101010101010101010101010101010101010101010101010101010101010101','2026-01-01','2026-01-01')`); err != nil {
+		t.Fatalf("r2_object uploading row rejected after widen: %v", err)
+	}
+	for _, index := range []string{"idx_requests_expires_at", "idx_requests_reservations", "idx_requests_upload_key", "idx_requests_final_key"} {
+		if err := conn.QueryRow(`select count(*) from sqlite_master where type = 'index' and name = ?`, index).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("index %s missing after widen: %d %v", index, count, err)
+		}
+	}
+	var seeded int
+	if err := conn.QueryRow(`select count(*) from request_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
+		t.Fatalf("v2 request cursor backends seeded: %d %v", seeded, err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`select count(*) from requests`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("rows lost on idempotent re-run: %d %v", count, err)
+	}
+	if err := conn.QueryRow(`select count(*) from object_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
+		t.Fatalf("v2 object cursor backends seeded: %d %v", seeded, err)
+	}
+}
