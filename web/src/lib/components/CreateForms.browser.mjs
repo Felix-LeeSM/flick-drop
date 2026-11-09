@@ -435,6 +435,34 @@ test('type tabs stay disabled until hydration attaches their handlers', async ()
 	}
 });
 
+test('a file dropped outside the zone switches to the File tab and attaches', async () => {
+	const page = await browser.newPage();
+	const dropOnPage = (name) =>
+		page.evaluate((fileName) => {
+			const transfer = new DataTransfer();
+			transfer.items.add(new File(['drop'], fileName, { type: 'text/plain' }));
+			document.body.dispatchEvent(
+				new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+			);
+		}, name);
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		await page.getByLabel('Message', { exact: true }).fill('Synthetic drop regression');
+		await dropOnPage('dropped.txt');
+		assert.equal(await typeTab(page, 'File').getAttribute('aria-selected'), 'true');
+		await editorVisible(page, 'File');
+		await page.getByText('dropped.txt', { exact: true }).waitFor();
+		// Already on the File tab: a second page-wide drop accumulates instead
+		// of replacing the first attachment.
+		await dropOnPage('second.txt');
+		await page.getByText('second.txt', { exact: true }).waitFor();
+		assert.equal(await page.getByText('dropped.txt', { exact: true }).count(), 1);
+	} finally {
+		await page.close();
+	}
+});
+
 for (const width of [375, 1280]) {
 	const phone = width < 768;
 	test(`${width}px type tabs stay stationary on hover and focus in one row`, async () => {

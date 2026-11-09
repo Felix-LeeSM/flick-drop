@@ -518,6 +518,37 @@ function onDrop(event: DragEvent): void {
 	}
 }
 
+// The drop zone above only spans the file panel, so a drop landing elsewhere on
+// the screen would open the file in the browser instead. These window handlers
+// accept that drop, switching to the File tab first when a different tab is
+// open — the same behavior as a manual tab click. Gating on 'Files' keeps
+// native text drops into the textarea working.
+function canAcceptFileDrop(): boolean {
+	return pipeActiveCode === null && !hasResult && !isCreating;
+}
+
+function onWindowDragOver(event: DragEvent): void {
+	if (canAcceptFileDrop() && event.dataTransfer?.types.includes('Files')) {
+		// Without a prevented dragover the drop event never fires and the
+		// browser navigates to the dragged file.
+		event.preventDefault();
+	}
+}
+
+function onWindowDrop(event: DragEvent): void {
+	// defaultPrevented means the zone's own onDrop already handled this drop.
+	if (!canAcceptFileDrop() || event.defaultPrevented) {
+		return;
+	}
+	const files = Array.from(event.dataTransfer?.files ?? []);
+	if (files.length === 0) {
+		return;
+	}
+	event.preventDefault();
+	switchMode('file');
+	addFiles(files);
+}
+
 function clearSelectedFile(): void {
 	// Bump the token so an in-flight zip (e.g. bundling still running when the
 	// user switches mode) can't resolve late and resurrect the cleared bundle.
@@ -725,6 +756,8 @@ function typePanelId(type: CreateMode): string {
 <svelte:head>
 	<title>Create secret - Flick</title>
 </svelte:head>
+
+<svelte:window ondragover={onWindowDragOver} ondrop={onWindowDrop} />
 
 <!-- The header keeps logo + theme only: the request and code entry points live in
      the adaptive heading below (prototype round R1), so `link`/`showEnterCode`
