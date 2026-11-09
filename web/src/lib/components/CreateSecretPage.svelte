@@ -10,6 +10,7 @@ import {
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
+	TimerIcon,
 	UploadIcon,
 	WandSparklesIcon,
 	XIcon
@@ -1029,6 +1030,43 @@ function typePanelId(type: CreateMode): string {
 					</div>
 				{/if}
 
+				<!-- One CTA footer for both delivery tabs: the grid gap, the
+				     solid-black primary action, and the micro caption row can
+				     no longer drift apart between tabs. -->
+				{#snippet ctaFooter({
+					type,
+					label,
+					disabled,
+					onclick,
+					icon: Icon,
+					caption
+				}: {
+					type: 'submit' | 'button';
+					label: string;
+					disabled: boolean;
+					onclick?: () => void;
+					icon: typeof FlameIcon;
+					caption: string;
+				})}
+					<div class="grid gap-3">
+						<Button
+							{type}
+							variant="toggleActive"
+							size="cta"
+							{disabled}
+							class={BLOCKED_CLASS}
+							title={disabled ? blockedTitle : undefined}
+							{onclick}
+						>
+							{isCreating ? 'Creating' : label}
+						</Button>
+						<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
+							<Icon class="size-3" aria-hidden="true" />
+							<span>{caption}</span>
+						</p>
+					</div>
+				{/snippet}
+
 				{#if delivery === 'link'}
 					<!-- U2 switch row: the always-visible paragraph moved behind the
 					     info icon (hover or keyboard focus). Not "end-to-end" here:
@@ -1117,22 +1155,13 @@ function typePanelId(type: CreateMode): string {
 						<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" label="" />
 					</div>
 
-					<div class="grid gap-3">
-						<Button
-							type="submit"
-							variant="toggleActive"
-							size="cta"
-							disabled={!canCreate}
-							class={BLOCKED_CLASS}
-							title={!canCreate ? blockedTitle : undefined}
-						>
-							{isCreating ? 'Creating' : 'Create link'}
-						</Button>
-						<p class="micro -mt-2 flex items-center justify-center gap-1.5 text-muted-foreground">
-							<FlameIcon class="size-3" aria-hidden="true" />
-							<span>burns after a single open</span>
-						</p>
-					</div>
+					{@render ctaFooter({
+						type: 'submit',
+						label: 'Create link',
+						disabled: !canCreate,
+						icon: FlameIcon,
+						caption: 'burns after a single open'
+					})}
 				{:else}
 					<SwitchRow
 						id="require-confirmation"
@@ -1153,24 +1182,14 @@ function typePanelId(type: CreateMode): string {
 						{/snippet}
 					</SwitchRow>
 
-					<div class="grid gap-3">
-						<!-- Round 22: the same solid black as the link tab's Create
-						     link — this is the tab's primary action. -->
-						<Button
-							type="button"
-							variant="toggleActive"
-							size="cta"
-							disabled={!canPipe}
-							class={BLOCKED_CLASS}
-							title={!canPipe ? blockedTitle : undefined}
-							onclick={startPipeSend}
-						>
-							{isCreating ? 'Creating' : 'Start live transfer'}
-						</Button>
-						<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
-							<span>fixed 3-minute in-memory relay · 0B storage</span>
-						</p>
-					</div>
+					{@render ctaFooter({
+						type: 'button',
+						label: 'Start live transfer',
+						disabled: !canPipe,
+						onclick: startPipeSend,
+						icon: TimerIcon,
+						caption: 'fixed 3-minute in-memory relay · 0B storage'
+					})}
 				{/if}
 			{/if}
 
