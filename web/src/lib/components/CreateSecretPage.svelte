@@ -57,19 +57,11 @@ import {
 import { createAccessVerifier } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
 import { generatePassphrase } from '#lib/crypto/passphrase.js';
-import {
-	computePipePassphrase,
-	deriveConfirmationCode,
-	encryptPipeStream,
-	initPipeRendezvous,
-	sendPipeStream,
-	streamToBytes,
-	waitForReceiver
-} from '#lib/crypto/pipe.js';
 import { sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
 import { bundleFiles } from '#lib/files/bundle.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
+import { createPipeRelay, type PipePayload } from '#lib/state/pipe-relay.svelte.js';
 import { cn, formatBytes } from '#lib/utils.js';
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
@@ -130,24 +122,20 @@ let uploadProgress = $state<FileUploadProgress | null>(null);
 // manage-page handoff takes over.
 let stageCardDone = $state(false);
 
-// Live Pipe Relay (Send with code)
-let pipeActiveCode = $state<string | null>(null);
-let pipeSalt = $state('');
-let pipeStatus = $state('Waiting for receiver to enter code...');
-let pipeProgress = $state(0);
-let pipeCompleted = $state(false);
+// Live pipe relay (Send with code): session state and runtime live in
+// #lib/state/pipe-relay.svelte.ts. The page owns the form-side confirmation
+// toggle and feeds payload and extra passphrase at send time.
 let pipeRequireApproval = $state(false);
-let pipeApprovalStatus = $state<'idle' | 'pending' | 'approved' | 'rejected'>('idle');
-let pipeMatchCode = $state('482');
-let pipeExpiresIn = $state(180);
-let pipeAbortController = $state<AbortController | null>(null);
+const relay = createPipeRelay({
+	getPayload: buildPipePayload,
+	getExtraPassphrase: () => (usePassphrase ? passphrase : '')
+});
 
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
 
 onDestroy(() => {
 	abortController?.abort();
-	pipeAbortController?.abort();
 });
 
 // Move focus to the success heading when the result panel replaces the form.
@@ -191,7 +179,7 @@ const canCreate = $derived(
 		!bundling
 );
 const canPipe = $derived(
-	hasCreatePayload && passphraseReady && !isCreating && !bundling && pipeActiveCode === null
+	hasCreatePayload && passphraseReady && !isCreating && !bundling && relay.activeCode === null
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -520,7 +508,7 @@ function onDrop(event: DragEvent): void {
 // open — the same behavior as a manual tab click. Gating on 'Files' keeps
 // native text drops into the textarea working.
 function canAcceptFileDrop(): boolean {
-	return pipeActiveCode === null && !hasResult && !isCreating;
+	return relay.activeCode === null && !hasResult && !isCreating;
 }
 
 function onWindowDragOver(event: DragEvent): void {
@@ -574,147 +562,34 @@ function createAnother(): void {
 	qrOpen = false;
 }
 
+// The relay encrypts whatever the form holds at send time: a picked file
+// streams as-is, text and credentials ride as text bytes.
+function buildPipePayload(): PipePayload {
+	if (mode === 'file' && selectedFile) {
+		return { kind: 'file', stream: selectedFile.stream(), filename: selectedFile.name };
+	}
+	const text = mode === 'text' ? plaintext : serializeCredential(credentialEnvelope);
+	return { kind: 'text', stream: streamFromBytes(new TextEncoder().encode(text)) };
+}
+
+function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(bytes);
+			controller.close();
+		}
+	});
+}
+
 async function startPipeSend(): Promise<void> {
 	if (!canPipe) {
 		return;
 	}
-	pipeAbortController?.abort();
-	pipeAbortController = new AbortController();
-	const signal = pipeAbortController.signal;
-
-	try {
-		pipeStatus = 'Initializing live transfer session...';
-		const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, fetch);
-		pipeActiveCode = session.code;
-		pipeSalt = session.salt;
-		pipeMatchCode = deriveConfirmationCode(session.code);
-		pipeExpiresIn = session.expiresIn;
-		pipeApprovalStatus = 'idle';
-		pipeCompleted = false;
-		pipeProgress = 0;
-		pipeStatus = pipeRequireApproval
-			? 'Waiting for receiver to enter code... (confirmation required)'
-			: 'Waiting for receiver to enter code...';
-
-		await waitForReceiver(DEFAULT_API_BASE_URL, session.code, fetch, signal);
-
-		if (pipeRequireApproval) {
-			pipeApprovalStatus = 'pending';
-			pipeStatus = 'Receiver connected. Please confirm transfer.';
-		} else {
-			await executePipeStream();
-		}
-	} catch (err) {
-		if (signal.aborted) {
-			return;
-		}
-		pipeStatus = err instanceof Error ? err.message : 'Live transfer failed';
-		pipeApprovalStatus = 'rejected';
-	}
-}
-
-async function handlePipeApprove(): Promise<void> {
-	pipeApprovalStatus = 'approved';
-	pipeStatus = 'Approved. Encrypting and streaming chunks...';
-	await executePipeStream();
-}
-
-function handlePipeReject(): void {
-	pipeApprovalStatus = 'rejected';
-	pipeStatus = 'Transfer denied. Session wiped from memory.';
-	pipeAbortController?.abort();
-}
-
-async function executePipeStream(): Promise<void> {
-	if (!pipeActiveCode) {
-		return;
-	}
-	const signal = pipeAbortController?.signal;
-
-	try {
-		const pipePassphrase = computePipePassphrase(
-			pipeActiveCode,
-			pipeSalt,
-			usePassphrase ? passphrase : ''
-		);
-
-		let rawStream: ReadableStream<Uint8Array>;
-		let kind: 'text' | 'file' = 'text';
-		let filename: string | undefined;
-
-		if (mode === 'file' && selectedFile) {
-			kind = 'file';
-			filename = selectedFile.name;
-			rawStream = selectedFile.stream();
-		} else if (mode === 'text') {
-			kind = 'text';
-			const encoded = new TextEncoder().encode(plaintext);
-			rawStream = new ReadableStream({
-				start(controller) {
-					controller.enqueue(encoded);
-					controller.close();
-				}
-			});
-		} else {
-			kind = 'text';
-			const serialized = serializeCredential(credentialEnvelope);
-			const encoded = new TextEncoder().encode(serialized);
-			rawStream = new ReadableStream({
-				start(controller) {
-					controller.enqueue(encoded);
-					controller.close();
-				}
-			});
-		}
-
-		pipeStatus = 'Encrypting stream on-the-fly (age format)...';
-		pipeProgress = 25;
-		const encryptedStream = await encryptPipeStream(rawStream, pipePassphrase);
-
-		pipeStatus = 'Streaming encrypted bytes directly to receiver...';
-		pipeProgress = 50;
-
-		let encFilenameHeader: string | undefined;
-		if (filename) {
-			const filenameBytes = new TextEncoder().encode(filename);
-			const encryptedFilenameStream = await encryptPipeStream(filenameBytes, pipePassphrase);
-			const encBytes = await streamToBytes(encryptedFilenameStream);
-			encFilenameHeader = btoa(String.fromCharCode(...encBytes));
-		}
-
-		await sendPipeStream({
-			baseUrl: DEFAULT_API_BASE_URL,
-			code: pipeActiveCode,
-			stream: encryptedStream,
-			kind,
-			encryptedFilename: encFilenameHeader,
-			fetcher: fetch,
-			signal
-		});
-
-		pipeProgress = 100;
-		pipeCompleted = true;
-		pipeStatus = 'Transfer complete!';
-	} catch (err) {
-		if (signal?.aborted) {
-			return;
-		}
-		pipeStatus = err instanceof Error ? err.message : 'Streaming failed';
-		pipeApprovalStatus = 'rejected';
-	}
-}
-
-function cancelPipe(): void {
-	pipeAbortController?.abort();
-	pipeActiveCode = null;
-	pipeStatus = '';
-	pipeProgress = 0;
-	pipeCompleted = false;
-	pipeApprovalStatus = 'idle';
+	await relay.start(pipeRequireApproval);
 }
 
 function resetPipeAndForm(): void {
-	cancelPipe();
+	relay.cancel();
 	createAnother();
 	plaintext = '';
 	clearSelectedFile();
@@ -759,20 +634,20 @@ function typePanelId(type: CreateMode): string {
      the adaptive heading below (prototype round R1), so `link`/`showEnterCode`
      stay unpassed. SiteHeader still owns the #code= deep-link modal. -->
 <DeliveryFrame>
-	{#if pipeActiveCode !== null}
+	{#if relay.activeCode !== null}
 		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
 			<PipeWaitingPanel
-				code={pipeActiveCode}
-				expiresInSeconds={pipeExpiresIn}
-				statusText={pipeStatus}
-				progressPercent={pipeProgress}
-				completed={pipeCompleted}
+				code={relay.activeCode}
+				expiresInSeconds={relay.expiresInSeconds}
+				statusText={relay.statusText}
+				progressPercent={relay.progressPercent}
+				completed={relay.completed}
 				requireApproval={pipeRequireApproval}
-				matchCode={pipeMatchCode}
-				approvalStatus={pipeApprovalStatus}
-				onApprove={handlePipeApprove}
-				onReject={handlePipeReject}
-				onCancel={cancelPipe}
+				matchCode={relay.matchCode}
+				approvalStatus={relay.approvalStatus}
+				onApprove={relay.approve}
+				onReject={relay.reject}
+				onCancel={relay.cancel}
 				onReset={resetPipeAndForm}
 			/>
 		</section>
