@@ -269,8 +269,6 @@ async function createSecret(): Promise<void> {
 			return;
 		}
 
-		shareUrl = createShareUrl(window.location.origin, created.id, identity);
-		expiresAt = created.expires_at;
 		plaintext = '';
 		passphrase = '';
 		revealPassphrase = false;
@@ -279,12 +277,16 @@ async function createSecret(): Promise<void> {
 			credentialEnvelope = buildEnvelope(mode);
 		}
 		// Every stage step is checked; let the done beat land before the
-		// manage-page handoff takes over.
+		// manage-page handoff takes over. shareUrl must stay after the beat:
+		// it flips hasResult, and hasResult replaces the stage card, so an
+		// earlier assignment would skip "Link ready" entirely.
 		stageCardDone = true;
 		await new Promise((beatTimer) => setTimeout(beatTimer, 900));
 		if (controller.signal.aborted || abortController !== controller) {
 			return;
 		}
+		shareUrl = createShareUrl(window.location.origin, created.id, identity);
+		expiresAt = created.expires_at;
 		status = '';
 		statusKind = 'idle';
 		await openManagement(created);
