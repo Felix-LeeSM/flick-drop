@@ -620,7 +620,7 @@ func (s Server) revokeSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, managementResponse(status))
 }
 
-func managementNoStore(next http.Handler) http.Handler {
+func noStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)

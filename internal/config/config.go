@@ -43,6 +43,7 @@ type Config struct {
 	PublicBaseURL      string
 	InternalToken      string
 	MetricsToken       string
+	StatsToken         string
 	OTLPEndpoint       string
 	InternalAPIBaseURL string
 	APIAddr            string
@@ -79,6 +80,9 @@ func Load() (Config, error) {
 		PublicBaseURL: getenv("FLICK_PUBLIC_BASE_URL", "http://localhost:5173"),
 		InternalToken: getenv("FLICK_INTERNAL_TOKEN", ""),
 		MetricsToken:  getenv("FLICK_METRICS_TOKEN", ""),
+		// Empty disables the admin usage-stats endpoint: /api/stats answers 404
+		// (fails closed, hides its own existence).
+		StatsToken: getenv("FLICK_STATS_TOKEN", ""),
 		// Empty disables distributed tracing (no collector dependency); set to a
 		// full OTLP/HTTP URL (e.g. http://otel-collector:4318) to enable it.
 		OTLPEndpoint:          getenv("FLICK_OTLP_ENDPOINT", ""),

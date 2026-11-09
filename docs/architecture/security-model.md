@@ -79,6 +79,12 @@ S3-compatible object storage
 - File names are encrypted in the browser as metadata before upload.
 - Internal worker to API calls require `FLICK_INTERNAL_TOKEN`.
 - The `/metrics` endpoint requires a separate bearer token (`FLICK_METRICS_TOKEN`); it never serves secret content, and an unset token fails closed (401).
+- The `/api/stats` endpoint requires another separate bearer token
+  (`FLICK_STATS_TOKEN`). It serves only daily aggregate counts
+  (`internal/usage`): no IDs, IPs, user agents, or content metadata. Missing
+  token, wrong token, and an unset configured token all answer 404 so the
+  endpoint fails closed and hides its own existence; the web `/stats` page
+  keeps the admin token in `sessionStorage` only and never persists it.
 - Public repository files must not contain real credentials or production
   configuration.
 - A secret is either Model A or Model B, never a mix. Model A secrets carry an
