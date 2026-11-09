@@ -1,20 +1,31 @@
 <script lang="ts">
 import {
+	ActivityIcon,
 	CheckIcon,
 	ClockIcon,
 	CopyIcon,
 	FlameIcon,
 	QrCodeIcon,
+	RadioIcon,
 	ShieldCheckIcon,
 	XIcon,
 	ZapIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import QrModal from '#lib/components/QrModal.svelte';
+import StageSteps from '#lib/components/StageSteps.svelte';
 import SuccessCheck from '#lib/components/SuccessCheck.svelte';
 import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
 import { cn } from '#lib/utils.js';
+
+// The relay's three stages. The burned step never renders as an active row —
+// reaching it swaps the whole panel to the completed view.
+const RELAY_STAGE_STEPS = [
+	{ icon: RadioIcon, label: 'Waiting for receiver' },
+	{ icon: ActivityIcon, label: 'Streaming encrypted chunks' },
+	{ icon: FlameIcon, label: 'Burned from memory' }
+];
 
 type Props = {
 	code: string;
@@ -232,21 +243,29 @@ let directReceiveUrl = $derived(
 			</div>
 		{/if}
 
-		<!-- Progress Bar when Streaming -->
-		{#if progressPercent > 0 && progressPercent < 100}
-			<div class="grid gap-1.5 text-left border rounded-xl p-3 bg-muted/30">
-				<div class="flex justify-between text-xs font-mono text-muted-foreground">
-					<span>Streaming encrypted chunks...</span>
-					<span>{progressPercent}%</span>
-				</div>
-				<div class="h-2 w-full overflow-hidden rounded-full bg-muted">
+		<!-- P2 stage stepper: where the transfer stands; the thin bar moves
+		     only while bytes stream (the sender's driver reports 25/50/100). -->
+		<div class="grid gap-2.5 rounded-xl border border-border bg-muted/30 p-3 text-left">
+			<StageSteps steps={RELAY_STAGE_STEPS} activeIndex={progressPercent > 0 ? 1 : 0} />
+			{#if progressPercent > 0 && progressPercent < 100}
+				<div class="grid gap-1">
 					<div
-						class="h-full bg-primary transition-all duration-200"
-						style="width: {progressPercent}%"
-					></div>
+						class="h-1 w-full overflow-hidden rounded-full bg-muted"
+						role="progressbar"
+						aria-label="Live transfer progress"
+						aria-valuemin={0}
+						aria-valuemax={100}
+						aria-valuenow={progressPercent}
+					>
+						<div
+							class="h-full rounded-full bg-primary transition-[width] duration-200 ease-linear motion-reduce:transition-none"
+							style="width: {progressPercent}%"
+						></div>
+					</div>
+					<p class="font-mono text-xs tabular-nums text-muted-foreground">{progressPercent}%</p>
 				</div>
-			</div>
-		{/if}
+			{/if}
+		</div>
 
 		<!-- Action buttons -->
 		<div class="grid gap-2.5 pt-2">
