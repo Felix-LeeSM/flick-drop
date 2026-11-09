@@ -142,12 +142,13 @@ let pipeMatchCode = $state('482');
 let pipeExpiresIn = $state(180);
 let pipeAbortController = $state<AbortController | null>(null);
 
+let qrOpen = $state(false);
+let successHeading = $state<HTMLHeadingElement | null>(null);
+
 onDestroy(() => {
 	abortController?.abort();
 	pipeAbortController?.abort();
 });
-let qrOpen = $state(false);
-let successHeading = $state<HTMLHeadingElement | null>(null);
 
 // Move focus to the success heading when the result panel replaces the form.
 $effect(() => {
@@ -178,9 +179,11 @@ const hasCreatePayload = $derived(
 			? selectedFile !== null && !selectedFileTooLarge
 			: hasCredentialPayload
 );
+// The optional passphrase must be set before anything can be sent.
+const passphraseReady = $derived(!usePassphrase || passphrase.length > 0);
 const canCreate = $derived(
 	hasCreatePayload &&
-		(!usePassphrase || passphrase.length > 0) &&
+		passphraseReady &&
 		Number.isInteger(ttlSeconds) &&
 		ttlSeconds >= MIN_TTL_SECONDS &&
 		ttlSeconds <= MAX_TTL_SECONDS &&
@@ -188,11 +191,7 @@ const canCreate = $derived(
 		!bundling
 );
 const canPipe = $derived(
-	hasCreatePayload &&
-		(!usePassphrase || passphrase.length > 0) &&
-		!isCreating &&
-		!bundling &&
-		pipeActiveCode === null
+	hasCreatePayload && passphraseReady && !isCreating && !bundling && pipeActiveCode === null
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -782,7 +781,7 @@ function typePanelId(type: CreateMode): string {
 			<div class="grid place-items-center gap-4 text-center">
 				<SuccessCheck />
 				<div class="grid gap-2">
-						<p class="micro flex items-center justify-center gap-1.5 text-burn">
+					<p class="micro flex items-center justify-center gap-1.5 text-burn">
 						<FlameIcon class="size-3.5" aria-hidden="true" />
 						one-time link
 					</p>
@@ -790,12 +789,12 @@ function typePanelId(type: CreateMode): string {
 						class="page-title"
 						tabindex="-1"
 						bind:this={successHeading}
-						>
-							Link created
-						</h1>
+					>
+						Link created
+					</h1>
 					<p class="text-sm text-muted-foreground">Opens once, then burns. Forward it fast.</p>
 				</div>
-					<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
+				<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
 					<ClockIcon class="size-4" aria-hidden="true" />
 					<span>EXPIRES IN</span>
 					<span class="tabular-nums text-foreground">{formatRemaining(remainingSeconds)}</span>
@@ -806,7 +805,7 @@ function typePanelId(type: CreateMode): string {
 				<UrlField value={shareUrl} id="share-url" />
 				<NativeShareButton recipientUrl={shareUrl} />
 				{#if managementUrl}
-						<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
+					<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
 				{/if}
 				<Button
 					type="button"
@@ -819,7 +818,7 @@ function typePanelId(type: CreateMode): string {
 					<QrCodeIcon class="size-4" aria-hidden="true" />
 					Show QR
 				</Button>
-					<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
+				<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
 					<LockKeyholeIcon
 						class="mt-0.5 size-4 shrink-0 text-muted-foreground"
 						aria-hidden="true"
@@ -827,26 +826,26 @@ function typePanelId(type: CreateMode): string {
 					<div class="grid gap-1">
 						{#if usePassphrase}
 							<strong class="text-sm font-medium">Send the passphrase separately.</strong>
-								<p class="text-sm text-muted-foreground">
-									The recipient needs both the link and the passphrase to open this.
-								</p>
+							<p class="text-sm text-muted-foreground">
+								The recipient needs both the link and the passphrase to open this.
+							</p>
 						{:else}
 							<strong class="text-sm font-medium">Share only with your recipient.</strong>
-								<p class="text-sm text-muted-foreground">
-									Anyone with this full link can open it once.
-								</p>
+							<p class="text-sm text-muted-foreground">
+								Anyone with this full link can open it once.
+							</p>
 						{/if}
 					</div>
 				</aside>
-					<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
-						Create another
-					</Button>
+				<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
+					Create another
+				</Button>
 			</div>
 		</section>
 	{:else}
 		<section class="grid gap-7">
 			<div class="grid gap-1.5">
-					<p class="micro flex items-center gap-1.5 text-muted-foreground">
+				<p class="micro flex items-center gap-1.5 text-muted-foreground">
 					<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
 					end-to-end encrypted · burns after read
 				</p>
@@ -1192,15 +1191,15 @@ function typePanelId(type: CreateMode): string {
 			<!-- After a failed or cancelled create the error lands on the
 			     returned form; during creation the status lives in the stage card. -->
 			{#if status.length > 0 && !isCreating}
-					<p
-						class="text-sm"
-						class:text-muted-foreground={statusKind !== 'error'}
-						class:text-destructive={statusKind === 'error'}
-						role={statusKind === 'error' ? 'alert' : 'status'}
-						aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
-					>
-						{status}
-					</p>
+				<p
+					class="text-sm"
+					class:text-muted-foreground={statusKind !== 'error'}
+					class:text-destructive={statusKind === 'error'}
+					role={statusKind === 'error' ? 'alert' : 'status'}
+					aria-live={statusKind === 'error' ? 'assertive' : 'polite'}
+				>
+					{status}
+				</p>
 				{/if}
 			</form>
 		</section>
