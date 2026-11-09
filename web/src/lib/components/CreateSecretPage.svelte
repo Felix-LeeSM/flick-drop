@@ -25,8 +25,7 @@ import {
 	DEFAULT_API_BASE_URL,
 	type FileUploadProgress,
 	type PassphraseEnvelope,
-	SecretApiError,
-	type TtlSeconds
+	SecretApiError
 } from '#lib/api/secrets.js';
 import CreateStageCard from '#lib/components/CreateStageCard.svelte';
 import CredentialForm from '#lib/components/CredentialForm.svelte';
@@ -67,7 +66,7 @@ import {
 	streamToBytes,
 	waitForReceiver
 } from '#lib/crypto/pipe.js';
-import { type SealedFile, sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
+import { sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
 import { bundleFiles } from '#lib/files/bundle.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
@@ -351,12 +350,43 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	const modelA = usePassphrase ? await passphraseEnvelope(identity, passphrase) : undefined;
 	let created: CreateSecretResponse;
 	if (mode === 'file') {
-		created = await createFile(await sealFile(identity, requireSelectedFile()), modelA);
+		const sealed = await sealFile(identity, requireSelectedFile());
+		status = 'Creating link…';
+		statusKind = 'saving';
+		const controller = abortController;
+		created = await api.createFileSecret(
+			sealed,
+			ttlSeconds,
+			modelA,
+			controller?.signal,
+			(progress) => {
+				// A callback from a cancelled or superseded attempt is dropped.
+				if (controller?.signal.aborted || abortController !== controller) {
+					return;
+				}
+				uploadProgress = progress;
+				statusKind = progress.stage;
+				status = uploadStatusText(progress);
+			}
+		);
 	} else {
 		const text = mode === 'text' ? plaintext : serializeCredential(credentialEnvelope);
-		created = await createText(await sealText(identity, text), ttlSeconds, modelA);
+		const sealed = await sealText(identity, text);
+		status = 'Creating link…';
+		statusKind = 'saving';
+		created = await api.createTextSecret(sealed, ttlSeconds, modelA);
 	}
 	return usePassphrase ? { created } : { created, identity };
+}
+
+function uploadStatusText(progress: FileUploadProgress): string {
+	return progress.stage === 'preparing'
+		? 'Preparing encrypted upload…'
+		: progress.stage === 'finalizing'
+			? 'Finalizing link…'
+			: progress.total !== undefined && progress.loaded !== undefined
+				? `Uploading encrypted file · ${formatBytes(progress.loaded)} of ${formatBytes(progress.total)} (${Math.floor((progress.loaded / progress.total) * 100)}%)`
+				: 'Uploading encrypted file…';
 }
 
 async function passphraseEnvelope(
@@ -368,40 +398,6 @@ async function passphraseEnvelope(
 		wrapIdentityOffThread(identity, secretPassphrase)
 	]);
 	return { access, wrappedIdentity };
-}
-
-function createText(
-	body: Uint8Array,
-	ttl: TtlSeconds,
-	modelA?: PassphraseEnvelope
-): Promise<CreateSecretResponse> {
-	status = 'Creating link…';
-	statusKind = 'saving';
-	return api.createTextSecret(body, ttl, modelA);
-}
-
-function createFile(
-	sealed: SealedFile,
-	modelA?: PassphraseEnvelope
-): Promise<CreateSecretResponse> {
-	status = 'Creating link…';
-	statusKind = 'saving';
-	const controller = abortController;
-	return api.createFileSecret(sealed, ttlSeconds, modelA, controller?.signal, (progress) => {
-		if (controller?.signal.aborted || abortController !== controller) {
-			return;
-		}
-		uploadProgress = progress;
-		statusKind = progress.stage;
-		status =
-			progress.stage === 'preparing'
-				? 'Preparing encrypted upload…'
-				: progress.stage === 'finalizing'
-					? 'Finalizing link…'
-					: progress.total !== undefined && progress.loaded !== undefined
-						? `Uploading encrypted file · ${formatBytes(progress.loaded)} of ${formatBytes(progress.total)} (${Math.floor((progress.loaded / progress.total) * 100)}%)`
-						: 'Uploading encrypted file…';
-	});
 }
 
 function switchMode(nextMode: CreateMode): void {
