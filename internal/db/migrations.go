@@ -83,6 +83,16 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
 		)`,
 		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
+		// Daily aggregate usage counters (internal/usage): counts only, no IDs,
+		// IPs, or content metadata. Secrets and requests rows are hard-deleted on
+		// expiry, so these rows are the durable usage history; they are never
+		// deleted and stay at one row per day per metric.
+		`create table if not exists usage_counters (
+			day text not null,
+			metric text not null,
+			count integer not null default 0 check (count >= 0),
+			primary key (day, metric)
+		)`,
 		requestsTableSchema,
 		`create index if not exists idx_requests_expires_at on requests(expires_at, id)`,
 		`create table if not exists request_payloads (
