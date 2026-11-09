@@ -85,6 +85,9 @@ for (const [name, size] of [
 					)
 				);
 				release.resolve();
+				// The stage card's done beat must render before the handoff:
+				// setting shareUrl earlier flips hasResult and skips "Link ready".
+				await page.getByText('Link ready').waitFor();
 			}
 			await page.getByRole('heading', { name: 'Link created' }).waitFor();
 			const url = await page.getByLabel('Share URL').inputValue();

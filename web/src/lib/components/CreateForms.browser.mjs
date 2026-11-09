@@ -193,7 +193,7 @@ for (const form of forms) {
 		}
 	});
 
-	test(`${form.name} freezes lifetime controls and prevents duplicate submit while pending`, async () => {
+	test(`${form.name} prevents interaction and duplicate submits while pending`, async () => {
 		const page = await browser.newPage();
 		const mock = await fixture(page, true);
 		try {
@@ -201,25 +201,38 @@ for (const form of forms) {
 			await custom(page, '3', 'hours');
 			await submitButton(page).click();
 			await mock.started;
-			assert.equal(await valueInput(page).isDisabled(), true);
-			assert.equal(await unitInput(page).isDisabled(), true);
-			assert.equal(await submitButton(page).isDisabled(), true);
-			for (const [name] of presets) {
+			if (form.name === 'sender') {
+				// P2 stage card: the create folds the form away while the POST
+				// runs; a duplicate submit still cannot fire a second request.
 				assert.equal(
-					await page
-						.getByRole('group', { name: form.group, exact: true })
-						.getByRole('button', { name, exact: true })
-						.isDisabled(),
+					await page.getByRole('region', { name: 'Creating your link' }).isVisible(),
 					true
 				);
+				assert.equal(await valueInput(page).count(), 0);
+				assert.equal(await unitInput(page).count(), 0);
+				assert.equal(await submitButton(page).count(), 0);
+			} else {
+				assert.equal(await valueInput(page).isDisabled(), true);
+				assert.equal(await unitInput(page).isDisabled(), true);
+				assert.equal(await submitButton(page).isDisabled(), true);
+				for (const [name] of presets) {
+					assert.equal(
+						await page
+							.getByRole('group', { name: form.group, exact: true })
+							.getByRole('button', { name, exact: true })
+							.isDisabled(),
+						true
+					);
+				}
 			}
 			await page.locator('form').evaluate((form) => form.requestSubmit());
 			const response = page.waitForResponse((reply) => reply.request().method() === 'POST');
 			mock.release();
 			await response;
-			await page.waitForFunction(
-				() => !document.querySelector('input[aria-label="Custom lifetime value"]').disabled
-			);
+			await page.waitForFunction(() => {
+				const input = document.querySelector('input[aria-label="Custom lifetime value"]');
+				return input !== null && !input.disabled;
+			});
 			assert.equal(await unitInput(page).isEnabled(), true);
 			assert.deepEqual(mock.ttls, [10_800]);
 		} finally {

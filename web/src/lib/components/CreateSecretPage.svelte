@@ -6,9 +6,11 @@ import {
 	EyeOffIcon,
 	FileUpIcon,
 	FlameIcon,
+	LinkIcon,
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
+	UploadIcon,
 	WandSparklesIcon,
 	XIcon
 } from '@lucide/svelte';
@@ -25,6 +27,7 @@ import {
 	SecretApiError,
 	type TtlSeconds
 } from '#lib/api/secrets.js';
+import CreateStageCard from '#lib/components/CreateStageCard.svelte';
 import CredentialForm from '#lib/components/CredentialForm.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import DeliveryTabs from '#lib/components/DeliveryTabs.svelte';
@@ -123,6 +126,9 @@ let isCreating = $state(false);
 // One controller identifies the current attempt and suppresses stale callbacks.
 let abortController = $state<AbortController | null>(null);
 let uploadProgress = $state<FileUploadProgress | null>(null);
+// The stage card's done beat: every step checked, shown briefly before the
+// manage-page handoff takes over.
+let stageCardDone = $state(false);
 
 // Live Pipe Relay (Send with code)
 let pipeActiveCode = $state<string | null>(null);
@@ -203,6 +209,37 @@ const blockedTitle = $derived(
 		: 'Add a message, file or credential first'
 );
 
+// P2 stage card: the create folds the form into a step card while running.
+// File creates upload, so they get three steps; text and credentials go
+// straight from local encryption to the link.
+const FILE_STAGE_STEPS = [
+	{ icon: LockKeyholeIcon, label: 'Encrypt on this device' },
+	{ icon: UploadIcon, label: 'Upload encrypted file' },
+	{ icon: LinkIcon, label: 'Create the one-time link' }
+];
+const INLINE_STAGE_STEPS = [
+	{ icon: LockKeyholeIcon, label: 'Encrypt on this device' },
+	{ icon: LinkIcon, label: 'Create the one-time link' }
+];
+const stageSteps = $derived(mode === 'file' ? FILE_STAGE_STEPS : INLINE_STAGE_STEPS);
+const stageStep = $derived.by(() => {
+	if (stageCardDone) {
+		return stageSteps.length;
+	}
+	if (statusKind === 'encrypting') {
+		return 0;
+	}
+	if (mode === 'file') {
+		return statusKind === 'finalizing' ? 2 : 1;
+	}
+	return statusKind === 'saving' ? 1 : 0;
+});
+const stageCardProgress = $derived(
+	statusKind === 'uploading' && uploadProgress?.total !== undefined && uploadProgress.total > 0
+		? (uploadProgress.loaded ?? 0) / uploadProgress.total
+		: null
+);
+
 function submitCreate(event: SubmitEvent): void {
 	event.preventDefault();
 	// On the code tab the form has no visible submit button; an implicit Enter
@@ -222,6 +259,7 @@ async function createSecret(): Promise<void> {
 	const controller = new AbortController();
 	abortController = controller;
 	uploadProgress = null;
+	stageCardDone = false;
 	status = 'Encrypting in your browser…';
 	statusKind = 'encrypting';
 
@@ -231,8 +269,6 @@ async function createSecret(): Promise<void> {
 			return;
 		}
 
-		shareUrl = createShareUrl(window.location.origin, created.id, identity);
-		expiresAt = created.expires_at;
 		plaintext = '';
 		passphrase = '';
 		revealPassphrase = false;
@@ -240,6 +276,17 @@ async function createSecret(): Promise<void> {
 		if (isCredentialMode(mode)) {
 			credentialEnvelope = buildEnvelope(mode);
 		}
+		// Every stage step is checked; let the done beat land before the
+		// manage-page handoff takes over. shareUrl must stay after the beat:
+		// it flips hasResult, and hasResult replaces the stage card, so an
+		// earlier assignment would skip "Link ready" entirely.
+		stageCardDone = true;
+		await new Promise((beatTimer) => setTimeout(beatTimer, 900));
+		if (controller.signal.aborted || abortController !== controller) {
+			return;
+		}
+		shareUrl = createShareUrl(window.location.origin, created.id, identity);
+		expiresAt = created.expires_at;
 		status = '';
 		statusKind = 'idle';
 		await openManagement(created);
@@ -258,6 +305,7 @@ async function createSecret(): Promise<void> {
 		isCreating = false;
 		abortController = null;
 		uploadProgress = null;
+		stageCardDone = false;
 	}
 }
 
@@ -811,6 +859,19 @@ function typePanelId(type: CreateMode): string {
 					onSelect={switchMode}
 				/>
 
+				{#if isCreating}
+					<!-- P2 stage card: the form folds away while the create runs.
+					     Cancel only stops the encrypted PUT; finalize has its own status. -->
+					<CreateStageCard
+						steps={stageSteps}
+						step={stageStep}
+						status={status}
+						progress={stageCardProgress}
+						cancellable={statusKind === 'uploading'}
+						onCancel={cancelCreate}
+					/>
+				{:else}
+
 				{#if mode === 'text'}
 					<div
 						class="grid gap-2.5"
@@ -1078,25 +1139,11 @@ function typePanelId(type: CreateMode): string {
 						</p>
 					</div>
 				{/if}
+			{/if}
 
-				<!-- Cancel stops the encrypted PUT; finalize has its own status. -->
-				{#if statusKind === 'uploading'}
-					<Button
-						type="button"
-						variant="outline"
-						class="h-11 w-full"
-						onclick={cancelCreate}
-					>
-						Cancel
-					</Button>
-					<progress
-						class="h-2 w-full accent-primary"
-						aria-label="Encrypted file upload progress"
-						max={uploadProgress?.total ?? 1}
-						value={uploadProgress?.total ? uploadProgress.loaded : undefined}
-					></progress>
-				{/if}
-				{#if status.length > 0}
+			<!-- After a failed or cancelled create the error lands on the
+			     returned form; during creation the status lives in the stage card. -->
+			{#if status.length > 0 && !isCreating}
 					<p
 						class="text-sm"
 						class:text-muted-foreground={statusKind !== 'error'}
