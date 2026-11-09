@@ -20,6 +20,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
 // defaultTracer instruments the HTTP server when no Tracer or TracerProvider is
@@ -31,6 +32,7 @@ type Server struct {
 	db                       *sql.DB
 	secrets                  *secrets.Store
 	requests                 *requests.Store
+	usageStore               *usage.Store
 	outbox                   *events.OutboxStore
 	newJobID                 func() (string, error)
 	payloadInlineMaxBytes    int64
@@ -39,10 +41,12 @@ type Server struct {
 	allowedOrigin            string
 	internalToken            string
 	metricsToken             string
+	statsToken               string
 	openLimiter              *rateLimiter
 	createLimiter            *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
+	statsLimiter             *rateLimiter
 	pipeRelayEnabled         bool
 	pipeCoordinator          *piperelay.Coordinator
 	pipeInitLimiter          *rateLimiter
@@ -66,17 +70,21 @@ type Options struct {
 	AllowedOrigin            string
 	InternalToken            string
 	MetricsToken             string
-	OpenRatePerMinute        int
-	CreateRatePerMinute      int
-	TrustedProxies           []*net.IPNet
-	OutboxStore              *events.OutboxStore
-	NewJobID                 func() (string, error)
-	NATSConnected            func() bool
-	RequestStore             *requests.Store
-	PipeRelayEnabled         bool
-	PipeCoordinator          *piperelay.Coordinator
-	Tracer                   trace.Tracer
-	TracerProvider           trace.TracerProvider
+	StatsToken               string
+	// UsageStore reads the daily aggregate counters for GET /api/stats. Nil
+	// keeps the endpoint answering 404 like a deployment with the token unset.
+	UsageStore          *usage.Store
+	OpenRatePerMinute   int
+	CreateRatePerMinute int
+	TrustedProxies      []*net.IPNet
+	OutboxStore         *events.OutboxStore
+	NewJobID            func() (string, error)
+	NATSConnected       func() bool
+	RequestStore        *requests.Store
+	PipeRelayEnabled    bool
+	PipeCoordinator     *piperelay.Coordinator
+	Tracer              trace.Tracer
+	TracerProvider      trace.TracerProvider
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -111,6 +119,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		db:                       db,
 		secrets:                  secretStore,
 		requests:                 opts.RequestStore,
+		usageStore:               opts.UsageStore,
 		outbox:                   opts.OutboxStore,
 		newJobID:                 events.NewJobID,
 		payloadInlineMaxBytes:    payloadInlineMaxBytes,
@@ -119,10 +128,12 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		allowedOrigin:            strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:            opts.InternalToken,
 		metricsToken:             opts.MetricsToken,
+		statsToken:               opts.StatsToken,
 		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		statsLimiter:             newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		pipeRelayEnabled:         opts.PipeRelayEnabled,
 		pipeCoordinator:          pipeCoordinator,
 		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
@@ -143,12 +154,13 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
 	r.With(server.metricsAuth).Get("/metrics", server.metrics)
+	r.With(noStore, server.statsLimiter.middleware, server.statsAuth).Get("/api/stats", server.getStats)
 	r.Get("/api/config", server.getConfig)
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
-	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
-	r.With(managementNoStore, server.managementLimiter.managementMiddleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
+	r.With(noStore, server.managementLimiter.managementMiddleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
+	r.With(noStore, server.managementLimiter.managementMiddleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Route("/api/requests", func(r chi.Router) {
 		r.Use(server.requestReady)
@@ -289,7 +301,7 @@ func secureTokenEqual(got, want string) bool {
 // fails closed (401) so a misconfigured deploy never exposes metrics.
 func (s Server) metricsAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.checkBearer(r.Header.Get("Authorization")) {
+		if !s.checkBearer(r.Header.Get("Authorization"), s.metricsToken) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "metrics token is missing or invalid")
 			return
 		}
@@ -297,15 +309,16 @@ func (s Server) metricsAuth(next http.Handler) http.Handler {
 	})
 }
 
-// checkBearer reports whether header is "Bearer <token>" matching the configured
-// metrics token. The scheme match is case-insensitive per RFC 6750; the token
-// tail is compared in constant time.
-func (s Server) checkBearer(header string) bool {
+// checkBearer reports whether header is "Bearer <token>" matching the given
+// configured token (metrics or stats; the two never share a credential). The
+// scheme match is case-insensitive per RFC 6750; the token tail is compared in
+// constant time.
+func (s Server) checkBearer(header, token string) bool {
 	const prefix = "bearer "
 	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 		return false
 	}
-	return secureTokenEqual(header[len(prefix):], s.metricsToken)
+	return secureTokenEqual(header[len(prefix):], token)
 }
 
 func (s Server) healthz(w http.ResponseWriter, _ *http.Request) {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
 // Fixed-width UTC timestamps preserve indexed subsecond deadline ordering.
@@ -163,11 +164,22 @@ func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created
 	submitHash, _ := tokenHash(submit)
 	retrieveHash, _ := tokenHash(retrieve)
 	expires := s.now().UTC().Add(time.Duration(seconds) * time.Second)
-	_, err = s.db.ExecContext(ctx, `insert into requests
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Created{}, fmt.Errorf("begin create request: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `insert into requests
 		(id, public_key, fingerprint, submission_token_hash, retrieval_token_hash, expires_at)
 		values (?, ?, ?, ?, ?, ?)`, id, publicKey, fingerprint, submitHash, retrieveHash, expires.Format(timeFormat))
 	if err != nil {
 		return Created{}, err
+	}
+	if err := usage.Increment(ctx, tx, s.now().UTC(), usage.RequestCreated, 1); err != nil {
+		return Created{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Created{}, fmt.Errorf("commit create request: %w", err)
 	}
 	return Created{id, expires, submit, retrieve}, nil
 }
@@ -403,6 +415,12 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	if _, err := tx.ExecContext(ctx, `insert into request_payloads (request_id, ciphertext) values (?, ?)`, id, ciphertext); err != nil {
 		return Receipt{}, err
 	}
+	// Only the waiting -> submitted transition counts: the replay branch above
+	// re-accepts an identical submission without a new state change, so a
+	// retried submit cannot double-count.
+	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestSubmitted, 1); err != nil {
+		return Receipt{}, err
+	}
 	if err := s.commit(tx, row.expires); err != nil {
 		return Receipt{}, err
 	}
@@ -473,6 +491,9 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 		if err := s.clearPayloadTx(ctx, tx.Tx, id, row.state, "consumed", events.ReasonConsumed); err != nil {
 			return Opened{}, err
 		}
+		if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestConsumed, 1); err != nil {
+			return Opened{}, err
+		}
 		if err := s.commit(tx, row.expires); err != nil {
 			return Opened{}, err
 		}
@@ -526,6 +547,9 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 		return err
 	}
 	if err := requireTransition(changed); err != nil {
+		return err
+	}
+	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestConsumed, 1); err != nil {
 		return err
 	}
 	return s.commit(tx, row.expires)

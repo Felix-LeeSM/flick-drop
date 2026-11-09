@@ -17,6 +17,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -258,6 +259,16 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 		return Secret{}, err
 	}
 
+	if err := usage.Increment(ctx, tx, now, usage.SecretCreatedMetric(input.Kind), 1); err != nil {
+		return Secret{}, err
+	}
+	// The inline payload persists in this same transaction, so the bytes are
+	// uploaded here. Large uploads count theirs in Finalize, where the object
+	// is confirmed.
+	if err := usage.Increment(ctx, tx, now, usage.BytesUploaded, input.SizeBytes); err != nil {
+		return Secret{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return Secret{}, fmt.Errorf("commit create secret: %w", err)
 	}
@@ -319,12 +330,12 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	// transaction (the write tx opens below), so concurrent placements can
 	// transiently overshoot a ceiling — the documented soft cap (storage-model.md).
 	// The chosen backend flows into the presign, the row, and the metric label.
-	usage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC())
+	backendUsage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC())
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
 	}
-	telemetry.SetStorageBytesUsed(usage)
-	backend := storage.ChooseBackend(s.objects, usage, s.maxTotalBytes, input.SizeBytes)
+	telemetry.SetStorageBytesUsed(backendUsage)
+	backend := storage.ChooseBackend(s.objects, backendUsage, s.maxTotalBytes, input.SizeBytes)
 	if backend == "" {
 		return CreateLargeResult{}, ErrStorageFull
 	}
@@ -370,6 +381,11 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	}
 	managementToken, err := createManagementTx(ctx, tx, id, expiresAt)
 	if err != nil {
+		return CreateLargeResult{}, err
+	}
+	// The create counts the event; bytes_uploaded waits for Finalize to confirm
+	// the object landed, so an abandoned presigned upload never inflates it.
+	if err := usage.Increment(ctx, tx, now, usage.SecretCreatedMetric(input.Kind), 1); err != nil {
 		return CreateLargeResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -454,6 +470,12 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 		return ErrExpired
 	}
 	if err := s.activateSecretTx(ctx, tx, id, now); err != nil {
+		return err
+	}
+	// The object is confirmed at exactly the staged length, so this is where the
+	// large upload's bytes actually landed. The idempotent already-active early
+	// return above never reaches here, so finalize replays cannot double-count.
+	if err := usage.Increment(ctx, tx, now, usage.BytesUploaded, sizeBytes); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -645,6 +667,9 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if err := recordManagementOutcomeTx(ctx, tx, id, "opened"); err != nil {
 		return Secret{}, err
 	}
+	if err := usage.Increment(ctx, tx, now, usage.SecretOpened, 1); err != nil {
+		return Secret{}, err
+	}
 	return secret, nil
 }
 
@@ -698,6 +723,9 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 	}
 	if affected != 1 {
 		return ErrConsumed
+	}
+	if err := usage.Increment(ctx, tx, now, usage.SecretOpenFailed, 1); err != nil {
+		return err
 	}
 
 	var failedAccessCount int

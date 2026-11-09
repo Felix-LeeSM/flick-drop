@@ -101,7 +101,25 @@ create table outbox_events (
 
 create index idx_outbox_events_state_next_attempt
   on outbox_events(state, next_attempt_at);
+
+create table usage_counters (
+  day text not null,
+  metric text not null,
+  count integer not null default 0 check (count >= 0),
+  primary key (day, metric)
+);
 ```
+
+`usage_counters` (`internal/usage`) records committed usage events as daily
+aggregate counts, so usage history survives the hard deletion that expiry and
+reclamation apply to `secrets` and `requests` rows. The secrets and requests
+stores increment one row per event inside the same transaction as the state
+change it describes (`internal/usage.Increment` upserts `count`); deletion and
+cancellation are never subtracted. Rows carry counts only — no IDs, IPs, user
+agents, or content metadata — and are never purged, which keeps the table at
+one row per UTC day per metric. The admin `/api/stats` endpoint reads it via
+`internal/usage.Store.Report`, which also computes live inventory counts from
+the current `secrets` and `requests` tables.
 
 Bodies (`secret_payloads.ciphertext` or the bucket object), `encrypted_filename`,
 and `wrapped_identity` are age files ([age format v1](../../contracts/age-format-v1.md));

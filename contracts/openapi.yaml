@@ -42,6 +42,93 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/stats:
+    get:
+      operationId: getUsageStats
+      summary: Admin aggregate usage report (daily counters, totals, live inventory).
+      description: >
+        Serves the usage_counters aggregates the secrets and requests stores
+        write with their state changes, plus live inventory counts. The payload
+        carries counts only — no IDs, IPs, user agents, or content metadata.
+        Missing token, wrong token, and an unset FLICK_STATS_TOKEN all answer
+        404, so the endpoint fails closed and hides its own existence.
+      security:
+        - statsToken: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+          description: Length of the zero-filled daily series window in UTC days.
+      responses:
+        "200":
+          description: Aggregate usage report.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, series, totals, live]
+                properties:
+                  days:
+                    type: integer
+                    description: Window length the series covers.
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      required: [day, metrics]
+                      properties:
+                        day:
+                          type: string
+                          description: UTC calendar day, YYYY-MM-DD.
+                        metrics:
+                          type: object
+                          additionalProperties:
+                            type: integer
+                          description: Counter values for that day; metrics with no events are absent.
+                  totals:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    description: All-time sum per metric.
+                  live:
+                    type: object
+                    required: [active_secrets, live_requests]
+                    properties:
+                      active_secrets:
+                        type: integer
+                        description: Secrets currently openable (not consumed, not expired).
+                      live_requests:
+                        type: integer
+                        description: Request links waiting for or holding a submission.
+        "404":
+          description: Token missing/invalid, endpoint disabled, or report store not wired.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit exceeded.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/config:
     get:
       operationId: getConfig
@@ -968,6 +1055,10 @@ components:
       type: apiKey
       in: header
       name: X-Flick-Internal-Token
+    statsToken:
+      type: http
+      scheme: bearer
+      description: Pre-shared admin credential (FLICK_STATS_TOKEN) guarding the aggregate usage report. Separate from the metrics and internal tokens; an unset token keeps the endpoint answering 404.
   parameters:
     SecretId:
       name: id

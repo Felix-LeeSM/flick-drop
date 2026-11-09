@@ -16,6 +16,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
+	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
 const ObjectPrefix = "managed/requests/"
@@ -289,6 +290,13 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 		return Receipt{}, err
 	}
 	if err := requireTransition(result); err != nil {
+		return Receipt{}, err
+	}
+	// Large requests count the submission here: uploading -> submitted is the
+	// transition (store.Submit handles the inline waiting -> submitted one).
+	// A losing or replayed finalize never passes requireTransition, so the
+	// counter counts the submission exactly once.
+	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestSubmitted, 1); err != nil {
 		return Receipt{}, err
 	}
 	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, backendOf(a), a.uploadKey.String, events.ReasonOrphan, s.now().UTC()); err != nil {
