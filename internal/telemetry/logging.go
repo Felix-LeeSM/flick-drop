@@ -5,22 +5,56 @@
 package telemetry
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 )
 
 // NewLogger builds the process logger from FLICK_LOG_LEVEL and FLICK_LOG_FORMAT.
 // Defaults are level=info, format=json. Unrecognized values fall back to the
-// defaults so a bad env value never blocks startup.
+// defaults so a bad env value never blocks startup. Error-level records carry
+// a stack attribute (see stackHandler), so an ERROR line in Loki shows where
+// it was logged.
 func NewLogger() *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(os.Getenv("FLICK_LOG_LEVEL"))}
-	handler := slog.Handler(slog.NewJSONHandler(os.Stdout, opts))
+	handler := slog.Handler(stackHandler{slog.NewJSONHandler(os.Stdout, opts)})
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("FLICK_LOG_FORMAT")), "text") {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = stackHandler{slog.NewTextHandler(os.Stdout, opts)}
 	}
 	return slog.New(handler)
+}
+
+// stackHandler decorates every record at or above Error level with the
+// goroutine stack captured at the log call site: a Loki ERROR line then shows
+// where it was logged without each call site remembering to capture one.
+// runtime.Stack output holds frames only — no argument or variable values —
+// so it cannot leak secret content (docs/architecture/security-model.md).
+// The first frames (runtime.Stack, Handle, slog's internal call chain) are
+// known noise; keeping the full capture is simpler and robust to slog
+// internals changing.
+type stackHandler struct{ slog.Handler }
+
+func (h stackHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		buf := make([]byte, 8192)
+		n := runtime.Stack(buf, false)
+		r.AddAttrs(slog.String("stack", string(buf[:n])))
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+// WithAttrs and WithGroup re-wrap the decorated handler: the promoted methods
+// would return the inner handler, and loggers derived via logger.With would
+// silently lose the stack decoration.
+func (h stackHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return stackHandler{h.Handler.WithAttrs(attrs)}
+}
+
+func (h stackHandler) WithGroup(name string) slog.Handler {
+	return stackHandler{h.Handler.WithGroup(name)}
 }
 
 // SetStandardLogger routes the standard library's log package and the default
