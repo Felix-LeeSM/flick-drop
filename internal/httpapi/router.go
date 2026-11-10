@@ -69,14 +69,14 @@ type Options struct {
 	OpenRatePerMinute        int
 	CreateRatePerMinute      int
 	TrustedProxies           []*net.IPNet
-	OutboxStore         *events.OutboxStore
-	NewJobID            func() (string, error)
-	NATSConnected       func() bool
-	RequestStore        *requests.Store
-	PipeRelayEnabled    bool
-	PipeCoordinator     *piperelay.Coordinator
-	Tracer              trace.Tracer
-	TracerProvider      trace.TracerProvider
+	OutboxStore              *events.OutboxStore
+	NewJobID                 func() (string, error)
+	NATSConnected            func() bool
+	RequestStore             *requests.Store
+	PipeRelayEnabled         bool
+	PipeCoordinator          *piperelay.Coordinator
+	Tracer                   trace.Tracer
+	TracerProvider           trace.TracerProvider
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {

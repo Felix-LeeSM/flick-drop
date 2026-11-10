@@ -51,9 +51,9 @@ type Config struct {
 	// WorkerMetricsAddr is the worker's dedicated bearer-gated /metrics listen
 	// address (FLICK_WORKER_METRICS_ADDR). Empty disables the listener.
 	WorkerMetricsAddr string
-	NATSURL            string
-	NATSStream         string
-	NATSJobSubject     string
+	NATSURL           string
+	NATSStream        string
+	NATSJobSubject    string
 	// PayloadInlineMaxBytes bounds one encrypted secret; MaxFileBytes bounds the
 	// file the browser may pick. MaxTotalBytes bounds the cumulative stored
 	// bytes per backend (0 = unlimited) so multi-backend deployments stay inside
@@ -84,14 +84,14 @@ func Load() (Config, error) {
 		MetricsToken:  getenv("FLICK_METRICS_TOKEN", ""),
 		// Empty disables distributed tracing (no collector dependency); set to a
 		// full OTLP/HTTP URL (e.g. http://otel-collector:4318) to enable it.
-		OTLPEndpoint:          getenv("FLICK_OTLP_ENDPOINT", ""),
-		InternalAPIBaseURL:    getenv("FLICK_INTERNAL_API_BASE_URL", "http://localhost:8080"),
-		APIAddr:               getenv("FLICK_API_ADDR", ":8080"),
-		APIDBPath:             getenv("FLICK_API_DB_PATH", "./var/api.db"),
-		WorkerDBPath:          getenv("FLICK_WORKER_DB_PATH", "./var/worker.db"),
+		OTLPEndpoint:       getenv("FLICK_OTLP_ENDPOINT", ""),
+		InternalAPIBaseURL: getenv("FLICK_INTERNAL_API_BASE_URL", "http://localhost:8080"),
+		APIAddr:            getenv("FLICK_API_ADDR", ":8080"),
+		APIDBPath:          getenv("FLICK_API_DB_PATH", "./var/api.db"),
+		WorkerDBPath:       getenv("FLICK_WORKER_DB_PATH", "./var/worker.db"),
 		// An explicitly empty value disables the worker metrics listener; the
 		// deployment default binds :9091 (bearer-gated by FLICK_METRICS_TOKEN).
-		WorkerMetricsAddr: getenv("FLICK_WORKER_METRICS_ADDR", ":9091"),
+		WorkerMetricsAddr:     getenv("FLICK_WORKER_METRICS_ADDR", ":9091"),
 		NATSURL:               getenv("FLICK_NATS_URL", "nats://127.0.0.1:4222"),
 		NATSStream:            getenv("FLICK_NATS_STREAM", "FLICK_JOBS"),
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
