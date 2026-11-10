@@ -143,4 +143,52 @@ history. Pin the node deliberately and keep it stable, or migrate the PV with it
 cluster object metadata and host stats), so their `/metrics` endpoints are
 unauthenticated. The flick API `/metrics` endpoint stays guarded by
 `FLICK_METRICS_TOKEN`; `vmsingle` scrapes it with the mounted token, so the
-guard holds end to end.
+guard holds end to end. The worker's dedicated metrics listener
+(`flick-worker-metrics` Service, `deploy/base/worker.yaml`) shares the same
+credential and is ClusterIP-only.
+
+## Loki — access-log storage
+
+Single-binary Loki storing the container logs Alloy tails through the
+Kubernetes API:
+filesystem store on a 5 GiB PVC, 7-day retention enforced by the compactor
+(`retention_period: 168h`, `retention_enabled: true` — deleting the retention
+flags turns the small PVC into an unbounded log). ClusterIP only; Grafana is
+the only reader. Inspect without Grafana:
+
+```sh
+kubectl -n flick port-forward service/loki 13100:3100
+curl -fsS 'http://127.0.0.1:13100/loki/api/v1/query_range' \
+  --data-urlencode 'query=sum by (DownstreamStatus) (rate({namespace="kube-system", app="traefik"} | json [5m]))'
+```
+
+## Alloy — log shipper
+
+DaemonSet tailing container logs through the Kubernetes API
+(`loki.source.kubernetes` streams the `pods/log` subresource — no privileged
+container, no root, no node filesystem access). Its ClusterRole grants
+`pods` get/list/watch plus `pods/log` get; the `pods/log` rule is the one the
+log streaming itself needs, and missing it 403s every log request while
+discovery and probes stay green. A `spec.nodeName` field selector (from the
+`NODE_NAME` env) scopes each replica to its own node so a 2-node cluster
+stores each line once. It keeps exactly the `flick` namespace and the
+`kube-system` traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
+lookahead, which RE2 lacks); every other namespace is dropped before a line is
+read. Traefik must emit its access log in JSON for the dashboard queries to
+parse (the ops overlay enables `accessLog` with `format: json`).
+
+## Grafana — the admin view
+
+Serves the provisioned `Flick usage, queue, and access` dashboard: daily
+deliveries/opens/request links from VictoriaMetrics counters, outbox backlog
+and worker job outcomes from the queue series, pod phases, and the Loki
+access-log panels (requests by status, top paths, unique client IPs) plus
+error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
+Datasources
+are provisioned (`vmsingle`, `loki` uids); anonymous access is disabled; the
+admin credential comes from the `grafana-admin` Secret (placeholder in base —
+the ops overlay must replace it before the ingress goes internet-facing).
+The base ingress host is the `grafana.localhost` placeholder; the ops overlay
+patches it to `grafana.<domain>` with cert-manager TLS. Grafana data is an
+`emptyDir` on purpose: provisioning recreates everything except saved
+dashboard edits, which do not survive a restart by design.

@@ -1,0 +1,258 @@
+# Grafana: the admin's single observability view (usage counters, queue
+# health, node/pod status, access-log search). Not part of the public product
+# surface: the ingress host is a placeholder (grafana.localhost) that the ops
+# overlay replaces with grafana.<domain> plus cert-manager TLS, and login is
+# Grafana's own admin credential — anonymous access is disabled here, so a
+# deployed Grafana behind a not-yet-patched placeholder host can still only be
+# opened with the admin password.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+type: Opaque
+stringData:
+  # Ops overlay replaces both before use; the password must be strong because
+  # the ingress is internet-facing once patched.
+  GF_SECURITY_ADMIN_USER: "admin"
+  GF_SECURITY_ADMIN_PASSWORD: "replace-me-before-use"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        uid: vmsingle
+        type: prometheus
+        access: proxy
+        url: http://vmsingle:8428
+        isDefault: true
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+data:
+  provider.yml: |
+    apiVersion: 1
+    providers:
+      - name: flick
+        folder: Flick
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+data:
+  usage.json: |
+    {
+      "uid": "flick-usage",
+      "title": "Flick usage, queue, and access",
+      "tags": ["flick"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "refresh": "1m",
+      "time": { "from": "now-7d", "to": "now" },
+      "panels": [
+        { "type": "timeseries", "title": "Deliveries created per day", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+          "targets": [{"expr": "sum by (kind) (increase(flick_secret_created_total[1d]))", "legendFormat": "{{kind}}"}] },
+        { "type": "timeseries", "title": "Opens per day", "datasource": "vmsingle", "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+          "targets": [{"expr": "increase(flick_secret_opened_total[1d])", "legendFormat": "opened"}] },
+        { "type": "timeseries", "title": "Request links per day", "datasource": "vmsingle", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+          "targets": [
+            {"expr": "increase(flick_request_created_total[1d])", "legendFormat": "created"},
+            {"expr": "increase(flick_request_submitted_total[1d])", "legendFormat": "filled"},
+            {"expr": "increase(flick_request_consumed_total[1d])", "legendFormat": "opened"}
+          ] },
+        { "type": "stat", "title": "Stored (encrypted) bytes", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 8, "w": 8, "h": 4},
+          "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+          "targets": [{"expr": "flick_storage_bytes_used", "legendFormat": "{{storage}}"}] },
+        { "type": "stat", "title": "Active large uploads", "datasource": "vmsingle", "gridPos": {"x": 8, "y": 8, "w": 4, "h": 4},
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "targets": [{"expr": "flick_active_uploads"}] },
+        { "type": "stat", "title": "Processes up", "datasource": "vmsingle", "gridPos": {"x": 12, "y": 8, "w": 4, "h": 4},
+          "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+          "targets": [{"expr": "sum(up{job=~\"flick-api|flick-worker\"})"}] },
+        { "type": "timeseries", "title": "Pods by phase (flick)", "datasource": "vmsingle", "gridPos": {"x": 16, "y": 8, "w": 8, "h": 4},
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "targets": [{"expr": "sum by (phase) (kube_pod_status_phase{namespace=\"flick\"})", "legendFormat": "{{phase}}"}] },
+
+        { "type": "timeseries", "title": "Outbox backlog (pending publishes)", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 12, "w": 8, "h": 8},
+          "description": "Rising means the NATS broker is backing up or down; zero is the healthy steady state.",
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "targets": [{"expr": "flick_outbox_pending", "legendFormat": "pending"}] },
+        { "type": "timeseries", "title": "Outbox published, per minute", "datasource": "vmsingle", "gridPos": {"x": 8, "y": 12, "w": 8, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "targets": [{"expr": "sum by (outcome) (rate(flick_outbox_published_total[5m])) * 60", "legendFormat": "{{outcome}}"}] },
+        { "type": "timeseries", "title": "Worker jobs, per minute", "datasource": "vmsingle", "gridPos": {"x": 16, "y": 12, "w": 8, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "targets": [{"expr": "sum by (outcome) (rate(flick_jobs_processed_total[5m])) * 60", "legendFormat": "{{outcome}}"}] },
+
+        { "type": "timeseries", "title": "Requests per minute by status (traefik access log)", "datasource": "loki", "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+          "description": "Traefik access log lines (JSON format enabled in the ops overlay).",
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "targets": [{"expr": "sum by (DownstreamStatus) (rate({namespace=\"kube-system\", app=\"traefik\"} | json [2m]))", "legendFormat": "{{DownstreamStatus}}"}] },
+        { "type": "timeseries", "title": "Top paths, last hour", "datasource": "loki", "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "targets": [{"expr": "topk(10, sum by (RequestPath) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1h])))", "legendFormat": "{{RequestPath}}"}] },
+        { "type": "table", "title": "Unique client IPs, last day", "datasource": "loki", "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
+          "targets": [{"expr": "count by (ClientHost) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1d]))", "instant": true, "format": "table"}],
+          "transformations": [{"id": "organize", "options": {"renameByName": {"ClientHost": "client IP", "Value": "requests"}}}] },
+
+        { "type": "timeseries", "title": "App errors, per minute", "datasource": "loki", "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
+          "description": "JSON-structured slog ERROR lines from flick-api and flick-worker.",
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "targets": [{"expr": "sum by (app) (rate({namespace=\"flick\"} | json | level=\"ERROR\" [5m])) * 60", "legendFormat": "{{app}}"}] },
+        { "type": "timeseries", "title": "Failed requests 4xx/5xx, per minute (traefik)", "datasource": "loki", "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "targets": [{"expr": "sum by (DownstreamStatus) (rate({namespace=\"kube-system\", app=\"traefik\"} | json | DownstreamStatus =~ \"[45]..\" [5m])) * 60", "legendFormat": "{{DownstreamStatus}}"}] },
+        { "type": "logs", "title": "Recent error lines", "datasource": "loki", "gridPos": {"x": 0, "y": 44, "w": 24, "h": 12},
+          "description": "Raw app ERROR lines, newest last. Switch the time range or use Explore for full-text search.",
+          "targets": [{"expr": "{namespace=\"flick\"} | json | level=\"ERROR\"", "refId": "A"}] }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 472
+        runAsGroup: 472
+        runAsNonRoot: true
+        runAsUser: 472
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: grafana
+          image: docker.io/grafana/grafana:11.5.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: GF_SECURITY_ADMIN_USER
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: GF_SECURITY_ADMIN_PASSWORD
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+            # Ops overlay patches this to https://grafana.<domain>.
+            - name: GF_SERVER_ROOT_URL
+              value: "http://grafana.localhost"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/grafana
+            # readOnlyRootFilesystem leaves no writable /tmp; SQLite and CSV
+            # export temp files need one (same pattern as vmsingle).
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  name: http
