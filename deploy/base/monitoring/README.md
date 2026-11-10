@@ -179,11 +179,33 @@ parse (the ops overlay enables `accessLog` with `format: json`).
 
 ## Grafana — the admin view
 
-Serves the provisioned `Flick usage, queue, and access` dashboard: daily
+Serves the provisioned `Flick 사용량·큐·접속` dashboard (panels are labelled in
+Korean): daily
 deliveries/opens/request links from VictoriaMetrics counters, outbox backlog
 and worker job outcomes from the queue series, pod phases, and the Loki
 access-log panels (requests by status, top paths, unique client IPs) plus
 error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
+A second provisioned dashboard, `Flick 클러스터: 노드와 파드`
+(`cluster.json`), shows where everything runs. Its main panel is a Treemap
+nesting node → namespace → pod → container: tile area is the container's
+memory *request* (16MiB minimum when none is set; actual usage is not scraped,
+because cAdvisor is not a scrape target), tile colour is the container state,
+and hovering a tile shows what the component does, its image, pod phase,
+namespace and node. Below it sit a Nodes table (free/total memory and disk with
+percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
+Pods table, and per-node history graphs. Node names come from joining
+node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
+Node Ready conditions are not available: `kube-state-metrics` runs with
+`--resources=pods` only, so `Nodes down` counts failed node-exporter scrapes.
+The Container restarts panels read high until 24 hours of samples exist,
+because VictoriaMetrics `increase()` counts a new series from zero.
+
+The Treemap panel is a plugin: `GF_INSTALL_PLUGINS=marcusolsson-treemap-panel@2.1.1`
+makes `/run.sh` download it from grafana.com at every Grafana start (the image
+runs `bash -e`, so an unreachable grafana.com crash-loops the pod until it
+works). It is Grafana Labs-maintained and Grafana-signed; the other panels do
+not depend on it.
+
 Datasources
 are provisioned (`vmsingle`, `loki` uids); anonymous access is disabled; the
 admin credential comes from the `grafana-admin` Secret (placeholder in base —
