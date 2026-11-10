@@ -133,6 +133,10 @@ spec:
             - run
             - /etc/alloy/config.alloy
             - --storage.path=/var/lib/alloy/data
+            # The default HTTP listen address is 127.0.0.1, which the readiness
+            # probe (dialing the pod IP) cannot reach — pods stay NotReady and
+            # the rollout wedges.
+            - --server.http.listen-addr=0.0.0.0:12345
           env:
             - name: NODE_NAME
               valueFrom:
