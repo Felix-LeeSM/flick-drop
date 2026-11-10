@@ -200,11 +200,14 @@ Node Ready conditions are not available: `kube-state-metrics` runs with
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
-The Treemap panel is a plugin: `GF_INSTALL_PLUGINS=marcusolsson-treemap-panel@2.1.1`
+The Treemap panel is a plugin: `GF_INSTALL_PLUGINS=marcusolsson-treemap-panel`
 makes `/run.sh` download it from grafana.com at every Grafana start (the image
 runs `bash -e`, so an unreachable grafana.com crash-loops the pod until it
-works). It is Grafana Labs-maintained and Grafana-signed; the other panels do
-not depend on it.
+works). It is left unpinned because grafana.com lists no version history for
+this plugin — a `@version` suffix fails with `404: Plugin not found` and
+crash-loops the pod (#372). The unpinned id installs the catalog's latest
+version, which the dashboards are built against. It is Grafana
+Labs-maintained and Grafana-signed; the other panels do not depend on it.
 
 Datasources
 are provisioned (`vmsingle`, `loki` uids); anonymous access is disabled; the

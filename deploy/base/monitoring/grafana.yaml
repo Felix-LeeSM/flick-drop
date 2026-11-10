@@ -328,9 +328,13 @@ spec:
             # into /var/lib/grafana/plugins (the `data` emptyDir) and runs with
             # `bash -e`, so an unreachable grafana.com crash-loops the pod until
             # the download works; no stored data is lost because the emptyDir is
-            # re-provisioned anyway.
+            # re-provisioned anyway. Unpinned on purpose: grafana.com lists no
+            # version history for this plugin (versions: []), so a `@version`
+            # suffix fails with `404: Plugin not found` and crash-loops the pod
+            # at startup (#372). The unpinned id installs the catalog's latest,
+            # which the dashboards are built against.
             - name: GF_INSTALL_PLUGINS
-              value: "marcusolsson-treemap-panel@2.1.1"
+              value: "marcusolsson-treemap-panel"
             # Ops overlay patches this to https://grafana.<domain>.
             - name: GF_SERVER_ROOT_URL
               value: "http://grafana.localhost"
