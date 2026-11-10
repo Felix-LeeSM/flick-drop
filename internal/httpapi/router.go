@@ -20,7 +20,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
-	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
 // defaultTracer instruments the HTTP server when no Tracer or TracerProvider is
@@ -32,7 +31,6 @@ type Server struct {
 	db                       *sql.DB
 	secrets                  *secrets.Store
 	requests                 *requests.Store
-	usageStore               *usage.Store
 	outbox                   *events.OutboxStore
 	newJobID                 func() (string, error)
 	payloadInlineMaxBytes    int64
@@ -41,12 +39,10 @@ type Server struct {
 	allowedOrigin            string
 	internalToken            string
 	metricsToken             string
-	statsToken               string
 	openLimiter              *rateLimiter
 	createLimiter            *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
-	statsLimiter             *rateLimiter
 	pipeRelayEnabled         bool
 	pipeCoordinator          *piperelay.Coordinator
 	pipeInitLimiter          *rateLimiter
@@ -70,13 +66,9 @@ type Options struct {
 	AllowedOrigin            string
 	InternalToken            string
 	MetricsToken             string
-	StatsToken               string
-	// UsageStore reads the daily aggregate counters for GET /api/stats. Nil
-	// keeps the endpoint answering 404 like a deployment with the token unset.
-	UsageStore          *usage.Store
-	OpenRatePerMinute   int
-	CreateRatePerMinute int
-	TrustedProxies      []*net.IPNet
+	OpenRatePerMinute        int
+	CreateRatePerMinute      int
+	TrustedProxies           []*net.IPNet
 	OutboxStore         *events.OutboxStore
 	NewJobID            func() (string, error)
 	NATSConnected       func() bool
@@ -119,7 +111,6 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		db:                       db,
 		secrets:                  secretStore,
 		requests:                 opts.RequestStore,
-		usageStore:               opts.UsageStore,
 		outbox:                   opts.OutboxStore,
 		newJobID:                 events.NewJobID,
 		payloadInlineMaxBytes:    payloadInlineMaxBytes,
@@ -128,12 +119,10 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		allowedOrigin:            strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:            opts.InternalToken,
 		metricsToken:             opts.MetricsToken,
-		statsToken:               opts.StatsToken,
 		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		statsLimiter:             newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		pipeRelayEnabled:         opts.PipeRelayEnabled,
 		pipeCoordinator:          pipeCoordinator,
 		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
@@ -154,7 +143,6 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/healthz", server.healthz)
 	r.Get("/readyz", server.readyz)
 	r.With(server.metricsAuth).Get("/metrics", server.metrics)
-	r.With(noStore, server.statsLimiter.middleware, server.statsAuth).Get("/api/stats", server.getStats)
 	r.Get("/api/config", server.getConfig)
 	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)

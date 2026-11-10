@@ -18,7 +18,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
-	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
 func main() {
@@ -191,8 +190,6 @@ func main() {
 			AllowedOrigin:            cfg.PublicBaseURL,
 			InternalToken:            cfg.InternalToken,
 			MetricsToken:             cfg.MetricsToken,
-			StatsToken:               cfg.StatsToken,
-			UsageStore:               usage.NewStore(conn),
 			OpenRatePerMinute:        cfg.OpenRatePerMinute,
 			CreateRatePerMinute:      cfg.CreateRatePerMinute,
 			TrustedProxies:           cfg.TrustedProxies,

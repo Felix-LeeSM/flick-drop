@@ -117,9 +117,10 @@ stores increment one row per event inside the same transaction as the state
 change it describes (`internal/usage.Increment` upserts `count`); deletion and
 cancellation are never subtracted. Rows carry counts only — no IDs, IPs, user
 agents, or content metadata — and are never purged, which keeps the table at
-one row per UTC day per metric. The admin `/api/stats` endpoint reads it via
-`internal/usage.Store.Report`, which also computes live inventory counts from
-the current `secrets` and `requests` tables.
+one row per UTC day per metric. There is no HTTP reader: the table is the
+durable record, inspected through ops-side DB access, while the live scraped
+view rides the Prometheus counters (`flick_secret_created_total`,
+`flick_request_submitted_total`, …) served on `/metrics`.
 
 Bodies (`secret_payloads.ciphertext` or the bucket object), `encrypted_filename`,
 and `wrapped_identity` are age files ([age format v1](../../contracts/age-format-v1.md));

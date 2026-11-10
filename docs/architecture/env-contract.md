@@ -31,8 +31,8 @@ Local development:
 | Variable | Purpose |
 | --- | --- |
 | `FLICK_API_ADDR` | API listen address. |
-| `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` (Prometheus scrape). Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/metrics` fails closed (401). |
-| `FLICK_STATS_TOKEN` | Bearer token guarding `/api/stats` (admin aggregate usage report and the web `/stats` page). Separate from `FLICK_METRICS_TOKEN` and `FLICK_INTERNAL_TOKEN` (least privilege). Empty = `/api/stats` answers 404 (fails closed, hides its own existence). Responses carry counts only — no IDs, IPs, or content metadata. |
+| `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` on both the API and the worker's dedicated metrics listener. Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = both fail closed (401). |
+| `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address. Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored as SQLite BLOB. Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
