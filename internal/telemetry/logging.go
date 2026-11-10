@@ -20,11 +20,19 @@ import (
 // it was logged.
 func NewLogger() *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(os.Getenv("FLICK_LOG_LEVEL"))}
-	handler := slog.Handler(stackHandler{slog.NewJSONHandler(os.Stdout, opts)})
+	handler := slog.Handler(NewStackHandler(slog.NewJSONHandler(os.Stdout, opts)))
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("FLICK_LOG_FORMAT")), "text") {
-		handler = stackHandler{slog.NewTextHandler(os.Stdout, opts)}
+		handler = NewStackHandler(slog.NewTextHandler(os.Stdout, opts))
 	}
 	return slog.New(handler)
+}
+
+// NewStackHandler wraps h so records at or above Error level carry the
+// goroutine stack captured at the log call site (see stackHandler). Callers
+// that build their own handler chain — tests, alternative mains — use it to
+// keep the decoration NewLogger provides.
+func NewStackHandler(h slog.Handler) slog.Handler {
+	return stackHandler{h}
 }
 
 // stackHandler decorates every record at or above Error level with the

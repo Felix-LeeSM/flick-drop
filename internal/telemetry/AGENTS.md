@@ -13,6 +13,11 @@ continues across the async api→NATS→worker hop.**
 (or text) handler in `stackHandler` (`logging.go`, #366), so every record at or
 above Error level carries a `stack` attribute — the goroutine stack captured at
 the log call site, frames only, so no secret content can leak through it.
+`NewStackHandler(h)` (`logging.go`) exposes that wrapping for callers that
+build their own handler chain. The worker job failure path
+(`internal/worker/processor.go` `finishFailed`) is the production `slog.Error`
+caller: a failed or dead-lettered job attempt logs `"worker job failed"` with
+`kind`, `attempt`, `dead_letter`, and `err`.
 `SetStandardLogger` routes the standard `log` package through slog so existing
 `log.Printf` calls (NATS `Logf`, `net/http`) emit structured output.
 
