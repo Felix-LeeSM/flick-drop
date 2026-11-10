@@ -1,8 +1,11 @@
-# Grafana Alloy DaemonSet: tails /var/log/pods on every node and ships the
-# lines to Loki. Keeps only the flick namespace and the kube-system traefik
-# pod — traefik's access log is the cluster's entry-point record (client IP,
-# path, status), which is exactly the access-log search the admin needs; every
-# other namespace's logs stay on their containers.
+# Grafana Alloy DaemonSet: tails container logs through the Kubernetes API
+# (loki.source.kubernetes streams pods/log — no privileges, no root, no node
+# filesystem access) and ships the lines to Loki. Each replica only discovers
+# pods on its own node (spec.nodeName field selector), so a 2-node cluster
+# stores each line exactly once. Keeps only the flick namespace and the
+# kube-system traefik pod — traefik's access log is the cluster's entry-point
+# record (client IP, path, status), which is exactly the access-log search the
+# admin needs; every other namespace's logs stay on their containers.
 #
 # Traefik access logging itself is enabled node-side (ops overlay), so until
 # that lands only flick app containers appear here.
@@ -19,6 +22,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # loki.source.kubernetes streams the pods/log subresource (GET .../pods/{name}/log);
+  # a "pods" rule alone does not cover it, and without this rule every log
+  # request 403s while discovery and probes stay green.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -41,6 +50,14 @@ data:
   config.alloy: |
     discovery.kubernetes "pods" {
       role = "pod"
+
+      // DaemonSet replicas must not tail the whole cluster: without this field
+      // selector every replica discovers every pod and each log line lands in
+      // Loki once per node.
+      selectors {
+        role  = "pod"
+        field = "spec.nodeName=" + sys.env("NODE_NAME")
+      }
     }
 
     discovery.relabel "pod_logs" {
@@ -102,20 +119,25 @@ spec:
     spec:
       serviceAccountName: alloy
       securityContext:
-        runAsNonRoot: false
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: alloy
-          image: docker.io/grafana/alloy:v0.7.0
+          image: docker.io/grafana/alloy:v1.21.3
           imagePullPolicy: IfNotPresent
           args:
             - run
             - /etc/alloy/config.alloy
             - --storage.path=/var/lib/alloy/data
           env:
-            - name: HOST_ROOT
-              value: /rootfs
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: http
               containerPort: 12345
@@ -145,12 +167,6 @@ spec:
               readOnly: true
             - name: storage
               mountPath: /var/lib/alloy
-            # loki.source.kubernetes reads container logs through the kubelet's
-            # /var/log/pods; the host mount is read-only and unavoidable for a
-            # log tailer.
-            - name: varlogpods
-              mountPath: /var/log/pods
-              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -158,7 +174,3 @@ spec:
         - name: storage
           emptyDir:
             sizeLimit: 128Mi
-        - name: varlogpods
-          hostPath:
-            path: /var/log/pods
-            type: Directory

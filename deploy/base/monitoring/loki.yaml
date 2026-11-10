@@ -58,6 +58,10 @@ metadata:
   name: loki
 spec:
   replicas: 1
+  # RWO PVC: a rolling update schedules the new pod on the other node where the
+  # volume cannot mount, and the rollout wedges. Same fix as vmsingle.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: loki

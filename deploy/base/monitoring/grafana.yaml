@@ -192,6 +192,10 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/grafana
+            # readOnlyRootFilesystem leaves no writable /tmp; SQLite and CSV
+            # export temp files need one (same pattern as vmsingle).
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: datasources
           configMap:
@@ -205,6 +209,9 @@ spec:
         - name: data
           emptyDir:
             sizeLimit: 128Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service

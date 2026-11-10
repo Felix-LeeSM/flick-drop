@@ -163,12 +163,18 @@ curl -fsS 'http://127.0.0.1:13100/loki/api/v1/query_range' \
 
 ## Alloy — log shipper
 
-DaemonSet reading `/var/log/pods` (read-only host mount) with pod-list/watch
-RBAC. It keeps exactly the `flick` namespace and the `kube-system` traefik pod
-(one RE2-safe keep rule on `namespace/pod-name` — no lookahead, which RE2
-lacks); every other namespace is dropped before a line is read. Traefik must
-emit its access log in JSON for the dashboard queries to parse (the ops
-overlay enables `accessLog` with `format: json`).
+DaemonSet tailing container logs through the Kubernetes API
+(`loki.source.kubernetes` streams the `pods/log` subresource — no privileged
+container, no root, no node filesystem access). Its ClusterRole grants
+`pods` get/list/watch plus `pods/log` get; the `pods/log` rule is the one the
+log streaming itself needs, and missing it 403s every log request while
+discovery and probes stay green. A `spec.nodeName` field selector (from the
+`NODE_NAME` env) scopes each replica to its own node so a 2-node cluster
+stores each line once. It keeps exactly the `flick` namespace and the
+`kube-system` traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
+lookahead, which RE2 lacks); every other namespace is dropped before a line is
+read. Traefik must emit its access log in JSON for the dashboard queries to
+parse (the ops overlay enables `accessLog` with `format: json`).
 
 ## Grafana — the admin view
 
