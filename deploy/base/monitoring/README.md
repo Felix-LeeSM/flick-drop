@@ -149,7 +149,8 @@ credential and is ClusterIP-only.
 
 ## Loki — access-log storage
 
-Single-binary Loki keeping the logs Alloy ships from `/var/log/pods`:
+Single-binary Loki storing the container logs Alloy tails through the
+Kubernetes API:
 filesystem store on a 5 GiB PVC, 7-day retention enforced by the compactor
 (`retention_period: 168h`, `retention_enabled: true` — deleting the retention
 flags turns the small PVC into an unbounded log). ClusterIP only; Grafana is
@@ -181,7 +182,9 @@ parse (the ops overlay enables `accessLog` with `format: json`).
 Serves the provisioned `Flick usage, queue, and access` dashboard: daily
 deliveries/opens/request links from VictoriaMetrics counters, outbox backlog
 and worker job outcomes from the queue series, pod phases, and the Loki
-access-log panels (requests by status, top paths, unique client IPs). Datasources
+access-log panels (requests by status, top paths, unique client IPs) plus
+error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
+Datasources
 are provisioned (`vmsingle`, `loki` uids); anonymous access is disabled; the
 admin credential comes from the `grafana-admin` Secret (placeholder in base —
 the ops overlay must replace it before the ingress goes internet-facing).

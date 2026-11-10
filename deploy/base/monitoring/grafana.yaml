@@ -111,7 +111,18 @@ data:
           "targets": [{"expr": "topk(10, sum by (RequestPath) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1h])))", "legendFormat": "{{RequestPath}}"}] },
         { "type": "table", "title": "Unique client IPs, last day", "datasource": "loki", "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
           "targets": [{"expr": "count by (ClientHost) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1d]))", "instant": true, "format": "table"}],
-          "transformations": [{"id": "organize", "options": {"renameByName": {"ClientHost": "client IP", "Value": "requests"}}}] }
+          "transformations": [{"id": "organize", "options": {"renameByName": {"ClientHost": "client IP", "Value": "requests"}}}] },
+
+        { "type": "timeseries", "title": "App errors, per minute", "datasource": "loki", "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
+          "description": "JSON-structured slog ERROR lines from flick-api and flick-worker.",
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "targets": [{"expr": "sum by (app) (rate({namespace=\"flick\"} | json | level=\"ERROR\" [5m])) * 60", "legendFormat": "{{app}}"}] },
+        { "type": "timeseries", "title": "Failed requests 4xx/5xx, per minute (traefik)", "datasource": "loki", "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "targets": [{"expr": "sum by (DownstreamStatus) (rate({namespace=\"kube-system\", app=\"traefik\"} | json | DownstreamStatus =~ \"[45]..\" [5m])) * 60", "legendFormat": "{{DownstreamStatus}}"}] },
+        { "type": "logs", "title": "Recent error lines", "datasource": "loki", "gridPos": {"x": 0, "y": 44, "w": 24, "h": 12},
+          "description": "Raw app ERROR lines, newest last. Switch the time range or use Explore for full-text search.",
+          "targets": [{"expr": "{namespace=\"flick\"} | json | level=\"ERROR\"", "refId": "A"}] }
       ]
     }
 ---
