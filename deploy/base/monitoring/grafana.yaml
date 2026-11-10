@@ -64,19 +64,34 @@ data:
       "schemaVersion": 39,
       "refresh": "1m",
       "time": { "from": "now-7d", "to": "now" },
+      "templating": { "list": [
+        { "name": "window", "label": "버킷", "type": "custom", "hide": 0,
+          "query": "1분 : 1m,15분 : 15m,1시간 : 1h,1일 : 1d",
+          "current": { "selected": true, "text": "1시간", "value": "1h" },
+          "options": [
+            { "selected": false, "text": "1분", "value": "1m" },
+            { "selected": false, "text": "15분", "value": "15m" },
+            { "selected": true, "text": "1시간", "value": "1h" },
+            { "selected": false, "text": "1일", "value": "1d" }
+          ] }
+      ] },
+      "links": [
+        { "title": "오늘(UTC 00:00부터)", "type": "link", "icon": "clock",
+          "url": "/d/flick-usage?from=now/d&to=now/d" }
+      ],
       "panels": [
-        { "type": "timeseries", "title": "일별 생성된 전달", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+        { "type": "timeseries", "title": "전달 생성 (${window:text})", "interval": "$window", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
           "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
-          "targets": [{"expr": "sum by (kind) (increase(flick_secret_created_total[1d]))", "legendFormat": "{{kind}}"}] },
-        { "type": "timeseries", "title": "일별 열림 수", "datasource": "vmsingle", "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+          "targets": [{"expr": "sum by (kind) (increase(flick_secret_created_total[$window]))", "legendFormat": "{{kind}}"}] },
+        { "type": "timeseries", "title": "열람 (${window:text})", "interval": "$window", "datasource": "vmsingle", "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
           "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
-          "targets": [{"expr": "sum(increase(flick_secret_opened_total[1d]))", "legendFormat": "열림"}] },
-        { "type": "timeseries", "title": "일별 요청 링크 수", "datasource": "vmsingle", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+          "targets": [{"expr": "sum(increase(flick_secret_opened_total[$window]))", "legendFormat": "열람"}] },
+        { "type": "timeseries", "title": "요청 링크 (${window:text})", "interval": "$window", "datasource": "vmsingle", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
           "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
           "targets": [
-            {"expr": "sum(increase(flick_request_created_total[1d]))", "legendFormat": "생성"},
-            {"expr": "sum(increase(flick_request_submitted_total[1d]))", "legendFormat": "작성됨"},
-            {"expr": "sum(increase(flick_request_consumed_total[1d]))", "legendFormat": "열림"}
+            {"expr": "sum(increase(flick_request_created_total[$window]))", "legendFormat": "생성"},
+            {"expr": "sum(increase(flick_request_submitted_total[$window]))", "legendFormat": "작성됨"},
+            {"expr": "sum(increase(flick_request_consumed_total[$window]))", "legendFormat": "열람"}
           ] },
         { "type": "stat", "title": "저장된(암호화된) 바이트", "datasource": "vmsingle", "gridPos": {"x": 0, "y": 8, "w": 8, "h": 4},
           "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},

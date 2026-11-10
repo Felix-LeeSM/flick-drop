@@ -180,8 +180,10 @@ parse (the ops overlay enables `accessLog` with `format: json`).
 ## Grafana — the admin view
 
 Serves the provisioned `Flick 사용량·큐·접속` dashboard (panels are labelled in
-Korean): daily
-deliveries/opens/request links from VictoriaMetrics counters, outbox backlog
+Korean): deliveries/opens/request links from VictoriaMetrics counters,
+aggregated over a selectable bucket — the dashboard variable offers
+1분/15분/1시간/1일, all in UTC (dashboards pin `timezone: utc`), and the
+`오늘(UTC 00:00부터)` link jumps to the UTC day boundary; outbox backlog
 and worker job outcomes from the queue series, pod phases, and the Loki
 access-log panels (requests by status, top paths, unique client IPs) plus
 error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
