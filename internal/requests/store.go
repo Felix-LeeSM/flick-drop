@@ -18,6 +18,7 @@ import (
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
 
@@ -181,6 +182,7 @@ func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created
 	if err := tx.Commit(); err != nil {
 		return Created{}, fmt.Errorf("commit create request: %w", err)
 	}
+	telemetry.RequestCreated.Inc()
 	return Created{id, expires, submit, retrieve}, nil
 }
 
@@ -424,6 +426,7 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	if err := s.commit(tx, row.expires); err != nil {
 		return Receipt{}, err
 	}
+	telemetry.RequestSubmitted.Inc()
 	return Receipt{in.Generation, "submitted"}, nil
 }
 
@@ -497,6 +500,7 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 		if err := s.commit(tx, row.expires); err != nil {
 			return Opened{}, err
 		}
+		telemetry.RequestConsumed.Inc()
 		opened.Body = io.NopCloser(bytes.NewReader(ciphertext))
 		return opened, nil
 	}
@@ -552,7 +556,11 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestConsumed, 1); err != nil {
 		return err
 	}
-	return s.commit(tx, row.expires)
+	if err := s.commit(tx, row.expires); err != nil {
+		return err
+	}
+	telemetry.RequestConsumed.Inc()
+	return nil
 }
 
 // FinishOpen queues the opened object's delete once its stream has ended, and

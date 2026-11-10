@@ -47,6 +47,9 @@ spec:
               drop:
                 - ALL
             readOnlyRootFilesystem: true
+          ports:
+            - name: metrics
+              containerPort: 9091
           volumeMounts:
             - name: worker-data
               mountPath: /data
@@ -59,3 +62,21 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+---
+# The worker's bearer-gated /metrics listener (FLICK_WORKER_METRICS_ADDR,
+# same FLICK_METRICS_TOKEN credential as the API). ClusterIP only: reachable
+# by the VictoriaMetrics scraper, never from outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flick-worker-metrics
+  labels:
+    app.kubernetes.io/name: flick-worker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flick-worker
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: metrics
