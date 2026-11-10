@@ -11,3 +11,6 @@ resources:
   - kube-state-metrics.yaml
   - node-exporter.yaml
   - vmsingle.yaml
+  - loki.yaml
+  - alloy.yaml
+  - grafana.yaml
