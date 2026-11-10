@@ -7,7 +7,11 @@
 package telemetry
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/prometheus/client_golang/prometheus"
@@ -75,6 +79,51 @@ var (
 		[]string{labelJobKind, labelOutcome},
 	)
 
+	// RequestCreated/Submitted/Consumed count the request-link lifecycle so the
+	// scraped series carry the same story as the durable usage_counters rows.
+	// Like SecretCreated they are process-local counters (reset on restart);
+	// VictoriaMetrics rate() absorbs the reset.
+	RequestCreated = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "flick_request_created_total",
+			Help: "Request links created by owners.",
+		},
+	)
+
+	RequestSubmitted = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "flick_request_submitted_total",
+			Help: "Request links that received a submission (inline or finalized object).",
+		},
+	)
+
+	RequestConsumed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "flick_request_consumed_total",
+			Help: "Request submissions opened (consumed) by their owner.",
+		},
+	)
+
+	// OutboxPublished counts outbox events handed to NATS, by outcome: the
+	// queue's throughput as seen from its producer side.
+	OutboxPublished = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "flick_outbox_published_total",
+			Help: "Outbox events published to NATS, by outcome.",
+		},
+		[]string{labelOutcome},
+	)
+
+	// OutboxPending gauges outbox rows still waiting to be published (state
+	// 'pending'), set by the publisher after each batch. Rising values mean the
+	// broker is backing up or down.
+	OutboxPending = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "flick_outbox_pending",
+			Help: "Outbox events waiting to be published.",
+		},
+	)
+
 	// ActiveUploads gauges pending_upload secrets: staged by /api/secrets
 	// (CreateLarge) but not yet confirmed by /finalize. It is Inc'd on stage and
 	// Dec'd on both finalize-activate and reaper orphan reclaim, so it never
@@ -106,6 +155,11 @@ func init() {
 		SecretOpened,
 		SecretReaped,
 		JobsProcessed,
+		RequestCreated,
+		RequestSubmitted,
+		RequestConsumed,
+		OutboxPublished,
+		OutboxPending,
 		ActiveUploads,
 		StorageBytesUsed,
 	)
@@ -113,9 +167,47 @@ func init() {
 
 // MetricsHandler serves the Prometheus text exposition format for
 // DefaultRegistry. Mounted on /metrics by the API process (see
-// internal/httpapi); the worker does not yet expose /metrics.
+// internal/httpapi) and by the worker's dedicated metrics server.
 func MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{})
+}
+
+// NewMetricsServer builds a standalone bearer-gated /metrics HTTP server for a
+// process with no other listener — the worker. The token is the same
+// FLICK_METRICS_TOKEN credential the API serves under (one scrape credential
+// per deployment), compared in constant time; an empty configured token fails
+// closed with 401 so a misconfigured deploy never exposes metrics.
+func NewMetricsServer(addr, token string) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "bearer "
+		header := r.Header.Get("Authorization")
+		ok := len(header) >= len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) && checkBearerToken(header[len(prefix):], token)
+		if !ok {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		MetricsHandler().ServeHTTP(w, r)
+	})
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
+// checkBearerToken compares the "Bearer <token>" tail against want with the
+// same constant-time digest comparison the API uses
+// (httpapi.secureTokenEqual); an empty want never matches.
+func checkBearerToken(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 }
 
 // SetStorageBytesUsed publishes the per-backend usage aggregates a ceiling

@@ -41,6 +41,14 @@ data:
         static_configs:
           - targets: ['kube-state-metrics:8080']
 
+      # Worker /metrics (flick_jobs_processed_total, the queue-facing series).
+      # Same bearer credential as the API.
+      - job_name: flick-worker
+        metrics_path: /metrics
+        bearer_token_file: /etc/vm-secrets/flick-metrics-token
+        static_configs:
+          - targets: ['flick-worker-metrics:9091']
+
       # Headless Service: the A record returns all node-exporter pod IPs, so
       # every node is scraped without hostNetwork (node-IP:9100 is firewalled
       # cross-node on this cluster). FQDN is required — dns_sd does not append

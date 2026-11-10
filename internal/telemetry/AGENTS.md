@@ -25,6 +25,18 @@ on `DefaultRegistry` in `init()`:
 - `flick_jobs_processed_total` (counter, labels `kind`, `outcome`
   `succeeded`|`failed`|`dead`) — incremented in `worker.Processor.Process` /
   `finishFailed`.
+- `flick_request_created_total` / `flick_request_submitted_total` /
+  `flick_request_consumed_total` (counters) — incremented in
+  `requests.Store.Create` / `Submit` (inline transition) and
+  `requests/large.go` `finalizeAttempt` / `Store.Open` + `consumeObject`,
+  right after the state-change transaction commits, so replayed idempotent
+  paths do not count. They mirror the durable `usage_counters` rows
+  (`internal/usage`) as the scraped live view.
+- `flick_outbox_published_total` (counter, label `outcome`
+  `published`|`failed`) and `flick_outbox_pending` (gauge) — set in
+  `events.OutboxPublisher.PublishDue` after each batch; the gauge counts rows
+  still in state `pending` (`OutboxStore.CountPending`), which is the queue's
+  backlog as seen from its producer side.
 - `flick_active_uploads` (gauge) — `Inc` in `CreateLarge`, `Dec` in `Finalize`
   (upload confirmed) and in the reaper (pending_upload orphan reclaimed).
 - `flick_storage_bytes_used` (gauge, label `storage` `s3_object`|`r2_object`) —
@@ -35,10 +47,13 @@ on `DefaultRegistry` in `init()`:
   not a bucket scan.
 
 `MetricsHandler()` serves the Prometheus text exposition format; mounted on
-`/metrics` by `internal/httpapi/router.go` in the API process. (The worker
-process increments `flick_jobs_processed_total` but does not run an HTTP
-server today, so that counter is only exposed when a future worker `/metrics`
-endpoint is added.) Bucket usage is gauged from the api.db size aggregate
+`/metrics` by `internal/httpapi/router.go` in the API process, and on the
+worker's dedicated listener (`FLICK_WORKER_METRICS_ADDR`, default `:9091`)
+via `telemetry.NewMetricsServer` — the same bearer credential
+(`FLICK_METRICS_TOKEN`) guards both, and an unset token fails closed (401).
+The worker's Deployment exposes the port through the ClusterIP-only
+`flick-worker-metrics` Service (`deploy/base/worker.yaml`), which only the
+VictoriaMetrics scraper can reach. Bucket usage is gauged from the api.db size aggregate
 (`flick_storage_bytes_used`), deliberately not from a `ListObjectsV2` scan: a
 scan on every scrape is too costly for a health endpoint.
 

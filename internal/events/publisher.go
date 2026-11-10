@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 type OutboxPublisher struct {
@@ -69,6 +71,20 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 			return result, err
 		}
 		result.Published++
+	}
+	// Queue visibility for /metrics: after each batch, report how many events
+	// still wait to be published and count the batch's outcomes. Rows marked
+	// 'failed' stay excluded from the pending gauge until their retry is due —
+	// the publisher tick re-claims them.
+	pending, err := p.store.CountPending(ctx)
+	if err == nil {
+		telemetry.OutboxPending.Set(float64(pending))
+	}
+	if result.Published > 0 {
+		telemetry.OutboxPublished.WithLabelValues("published").Add(float64(result.Published))
+	}
+	if result.Failed > 0 {
+		telemetry.OutboxPublished.WithLabelValues("failed").Add(float64(result.Failed))
 	}
 	return result, nil
 }

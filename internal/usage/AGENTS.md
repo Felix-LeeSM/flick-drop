@@ -1,8 +1,10 @@
 # `internal/usage/` Guide
 
 This package owns the api.db `usage_counters` table: daily aggregate usage
-counters and the read-only report behind the admin `/api/stats` endpoint
-(`internal/httpapi/stats.go`).
+counters written inside the secrets and requests state-change transactions.
+There is no HTTP reader — the table is the durable record, inspected through
+ops-side DB access; the live scraped view is the Prometheus counters served on
+`/metrics` (`internal/telemetry`).
 
 Boundary:
 
@@ -12,8 +14,9 @@ Boundary:
   `*sql.Tx` as the `Counter` handle — the single-connection SQLite pool makes
   an out-of-band write deadlock (see `internal/db/storage_usage.go` for the
   same pattern).
-- `usage.Store` reads the counters and the live secrets/requests inventory for
-  the report. It never writes the domain tables.
+- `usage.Store` (`Report`) reads the counters and the live secrets/requests
+  inventory for reports. It never writes the domain tables, and no HTTP route
+  exposes the report.
 - Table schema is created idempotently in `internal/db/migrations.go`
   (`MigrateAPI`), like every other table.
 

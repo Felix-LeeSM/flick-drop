@@ -309,6 +309,7 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 	if err := s.commit(tx, row.expires); err != nil {
 		return Receipt{}, err
 	}
+	telemetry.RequestSubmitted.Inc()
 	return Receipt{row.generation, "submitted"}, nil
 }
 

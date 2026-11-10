@@ -51,6 +51,18 @@ func (s *OutboxStore) SetNowForTest(now func() time.Time) {
 	s.now = now
 }
 
+// CountPending reports how many outbox events still wait to be published
+// (state 'pending'). Rows awaiting a failed attempt's retry are excluded —
+// the publisher tick re-claims them when due, and the pending gauge reads the
+// queue's real backlog, not its retry debt.
+func (s *OutboxStore) CountPending(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `select count(*) from outbox_events where state = 'pending'`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count pending outbox events: %w", err)
+	}
+	return n, nil
+}
+
 func (s *OutboxStore) Enqueue(ctx context.Context, event JobEvent) (OutboxRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

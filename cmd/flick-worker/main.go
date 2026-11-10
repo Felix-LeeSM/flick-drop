@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,6 +43,24 @@ func main() {
 			log.Printf("shutdown tracing: %v", err)
 		}
 	}()
+
+	// Bearer-gated /metrics so the scraped series carry the worker's job
+	// counters alongside the API's. Disabled when the address is explicitly
+	// empty; the token is the shared FLICK_METRICS_TOKEN.
+	if cfg.WorkerMetricsAddr != "" {
+		metricsServer := telemetry.NewMetricsServer(cfg.WorkerMetricsAddr, cfg.MetricsToken)
+		go func() {
+			log.Printf("flick-worker metrics listening on %s", cfg.WorkerMetricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("serve worker metrics: %v", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	conn, err := db.OpenSQLite(ctx, cfg.WorkerDBPath)
 	if err != nil {
