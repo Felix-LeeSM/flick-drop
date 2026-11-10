@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -187,6 +188,16 @@ func (p *Processor) finishFailed(
 	if err != nil {
 		return result, err
 	}
+	// Operator-facing record: the receipt row and metric carry the retry
+	// state, but this Error line is what puts the failure in Loki with a
+	// stack (the telemetry stackHandler decorates Error records). It fires
+	// per attempt, so a retrying job shows its retry pattern in the error
+	// panels.
+	slog.Error("worker job failed",
+		"kind", event.Kind,
+		"attempt", attempt.Attempt,
+		"dead_letter", dead,
+		"err", jobErr)
 	result.Failed = true
 	if !dead {
 		telemetry.JobsProcessed.WithLabelValues(event.Kind, "failed").Inc()

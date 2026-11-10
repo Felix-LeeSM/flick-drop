@@ -1,12 +1,17 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
 func TestProcessorMarksSuccessfulJob(t *testing.T) {
@@ -109,6 +114,56 @@ func TestProcessorMarksFailedJobForRetry(t *testing.T) {
 	}
 	if receipt.State != StateFailed || receipt.Attempts != 1 {
 		t.Fatalf("receipt state = %q attempts = %d, want failed/1", receipt.State, receipt.Attempts)
+	}
+}
+
+// Given the default slog routes to a JSON handler over a buffer,
+// when a job handler fails to its retry limit,
+// then an Error record carries the job kind and a goroutine stack.
+func TestProcessorFailedJobLogsErrorWithStack(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	// Mirror production wiring: cmd/flick-worker sets the default logger from
+	// telemetry.NewLogger, whose handler chain includes the stack decorator.
+	slog.SetDefault(slog.New(telemetry.NewStackHandler(slog.NewJSONHandler(&buf, nil))))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx := context.Background()
+	store := newTestReceiptStore(t, ctx)
+	handlerErr := errors.New("failed permanently")
+	handler := &fakeJobHandler{err: handlerErr}
+	processor := newTestProcessor(t, store, handler, 1)
+
+	result, err := processor.Process(ctx, testJobPayload(t, "job_error_log"))
+	if err != nil {
+		t.Fatalf("process terminal failure: %v", err)
+	}
+	if !result.Failed || !result.DeadLettered {
+		t.Fatalf("result = %+v, want failed dead-lettered", result)
+	}
+
+	line := strings.TrimSpace(buf.String())
+	var rec struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+		Kind  string `json:"kind"`
+		Err   string `json:"err"`
+		Stack string `json:"stack"`
+	}
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("log line is not JSON: %v\n%s", err, line)
+	}
+	if rec.Level != "ERROR" || rec.Msg != "worker job failed" {
+		t.Fatalf("log record = %q/%q, want ERROR/worker job failed", rec.Level, rec.Msg)
+	}
+	if rec.Kind != string(events.KindDeleteSecret) {
+		t.Fatalf("log kind = %q, want %q", rec.Kind, events.KindDeleteSecret)
+	}
+	if rec.Err != handlerErr.Error() {
+		t.Fatalf("log err = %q, want %q", rec.Err, handlerErr.Error())
+	}
+	if !strings.Contains(rec.Stack, "goroutine ") {
+		t.Fatalf("log record stack is not a goroutine stack: %q", rec.Stack)
 	}
 }
 

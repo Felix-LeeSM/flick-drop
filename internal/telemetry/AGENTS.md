@@ -9,9 +9,17 @@ injects the enqueuing span's W3C trace context into the job payload
 (`events.JobEvent.TraceContext`) and `worker.Process` extracts it, so a trace
 continues across the async api→NATS→worker hop.**
 
-`NewLogger` reads `FLICK_LOG_LEVEL` and `FLICK_LOG_FORMAT`; `SetStandardLogger`
-routes the standard `log` package through slog so existing `log.Printf` calls
-(NATS `Logf`, `net/http`) emit structured output.
+`NewLogger` reads `FLICK_LOG_LEVEL` and `FLICK_LOG_FORMAT`; it wraps the JSON
+(or text) handler in `stackHandler` (`logging.go`, #366), so every record at or
+above Error level carries a `stack` attribute — the goroutine stack captured at
+the log call site, frames only, so no secret content can leak through it.
+`NewStackHandler(h)` (`logging.go`) exposes that wrapping for callers that
+build their own handler chain. The worker job failure path
+(`internal/worker/processor.go` `finishFailed`) is the production `slog.Error`
+caller: a failed or dead-lettered job attempt logs `"worker job failed"` with
+`kind`, `attempt`, `dead_letter`, and `err`.
+`SetStandardLogger` routes the standard `log` package through slog so existing
+`log.Printf` calls (NATS `Logf`, `net/http`) emit structured output.
 
 `metrics.go` declares process-global Prometheus instruments and registers them
 on `DefaultRegistry` in `init()`:
