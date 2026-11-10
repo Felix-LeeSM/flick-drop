@@ -298,9 +298,8 @@ func (s Server) metricsAuth(next http.Handler) http.Handler {
 }
 
 // checkBearer reports whether header is "Bearer <token>" matching the given
-// configured token (metrics or stats; the two never share a credential). The
-// scheme match is case-insensitive per RFC 6750; the token tail is compared in
-// constant time.
+// configured token (only the metrics credential today). The scheme match is
+// case-insensitive per RFC 6750; the token tail is compared in constant time.
 func (s Server) checkBearer(header, token string) bool {
 	const prefix = "bearer "
 	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
