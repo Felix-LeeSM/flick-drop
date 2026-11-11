@@ -62,6 +62,15 @@ create table secret_management (
 create index idx_secret_management_expires_at
   on secret_management(expires_at, secret_id);
 
+-- Streaming protection for an opened bucket body whose secret row is gone.
+-- No secret ID column, kind, or size.
+create table secret_open_grace (
+  object_key text primary key,
+  grace_until datetime not null
+);
+
+create index idx_secret_open_grace_until on secret_open_grace(grace_until);
+
 create table object_reconciliation_cursor (
   id integer primary key check (id = 1),
   continuation_token text not null default '',
@@ -297,10 +306,23 @@ hashes are 32-byte BLOBs; raw management tokens are never persisted. Expiry uses
 fixed-width UTC nanosecond timestamps for exact indexed comparisons. Existing
 secrets receive no retroactive credential.
 
-`internal/secrets/management.go` records `opened`/`locked` with the transition;
-the reaper records orphan `unavailable` before deleting its secret row. Bounded
-reaper sweeps purge expired management rows and their consumed secret metadata,
-without changing legacy consumed-row retention. Public management reads enforce
+`internal/secrets/store.go` records `locked` with the lockout transition; the
+reaper records orphan `unavailable` before deleting its secret row. A
+successful open deletes the `secrets` row (payload by cascade) and the
+`secret_management` row in the open transaction and writes no outcome; the
+CHECK still admits the retired `opened` value because SQLite cannot alter a
+CHECK without a table rebuild. For an `s3_object`/`r2_object` body the same
+transaction inserts `secret_open_grace` (`object_key`, `grace_until` = open
+time + 35 minutes, fixed-width UTC); `internal/secrets/reconciliation.go`
+protects that key until `grace_until`, and the reaper sweep deletes expired
+grace rows. `internal/db/migrations.go:forgetOpenedSecrets` runs in
+`MigrateAPI` and deletes rows earlier releases kept after opens: `secrets` rows
+with `consumed_at is not null and view_count > 0` (lockout never increments
+`view_count`) and `secret_management` rows with `outcome = 'opened'`, first
+moving the key and deadline of a bucket row opened in the last 35 minutes into
+`secret_open_grace`. Bounded reaper sweeps purge expired management rows and
+their consumed (locked) secret metadata, without changing legacy locked-row
+retention. Public management reads enforce
 the deadline even while cleanup is delayed. Cancellation deletes its live row and inline payload after committing the
 `cancelled` outcome and required object-delete outbox record in the same
 transaction. `object_reconciliation_cursor` has one row (`id = 1`); its generation

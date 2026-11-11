@@ -47,8 +47,9 @@ lost recipient link. Save both links where needed: after a refresh or on
 another device, the management page offers only status and cancellation.
 Flick does not keep browser delivery history or recover lost links.
 
-An `Opened` status means the server authorized release of the encrypted
-content, not that anyone read it. Cancellation prevents a later opening; it
+Once the delivery is opened, the server forgets it: the management page shows
+"Management link unavailable", exactly as for a link that never existed, and
+the recipient link answers like an unknown one. Cancellation prevents a later opening; it
 cannot recall content already delivered or guarantee physical erasure of copies.
 Older API deployments that do not return management capabilities retain the
 original recipient-link result until the API is upgraded.
