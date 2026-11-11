@@ -2,9 +2,10 @@
 # kube_pod_container_status_restarts_total, kube_pod_status_ready,
 # kube_pod_status_reason, ...) in Prometheus text format for the flick cluster.
 #
-# Scoped to the pods collector only (--resources=pods) so RBAC stays read-only
-# on a single object kind and memory stays small. Expand --resources and the
-# ClusterRole together when more object kinds are needed (deployments, nodes).
+# Scoped to the pods and nodes collectors (--resources=pods,nodes) so RBAC stays
+# read-only on two object kinds and memory stays small. The nodes collector
+# feeds kube_node_status_condition, the dashboard's node Ready signal. Expand
+# --resources and the ClusterRole together when more object kinds are needed.
 #
 # This is an opt-in add-on: it is NOT referenced by deploy/base/kustomization.yaml.
 # Apply it separately after the base with `kubectl apply -k deploy/base/monitoring`.
@@ -13,7 +14,7 @@ kind: ServiceAccount
 metadata:
   name: kube-state-metrics
 ---
-# Cluster-wide read on pods only. kube-state-metrics lists/watches pods across
+# Cluster-wide read on pods and nodes only. kube-state-metrics lists/watches pods across
 # all namespaces; the binding subject is the ServiceAccount in the flick
 # namespace (set by the kustomization).
 apiVersion: rbac.authorization.k8s.io/v1
@@ -22,7 +23,7 @@ metadata:
   name: kube-state-metrics
 rules:
   - apiGroups: [""]
-    resources: ["pods"]
+    resources: ["pods", "nodes"]
     verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -68,7 +69,7 @@ spec:
           image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.14.0
           imagePullPolicy: IfNotPresent
           args:
-            - --resources=pods
+            - --resources=pods,nodes
             - --port=8080
             - --telemetry-port=8081
           ports:

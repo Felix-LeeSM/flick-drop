@@ -9,8 +9,8 @@ Exposes pod-status metrics in Prometheus text format so pod phase, restarts, and
 readiness are visible without `kubectl` polling (and without a metrics-server,
 which the base does not install).
 
-Scoped to the pods collector only (`--resources=pods`), so RBAC is read-only on a
-single object kind and the footprint stays small (~42Mi RSS measured; 32Mi
+Scoped to the pods and nodes collectors (`--resources=pods,nodes`), so RBAC is
+read-only on two object kinds and the footprint stays small (~42Mi RSS measured; 32Mi
 request, 96Mi limit).
 
 ### Apply
@@ -89,6 +89,10 @@ three targets, stores the series on a PVC, and serves the query API + `vmui` on
 `:8428`. Full Prometheus is too heavy for a ~1GB node; vmsingle is the
 low-footprint substitute (128Mi request, 384Mi limit, `--memory.allowedPercent=70`,
 14-day retention).
+Per-container cAdvisor series arrive by a second path: the `alloy-cadvisor`
+DaemonSet pushes them to vmsingle's `/api/v1/write` endpoint (remote write), so
+vmsingle itself still needs no API access; the `nodes/metrics` RBAC belongs to
+`alloy-cadvisor`.
 
 It uses static / `dns_sd` scraping instead of Kubernetes service discovery, so it
 needs **no API access and no RBAC**:
@@ -171,11 +175,26 @@ container, no root, no node filesystem access). Its ClusterRole grants
 log streaming itself needs, and missing it 403s every log request while
 discovery and probes stay green. A `spec.nodeName` field selector (from the
 `NODE_NAME` env) scopes each replica to its own node so a 2-node cluster
-stores each line once. It keeps exactly the `flick` namespace and the
-`kube-system` traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
+stores each line once. It keeps exactly the `flick` namespace, the
+`cert-manager` namespace (certificate renewal failures), and the `kube-system`
+traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
 lookahead, which RE2 lacks); every other namespace is dropped before a line is
 read. Traefik must emit its access log in JSON for the dashboard queries to
 parse (the ops overlay enables `accessLog` with `format: json`).
+
+## alloy-cadvisor — per-container usage
+
+`alloy-cadvisor.yaml` is a second Alloy DaemonSet that scrapes each node's
+kubelet `/metrics/cadvisor` and remote-writes two series to vmsingle:
+`container_memory_working_set_bytes` and `container_cpu_usage_seconds_total`
+(job `cadvisor`, `container=""` rows and the per-cgroup `id`/`name` labels
+dropped). It runs with `hostNetwork: true` because the node host firewall drops
+pod-network traffic to the kubelet port 10250 (measured 2026-11-11: no answer
+from a pod-network pod, 401 from a hostNetwork pod). Its ClusterRole grants only
+`nodes/metrics` get; the API-server proxy path would avoid hostNetwork but needs
+`nodes/proxy`, which also reaches kubelet exec. The Alloy HTTP server listens on
+`127.0.0.1:12346` so the debug UI is not published on the node IP, so the pod
+has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160Mi (measured 39-96Mi right after start; the request sits below that peak, so up to ~32Mi of the start-up peak sits outside the scheduler's accounting).
 
 ## Grafana — the admin view
 
@@ -190,15 +209,26 @@ error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
 A second provisioned dashboard, `Flick 클러스터: 노드와 파드`
 (`cluster.json`), shows where everything runs. Its main panel is a Treemap
 nesting node → namespace → pod → container: tile area is the container's
-memory *request* (16MiB minimum when none is set; actual usage is not scraped,
-because cAdvisor is not a scrape target), tile colour is the container state,
+memory *request* (16MiB minimum when none is set), tile colour is the container state,
 and hovering a tile shows what the component does, its image, pod phase,
 namespace and node. Below it sit a Nodes table (free/total memory and disk with
 percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
-Pods table, and per-node history graphs. Node names come from joining
+Pods table, per-node history graphs, and per-container actual memory (working
+set) and CPU graphs from cAdvisor (see `alloy-cadvisor` above). Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
-Node Ready conditions are not available: `kube-state-metrics` runs with
-`--resources=pods` only, so `Nodes down` counts failed node-exporter scrapes.
+`Nodes down` counts nodes whose Ready condition is not true
+(`kube_node_status_condition`, from the kube-state-metrics nodes collector), and
+counts 1 while kube-state-metrics itself fails its scrape
+(`up{job="kube-state-metrics"} == 0`): when the node hosting the single
+kube-state-metrics replica dies, the Ready series go stale, but the static
+scrape target keeps reporting `up=0` until the replica is rescheduled and
+reports that node NotReady. Failed node-exporter scrapes are not a substitute:
+the headless Service drops a dead node's NotReady pod from DNS (expected within
+about a minute from the node lifecycle defaults; not measured here), so the
+target vanishes instead of reporting `up=0`. A restarting kube-state-metrics
+pod also reads as 1 for a scrape or two, and while kube-state-metrics is down
+a second dead node is not counted (the panel reads 1, not 2) until the replica
+is rescheduled, about 5 minutes with the default eviction timeout.
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
