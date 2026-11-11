@@ -16,6 +16,10 @@ Rules:
 - Do not publish ciphertext bodies, plaintext, passphrases, derived keys, OCI
   credentials, or private bucket names.
 - Publishing from API-owned state should go through the outbox pattern.
+- `outbox.go:PurgePublishedTx` deletes `published` rows older than
+  `PublishedRetention` (1 hour); the API reaper (`internal/secrets/reaper.go:ClaimOnce`)
+  calls it each tick so payload object keys and secret IDs do not persist.
+  `pending` and `failed` rows are never pruned.
 - Consumers must be idempotent and safe to replay after partial success.
 - `JobEvent.TraceContext` carries the W3C trace context of the enqueuing span,
   injected by `OutboxStore.EnqueueTx` (while that span is still live — the async

@@ -15,6 +15,13 @@ A secret moves through these states:
   plaintext plus the AEAD tag, and flips the row to `active`
   (`activateSecretTx`, `store.go:414`).
 - reaped: hard-deleted by the expiration reaper (see below).
+- opened: forgotten. `Store.OpenTx` (`store.go`) deletes the `secrets` row, its
+  inline payload (cascade), and its `secret_management` row in the open
+  transaction, so every later request for the ID gets the unknown-ID response
+  (`ErrNotFound`, `ErrManagementUnavailable`). A bucket body that may still be
+  streaming gets a `secret_open_grace` row holding only `object_key` and
+  `grace_until` (`openObjectGrace`, `age.go`); `reconciliation.go:protectObjectTx`
+  honors it and `management.go:purgeManagementTx` deletes it after the deadline.
 
 Small payloads (≤ inline threshold) write a SQLite BLOB inline (`Create`,
 `store.go:160`; `StorageSQLite`, `store.go:20`); large payloads write an S3
@@ -51,7 +58,9 @@ Directory structure:
 - `management.go` issues independent random capabilities, stores SHA-256 hashes,
   reads authenticated outcomes without loading payloads, and purges managed
   metadata at the original expiry. `reaper.go:ClaimOnce` calls the bounded purge
-  even for consumed managed secrets; legacy consumed-row retention is unchanged.
+  even for consumed (locked) managed secrets; legacy locked-row retention is
+  unchanged. Opened secrets keep no outcome: the management record is deleted
+  at open, and `opened` is never written.
 - `management.go:Revoke` authenticates and commits cancellation with payload
   deletion and the required object-delete outbox record. A failed commit must
   roll back on the exclusively owned SQLite connection before releasing it.

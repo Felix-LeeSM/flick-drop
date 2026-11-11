@@ -110,13 +110,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/GetSecretMetadataResponse"
         "404":
-          description: Secret missing, expired, or consumed.
+          description: >
+            not_found for an unknown ID and for an opened secret: the open
+            deletes every record of the ID, so the two responses are identical.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Secret already consumed or expired.
+          description: Secret locked by invalid access proofs (consumed) or expired.
           content:
             application/json:
               schema:
@@ -126,9 +128,11 @@ paths:
       operationId: getManagementStatus
       summary: Read delivery status using its independent management capability.
       description: >
-        Valid only before the original expiry. Opened means the release transaction
-        committed; it does not confirm reading or decryption. This read never consumes
-        the delivery. Cancellation is not implemented by this endpoint.
+        Valid only before the original expiry. A successful open deletes the
+        management record with the secret, so an opened delivery returns the
+        same 404 management_unavailable response as an unknown ID. This read
+        never consumes the delivery. Cancellation is not implemented by this
+        endpoint.
       security:
         - managementToken: []
       parameters:
@@ -146,7 +150,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ManagementStatusResponse"
         "404":
-          description: management_unavailable for missing, invalid, mismatched, or expired capabilities.
+          description: >
+            management_unavailable for missing, invalid, mismatched, or expired
+            capabilities and for opened deliveries; byte-identical in every case.
           content:
             application/json:
               schema:
@@ -165,8 +171,10 @@ paths:
       summary: Cancel an unopened delivery using its independent management capability.
       description: >
         Irreversible. Authorization ends at the original expiry. A repeated cancellation
-        returns the same cancelled snapshot. All responses use Cache-Control no-store.
-        Status and cancellation share the management client/delivery rate limit.
+        returns the same cancelled snapshot. A delivery that was opened, including one
+        opened while this request was in flight, returns the unknown-ID 404. All
+        responses use Cache-Control no-store. Status and cancellation share the
+        management client/delivery rate limit.
       security:
         - managementToken: []
       parameters:
@@ -189,13 +197,15 @@ paths:
         "400":
           description: Authenticated request body is not an empty JSON object.
         "404":
-          description: Uniform management_unavailable for invalid or expired capabilities.
+          description: >
+            Uniform management_unavailable for invalid or expired capabilities and
+            for opened deliveries, including an open that wins the cancellation race.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: not_cancellable with the authenticated opened, locked, or unavailable snapshot.
+          description: not_cancellable with the authenticated locked or unavailable snapshot.
           content:
             application/json:
               schema:
@@ -259,7 +269,9 @@ paths:
         without base64. The bucket read starts before the secret is marked
         consumed, so a store that cannot serve the body leaves it openable;
         a transfer that fails after the 200 status has been sent loses the
-        secret. The stream must finish within 30 minutes.
+        secret. The stream must finish within 30 minutes. The open transaction
+        deletes the secret and its management record, so afterwards every
+        endpoint answers for this ID exactly as for an unknown ID.
       parameters:
         - $ref: "#/components/parameters/SecretId"
       requestBody:
@@ -308,7 +320,9 @@ paths:
                 type: string
                 format: binary
         "404":
-          description: Secret missing.
+          description: >
+            not_found for an unknown ID and for an already-opened secret,
+            byte-identical: the successful open deleted every record of the ID.
           content:
             application/json:
               schema:
@@ -320,7 +334,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Secret already consumed or expired.
+          description: Secret locked by invalid access proofs (consumed) or expired.
           content:
             application/json:
               schema:
@@ -1351,7 +1365,7 @@ components:
           type: string
         status:
           type: string
-          enum: [pending_upload, active, opened, locked, cancelled, unavailable]
+          enum: [pending_upload, active, locked, cancelled, unavailable]
         expires_at:
           type: string
           format: date-time

@@ -27,11 +27,14 @@ type RowQueryer interface {
 
 // StorageObjectBytes sums the size_bytes of rows whose objects are plausibly
 // present in each configured bucket: reserved rows (staging object), submitted
-// rows (final object), and secrets consumed within the open grace. Deletion is
-// asynchronous, so the true bucket usage can differ from this sum by a couple
-// of objects in either direction; over-counting is safe, under-counting is
-// not. The read-only aggregation stays documented in internal/db/AGENTS.md as
-// a boundary exception.
+// rows (final object), and secrets consumed (locked) within the open grace.
+// An opened secret's row is deleted in the open transaction and its
+// secret_open_grace record carries no size, so a body still streaming after
+// open no longer counts: the same small under-count as consumed requests,
+// absorbed by the 90% ceiling margin. Deletion is asynchronous, so the true
+// bucket usage can differ from this sum by a couple of objects in either
+// direction. The read-only aggregation stays documented in
+// internal/db/AGENTS.md as a boundary exception.
 func StorageObjectBytes(ctx context.Context, conn RowQueryer, now time.Time) (map[string]int64, error) {
 	usage := map[string]int64{
 		storage.PrimaryBackend:   0,

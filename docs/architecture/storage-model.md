@@ -88,10 +88,16 @@ independent.
 Object Storage receives client-encrypted age files only. Uploads are presigned
 PUTs signed at the exact age file length. Downloads never use a presigned GET:
 the open call streams the object through the API, starting the bucket read
-before the secret is consumed and queueing the object delete after the stream
-ends. Object reconciliation leaves a consumed object alone for 35 minutes, past
-the 30-minute stream deadline, and then deletes it like any orphan
-([age format v1](../../contracts/age-format-v1.md#api-mapping)). Bucket names,
+before the open commits and queueing the object delete after the stream ends.
+The open transaction deletes the secret row, so a `secret_open_grace` row
+holding only the object key and a deadline 35 minutes later (past the
+30-minute stream deadline) keeps object reconciliation away from the body;
+after the deadline reconciliation deletes it like any orphan and the reaper
+drops the grace row
+([age format v1](../../contracts/age-format-v1.md#api-mapping)). Because that
+row carries no size, a body still streaming after open stops counting toward
+the placement ceiling, the same small under-count consumed requests already
+have. Bucket names,
 credentials, presigned URLs, and production domains must not be committed to the
 public repository.
 
@@ -134,6 +140,26 @@ jobs indefinitely. Request objects are never swept using sender-secret live-row 
 Deleting a secret means Flick no longer serves the ciphertext and no server
 component knows the passphrase or derived key.
 
+### Opened means forgotten
+
+A successful open deletes the `secrets` row, its inline payload, and its
+`secret_management` row in the open transaction
+(`internal/secrets/store.go:OpenTx`). Afterwards the API holds no record that
+a delivery existed under that ID: management status and cancellation,
+recipient metadata, and a repeated open all return the unknown-ID response.
+Inline opens queue no cleanup job. A bucket-backed open keeps only the
+`secret_open_grace` row (object key and deadline) until 35 minutes after the
+open, and queues one `delete_oci_object` job after streaming. The managed key
+is `managed/secrets/{id}`, so the grace row and that outbox job still name the
+ID until the reaper prunes the published outbox row one hour after publish
+(`internal/events/outbox.go:PublishedRetention`, see
+[event contract](event-contract.md#outbox)). A `failed` outbox row is kept for
+diagnosis and can hold the key until it publishes. Aggregate
+`usage_counters` count opens without IDs. Locked, cancelled, and unavailable
+deliveries keep their documented retention.
+`internal/db/migrations.go:forgetOpenedSecrets` removes rows that earlier
+releases kept after opens.
+
 SQLite BLOB deletion may leave bytes in WAL/freelist pages until checkpoint or
 vacuum. Backups may also retain old ciphertext. Runbooks must document this
 residual risk.
@@ -149,10 +175,12 @@ Cleanup jobs are idempotent:
 
 [Sender management v1](../../contracts/sender-management-v1.md) defines the
 management lifecycle. #200 implements management records, status, and expiry;
-#201 implements cancellation and object reconciliation. Management hashes and minimal terminal outcomes expire at the
-original secret deadline. Early payload cleanup does not erase that outcome;
-expiry sweeps purge management records and consumed secret metadata after open
-or lockout. Cancellation removes its live secret and payload in the same transaction
+#201 implements cancellation and object reconciliation. Management hashes and minimal terminal outcomes
+(`locked`, `cancelled`, `unavailable`) expire at the original secret deadline.
+Early payload cleanup does not erase that outcome; expiry sweeps purge
+management records and consumed secret metadata after lockout. An open keeps no
+outcome: it deletes the management record with the secret (see "Opened means
+forgotten"). Cancellation removes its live secret and payload in the same transaction
 as any required object-delete job.
 No account history or content-retention extension is introduced.
 

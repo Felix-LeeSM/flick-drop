@@ -21,14 +21,18 @@ after(async () => {
 	await browser?.close();
 });
 
-async function fixture(page, conflict = false) {
+// The server forgets an opened delivery and answers every management request
+// for it exactly like an unknown ID.
+const unknownId = {
+	status: 404,
+	json: { error: { code: 'management_unavailable', message: 'management link is unavailable' } }
+};
+
+async function fixture(page, openRace = false) {
 	const requests = [];
 	let status = active;
-	const terminal = { ...active, status: conflict ? 'opened' : 'cancelled', can_cancel: false };
-	const cancellation = {
-		status: conflict ? 409 : 200,
-		json: conflict ? { error: { code: 'not_cancellable' }, status: terminal } : terminal
-	};
+	const terminal = { ...active, status: 'cancelled', can_cancel: false };
+	const cancellation = openRace ? unknownId : { json: terminal };
 	await page.addInitScript(() => {
 		window.shared = [];
 		window.copied = [];
@@ -70,10 +74,10 @@ async function fixture(page, conflict = false) {
 				});
 			}
 			if (path.endsWith('/management')) {
-				return route.fulfill({ json: status });
+				return route.fulfill(status ? { json: status } : unknownId);
 			}
 			if (path.endsWith('/revoke')) {
-				status = terminal;
+				status = openRace ? null : terminal;
 				return route.fulfill(cancellation);
 			}
 			return route.abort();
@@ -200,7 +204,7 @@ for (const model of ['a', 'b']) {
 	});
 }
 
-test('a fresh management visit reconciles an open/cancel race from the server snapshot', async () => {
+test('an open that wins the cancellation race reads as an unavailable link', async () => {
 	const page = await browser.newPage();
 	try {
 		await fixture(page, true);
@@ -213,11 +217,52 @@ test('a fresh management visit reconciles an open/cancel race from the server sn
 			.getByRole('dialog')
 			.getByRole('button', { name: 'Cancel delivery', exact: true })
 			.click();
-		await page.getByRole('heading', { name: 'Opened', exact: true }).waitFor();
-		await page
-			.getByText('This does not confirm that anyone decrypted or read it.', { exact: false })
-			.waitFor();
+		await page.getByText('Management link unavailable.', { exact: true }).waitFor();
 		assert.equal(await page.getByRole('heading', { name: 'Cancelled', exact: true }).count(), 0);
+		assert.equal(await page.getByLabel('Private management link', { exact: true }).count(), 0);
+		assert.equal(await page.title(), 'Manage delivery - Flick');
+	} finally {
+		await page.close();
+	}
+});
+
+test('the creation session lands on the unavailable card once the delivery is opened', async () => {
+	const page = await browser.newPage();
+	try {
+		await page.route('**/api/config', (route) => route.fulfill({ json: {} }));
+		await page.route('**/api/secrets', (route) =>
+			route.fulfill({
+				json: {
+					id: active.id,
+					expires_at: active.expires_at,
+					management_token: token,
+					management_expires_at: active.expires_at
+				}
+			})
+		);
+		let opened = false;
+		await page.route('**/api/secrets/managed/management', (route) =>
+			route.fulfill(opened ? unknownId : { json: active })
+		);
+		const configured = page.waitForResponse('**/api/config');
+		await page.goto(baseUrl);
+		await configured;
+		await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
+		await page.locator('form button[type="submit"]').click();
+		await page.waitForURL(`**${privatePath}`);
+		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
+		assert.equal(await page.title(), 'Manage delivery - Flick');
+		// The recipient opens it; the next status check meets the unknown-ID response.
+		opened = true;
+		await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
+		await page.getByText('Management link unavailable.', { exact: true }).waitFor();
+		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 0);
+		assert.equal(await page.getByLabel('Private management link', { exact: true }).count(), 0);
+		assert.equal(
+			await page.getByText('check or cancel this delivery', { exact: false }).count(),
+			0
+		);
+		assert.equal(await page.title(), 'Manage delivery - Flick');
 	} finally {
 		await page.close();
 	}
@@ -248,7 +293,7 @@ test('invalid links and network failures do not fabricate a delivery outcome', a
 	}
 });
 
-test('known expiry discards link details and lockout is distinct from opening', async () => {
+test('known expiry discards link details and shows lockout', async () => {
 	const page = await browser.newPage();
 	try {
 		await page.route('**/api/secrets/managed/management', (route) => {
@@ -265,7 +310,6 @@ test('known expiry discards link details and lockout is distinct from opening', 
 		});
 		await page.goto(`${baseUrl}${privatePath}`);
 		await page.getByRole('heading', { name: 'Locked', exact: true }).waitFor();
-		assert.equal(await page.getByRole('heading', { name: 'Opened', exact: true }).count(), 0);
 		await page.getByText('Management link expired.', { exact: true }).waitFor();
 		assert.equal(await page.getByLabel('Private management link', { exact: true }).count(), 0);
 		assert.equal(await page.getByRole('heading', { name: 'Locked', exact: true }).count(), 0);

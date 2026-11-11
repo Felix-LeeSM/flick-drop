@@ -15,19 +15,17 @@ import (
 )
 
 func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
-	for _, outcome := range []string{"opened", "locked"} {
+	// Opened secrets keep no outcome (TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow
+	// and httpapi TestOpenedSecretIsIndistinguishableFromUnknownID); locked is retained.
+	for _, outcome := range []string{"locked"} {
 		t.Run(outcome, func(t *testing.T) {
 			ctx := context.Background()
 			conn := openTestDB(t, ctx)
 			store := newTestStore(t, conn)
 			now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
 			store.SetNowForTest(func() time.Time { return now })
-			input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600}
-			if outcome == "locked" {
-				input.AccessProofHash = "proof"
-				input.AccessKDF = testAccessKDF
-				input.WrappedIdentity = testWrappedIdentity
-			}
+			input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600,
+				AccessProofHash: "proof", AccessKDF: testAccessKDF, WrappedIdentity: testWrappedIdentity}
 			created, err := store.Create(ctx, input)
 			if err != nil {
 				t.Fatal(err)
@@ -47,17 +45,13 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 			if status, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil || status.Status != "active" || !status.CanCancel {
 				t.Fatalf("active: %+v, %v", status, err)
 			}
-			attempts := 1
-			if outcome == "locked" {
-				attempts = 5
-			}
-			for i := 0; i < attempts; i++ {
+			for range maxFailedAccessAttempts {
 				tx, err := conn.BeginTx(ctx, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				_, err = store.OpenTx(ctx, tx, created.ID, "wrong-proof")
-				if (outcome == "opened" && err != nil) || (outcome == "locked" && !errors.Is(err, ErrInvalidAccess)) {
+				if !errors.Is(err, ErrInvalidAccess) {
 					_ = tx.Rollback()
 					t.Fatal(err)
 				}
@@ -141,7 +135,7 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from secrets`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("create did not roll back: %d %v", count, err)
 	}
-	if _, err := conn.Exec(`create trigger reject_outcome before update on secret_management begin select raise(abort, 'test failure'); end`); err != nil {
+	if _, err := conn.Exec(`create trigger reject_forget before delete on secret_management begin select raise(abort, 'test failure'); end`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := conn.BeginTx(ctx, nil)
@@ -149,11 +143,14 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.OpenTx(ctx, tx, first.ID, ""); err == nil {
-		t.Fatal("open succeeded without its outcome")
+		t.Fatal("open succeeded without forgetting its management record")
 	}
 	_ = tx.Rollback()
 	if _, err := store.Get(ctx, first.ID); err != nil {
 		t.Fatalf("failed outcome consumed payload: %v", err)
+	}
+	if _, err := conn.Exec(`drop trigger reject_forget`); err != nil {
+		t.Fatal(err)
 	}
 	// A legacy row without a management record keeps its old recipient flow.
 	if _, err := conn.Exec(`delete from secret_management where secret_id = ?`, second.ID); err != nil {

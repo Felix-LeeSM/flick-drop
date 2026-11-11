@@ -33,11 +33,6 @@ const statusCopy: Record<ManagementStatus, { title: string; detail: string }> = 
 		title: 'Ready to open',
 		detail: 'The recipient can open this delivery once before it expires.'
 	},
-	opened: {
-		title: 'Opened',
-		detail:
-			'Flick released the encrypted content once. This does not confirm that anyone decrypted or read it.'
-	},
 	locked: {
 		title: 'Locked',
 		detail: 'Five incorrect access proofs exhausted access. This is not a confirmed opening.'
@@ -272,7 +267,7 @@ onMount(() => {
 		{#if managementUrl}
 			<section aria-labelledby="private-link-heading" class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-4.5">
 				<h2 id="private-link-heading" class="text-[0.9375rem] font-medium">Keep this management link private</h2>
-				<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">Anyone with this link can check or cancel this delivery until it expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.</p>
+				<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">Anyone with this link can check or cancel this delivery until it is opened or expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.</p>
 				<UrlField value={managementUrl} id="management-url" label="Private management link" copyLabel="Copy management link" />
 			</section>
 		{/if}

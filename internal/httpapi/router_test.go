@@ -76,42 +76,33 @@ func TestSecretHTTPFlow(t *testing.T) {
 		"Flick-Content-Type":       "",
 		"Flick-Encrypted-Filename": "",
 	})
+	// The open transaction already deleted the inline payload, so no cleanup
+	// job (which would carry the opened ID) is queued.
 	due, err := fixture.outbox.ListDue(context.Background(), time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
 	if err != nil {
 		t.Fatalf("list due outbox events: %v", err)
 	}
-	if len(due) != 1 {
-		t.Fatalf("due outbox count = %d, want 1", len(due))
-	}
-	if due[0].Payload.JobID != "job-consume-1" {
-		t.Fatalf("outbox job id = %q, want job-consume-1", due[0].Payload.JobID)
-	}
-	if due[0].Payload.Kind != events.KindDeleteSecret || due[0].Payload.SecretID != created.ID || due[0].Payload.Reason != events.ReasonConsumed {
-		t.Fatalf("outbox payload = %+v, want consumed delete_secret for %q", due[0].Payload, created.ID)
-	}
-	for _, forbidden := range []string{"payload", "plaintext", "passphrase", "derived_key", "decrypt_key", "ciphertext"} {
-		if strings.Contains(due[0].PayloadJSON, forbidden) {
-			t.Fatalf("outbox payload contains forbidden value %q: %s", forbidden, due[0].PayloadJSON)
-		}
+	if len(due) != 0 {
+		t.Fatalf("due outbox events = %+v, want none for an inline open", due)
 	}
 
 	var payloadCount int
 	if err := fixture.db.QueryRowContext(context.Background(), `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
-		t.Fatalf("count payloads after consume: %v", err)
+		t.Fatalf("count payloads after open: %v", err)
 	}
-	if payloadCount != 1 {
-		t.Fatalf("payload count after consume = %d, want 1 until cleanup job runs", payloadCount)
+	if payloadCount != 0 {
+		t.Fatalf("payload count after open = %d, want 0", payloadCount)
 	}
 
 	secondGetResp := performJSON(t, router, http.MethodGet, "/api/secrets/"+created.ID, nil)
-	if secondGetResp.Code != http.StatusGone {
+	if secondGetResp.Code != http.StatusNotFound {
 		t.Fatalf("second metadata status = %d, body = %s", secondGetResp.Code, secondGetResp.Body.String())
 	}
 
 	secondOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
 		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
 	})
-	if secondOpenResp.Code != http.StatusGone {
+	if secondOpenResp.Code != http.StatusNotFound {
 		t.Fatalf("second open status = %d, body = %s", secondOpenResp.Code, secondOpenResp.Body.String())
 	}
 }
@@ -171,7 +162,7 @@ func TestFileSecretHTTPFlow(t *testing.T) {
 	secondOpenResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
 		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
 	})
-	if secondOpenResp.Code != http.StatusGone {
+	if secondOpenResp.Code != http.StatusNotFound {
 		t.Fatalf("second file open status = %d, body = %s", secondOpenResp.Code, secondOpenResp.Body.String())
 	}
 }
@@ -225,53 +216,6 @@ func TestOpenDeletesSecretAfterFiveInvalidProofs(t *testing.T) {
 	})
 	if openResp.Code != http.StatusGone {
 		t.Fatalf("correct open after failed access limit status = %d, body = %s", openResp.Code, openResp.Body.String())
-	}
-}
-
-func TestOpenRollsBackWhenOutboxEnqueueFails(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
-	fixture := newTestRouterFixture(t, Options{
-		PayloadInlineMaxBytes: 1024,
-		NewJobID: func() (string, error) {
-			return "job-duplicate", nil
-		},
-	})
-
-	if _, err := fixture.outbox.Enqueue(ctx, events.JobEvent{
-		JobID:       "job-duplicate",
-		Kind:        events.KindDeleteSecret,
-		SecretID:    "sec-duplicate",
-		RequestedAt: now,
-	}); err != nil {
-		t.Fatalf("seed duplicate outbox event: %v", err)
-	}
-
-	createResp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets", validCreateSecretBody())
-	if createResp.Code != http.StatusCreated {
-		t.Fatalf("create status = %d, body = %s", createResp.Code, createResp.Body.String())
-	}
-	var created createSecretResponse
-	decodeBody(t, createResp, &created)
-
-	openResp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{
-		"access_proof": base64.StdEncoding.EncodeToString([]byte("proof")),
-	})
-	if openResp.Code != http.StatusInternalServerError {
-		t.Fatalf("open with duplicate outbox id status = %d, body = %s", openResp.Code, openResp.Body.String())
-	}
-
-	getResp := performJSON(t, fixture.router, http.MethodGet, "/api/secrets/"+created.ID, nil)
-	if getResp.Code != http.StatusOK {
-		t.Fatalf("metadata after failed outbox enqueue status = %d, body = %s", getResp.Code, getResp.Body.String())
-	}
-
-	due, err := fixture.outbox.ListDue(ctx, now, 10)
-	if err != nil {
-		t.Fatalf("list due outbox events: %v", err)
-	}
-	if len(due) != 1 || due[0].ID != "job-duplicate" {
-		t.Fatalf("due outbox records = %+v, want only seeded duplicate event", due)
 	}
 }
 
@@ -773,7 +717,7 @@ func TestSecretHTTPFlowModelB(t *testing.T) {
 
 	// One-time open still applies.
 	secondOpen := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
-	if secondOpen.Code != http.StatusGone {
+	if secondOpen.Code != http.StatusNotFound {
 		t.Fatalf("second open status = %d, body = %s", secondOpen.Code, secondOpen.Body.String())
 	}
 }
@@ -928,8 +872,8 @@ func newS3OpenFixture(t *testing.T, objects *streamObjects) (testRouterFixture, 
 
 // TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete proves an S3 body larger
 // than the inline cap streams from the object store's Open, and that the
-// bucket delete is queued only once the body has been read to the end, while
-// the DB cleanup job is already committed with the open.
+// bucket delete is queued only once the body has been read to the end. The
+// open transaction itself queues nothing: it already deleted the secret's rows.
 func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	objects := &streamObjects{body: ageBody(5000)}
 	fixture, id := newS3OpenFixture(t, objects)
@@ -948,16 +892,61 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	if atEOF == nil {
 		t.Fatal("body was not read to EOF")
 	}
-	if _, ok := atEOF[events.KindDeleteSecret]; !ok {
-		t.Fatalf("outbox at EOF = %+v, want the DB cleanup job from the open transaction", atEOF)
-	}
-	if _, ok := atEOF[events.KindDeleteOCIObject]; ok {
-		t.Fatalf("object delete was queued before the body finished streaming: %+v", atEOF)
+	if len(atEOF) != 0 {
+		t.Fatalf("outbox at EOF = %+v, want nothing before the body finished streaming", atEOF)
 	}
 	after := outboxKinds(t, fixture.outbox)
 	job, ok := after[events.KindDeleteOCIObject]
 	if !ok || job.ObjectKey != objects.opened[0] || job.Reason != events.ReasonConsumed {
 		t.Fatalf("outbox after open = %+v, want consumed object delete for %q", after, objects.opened[0])
+	}
+}
+
+// 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 백엔드가
+// 비면 워커가 기본(primary) 버킷에서 지우므로 R2 객체는 재조정 유예가 지날 때까지 남는다.
+func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
+	for _, backend := range []string{storage.PrimaryBackend, storage.SecondaryBackend} {
+		t.Run(backend, func(t *testing.T) {
+			// Given: 두 버킷이 설정되고 시크릿이 backend에 놓였다
+			ctx := context.Background()
+			conn := openHTTPTestDB(t, ctx)
+			objects := &streamObjects{body: ageBody(5000)}
+			registry, err := storage.NewRegistry(objects, objects)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := secrets.NewStore(conn, secrets.StoreOptions{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 1 << 20, MinTTLSeconds: 300, MaxTTLSeconds: 604800, Objects: registry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outbox, err := events.NewOutboxStore(conn, "flick.jobs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			router := NewRouter(conn, store, Options{PayloadInlineMaxBytes: 1024, OutboxStore: outbox})
+			created, err := store.CreateLarge(ctx, secrets.CreateLargeInput{Kind: secrets.KindFile, EncryptedFilename: largeFilename(), SizeBytes: int64(len(objects.body)), TTLSeconds: 600, MaxViews: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Finalize(ctx, created.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Exec(`update secrets set storage_backend = ? where id = ?`, backend, created.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			// When: 수신자가 열고 본문을 끝까지 받는다
+			resp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
+			if resp.Code != http.StatusOK {
+				t.Fatalf("open: %d", resp.Code)
+			}
+
+			// Then: 삭제 작업이 같은 백엔드를 가리킨다
+			job, ok := outboxKinds(t, outbox)[events.KindDeleteOCIObject]
+			if !ok || job.Backend != backend || job.ObjectKey != "managed/secrets/"+created.ID {
+				t.Fatalf("object delete job = %+v, want backend %q", job, backend)
+			}
+		})
 	}
 }
 
@@ -975,8 +964,8 @@ func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	if job, ok := outboxKinds(t, fixture.outbox)[events.KindDeleteOCIObject]; !ok || job.ObjectKey != objects.opened[0] {
 		t.Fatalf("object delete after a broken stream = %+v, want one for %q", job, objects.opened[0])
 	}
-	if again := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{}); again.Code != http.StatusGone {
-		t.Fatalf("reopen after a broken stream status = %d, want 410", again.Code)
+	if again := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{}); again.Code != http.StatusNotFound {
+		t.Fatalf("reopen after a broken stream status = %d, want 404", again.Code)
 	}
 }
 

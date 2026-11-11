@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"slices"
 	"testing"
+	"time"
 )
 
 func TestRequestSchemaMigrationConstraintsAndCascade(t *testing.T) {
@@ -58,6 +60,152 @@ func TestRequestSchemaMigrationConstraintsAndCascade(t *testing.T) {
 	}
 	if err := worker.QueryRow(`select count(*) from sqlite_master where name in ('requests','request_payloads')`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("request schema entered worker DB")
+	}
+}
+
+// 열람된 시크릿을 보관하던 기존 DB를 마이그레이션하면 열람 결과와 소비된 secrets 행이
+// 사라진다. 아직 스트리밍 중일 수 있는 객체 저장소 행만 객체 키와 유예 마감을
+// secret_open_grace에 남기고, 잠금(locked)·미열람 행은 그대로 둔다.
+func TestMigrateAPIForgetsOpenedSecrets(t *testing.T) {
+	// Given: 열람(인라인·스트리밍 중 S3·유예 지난 S3·관리 행만 남은 것)·잠금·미열람 시크릿
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	recent := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	old := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	future := now.Add(time.Hour).Format(time.RFC3339Nano)
+	insert := func(id, backend, consumed string, views, failed int) {
+		t.Helper()
+		var consumedAt any
+		if consumed != "" {
+			consumedAt = consumed
+		}
+		if _, err := conn.Exec(`insert into secrets (id, kind, storage_backend, storage_key, size_bytes, view_count, failed_access_count, expires_at, consumed_at, created_at, updated_at)
+			values (?, 'file', ?, ?, 100, ?, ?, ?, ?, ?, ?)`, id, backend, "managed/secrets/"+id, views, failed, future, consumedAt, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`insert into secret_management (secret_id, token_hash, expires_at) values (?, zeroblob(32), ?)`, id, future); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("opened-inline", "sqlite_blob", recent, 1, 0)
+	insert("opened-streaming", "s3_object", recent, 1, 0)
+	insert("opened-streamed", "r2_object", old, 1, 0)
+	insert("locked", "sqlite_blob", recent, 0, 5)
+	insert("active", "sqlite_blob", "", 0, 0)
+	if _, err := conn.Exec(`insert into secret_payloads values ('opened-inline', X'01', ?), ('active', X'01', ?)`, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`update secret_management set outcome = case
+		when secret_id like 'opened-%' then 'opened' when secret_id = 'locked' then 'locked' end`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`insert into secret_management (secret_id, token_hash, expires_at, outcome) values ('opened-cleaned', zeroblob(32), ?, 'opened')`, future); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: 마이그레이션이 두 번 돈다
+	for range 2 {
+		if err := MigrateAPI(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Then: 열람 흔적은 사라지고 스트리밍 중인 객체 키만 유예로 보호된다
+	ids := func(query string) []string {
+		t.Helper()
+		rows, err := conn.Query(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		return got
+	}
+	if got := ids(`select id from secrets order by id`); !slices.Equal(got, []string{"active", "locked"}) {
+		t.Fatalf("secrets = %v, want active and locked", got)
+	}
+	if got := ids(`select secret_id from secret_management order by secret_id`); !slices.Equal(got, []string{"active", "locked"}) {
+		t.Fatalf("secret_management = %v, want active and locked", got)
+	}
+	if got := ids(`select secret_id from secret_payloads`); !slices.Equal(got, []string{"active"}) {
+		t.Fatalf("secret_payloads = %v, want active", got)
+	}
+	if got := ids(`select object_key from secret_open_grace`); !slices.Equal(got, []string{"managed/secrets/opened-streaming"}) {
+		t.Fatalf("grace keys = %v, want only the streaming object", got)
+	}
+	var graceUntil string
+	if err := conn.QueryRow(`select grace_until from secret_open_grace`).Scan(&graceUntil); err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, graceUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(-time.Minute + 35*time.Minute); deadline.Sub(want).Abs() > time.Millisecond {
+		t.Fatalf("grace_until = %s, want %s", deadline, want)
+	}
+}
+
+// 이전 릴리스가 영구히 남긴 발행 outbox 행은 마이그레이션이 지우고, 보존 기간(1시간)
+// 안의 발행 행과 failed·pending 행은 남긴다.
+func TestMigrateAPIPurgesPublishedOutboxRows(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, row := range []struct {
+		id, state   string
+		publishedAt any
+	}{
+		{"published-old", "published", now.Add(-2 * time.Hour).Format(time.RFC3339Nano)},
+		{"published-recent", "published", now.Add(-time.Minute).Format(time.RFC3339Nano)},
+		{"failed", "failed", nil},
+		{"pending", "pending", nil},
+	} {
+		if _, err := conn.Exec(`insert into outbox_events (id, subject, payload_json, state, next_attempt_at, published_at, created_at, updated_at)
+			values (?, 'jobs', '{}', ?, '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, row.id, row.state, row.publishedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	rows, err := conn.Query(`select id from outbox_events order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, id)
+	}
+	if want := []string{"failed", "pending", "published-recent"}; !slices.Equal(left, want) {
+		t.Fatalf("outbox rows = %v, want %v", left, want)
 	}
 }
 
@@ -165,7 +313,7 @@ func TestMigrateAPIDropsAESGCMSecrets(t *testing.T) {
 	})
 
 	// The AES-GCM shape as last shipped, with one inline secret, its payload,
-	// and management rows for a pending and an already-opened secret.
+	// and management rows for a pending and an already-locked secret.
 	for _, statement := range []string{
 		`create table secrets (
 			id text primary key,
@@ -207,7 +355,7 @@ func TestMigrateAPIDropsAESGCMSecrets(t *testing.T) {
 			values ('sec_1', 'text', 'sqlite_blob', 'sec_1', 'nonce', 5, '2026-06-17T00:00:00Z', '2026-06-17T00:00:00Z', '2026-06-17T00:00:00Z')`,
 		`insert into secret_payloads values ('sec_1', X'0102', '2026-06-17T00:00:00Z')`,
 		`insert into secret_management values ('sec_1', zeroblob(32), '2026-06-17T00:00:00Z', null)`,
-		`insert into secret_management values ('sec_0', zeroblob(32), '2026-06-17T00:00:00Z', 'opened')`,
+		`insert into secret_management values ('sec_0', zeroblob(32), '2026-06-17T00:00:00Z', 'locked')`,
 	} {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("seed aes-gcm schema: %v", err)
@@ -248,8 +396,8 @@ func TestMigrateAPIDropsAESGCMSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = rows.Close()
-	if outcomes["sec_1"] != "unavailable" || outcomes["sec_0"] != "opened" || len(outcomes) != 2 {
-		t.Fatalf("management outcomes = %v, want sec_1 unavailable and sec_0 opened", outcomes)
+	if outcomes["sec_1"] != "unavailable" || outcomes["sec_0"] != "locked" || len(outcomes) != 2 {
+		t.Fatalf("management outcomes = %v, want sec_1 unavailable and sec_0 locked", outcomes)
 	}
 
 	// The age table's CHECK: Model A columns are all present or all absent.
@@ -300,7 +448,7 @@ func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from secret_management`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("legacy token fabricated: %d %v", count, err)
 	}
-	if _, err := conn.Exec(`insert into secret_management values ('legacy', zeroblob(32), '2026-10-08T00:00:00.000000000Z', 'opened')`); err != nil {
+	if _, err := conn.Exec(`insert into secret_management values ('legacy', zeroblob(32), '2026-10-08T00:00:00.000000000Z', 'locked')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigrateAPI(ctx, conn); err != nil {
@@ -309,7 +457,7 @@ func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
 	if _, err := conn.Exec(`delete from secrets where id = 'legacy'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.QueryRow(`select count(*) from secret_management where outcome = 'opened'`).Scan(&count); err != nil || count != 1 {
+	if err := conn.QueryRow(`select count(*) from secret_management where outcome = 'locked'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("outcome lost on migration/payload reclamation: %d %v", count, err)
 	}
 }

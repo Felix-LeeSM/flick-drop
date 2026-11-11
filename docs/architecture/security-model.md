@@ -63,8 +63,8 @@ S3-compatible object storage
   client-side. Keys must never appear in the path or query string, where the
   server and access logs would see them.
 - Passphrases and derived keys must never be sent to the API.
-- Ciphertext payloads are returned only by a verified open operation that marks
-  the secret consumed in the same transaction.
+- Ciphertext payloads are returned only by a verified open operation that
+  deletes the secret and its management record in the same transaction.
 - The Model A wrapped identity is returned only by that verified open, never by
   metadata reads: anyone holding it can test passphrases offline at scrypt cost
   with no lockout.
@@ -330,7 +330,31 @@ browser-memory handoff. Refresh or a different device offers status/cancellation
 only, with no recipient-link recovery.
 
 A committed one-time open is a release decision, not evidence of a human read.
-Management distinguishes that outcome from invalid-proof lockout and sender
-cancellation. Raw management tokens belong only in the private browser fragment,
+Opened means forgotten: the open transaction deletes the secret and its
+management record, so the server cannot later say that anything existed under
+that ID. Management status, cancellation (including a cancellation that loses
+the race to an open), recipient metadata, and a repeated open all return the
+response an unknown ID gets, byte for byte. Management still distinguishes
+invalid-proof lockout and sender cancellation, which keep their outcomes until
+the original expiry. Residual traces remain outside that guarantee:
+
+- a bucket body's `managed/secrets/{id}` key stays in `secret_open_grace` for
+  35 minutes;
+- the same key stays in its `delete_oci_object` outbox row until the reaper
+  prunes it one hour after publish, and indefinitely in a `failed` outbox row
+  kept for diagnosis;
+- while a delete job is live, NATS JetStream holds the key in the message until
+  the worker acknowledges it;
+- worker failures carry no key: `internal/worker/cleanup.go:objectDeleteError`
+  names the job ID, reason, and backend and masks the key in the bucket SDK's
+  message for `job_receipts.last_error`, `job_attempts.error`, `dead_letters`,
+  and the `worker job failed` log line, and
+  `internal/worker/processor.go:deadLetterPayloadJSON` drops `object_key` from
+  a dead-lettered object delete;
+- a job ID still links worker rows to an outbox row while that row exists;
+- proxy access logs record request paths, which include the secret ID;
+- SQLite WAL pages and backups may hold deleted rows.
+
+Raw management tokens belong only in the private browser fragment,
 the creation response, and the management Authorization header; exclude them
 from persistent browser storage, logs, telemetry, and worker messages.

@@ -222,10 +222,35 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 		return nil
 	}
 	if err := objects.Delete(ctx, event.ObjectKey); err != nil {
-		return fmt.Errorf("delete object %q: %w", event.ObjectKey, err)
+		return objectDeleteError{event: event, err: err}
 	}
 	return nil
 }
+
+// objectDeleteError names a failed delete by job ID, reason, and backend. The
+// object key (managed/secrets/{id}) carries a secret ID, and this text lands
+// in job_receipts, job_attempts, dead_letters, and the worker error log, none
+// of which are pruned; the bucket SDK's own message can embed the key in a
+// request URL, so the key and its URL-escaped forms are masked there too.
+// Unwrap keeps the cause for errors.Is.
+type objectDeleteError struct {
+	event events.JobEvent
+	err   error
+}
+
+func (e objectDeleteError) Error() string {
+	cause := e.err.Error()
+	for _, form := range []string{e.event.ObjectKey, url.PathEscape(e.event.ObjectKey), url.QueryEscape(e.event.ObjectKey)} {
+		cause = strings.ReplaceAll(cause, form, "<object>")
+	}
+	backend := e.event.Backend
+	if backend == "" {
+		backend = storage.PrimaryBackend
+	}
+	return fmt.Sprintf("delete object for job %s (reason %s, backend %s): %s", e.event.JobID, e.event.Reason, backend, cause)
+}
+
+func (e objectDeleteError) Unwrap() error { return e.err }
 
 func cleanupReason(event events.JobEvent) (string, error) {
 	switch event.Kind {
