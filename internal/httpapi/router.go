@@ -40,7 +40,8 @@ type Server struct {
 	internalToken            string
 	metricsToken             string
 	openLimiter              *rateLimiter
-	createLimiter            *rateLimiter
+	secretCreateLimiter      *rateLimiter
+	requestCreateLimiter     *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
 	pipeRelayEnabled         bool
@@ -120,16 +121,20 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		allowedOrigin:            strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:            opts.InternalToken,
 		metricsToken:             opts.MetricsToken,
-		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		createLimiter:            newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
-		managementLimiter:        newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		requestLimiter:           newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		pipeRelayEnabled:         opts.PipeRelayEnabled,
-		pipeCoordinator:          pipeCoordinator,
-		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
-		pipeJoinLimiter:          newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
-		pipeStatusLimiter:        newRateLimiter(pipeStatusRatePerMinute, opts.TrustedProxies),
-		tracer:                   tracer,
+		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perResourceID),
+		secretCreateLimiter:      newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
+		requestCreateLimiter:     newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
+		// Both management actions (status and revoke) spend one bucket per delivery.
+		managementLimiter: newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perResourceID),
+		// One bucket across request IDs and operations: rotating IDs must not
+		// bypass the limit or allocate one bucket per guessed request ID.
+		requestLimiter:    newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perNetwork),
+		pipeRelayEnabled:  opts.PipeRelayEnabled,
+		pipeCoordinator:   pipeCoordinator,
+		pipeInitLimiter:   newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
+		pipeJoinLimiter:   newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perNetwork),
+		pipeStatusLimiter: newRateLimiter(pipeStatusRatePerMinute, opts.TrustedProxies, perNetwork),
+		tracer:            tracer,
 	}
 	if opts.NewJobID != nil {
 		server.newJobID = opts.NewJobID
@@ -146,17 +151,17 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	r.Get("/readyz", server.readyz)
 	r.With(server.metricsAuth).Get("/metrics", server.metrics)
 	r.Get("/api/config", server.getConfig)
-	r.With(server.createLimiter.middleware).Post("/api/secrets", server.createSecret)
+	r.With(server.secretCreateLimiter.middleware).Post("/api/secrets", server.createSecret)
 	r.Post("/api/secrets/{id}/finalize", server.finalizeSecret)
 	r.Get("/api/secrets/{id}", server.getSecretMetadata)
-	r.With(noStore, server.managementLimiter.managementMiddleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
-	r.With(noStore, server.managementLimiter.managementMiddleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
+	r.With(noStore, server.managementLimiter.middleware).Get("/api/secrets/{id}/management", server.getManagementStatus)
+	r.With(noStore, server.managementLimiter.middleware).Post("/api/secrets/{id}/revoke", server.revokeSecret)
 	r.With(server.openLimiter.middleware).Post("/api/secrets/{id}/open", server.openSecret)
 	r.Route("/api/requests", func(r chi.Router) {
 		r.Use(server.requestReady)
-		r.With(server.createLimiter.middleware).Post("/", server.createRequest)
+		r.With(server.requestCreateLimiter.middleware).Post("/", server.createRequest)
 		r.Group(func(r chi.Router) {
-			r.Use(server.requestRateLimit)
+			r.Use(server.requestLimiter.middleware)
 			r.Get("/{id}", server.getRequestInstructions)
 			r.Post("/{id}/submit", server.submitRequest)
 			r.Post("/{id}/upload", server.reserveRequest)
@@ -178,8 +183,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		// hold a goroutine and a socket each, so they carry their own
 		// per-network limit (pipeStatusRatePerMinute) on top of the coordinator's
 		// per-connection cap (piperelay.MaxStatusPollsPerConnection).
-		r.With(server.pipeJoinLimiter.networkMiddleware).Post("/join", server.joinPipe)
-		r.With(server.pipeStatusLimiter.networkMiddleware).Get("/status", server.statusPipe)
+		r.With(server.pipeJoinLimiter.middleware).Post("/join", server.joinPipe)
+		r.With(server.pipeStatusLimiter.middleware).Get("/status", server.statusPipe)
 		r.Get("/receive", server.receivePipe)
 		r.Get("/wait", server.waitPipe)
 		r.Post("/select", server.selectPipe)

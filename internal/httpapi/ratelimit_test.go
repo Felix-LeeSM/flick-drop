@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +20,7 @@ func mustCIDR(t *testing.T, raw string) *net.IPNet {
 }
 
 func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
-	rl := newRateLimiter(2, nil) // burst 2
+	rl := newRateLimiter(2, nil, perNetwork) // burst 2
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	if !rl.allow("k", now) {
 		t.Fatal("1st allow")
@@ -32,7 +34,7 @@ func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
 }
 
 func TestRateLimiterKeysAreIndependent(t *testing.T) {
-	rl := newRateLimiter(1, nil)
+	rl := newRateLimiter(1, nil, perNetwork)
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	if !rl.allow("ip-a|/open", now) {
 		t.Fatal("first key allowed")
@@ -49,7 +51,7 @@ func TestRateLimiterRefillsOverTime(t *testing.T) {
 	// 2/min => ~0.033 tokens/sec, burst 2. Drains to zero first so the test
 	// actually exercises the refill branch (a broken/zero refill would leave
 	// the bucket empty and fail the post-window allow).
-	rl := newRateLimiter(2, nil)
+	rl := newRateLimiter(2, nil, perNetwork)
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	if !rl.allow("k", now) {
 		t.Fatal("1st")
@@ -70,7 +72,7 @@ func TestRateLimiterRefillsOverTime(t *testing.T) {
 
 func TestClientIPHonorsXFFOnlyFromTrustedPeer(t *testing.T) {
 	trusted := []*net.IPNet{mustCIDR(t, "127.0.0.1/32")}
-	rl := newRateLimiter(10, trusted)
+	rl := newRateLimiter(10, trusted, perNetwork)
 
 	// Direct peer is the trusted proxy: right-most non-trusted XFF entry wins.
 	r := httptest.NewRequest(http.MethodPost, "/api/secrets/x/open", nil)
@@ -89,7 +91,7 @@ func TestClientIPHonorsXFFOnlyFromTrustedPeer(t *testing.T) {
 	}
 
 	// No trusted proxies configured: always RemoteAddr, XFF never honored.
-	rlNone := newRateLimiter(10, nil)
+	rlNone := newRateLimiter(10, nil, perNetwork)
 	r3 := httptest.NewRequest(http.MethodPost, "/api/secrets/x/open", nil)
 	r3.RemoteAddr = "198.51.100.9:5555"
 	r3.Header.Set("X-Forwarded-For", "203.0.113.5")
@@ -100,7 +102,7 @@ func TestClientIPHonorsXFFOnlyFromTrustedPeer(t *testing.T) {
 
 func TestClientIPSkipsNonIPXFFEntries(t *testing.T) {
 	trusted := []*net.IPNet{mustCIDR(t, "127.0.0.1/32")}
-	rl := newRateLimiter(10, trusted)
+	rl := newRateLimiter(10, trusted, perNetwork)
 
 	// A spoofed non-IP XFF must never become the bucket key: with no valid
 	// non-trusted entry, the limiter falls back to the trusted peer instead of
@@ -130,7 +132,7 @@ func TestClientIPSkipsNonIPXFFEntries(t *testing.T) {
 }
 
 func TestClientNetworkCollapsesIPv6ToSlash64AndKeepsIPv4(t *testing.T) {
-	rl := newRateLimiter(10, nil)
+	rl := newRateLimiter(10, nil, perNetwork)
 	for remoteAddr, want := range map[string]string{
 		"[2001:db8:1:2:aaaa::1]:443":  "2001:db8:1:2::/64",
 		"[2001:db8:1:2:ffff::ff]:443": "2001:db8:1:2::/64",
@@ -143,5 +145,45 @@ func TestClientNetworkCollapsesIPv6ToSlash64AndKeepsIPv4(t *testing.T) {
 		if got := rl.clientNetwork(r); got != want {
 			t.Errorf("clientNetwork(%s) = %q, want %q", remoteAddr, got, want)
 		}
+	}
+}
+
+// 모든 제한기는 IPv6를 /64로 묶어 센다: 같은 /64 안에서 주소를 바꿔도 새 버킷을 얻지 못한다.
+func TestRateLimitsKeyIPv6ByNetworkOnEveryScope(t *testing.T) {
+	// Given: 분당 1회 제한의 라우터
+	f := newTestRouterFixture(t, Options{OpenRatePerMinute: 1, CreateRatePerMinute: 1})
+	from := func(method, path, remoteAddr string, body []byte) int {
+		r := httptest.NewRequest(method, path, bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	createBody, err := json.Marshal(validCreateSecretBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When/Then: 생성(perNetwork)은 같은 /64의 다른 주소와 버킷을 나눈다
+	if code := from(http.MethodPost, "/api/secrets", "[2001:db8:1:2::1]:443", createBody); code == http.StatusTooManyRequests {
+		t.Fatal("첫 생성은 허용되어야 한다")
+	}
+	if code := from(http.MethodPost, "/api/secrets", "[2001:db8:1:2::2]:443", createBody); code != http.StatusTooManyRequests {
+		t.Fatalf("같은 /64의 두 번째 생성 = %d, want 429", code)
+	}
+	if code := from(http.MethodPost, "/api/secrets", "[2001:db8:1:3::1]:443", createBody); code == http.StatusTooManyRequests {
+		t.Fatal("다른 /64는 자기 버킷을 가져야 한다")
+	}
+
+	// When/Then: 열람(perResourceID)은 같은 /64·같은 ID끼리 버킷을 나누고, 다른 ID는 따로 센다
+	if code := from(http.MethodPost, "/api/secrets/id-a/open", "[2001:db8:1:2::1]:443", []byte(`{}`)); code == http.StatusTooManyRequests {
+		t.Fatal("첫 열람은 허용되어야 한다")
+	}
+	if code := from(http.MethodPost, "/api/secrets/id-a/open", "[2001:db8:1:2::2]:443", []byte(`{}`)); code != http.StatusTooManyRequests {
+		t.Fatalf("같은 /64·같은 ID의 두 번째 열람 = %d, want 429", code)
+	}
+	if code := from(http.MethodPost, "/api/secrets/id-b/open", "[2001:db8:1:2::2]:443", []byte(`{}`)); code == http.StatusTooManyRequests {
+		t.Fatal("다른 ID는 자기 버킷을 가져야 한다")
 	}
 }

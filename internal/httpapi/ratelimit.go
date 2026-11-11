@@ -11,17 +11,34 @@ import (
 )
 
 // rateLimiter is a per-key token bucket limiter with no external dependencies.
-// Each key (client IP + request path) gets an independent bucket refilled at
-// `rate` tokens/second up to `burst`. This protects the open endpoint against
-// brute-force access-proof guessing without coupling to a global quota that
-// could starve unrelated callers.
+// Every bucket key starts with the client network (clientNetwork: the client
+// IP, with IPv6 collapsed to its /64) and adds the limiter's scope. Each key
+// gets an independent bucket refilled at `rate` tokens/second up to `burst`, so
+// one client cannot starve unrelated callers through a global quota.
 type rateLimiter struct {
 	mu             sync.Mutex
 	buckets        map[string]*tokenBucket
 	rate           float64 // tokens added per second
 	burst          float64
 	trustedProxies []*net.IPNet
+	scope          rateLimitScope
 }
+
+// rateLimitScope picks which requests from one client network spend the same
+// bucket. A limiter instance is one budget: every route mounted with it shares
+// the bucket the scope selects, whatever the route's path, so /api/pipe/X and
+// /api/v1/pipe/X never get two budgets.
+type rateLimitScope func(*http.Request) string
+
+// perNetwork gives each client network one bucket for every route on the
+// limiter. Use it where rotating IDs must not buy fresh buckets (request link
+// calls, code joins) or where the route has no ID (creation, pipe init).
+func perNetwork(*http.Request) string { return "" }
+
+// perResourceID gives each client network one bucket per `{id}` route
+// parameter: guesses against one secret are bounded without a client's
+// activity on one secret slowing its access to another.
+func perResourceID(r *http.Request) string { return chi.URLParam(r, "id") }
 
 type tokenBucket struct {
 	tokens float64
@@ -29,10 +46,11 @@ type tokenBucket struct {
 }
 
 // newRateLimiter builds a limiter allowing perMinute requests per key per
-// minute (burst == per-minute allowance). trustedProxies gates which direct
-// peers may supply a client IP via X-Forwarded-For; an empty set means only the
-// direct RemoteAddr is ever used. A background goroutine evicts idle buckets.
-func newRateLimiter(perMinute int, trustedProxies []*net.IPNet) *rateLimiter {
+// minute (burst == per-minute allowance), keyed by client network plus scope.
+// trustedProxies gates which direct peers may supply a client IP via
+// X-Forwarded-For; an empty set means only the direct RemoteAddr is ever used.
+// A background goroutine evicts idle buckets.
+func newRateLimiter(perMinute int, trustedProxies []*net.IPNet, scope rateLimitScope) *rateLimiter {
 	if perMinute <= 0 {
 		perMinute = 10
 	}
@@ -41,6 +59,7 @@ func newRateLimiter(perMinute int, trustedProxies []*net.IPNet) *rateLimiter {
 		rate:           float64(perMinute) / 60.0,
 		burst:          float64(perMinute),
 		trustedProxies: trustedProxies,
+		scope:          scope,
 	}
 	go rl.cleanup()
 	return rl
@@ -86,30 +105,11 @@ func (rl *rateLimiter) cleanup() {
 	}
 }
 
-// middleware applies the limiter keyed by client IP + request path. Requests
-// over the limit get 429 with a Retry-After hint.
+// middleware spends one token from the bucket of the request's client network
+// and scope. Requests over the limit get 429 with a Retry-After hint.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientIP(r) + "|" + r.URL.Path })
-}
-
-// Both management actions spend the same client/delivery bucket.
-func (rl *rateLimiter) managementMiddleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientIP(r) + "|" + chi.URLParam(r, "id") })
-}
-
-// networkMiddleware keys the limiter by client network alone (clientNetwork:
-// IPv6 collapsed to its /64, so one host cannot rotate through its own prefix).
-// Every route that shares one limiter instance therefore spends one bucket,
-// whatever its path: the pipe routes use it so /api/pipe/X and
-// /api/v1/pipe/X share a bucket (internal/httpapi/router.go
-// pipeJoinLimiter, pipeStatusLimiter).
-func (rl *rateLimiter) networkMiddleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, rl.clientNetwork)
-}
-
-func (rl *rateLimiter) middlewareByKey(next http.Handler, bucketKey func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.allow(bucketKey(r), time.Now().UTC()) {
+		if !rl.allow(rl.clientNetwork(r)+"|"+rl.scope(r), time.Now().UTC()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
 			return

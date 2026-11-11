@@ -37,19 +37,6 @@ func (s Server) requestReady(next http.Handler) http.Handler {
 	})
 }
 
-func (s Server) requestRateLimit(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// One bucket per client across IDs and operations: rotating IDs must not
-		// bypass the limit or allocate one bucket per guessed request ID.
-		if !s.requestLimiter.allow(s.requestLimiter.clientIP(r), time.Now()) {
-			w.Header().Set("Retry-After", "60")
-			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func readRequestBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
 	defer r.Body.Close()
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
