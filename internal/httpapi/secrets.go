@@ -339,7 +339,7 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secrets.StorageS3)
 	}
 	secret.Body.Close()
-	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageKey)
+	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageBackend, secret.StorageKey)
 }
 
 // openAndCommit commits the one-time open. OpenTx deletes the secret row, its
@@ -386,8 +386,9 @@ func (s Server) openAndCommit(ctx context.Context, id string, accessProofHash st
 // enqueueOpenedObjectCleanup queues the bucket delete for a body that has
 // finished streaming, successfully or not. If this fails or the API stops
 // mid-stream, object reconciliation deletes the object once the stream window
-// has passed.
-func (s Server) enqueueOpenedObjectCleanup(ctx context.Context, key string) {
+// has passed. backend names the bucket holding the object; an empty value
+// would make the worker delete from the primary and miss an R2 object.
+func (s Server) enqueueOpenedObjectCleanup(ctx context.Context, backend, key string) {
 	jobID, err := s.newJobID()
 	if err != nil {
 		return
@@ -402,6 +403,7 @@ func (s Server) enqueueOpenedObjectCleanup(ctx context.Context, key string) {
 	if _, err := s.outbox.EnqueueTx(ctx, tx, events.JobEvent{
 		JobID:       jobID,
 		Kind:        events.KindDeleteOCIObject,
+		Backend:     backend,
 		ObjectKey:   key,
 		Reason:      events.ReasonConsumed,
 		RequestedAt: time.Now().UTC(),

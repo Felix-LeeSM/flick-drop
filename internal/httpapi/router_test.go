@@ -905,6 +905,54 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 // TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete covers a bucket read that
 // fails after the 200 status: the secret is consumed (lost by design), the
 // recipient gets a short body, and the object still gets its delete job.
+// 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 백엔드가
+// 비면 워커가 기본(primary) 버킷에서 지우므로 R2 객체는 재조정 유예가 지날 때까지 남는다.
+func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
+	for _, backend := range []string{storage.PrimaryBackend, storage.SecondaryBackend} {
+		t.Run(backend, func(t *testing.T) {
+			// Given: 두 버킷이 설정되고 시크릿이 backend에 놓였다
+			ctx := context.Background()
+			conn := openHTTPTestDB(t, ctx)
+			objects := &streamObjects{body: ageBody(5000)}
+			registry, err := storage.NewRegistry(objects, objects)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := secrets.NewStore(conn, secrets.StoreOptions{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 1 << 20, MinTTLSeconds: 300, MaxTTLSeconds: 604800, Objects: registry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outbox, err := events.NewOutboxStore(conn, "flick.jobs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			router := NewRouter(conn, store, Options{PayloadInlineMaxBytes: 1024, OutboxStore: outbox})
+			created, err := store.CreateLarge(ctx, secrets.CreateLargeInput{Kind: secrets.KindFile, EncryptedFilename: largeFilename(), SizeBytes: int64(len(objects.body)), TTLSeconds: 600, MaxViews: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Finalize(ctx, created.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Exec(`update secrets set storage_backend = ? where id = ?`, backend, created.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			// When: 수신자가 열고 본문을 끝까지 받는다
+			resp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
+			if resp.Code != http.StatusOK {
+				t.Fatalf("open: %d", resp.Code)
+			}
+
+			// Then: 삭제 작업이 같은 백엔드를 가리킨다
+			job, ok := outboxKinds(t, outbox)[events.KindDeleteOCIObject]
+			if !ok || job.Backend != backend || job.ObjectKey != "managed/secrets/"+created.ID {
+				t.Fatalf("object delete job = %+v, want backend %q", job, backend)
+			}
+		})
+	}
+}
+
 func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	objects := &streamObjects{body: ageBody(5000), readErr: errors.New("connection reset")}
 	fixture, id := newS3OpenFixture(t, objects)
