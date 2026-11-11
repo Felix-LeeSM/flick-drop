@@ -168,9 +168,20 @@ async function cancelPendingDelivery(): Promise<void> {
 	if (!pending || pending.signal.aborted) {
 		return;
 	}
-	const result = await api.revoke(secretId, token, pending.signal);
-	if (!pending.signal.aborted) {
-		accept(result);
+	// Re-entry guard: keep the delivery and refresh buttons disabled for the
+	// whole revoke, like the old confirm-blocking flow did via refresh's busy.
+	busy = true;
+	try {
+		const result = await api.revoke(secretId, token, pending.signal);
+		if (!pending.signal.aborted) {
+			accept(result);
+		}
+	} catch (cause) {
+		if (!pending.signal.aborted) {
+			report(cause);
+		}
+	} finally {
+		busy = false;
 	}
 }
 

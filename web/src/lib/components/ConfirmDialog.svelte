@@ -12,7 +12,14 @@ type Props = {
 	onconfirm?: () => void;
 };
 
-let { open = $bindable(false), title, description, confirmLabel, busy = false, onconfirm }: Props = $props();
+let {
+	open = $bindable(false),
+	title,
+	description,
+	confirmLabel,
+	busy = false,
+	onconfirm
+}: Props = $props();
 </script>
 
 <Dialog.Root bind:open>

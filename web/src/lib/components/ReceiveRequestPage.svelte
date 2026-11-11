@@ -235,6 +235,9 @@ async function cancelPendingRequest(): Promise<void> {
 	if (!signal || signal.aborted) {
 		return;
 	}
+	// Re-entry guard: keep the request and refresh buttons disabled for the
+	// whole revoke, like the old confirm-blocking flow did via refresh's busy.
+	busy = true;
 	try {
 		await api.revoke(requestId, token, signal);
 		if (alive && !signal.aborted && snapshot) {
@@ -248,9 +251,11 @@ async function cancelPendingRequest(): Promise<void> {
 				notice = 'The request changed before cancellation. The current server status is shown.';
 				void focus();
 			}
-		} else {
-			throw cause;
+		} else if (!signal.aborted) {
+			report(cause);
 		}
+	} finally {
+		busy = false;
 	}
 }
 function current(signal: AbortSignal): boolean {
