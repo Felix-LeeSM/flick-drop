@@ -11,6 +11,7 @@ import {
 } from '@lucide/svelte';
 import { Dialog } from 'bits-ui';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import ProgressRingLock from '#lib/components/ProgressRingLock.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
 import {
@@ -23,6 +24,13 @@ import {
 	streamToBytes,
 	streamToText
 } from '#lib/crypto/pipe.js';
+import {
+	holdMinimumStage,
+	STAGE_FAIL_MS,
+	STAGE_FINISH_MS,
+	type StagePhase,
+	sleep
+} from '#lib/stage-timing.js';
 import { cn, formatBytes } from '#lib/utils.js';
 
 type Props = {
@@ -53,7 +61,12 @@ const step = $derived(
 			? 2
 			: undefined
 );
-let progressPercent = $state(0);
+// Unlock ring while connected: it keeps its minimum and plays the unlock (or
+// failure) beat before the received content or the error view shows.
+let ringPhase = $state<StagePhase>('waiting');
+// True once the content is decrypted: the relay has burned it, so the remaining
+// ring beat is pacing only and Cancel would throw the secret away.
+let decrypted = $state(false);
 let errorMessage = $state('');
 let statusMessage = $state('');
 let matchCode = $state('');
@@ -74,7 +87,8 @@ function reset(): void {
 	optionalPassphrase = '';
 	showPassphraseField = false;
 	currentState = 'input';
-	progressPercent = 0;
+	ringPhase = 'waiting';
+	decrypted = false;
 	errorMessage = '';
 	statusMessage = '';
 	receivedText = '';
@@ -122,54 +136,101 @@ async function startReceive(): Promise<void> {
 
 	matchCode = deriveConfirmationCode(normalized);
 	currentState = 'connecting';
-	statusMessage = 'Connecting to transfer pipe...';
+	ringPhase = 'waiting';
+	decrypted = false;
+	statusMessage = 'Waiting for the sender…';
 	errorMessage = '';
-	abortController = new AbortController();
+	const controller = new AbortController();
+	abortController = controller;
+	const stageStartedAt = performance.now();
 
 	try {
 		const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
-		const result = await receivePipeStream(
-			targetBaseUrl,
-			normalized,
-			fetch,
-			abortController.signal
-		);
+		const result = await receivePipeStream(targetBaseUrl, normalized, fetch, controller.signal);
 
 		currentState = 'streaming';
-		statusMessage = 'Decrypting live stream...';
+		statusMessage = 'Decrypting in your browser…';
 
 		const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
 		const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
 
-		if (result.kind === 'file') {
-			const bytes = await streamToBytes(decryptedStream);
-			receivedFileSize = bytes.length;
-			if (result.encryptedFilename) {
-				try {
-					const encBytes = Uint8Array.from(atob(result.encryptedFilename), (c) => c.charCodeAt(0));
-					receivedFileName = await streamToText(
-						await decryptPipeStream(encBytes, derivedPassphrase)
-					);
-				} catch {
-					receivedFileName = 'downloaded-file';
-				}
-			} else {
-				receivedFileName = 'downloaded-file';
-			}
-			receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
-			currentState = 'done-file';
-			downloadFile();
-		} else {
-			receivedText = await streamToText(decryptedStream);
-			currentState = 'done-text';
+		const doneState = await storeReceived(
+			result,
+			decryptedStream,
+			derivedPassphrase,
+			controller.signal
+		);
+		if (doneState && (await settleRing(stageStartedAt, 'finishing', controller.signal))) {
+			currentState = doneState;
 		}
 	} catch (err) {
-		if (abortController.signal.aborted) {
+		if (controller.signal.aborted) {
 			return;
 		}
-		currentState = 'error';
 		errorMessage = err instanceof Error ? err.message : 'Transfer failed';
+		if (await settleRing(stageStartedAt, 'failing', controller.signal)) {
+			currentState = 'error';
+		}
 	}
+}
+
+// Keeps the decrypted content and marks it received; null when the receive was
+// cancelled meanwhile. A file is saved right away so closing the dialog during
+// the ring beat cannot lose it.
+async function storeReceived(
+	result: Awaited<ReturnType<typeof receivePipeStream>>,
+	decryptedStream: Awaited<ReturnType<typeof decryptPipeStream>>,
+	passphrase: string,
+	signal: AbortSignal
+): Promise<'done-file' | 'done-text' | null> {
+	if (result.kind !== 'file') {
+		receivedText = await streamToText(decryptedStream);
+		decrypted = true;
+		return 'done-text';
+	}
+	const bytes = await streamToBytes(decryptedStream);
+	receivedFileSize = bytes.length;
+	receivedFileName = await decryptFilename(result.encryptedFilename, passphrase);
+	if (signal.aborted) {
+		return null;
+	}
+	receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+	decrypted = true;
+	downloadFile();
+	return 'done-file';
+}
+
+// The sender encrypts the filename separately; a missing or unreadable one falls
+// back to a generic name rather than failing the received file.
+async function decryptFilename(
+	encryptedFilename: string | undefined,
+	passphrase: string
+): Promise<string> {
+	if (!encryptedFilename) {
+		return 'downloaded-file';
+	}
+	try {
+		const encBytes = Uint8Array.from(atob(encryptedFilename), (c) => c.charCodeAt(0));
+		return await streamToText(await decryptPipeStream(encBytes, passphrase));
+	} catch {
+		return 'downloaded-file';
+	}
+}
+
+// Holds the ring for its minimum, then plays the ending beat. False when the
+// receive was cancelled or reset meanwhile.
+async function settleRing(
+	startedAt: number,
+	ending: 'finishing' | 'failing',
+	signal: AbortSignal
+): Promise<boolean> {
+	await holdMinimumStage(startedAt);
+	if (signal.aborted) {
+		return false;
+	}
+	ringPhase = ending;
+	await sleep(ending === 'finishing' ? STAGE_FINISH_MS : STAGE_FAIL_MS);
+	return !signal.aborted;
 }
 
 function downloadFile(): void {
@@ -326,14 +387,20 @@ async function copyText(): Promise<void> {
 				</div>
 			{:else if currentState === 'connecting' || currentState === 'streaming'}
 				<div class="grid place-items-center gap-4 text-center">
+					<!-- The same unlock ring as opening a link; the receiver has no byte progress, so it creeps. -->
+					<ProgressRingLock mode="unlock" phase={ringPhase} />
 					<div class="grid gap-1">
-						<div class="flex items-center justify-center gap-2.5">
-							<div
-								class="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none"
-								aria-hidden="true"
-							></div>
-							<h4 class="text-sm font-medium text-foreground">{statusMessage}</h4>
-						</div>
+						<p
+							role="status"
+							aria-live="polite"
+							class={cn('text-sm', ringPhase === 'failing' ? 'text-destructive' : 'text-muted-foreground')}
+						>
+							{ringPhase === 'finishing'
+								? 'Unlocked'
+								: ringPhase === 'failing'
+									? errorMessage
+									: statusMessage}
+						</p>
 						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
 					</div>
 
@@ -349,26 +416,17 @@ async function copyText(): Promise<void> {
 						</p>
 					{/if}
 
-					{#if currentState === 'streaming'}
-						<div class="w-full space-y-1">
-							<div class="h-2 w-full overflow-hidden rounded-full bg-muted">
-								<div
-									class="h-full bg-primary transition-all duration-200"
-									style="width: {progressPercent}%"
-								></div>
-							</div>
-							<p class="text-[11px] font-mono text-muted-foreground">{progressPercent}% received</p>
-						</div>
+					{#if !decrypted}
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							class="text-xs text-muted-foreground hover:text-foreground"
+							onclick={() => reset()}
+						>
+							Cancel
+						</Button>
 					{/if}
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						class="text-xs text-muted-foreground hover:text-foreground"
-						onclick={() => reset()}
-					>
-						Cancel
-					</Button>
 				</div>
 			{:else if currentState === 'done-file'}
 				<div class="grid place-items-center gap-4 text-center">
