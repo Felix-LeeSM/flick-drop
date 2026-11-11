@@ -2,8 +2,8 @@
 # (loki.source.kubernetes streams pods/log — no privileges, no root, no node
 # filesystem access) and ships the lines to Loki. Each replica only discovers
 # pods on its own node (spec.nodeName field selector), so a 2-node cluster
-# stores each line exactly once. Keeps only the flick namespace and the
-# kube-system traefik pod — traefik's access log is the cluster's entry-point
+# stores each line exactly once. Keeps only the flick namespace, the
+# cert-manager namespace (TLS renewal failures), and the kube-system traefik pod — traefik's access log is the cluster's entry-point
 # record (client IP, path, status), which is exactly the access-log search the
 # admin needs; every other namespace's logs stay on their containers.
 #
@@ -63,15 +63,17 @@ data:
     discovery.relabel "pod_logs" {
       targets = discovery.kubernetes.pods.targets
 
-      // Keep the logs this deployment cares about: flick workloads and the
-      // edge traefik (whose access log is the cluster's entry-point record).
+      // Keep the logs this deployment cares about: flick workloads, cert-manager
+      // (a failed certificate renewal surfaces here first; it logs only on
+      // renewal, so the volume is near zero), and the edge traefik (whose access
+      // log is the cluster's entry-point record).
       // One keep with an RE2-safe alternation on "namespace/pod-name" — RE2
       // has no lookahead, so negative filtering is not an option here.
       rule {
         action        = "keep"
         source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name"]
         separator     = "/"
-        regex         = "flick/.*|kube-system/traefik.*"
+        regex         = "flick/.*|cert-manager/.*|kube-system/traefik.*"
       }
 
       // Standard labels Loki queries group by.
