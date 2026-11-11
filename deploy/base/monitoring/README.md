@@ -223,9 +223,12 @@ counts 1 while kube-state-metrics itself fails its scrape
 kube-state-metrics replica dies, the Ready series go stale, but the static
 scrape target keeps reporting `up=0` until the replica is rescheduled and
 reports that node NotReady. Failed node-exporter scrapes are not a substitute:
-the headless Service drops a dead node's NotReady pod from DNS within about a
-minute, so the target vanishes instead of reporting `up=0`. A restarting
-kube-state-metrics pod also reads as 1 for a scrape or two.
+the headless Service drops a dead node's NotReady pod from DNS (expected within
+about a minute from the node lifecycle defaults; not measured here), so the
+target vanishes instead of reporting `up=0`. A restarting kube-state-metrics
+pod also reads as 1 for a scrape or two, and while kube-state-metrics is down
+a second dead node is not counted (the panel reads 1, not 2) until the replica
+is rescheduled, about 5 minutes with the default eviction timeout.
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
