@@ -47,18 +47,18 @@ describe('management capability boundary', () => {
 		});
 		expect(init?.body).toBeUndefined();
 	});
-	it('submits an empty revoke body and surfaces the server winner on an open/cancel race', async () => {
-		const opened = { ...snapshot, status: 'opened', can_cancel: false };
+	it('submits an empty revoke body and surfaces the server winner on a lockout/cancel race', async () => {
+		const locked = { ...snapshot, status: 'locked', can_cancel: false };
 		const fetcher = vi
 			.fn<typeof fetch>()
 			.mockResolvedValue(
-				Response.json({ error: { code: 'not_cancellable' }, status: opened }, { status: 409 })
+				Response.json({ error: { code: 'not_cancellable' }, status: locked }, { status: 409 })
 			);
 		const client = createManagementApiClient({ baseUrl: '/', fetcher });
 		await expect(client.revoke('fixture', token)).rejects.toMatchObject({
 			code: 'not_cancellable',
 			status: 409,
-			snapshot: opened
+			snapshot: locked
 		});
 		expect(fetcher.mock.calls[0][0]).toBe('/api/secrets/fixture/revoke');
 		expect(fetcher.mock.calls[0][1]).toMatchObject({
@@ -66,6 +66,20 @@ describe('management capability boundary', () => {
 			body: '{}',
 			headers: { authorization: `Bearer ${token}` }
 		});
+	});
+	it('reads an open that wins the cancellation race as an unavailable link', async () => {
+		// 서버는 열람된 전달을 잊으므로 모르는 ID와 같은 404를 돌려준다.
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(
+				Response.json(
+					{ error: { code: 'management_unavailable', message: 'management link is unavailable' } },
+					{ status: 404 }
+				)
+			);
+		await expect(
+			createManagementApiClient({ fetcher }).revoke('fixture', token)
+		).rejects.toMatchObject({ code: 'management_unavailable', status: 404, snapshot: undefined });
 	});
 	it.each([404, 429, 503])('keeps HTTP %i distinct from a delivery outcome', async (status) => {
 		const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({}, { status }));
@@ -83,7 +97,8 @@ describe('management capability boundary', () => {
 	});
 	it.each([
 		{ ...snapshot, id: 'another' },
-		{ ...snapshot, status: 'opened' },
+		// The retired opened status is no longer a valid snapshot.
+		{ ...snapshot, status: 'opened', can_cancel: false },
 		{ ...snapshot, expires_at: 'invalid' },
 		{ ...snapshot, management_expires_at: '2100-01-01T00:00:00Z' }
 	])('rejects an inconsistent snapshot', async (body) => {
