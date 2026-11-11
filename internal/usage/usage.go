@@ -164,6 +164,7 @@ func (s *Store) Report(ctx context.Context, days int, now time.Time) (Report, er
 	if err != nil {
 		return Report{}, fmt.Errorf("parse report window start: %w", err)
 	}
+	seriesStart = seriesStart.UTC()
 	series := make([]DailyCount, 0, days)
 	for i := range days {
 		day := seriesStart.AddDate(0, 0, i).Format("2006-01-02")

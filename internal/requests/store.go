@@ -23,6 +23,7 @@ import (
 )
 
 // Fixed-width UTC timestamps preserve indexed subsecond deadline ordering.
+// The literal Z assumes the value is pinned to UTC before formatting.
 const timeFormat = "2006-01-02T15:04:05.000000000Z"
 
 type finalizeCall struct {

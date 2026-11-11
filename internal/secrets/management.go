@@ -18,6 +18,7 @@ import (
 
 // Fixed-width UTC timestamps make the new table's indexed expiry comparison
 // exact even when one timestamp has no fractional seconds.
+// The literal Z assumes the value is pinned to UTC before formatting.
 const managementTimeFormat = "2006-01-02T15:04:05.000000000Z"
 const managedObjectPrefix = "managed/secrets/"
 
@@ -37,7 +38,7 @@ func createManagementTx(ctx context.Context, tx *sql.Tx, id string, expires time
 		return "", fmt.Errorf("generate management capability: %w", err)
 	}
 	hash := sha256.Sum256(raw[:])
-	if _, err := tx.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at) values (?, ?, ?)`, id, hash[:], expires.Format(managementTimeFormat)); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at) values (?, ?, ?)`, id, hash[:], expires.UTC().Format(managementTimeFormat)); err != nil {
 		return "", fmt.Errorf("insert management capability: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
@@ -183,7 +184,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 // delete job is queued only when the stream ends: its row stays until the grace
 // passes, because that row is what keeps reconciliation away from the object.
 func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
-	cutoff := now.Format(managementTimeFormat)
+	cutoff := now.UTC().Format(managementTimeFormat)
 	streaming := formatTime(now.Add(-openObjectGrace))
 	const expired = `select m.secret_id from secret_management m
 		where m.expires_at <= ? and not exists (select 1 from secrets s
