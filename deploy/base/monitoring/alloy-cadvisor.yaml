@@ -11,7 +11,9 @@
 # exec; this DaemonSet holds only nodes/metrics get.
 #
 # The HTTP server stays on 127.0.0.1 so hostNetwork does not publish alloy's
-# debug UI on the node IP; that is also why there is no HTTP readiness probe.
+# debug UI on the node IP; that is also why there is no HTTP readiness or
+# liveness probe. A wedged collector shows up as a gap in the cluster
+# dashboard's per-container panels, not as a restart.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -89,6 +89,10 @@ three targets, stores the series on a PVC, and serves the query API + `vmui` on
 `:8428`. Full Prometheus is too heavy for a ~1GB node; vmsingle is the
 low-footprint substitute (128Mi request, 384Mi limit, `--memory.allowedPercent=70`,
 14-day retention).
+Per-container cAdvisor series arrive by a second path: the `alloy-cadvisor`
+DaemonSet pushes them to vmsingle's `/api/v1/write` endpoint (remote write), so
+vmsingle itself still needs no API access; the `nodes/metrics` RBAC belongs to
+`alloy-cadvisor`.
 
 It uses static / `dns_sd` scraping instead of Kubernetes service discovery, so it
 needs **no API access and no RBAC**:
@@ -190,7 +194,7 @@ from a pod-network pod, 401 from a hostNetwork pod). Its ClusterRole grants only
 `nodes/metrics` get; the API-server proxy path would avoid hostNetwork but needs
 `nodes/proxy`, which also reaches kubelet exec. The Alloy HTTP server listens on
 `127.0.0.1:12346` so the debug UI is not published on the node IP, so the pod
-has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node (measured 39-96Mi right after start).
+has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160Mi (measured 39-96Mi right after start; the request tracks the settled size, so up to ~32Mi of the start-up peak sits outside the scheduler's accounting).
 
 ## Grafana — the admin view
 
@@ -210,10 +214,12 @@ and hovering a tile shows what the component does, its image, pod phase,
 namespace and node. Below it sit a Nodes table (free/total memory and disk with
 percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
 Pods table, per-node history graphs, and per-container actual memory (working
-set) and CPU graphs from cAdvisor (see `alloy-cadvisor` below). Node names come from joining
+set) and CPU graphs from cAdvisor (see `alloy-cadvisor` above). Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
-`Nodes down` counts nodes whose Ready condition is not true
-(`kube_node_status_condition`, from the kube-state-metrics nodes collector).
+`Nodes down` is the larger of two counts: nodes whose Ready condition is not
+true (`kube_node_status_condition`, from the kube-state-metrics nodes collector)
+and failed node-exporter scrapes. The second count keeps the panel honest when
+the node hosting the single kube-state-metrics replica is the one that died.
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
