@@ -9,8 +9,8 @@ Exposes pod-status metrics in Prometheus text format so pod phase, restarts, and
 readiness are visible without `kubectl` polling (and without a metrics-server,
 which the base does not install).
 
-Scoped to the pods collector only (`--resources=pods`), so RBAC is read-only on a
-single object kind and the footprint stays small (~42Mi RSS measured; 32Mi
+Scoped to the pods and nodes collectors (`--resources=pods,nodes`), so RBAC is
+read-only on two object kinds and the footprint stays small (~42Mi RSS measured; 32Mi
 request, 96Mi limit).
 
 ### Apply
@@ -171,8 +171,9 @@ container, no root, no node filesystem access). Its ClusterRole grants
 log streaming itself needs, and missing it 403s every log request while
 discovery and probes stay green. A `spec.nodeName` field selector (from the
 `NODE_NAME` env) scopes each replica to its own node so a 2-node cluster
-stores each line once. It keeps exactly the `flick` namespace and the
-`kube-system` traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
+stores each line once. It keeps exactly the `flick` namespace, the
+`cert-manager` namespace (certificate renewal failures), and the `kube-system`
+traefik pod (one RE2-safe keep rule on `namespace/pod-name` — no
 lookahead, which RE2 lacks); every other namespace is dropped before a line is
 read. Traefik must emit its access log in JSON for the dashboard queries to
 parse (the ops overlay enables `accessLog` with `format: json`).
@@ -197,8 +198,8 @@ namespace and node. Below it sit a Nodes table (free/total memory and disk with
 percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
 Pods table, and per-node history graphs. Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
-Node Ready conditions are not available: `kube-state-metrics` runs with
-`--resources=pods` only, so `Nodes down` counts failed node-exporter scrapes.
+`Nodes down` counts nodes whose Ready condition is not true
+(`kube_node_status_condition`, from the kube-state-metrics nodes collector).
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 

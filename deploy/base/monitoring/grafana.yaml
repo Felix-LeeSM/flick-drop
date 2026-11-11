@@ -155,9 +155,9 @@ data:
           "title": "다운된 노드",
           "datasource": "vmsingle",
           "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
-          "description": "node-exporter 스크레이프가 실패한 타깃 수입니다.",
+          "description": "Ready 상태가 아닌 노드 수입니다. kube-state-metrics가 수집한 노드 Ready 조건(kube_node_status_condition)으로 셉니다.",
           "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
-          "targets": [{"expr": "count(up{job=\"node-exporter\"} == 0) or vector(0)"}]
+          "targets": [{"expr": "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"} == 0) or vector(0)"}]
         },
         {
           "type": "stat",
@@ -188,7 +188,7 @@ data:
           "type": "text",
           "title": "노드·네임스페이스·파드 읽는 법",
           "gridPos": {"x": 0, "y": 74, "w": 24, "h": 7},
-          "options": {"mode": "markdown", "content": "**노드(Node)** — 클러스터를 이루는 한 대의 머신(VM)입니다. 아래 노드 표에서 메모리와 디스크의 남은 양·총량·여유 비율, 유휴 CPU, 스왑 사용량을 볼 수 있습니다. 노드 이름은 데이터에서 가져오므로 이 대시보드는 특정 배포에 묶여 있지 않습니다.\n\n**어디에 무엇이 도나** — treemap은 노드 안에 네임스페이스, 그 안에 파드, 그 안에 컨테이너를 중첩해 보여 줍니다. 타일 면적은 컨테이너의 메모리 요청량이고, 타일에 마우스를 올리면 이 컨테이너가 무슨 일을 하는지 볼 수 있습니다.\n\n**네임스페이스(Namespace)** — 파드를 묶는 이름 공간입니다. `flick`는 앱과 관측 스택, `kube-system`은 k3s 코어, `cert-manager`는 TLS 인증서 자동화입니다.\n\n**파드(Pod)** — 구성요소 하나가 스케줄되는 단위이며, 노드와 네트워크를 공유하는 하나 이상의 컨테이너를 묶습니다. 파드 이름은 임의 접미사로 끝나고, 그 앞부분이 구성요소 이름입니다(아래 표의 *하는 일* 열 참고).\n\n**컨테이너(Container)** — 파드 안에서 실제로 도는 프로세스입니다. 지금은 모든 파드에 컨테이너가 하나씩 있고, 사이드카가 생기면 같은 파드 상자 안에 타일이 하나 더 생깁니다.\n\n**단계(Phase)** — Running이 정상입니다. Pending(노드나 이미지 대기), Failed, Unknown은 빨간색으로 표시됩니다. **재시작**은 파드가 시작된 이후의 컨테이너 재시작 횟수이고, 늘어나면 크래시 루프입니다.\n\n**다운된 노드**는 node-exporter 스크레이프가 실패한 횟수입니다. kube-state-metrics가 `--resources=pods`로만 실행되므로 노드 Ready 조건은 수집되지 않습니다."}
+          "options": {"mode": "markdown", "content": "**노드(Node)** — 클러스터를 이루는 한 대의 머신(VM)입니다. 아래 노드 표에서 메모리와 디스크의 남은 양·총량·여유 비율, 유휴 CPU, 스왑 사용량을 볼 수 있습니다. 노드 이름은 데이터에서 가져오므로 이 대시보드는 특정 배포에 묶여 있지 않습니다.\n\n**어디에 무엇이 도나** — treemap은 노드 안에 네임스페이스, 그 안에 파드, 그 안에 컨테이너를 중첩해 보여 줍니다. 타일 면적은 컨테이너의 메모리 요청량이고, 타일에 마우스를 올리면 이 컨테이너가 무슨 일을 하는지 볼 수 있습니다.\n\n**네임스페이스(Namespace)** — 파드를 묶는 이름 공간입니다. `flick`는 앱과 관측 스택, `kube-system`은 k3s 코어, `cert-manager`는 TLS 인증서 자동화입니다.\n\n**파드(Pod)** — 구성요소 하나가 스케줄되는 단위이며, 노드와 네트워크를 공유하는 하나 이상의 컨테이너를 묶습니다. 파드 이름은 임의 접미사로 끝나고, 그 앞부분이 구성요소 이름입니다(아래 표의 *하는 일* 열 참고).\n\n**컨테이너(Container)** — 파드 안에서 실제로 도는 프로세스입니다. 지금은 모든 파드에 컨테이너가 하나씩 있고, 사이드카가 생기면 같은 파드 상자 안에 타일이 하나 더 생깁니다.\n\n**단계(Phase)** — Running이 정상입니다. Pending(노드나 이미지 대기), Failed, Unknown은 빨간색으로 표시됩니다. **재시작**은 파드가 시작된 이후의 컨테이너 재시작 횟수이고, 늘어나면 크래시 루프입니다.\n\n**다운된 노드**는 Ready 상태가 아닌 노드 수입니다. kube-state-metrics가 수집한 노드 Ready 조건으로 셉니다."}
         },
         {
           "type": "table",
