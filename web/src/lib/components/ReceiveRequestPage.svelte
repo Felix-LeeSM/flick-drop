@@ -9,6 +9,7 @@ import {
 	requestLimits
 } from '#lib/api/requests.js';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 import CredentialView from '#lib/components/CredentialView.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
@@ -38,6 +39,8 @@ const api = createRequestApiClient();
 let snapshot = $state<RequestOwner | null>(null);
 let submission = $state('');
 let privateLink = $state('');
+let cancelConfirmOpen = $state(false);
+let pendingSignal: AbortSignal | null = null;
 let identity = $state<string | null>(null);
 let keyProblem = $state('');
 let busy = $state(false);
@@ -209,7 +212,7 @@ async function refresh(cancel = false): Promise<void> {
 		}
 		await readOwner(request.signal);
 		if (cancel && alive && !request.signal.aborted && !terminal) {
-			await cancelFresh(request.signal);
+			queueCancelFresh(request.signal);
 		}
 	} catch (cause) {
 		if (alive && !request.signal.aborted) {
@@ -221,14 +224,20 @@ async function refresh(cancel = false): Promise<void> {
 		}
 	}
 }
-async function cancelFresh(signal: AbortSignal): Promise<void> {
-	if (
-		!window.confirm(
-			'Cancel this request permanently? Nothing more can be submitted or opened. Already released copies cannot be recalled.'
-		)
-	) {
+function queueCancelFresh(signal: AbortSignal): void {
+	pendingSignal = signal;
+	cancelConfirmOpen = true;
+}
+
+async function cancelPendingRequest(): Promise<void> {
+	const signal = pendingSignal;
+	pendingSignal = null;
+	if (!signal || signal.aborted) {
 		return;
 	}
+	// Re-entry guard: keep the request and refresh buttons disabled for the
+	// whole revoke, like the old confirm-blocking flow did via refresh's busy.
+	busy = true;
 	try {
 		await api.revoke(requestId, token, signal);
 		if (alive && !signal.aborted && snapshot) {
@@ -242,9 +251,11 @@ async function cancelFresh(signal: AbortSignal): Promise<void> {
 				notice = 'The request changed before cancellation. The current server status is shown.';
 				void focus();
 			}
-		} else {
-			throw cause;
+		} else if (!signal.aborted) {
+			report(cause);
 		}
+	} finally {
+		busy = false;
 	}
 }
 function current(signal: AbortSignal): boolean {
@@ -471,3 +482,10 @@ onMount(() => {
 	>Create another request</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />
+<ConfirmDialog
+	bind:open={cancelConfirmOpen}
+	title="Cancel this request?"
+	description="Nothing more can be submitted or opened. Already released copies cannot be recalled."
+	confirmLabel="Cancel request"
+	onconfirm={() => { void cancelPendingRequest(); }}
+/>
