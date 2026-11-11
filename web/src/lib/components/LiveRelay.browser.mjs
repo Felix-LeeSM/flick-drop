@@ -2,7 +2,6 @@
 // biome-ignore-all lint/suspicious/useAwait: Playwright route handler interface accepts async callback.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { Encrypter } from 'age-encryption';
 import { chromium } from 'playwright';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://localhost:5173';
@@ -16,6 +15,13 @@ after(async () => {
 	await browser?.close();
 });
 
+const configJson = { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 };
+const corsHeaders = {
+	'Access-Control-Allow-Origin': '*',
+	'Access-Control-Allow-Headers': '*',
+	'Access-Control-Expose-Headers': 'X-Flick-Pipe-Salt, Flick-Kind, Flick-Encrypted-Filename'
+};
+
 // The header carries no Enter code action (prototype round R1): the receive
 // dialog opens from the code tab's "Enter it here" link.
 async function openReceiveDialog(page) {
@@ -26,21 +32,32 @@ async function openReceiveDialog(page) {
 	await page.getByRole('button', { name: 'Enter it here' }).click();
 }
 
+// Routes every /api/ call through handle(path, route); /api/config and CORS
+// preflights are answered here.
+async function routeApi(page, handle) {
+	await page.route(
+		(url) => url.pathname.startsWith('/api/'),
+		async (route) => {
+			if (route.request().method() === 'OPTIONS') {
+				return route.fulfill({ status: 204, headers: corsHeaders });
+			}
+			const path = new URL(route.request().url()).pathname;
+			if (path === '/api/config') {
+				return route.fulfill({ headers: corsHeaders, json: configJson });
+			}
+			return handle(path, route);
+		}
+	);
+}
+
+function errorJson(code) {
+	return { error: { code, message: code } };
+}
+
 test('The code tab Enter-it-here button opens the Receive dialog', async () => {
 	const page = await browser.newPage();
 	try {
-		await page.route(
-			(url) => url.pathname.startsWith('/api/'),
-			async (route) => {
-				const path = new URL(route.request().url()).pathname;
-				if (path === '/api/config') {
-					return route.fulfill({
-						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
-					});
-				}
-				return route.continue();
-			}
-		);
+		await routeApi(page, (_path, route) => route.continue());
 
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
@@ -61,25 +78,29 @@ test('The code tab Enter-it-here button opens the Receive dialog', async () => {
 	}
 });
 
-test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at 320px', async () => {
+test('Receive dialog mirrors typed digits in six key caps and shows its own number at 320px', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
 	try {
-		await page.route(
-			(url) => url.pathname.startsWith('/api/'),
-			async (route) => {
-				const path = new URL(route.request().url()).pathname;
-				if (path === '/api/config') {
-					return route.fulfill({
-						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
-					});
-				}
-				// Never answered, so the dialog stays on step 2 waiting for the sender.
-				if (path === '/api/pipe/receive') {
-					return;
-				}
-				return route.continue();
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				return route.fulfill({
+					status: 201,
+					headers: corsHeaders,
+					json: {
+						connection_id: 'conn-1',
+						require_confirmation: true,
+						verify_code: '042',
+						device: 'Chrome on Linux',
+						expires_in: 170
+					}
+				});
 			}
-		);
+			// Never answered, so the dialog stays on step 2 waiting for the sender's pick.
+			if (path === '/api/pipe/receive') {
+				return;
+			}
+			return route.continue();
+		});
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await openReceiveDialog(page);
@@ -156,12 +177,10 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
 		await input.fill('741-928');
 		await dialog.getByText('STEP 2 OF 2', { exact: true }).waitFor();
+		await dialog.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
 		await dialog.getByText('Pipe: 741-928', { exact: true }).waitFor();
-		await dialog.getByRole('heading', { name: "Check sender's screen" }).waitFor();
-		assert.match(
-			await dialog.getByText('Confirmation Code').locator('xpath=..').innerText(),
-			/\d{3}\s*$/
-		);
+		// The server's per-connection number, not anything derived from the 6-digit code.
+		await dialog.getByRole('img', { name: 'Your number 0 4 2' }).waitFor();
 		assert.equal(
 			await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 			true
@@ -174,18 +193,7 @@ test('Receive dialog mirrors typed digits in six key caps and moves to step 2 at
 test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OFF', async () => {
 	const page = await browser.newPage();
 	try {
-		await page.route(
-			(url) => url.pathname.startsWith('/api/'),
-			async (route) => {
-				const path = new URL(route.request().url()).pathname;
-				if (path === '/api/config') {
-					return route.fulfill({
-						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
-					});
-				}
-				return route.continue();
-			}
-		);
+		await routeApi(page, (_path, route) => route.continue());
 
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
@@ -236,24 +244,12 @@ test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OF
 test('QR scan direct hash navigation: navigating to /#code=123456 auto-opens Receive modal', async () => {
 	const page = await browser.newPage();
 	try {
-		await page.route(
-			(url) => url.pathname.startsWith('/api/'),
-			async (route) => {
-				const path = new URL(route.request().url()).pathname;
-				if (path === '/api/config') {
-					return route.fulfill({
-						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
-					});
-				}
-				if (path === '/api/pipe/receive') {
-					return route.fulfill({
-						status: 404,
-						json: { error: 'not found' }
-					});
-				}
-				return route.continue();
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				return route.fulfill({ status: 404, headers: corsHeaders, json: errorJson('not_found') });
 			}
-		);
+			return route.continue();
+		});
 
 		await page.goto(`${baseUrl}/#code=123456`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
@@ -268,24 +264,12 @@ test('QR scan direct hash navigation: navigating to /#code=123456 auto-opens Rec
 test('Receiver error state: displays actionable error on 404/expired code', async () => {
 	const page = await browser.newPage();
 	try {
-		await page.route(
-			(url) => url.pathname.startsWith('/api/'),
-			async (route) => {
-				const path = new URL(route.request().url()).pathname;
-				if (path === '/api/config') {
-					return route.fulfill({
-						json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
-					});
-				}
-				if (path === '/api/pipe/receive') {
-					return route.fulfill({
-						status: 404,
-						json: { error: 'rendezvous session not found or expired' }
-					});
-				}
-				return route.continue();
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				return route.fulfill({ status: 404, headers: corsHeaders, json: errorJson('not_found') });
 			}
-		);
+			return route.continue();
+		});
 
 		await page.goto(`${baseUrl}/`);
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
@@ -297,6 +281,7 @@ test('Receiver error state: displays actionable error on 404/expired code', asyn
 		// Transitions to error view
 		const errorTitle = page.getByRole('heading', { name: 'Transfer Failed' });
 		await assert.doesNotReject(errorTitle.waitFor({ state: 'visible' }));
+		await page.getByText('Invalid or expired 6-digit code.').waitFor();
 
 		// Try again button resets form
 		const tryAgainBtn = page.getByRole('button', { name: 'Try again' });
@@ -307,152 +292,334 @@ test('Receiver error state: displays actionable error on 404/expired code', asyn
 	}
 });
 
-test('Two-browser live relay transfer with 2-step confirmation and burn state', async () => {
-	const senderContext = await browser.newContext();
-	const receiverContext = await browser.newContext();
+test('Receiver room full: an 11th device is told to ask for a new code', async () => {
+	const page = await browser.newPage();
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				return route.fulfill({ status: 409, headers: corsHeaders, json: errorJson('room_full') });
+			}
+			return route.continue();
+		});
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await openReceiveDialog(page);
+		await page.locator('#pipe-code-input').fill('741928');
 
-	const senderPage = await senderContext.newPage();
-	const receiverPage = await receiverContext.newPage();
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		await dialog.getByRole('heading', { name: 'Too many devices are trying to connect' }).waitFor();
+		await dialog.getByText('Ask the sender for a new code.').waitFor();
+		await dialog.getByRole('button', { name: 'Enter a new code' }).waitFor();
+	} finally {
+		await page.close();
+	}
+});
 
-	// In-memory relay mock coordinating sender and receiver requests
-	let receiverJoinedResolve;
-	const receiverJoinedPromise = new Promise((resolve) => {
-		receiverJoinedResolve = resolve;
-	});
-
-	let senderStreamResolve;
-	const senderStreamPromise = new Promise((resolve) => {
-		senderStreamResolve = resolve;
-	});
-
-	const sharedPipeCode = '741928';
-	const sharedSalt = 'f0e1d2c3b4a59687';
-
-	const enc = new Encrypter();
-	enc.setPassphrase(`${sharedPipeCode}:${sharedSalt}`);
-	const encryptedPayload = await enc.encrypt(
-		new TextEncoder().encode('Real-time live relay transfer test')
-	);
-	const encryptedBuffer = Buffer.from(encryptedPayload);
-
-	const corsHeaders = {
-		'Access-Control-Allow-Origin': '*',
-		'Access-Control-Allow-Headers': '*',
-		'Access-Control-Expose-Headers': 'X-Flick-Pipe-Salt, Flick-Kind, Flick-Encrypted-Filename'
-	};
-
-	async function handleRelayRoute(route) {
-		const path = new URL(route.request().url()).pathname;
-		switch (path) {
-			case '/api/config':
+test('Sender waiting list: three rows show, the rest fold behind "Show N more"', async () => {
+	const page = await browser.newPage();
+	const devices = [
+		'Chrome on Windows',
+		'Safari on iPhone',
+		'Firefox on Android',
+		'Edge on Windows',
+		'Samsung Internet on Android'
+	];
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/init') {
 				return route.fulfill({
+					status: 201,
 					headers: corsHeaders,
-					json: { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_435_456 }
+					json: {
+						code: '741928',
+						salt: 'f0e1d2c3b4a59687',
+						expires_in: 180,
+						sender_token: 'tok',
+						require_confirmation: true
+					}
 				});
-			case '/api/pipe/init':
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				if (since === '1') {
+					return; // unchanged: hold the long-poll
+				}
 				return route.fulfill({
 					headers: corsHeaders,
 					json: {
-						code: sharedPipeCode,
-						salt: sharedSalt,
-						expires_in: 180
+						status: 'waiting',
+						version: 1,
+						connections: devices.map((device, i) => ({
+							connection_id: `c${i + 1}`,
+							index: i + 1,
+							verify_code: String(101 + i * 111).padStart(3, '0'),
+							device,
+							connected_seconds: 12
+						}))
 					}
 				});
-			case '/api/pipe/wait':
-				await receiverJoinedPromise;
+			}
+			return route.continue();
+		});
+
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await page.getByLabel('Message', { exact: true }).fill('payload');
+		await page
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Send with code' })
+			.click();
+		await page.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
+		await page.getByRole('button', { name: 'Start live transfer' }).click();
+
+		// The 6-digit code stays on screen above the list.
+		await page.getByLabel('Transfer code 741-928').waitFor();
+		const list = page.getByRole('list', { name: 'Waiting devices' });
+		await page.getByText('5 of 10 devices waiting').waitFor();
+		await list.getByRole('listitem').first().waitFor();
+		assert.equal(await list.getByRole('listitem').count(), 3);
+
+		const more = page.getByRole('button', { name: 'Show 2 more' });
+		assert.equal(await more.getAttribute('aria-expanded'), 'false');
+		await more.click();
+		assert.equal(await list.getByRole('listitem').count(), 5);
+		await list.getByText('Samsung Internet on Android').waitFor();
+		const fewer = page.getByRole('button', { name: 'Show fewer' });
+		assert.equal(await fewer.getAttribute('aria-expanded'), 'true');
+		await fewer.click();
+		assert.equal(await list.getByRole('listitem').count(), 3);
+
+		// Every row has a named Deny icon button and Send button, and the time is never cut off.
+		await page.getByRole('button', { name: 'Deny connection 1' }).waitFor();
+		await page.getByRole('button', { name: 'Send to connection 1, number 101' }).waitFor();
+		const timeClipped = await list
+			.getByText(/^\d+s ago$/)
+			.first()
+			.evaluate((node) => node.scrollWidth > node.clientWidth);
+		assert.equal(timeClipped, false);
+	} finally {
+		await page.close();
+	}
+});
+
+// An in-memory stand-in for the /api/pipe waiting room shared by every page in
+// the test: it hands out per-connection numbers, long-polls the sender, and
+// forwards the sender's real ciphertext to the chosen receiver only.
+function createRelayMock() {
+	const salt = 'f0e1d2c3b4a59687';
+	const numbers = ['150', '271', '319', '428', '563'];
+	const devices = ['Chrome on Windows', 'Safari on iPhone', 'Firefox on Android'];
+	const connections = new Map();
+	let version = 1;
+	let changed = Promise.withResolvers();
+	const sent = Promise.withResolvers();
+	const joinCalls = new Map();
+
+	function bump() {
+		version += 1;
+		changed.resolve();
+		changed = Promise.withResolvers();
+	}
+
+	async function handle(page, path, route) {
+		const request = route.request();
+		const headers = request.headers();
+		switch (path) {
+			case '/api/pipe/init':
+				return route.fulfill({
+					status: 201,
+					headers: corsHeaders,
+					json: {
+						code: '741928',
+						salt,
+						expires_in: 180,
+						sender_token: 'tok',
+						require_confirmation: true
+					}
+				});
+			case '/api/pipe/join': {
+				joinCalls.set(page, (joinCalls.get(page) ?? 0) + 1);
+				const index = connections.size + 1;
+				const id = `conn-${index}`;
+				const outcome = Promise.withResolvers();
+				connections.set(id, {
+					index,
+					number: numbers[index - 1],
+					device: devices[(index - 1) % devices.length],
+					outcome,
+					decided: false
+				});
+				bump();
+				return route.fulfill({
+					status: 201,
+					headers: corsHeaders,
+					json: {
+						connection_id: id,
+						require_confirmation: true,
+						verify_code: numbers[index - 1],
+						device: devices[(index - 1) % devices.length],
+						expires_in: 170
+					}
+				});
+			}
+			case '/api/pipe/wait': {
+				const since = Number(new URL(request.url()).searchParams.get('since'));
+				if (since === version) {
+					await Promise.race([changed.promise, new Promise((r) => setTimeout(r, 1500))]);
+				}
+				const pending = [...connections.entries()].filter(([, c]) => !c.decided);
 				return route.fulfill({
 					headers: corsHeaders,
-					json: { status: 'ready' }
+					json: {
+						status: 'waiting',
+						version,
+						connections: pending.map(([id, c]) => ({
+							connection_id: id,
+							index: c.index,
+							verify_code: c.number,
+							device: c.device,
+							connected_seconds: 1
+						}))
+					}
 				});
-			case '/api/pipe/receive':
-				receiverJoinedResolve();
-				await senderStreamPromise;
+			}
+			case '/api/pipe/select':
+			case '/api/pipe/decline': {
+				const chosen = headers['x-flick-pipe-connection'];
+				for (const [id, c] of connections) {
+					if (c.decided) {
+						continue;
+					}
+					if (id === chosen) {
+						c.decided = true;
+						c.outcome.resolve(path === '/api/pipe/select' ? 'selected' : 'declined');
+					} else if (path === '/api/pipe/select') {
+						c.decided = true;
+						c.outcome.resolve('not_selected');
+					}
+				}
+				bump();
+				return route.fulfill({ headers: corsHeaders, json: { status: 'ok' } });
+			}
+			case '/api/pipe/receive': {
+				const c = connections.get(headers['x-flick-pipe-connection']);
+				const outcome = await c.outcome.promise;
+				if (outcome !== 'selected') {
+					return route.fulfill({
+						status: outcome === 'declined' ? 403 : 410,
+						headers: corsHeaders,
+						json: errorJson(outcome)
+					});
+				}
+				const body = await sent.promise;
 				return route.fulfill({
 					headers: {
 						...corsHeaders,
 						'Content-Type': 'application/octet-stream',
-						'X-Flick-Pipe-Salt': sharedSalt,
+						'X-Flick-Pipe-Salt': salt,
 						'Flick-Kind': 'text'
 					},
-					body: encryptedBuffer
+					body
 				});
-			case '/api/pipe/send':
-				senderStreamResolve();
+			}
+			case '/api/pipe/send': {
+				const body = request.postDataBuffer();
+				sent.resolve(body);
 				return route.fulfill({
 					headers: corsHeaders,
-					json: { bytes_transferred: encryptedBuffer.length }
+					json: { status: 'completed', bytes_transferred: body.length }
 				});
+			}
+			case '/api/pipe/cancel':
+				return route.fulfill({ headers: corsHeaders, json: { status: 'cancelled' } });
 			default:
 				return route.continue();
 		}
 	}
 
-	const setupRouting = async (page) => {
-		await page.route((url) => url.pathname.startsWith('/api/'), handleRelayRoute);
+	return { handle, joinCalls };
+}
+
+async function readOwnNumber(page) {
+	const label = await page.getByRole('img', { name: /^Your number/ }).getAttribute('aria-label');
+	return label.replace('Your number ', '').replaceAll(' ', '');
+}
+
+test('Waiting room: three receivers, sender denies one and sends to the number read aloud', async () => {
+	const relay = createRelayMock();
+	const contexts = [];
+	const openPage = async () => {
+		const context = await browser.newContext();
+		contexts.push(context);
+		const page = await context.newPage();
+		await routeApi(page, (path, route) => relay.handle(page, path, route));
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		return page;
 	};
 
 	try {
-		await setupRouting(senderPage);
-		await setupRouting(receiverPage);
-
-		// Step 1: Sender creates secret and starts live pipe rendezvous
-		await senderPage.goto(`${baseUrl}/`);
-		await senderPage.locator('#svelte-announcer').waitFor({ state: 'attached' });
-
-		await senderPage
-			.getByLabel('Message', { exact: true })
-			.fill('Real-time live relay transfer test');
-		await senderPage
+		const sender = await openPage();
+		const message = 'Real-time live relay transfer test';
+		await sender.getByLabel('Message', { exact: true }).fill(message);
+		await sender
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Send with code' })
 			.click();
-		// The 2-step scenario turns the opt-in confirmation on before starting.
-		await senderPage.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
-		await senderPage.getByRole('button', { name: 'Start live transfer' }).click();
+		await sender.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
+		await sender.getByRole('button', { name: 'Start live transfer' }).click();
+		await sender.getByLabel('Transfer code 741-928').waitFor();
 
-		// Waiting panel displays 6-digit code
-		const codeCard = senderPage.getByLabel('Transfer code 741-928');
-		await assert.doesNotReject(codeCard.waitFor({ state: 'visible' }));
+		// Three devices enter the same code; each shows its own number.
+		const receivers = [];
+		for (let i = 0; i < 3; i++) {
+			const receiver = await openPage();
+			await openReceiveDialog(receiver);
+			await receiver.locator('#pipe-code-input').fill('741928');
+			await receiver.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
+			receivers.push(receiver);
+		}
+		const [impostor, intended, bystander] = receivers;
+		const intendedNumber = await readOwnNumber(intended);
+		assert.notEqual(await readOwnNumber(impostor), intendedNumber);
 
-		// Step 2: Receiver connects with code 741928
-		await receiverPage.goto(`${baseUrl}/`);
-		await receiverPage.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await sender.getByText('3 of 10 devices waiting').waitFor();
 
-		await openReceiveDialog(receiverPage);
-		await receiverPage.locator('#pipe-code-input').fill(sharedPipeCode);
+		// Deny one row: only that device ends, the code stays live.
+		await sender.getByRole('button', { name: 'Deny connection 1' }).click();
+		const impostorDialog = impostor.getByRole('dialog', { name: 'Receive secret with code' });
+		await impostorDialog.getByRole('heading', { name: 'The sender declined this device' }).waitFor();
+		await sender.getByText('2 of 10 devices waiting').waitFor();
 
-		// Step 3: Sender sees confirmation challenge card
-		const confirmHeading = senderPage.getByRole('heading', { name: 'Confirm live transfer' });
-		await assert.doesNotReject(confirmHeading.waitFor({ state: 'visible' }));
+		// The declined browser remembers the decline: re-entering the code asks nothing.
+		const joinsBefore = relay.joinCalls.get(impostor);
+		await impostorDialog.getByRole('button', { name: 'Enter a new code' }).click();
+		await impostor.locator('#pipe-code-input').fill('741928');
+		await impostorDialog.getByRole('heading', { name: 'The sender declined this device' }).waitFor();
+		assert.equal(relay.joinCalls.get(impostor), joinsBefore);
 
-		// Both sender and receiver display matching Confirmation Code
-		const approveBtn = senderPage.getByRole('button', { name: 'Approve & send' });
-		await assert.doesNotReject(approveBtn.waitFor({ state: 'visible' }));
+		// Send to the row whose number the intended receiver reads out.
+		await sender
+			.getByRole('button', { name: `Send to connection 2, number ${intendedNumber}` })
+			.click();
 
-		// Step 4: Sender approves transfer
-		await approveBtn.click();
-
-		// Step 5: Transfer completes on both ends
-		const senderComplete = senderPage.getByRole('heading', { name: 'Transfer complete!' });
-		await assert.doesNotReject(senderComplete.waitFor({ state: 'visible' }));
-
-		const receiverSuccess = receiverPage.getByText('Secret decrypted directly in memory');
-		await assert.doesNotReject(receiverSuccess.waitFor({ state: 'visible' }));
-
-		// Receiver sees decrypted text
-		const receivedText = await receiverPage
-			.getByRole('dialog', { name: 'Receive secret with code' })
-			.locator('textarea')
-			.inputValue();
-		assert.equal(receivedText, 'Real-time live relay transfer test');
-
-		// Burn indicators visible
-		await assert.doesNotReject(
-			senderPage.getByText('live pipe burned').waitFor({ state: 'visible' })
+		await intended.getByText('Secret decrypted directly in memory').waitFor();
+		assert.equal(
+			await intended
+				.getByRole('dialog', { name: 'Receive secret with code' })
+				.locator('textarea')
+				.inputValue(),
+			message
 		);
-		await assert.doesNotReject(receiverPage.getByText('burned').waitFor({ state: 'visible' }));
+		await bystander
+			.getByRole('dialog', { name: 'Receive secret with code' })
+			.getByRole('heading', { name: 'The sender chose another device' })
+			.waitFor();
+		await sender.getByRole('heading', { name: 'Transfer complete!' }).waitFor();
+		await sender.getByText('live pipe burned').waitFor();
 	} finally {
-		await senderContext.close();
-		await receiverContext.close();
+		for (const context of contexts) {
+			await context.close();
+		}
 	}
 });

@@ -186,6 +186,80 @@ original expiry at acceptance, and object read failures never consume.
 Generation exhaustion returns unavailable. Recurring request-prefix cleanup
 handles late writes even after capability metadata is gone.
 
+## Live Relay (Send with Code)
+
+The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
+one browser to another through API memory; it writes nothing to SQLite or
+object storage. The browser derives the age passphrase from the 6-digit code,
+the server-issued salt, and an optional extra passphrase
+(`web/src/lib/crypto/pipe.ts` `computePipePassphrase`). The server issues both
+the code and the salt, so without the extra passphrase this mode trusts the
+server like Model B trusts the link holder: a server that turns malicious could
+decrypt the stream. It is not end-to-end encrypted against the server.
+
+Credentials and what they unlock:
+
+- `POST /api/pipe/init` returns the 6-digit code, the salt, and a random sender
+  token. Only the sender token unlocks the sender calls (`/wait`, `/select`,
+  `/decline`, `/cancel`, `/send`). A wrong token answers `404` exactly like an
+  unknown code, so those calls are no code oracle, and knowing the 6-digit code
+  is not enough to watch the list, pick a device, cancel, or inject a stream.
+- `POST /api/pipe/join` is the only call that accepts a bare 6-digit code. It is
+  rate-limited per client IP by `FLICK_OPEN_RATE_PER_MIN` and returns an
+  unguessable connection ID that `/receive` needs.
+
+**Confirmation on ("Require confirmation before transfer").** The session is a
+waiting room. Every device that enters the right code is held as a pending
+connection, up to `MaxPendingConnections` (10) in
+`internal/piperelay/coordinator.go`. Each connection gets its own 3-digit
+verification number from crypto/rand, unique among the waiting connections and
+independent of the 6-digit code, so knowing the code reveals nothing about any
+device's number. The receiver reads its number to the sender over another
+channel (voice, chat); the sender sees every waiting connection with its
+number, a coarse device label such as "Safari on iPhone", and its wait time,
+then sends to the matching row. Every other waiting device ends with "The sender
+chose another device" and receives nothing. The check is the sender's eyes:
+there is no receiver-side typing or mutual confirmation, and it proves only that
+the stream goes to the device that showed that number. It does not defend
+against a compromised server, which draws the numbers.
+
+The sender can deny a single row. That device ends with "The sender declined
+this device", its slot reopens, and the session stays alive. The API also blocks
+the same client from rejoining the session: it keeps a SHA-256 of the client IP
+(resolved through `FLICK_TRUSTED_PROXIES`, the same way as the rate limiter) and
+the User-Agent, in memory only, for the session's lifetime
+(`internal/httpapi/piperelay.go` `pipeClientKey`). The block is deliberately
+coarse. Another device behind the same NAT with the same browser and OS string
+is blocked too for that one short session, and a determined person can change
+network or User-Agent to get back in; the sender can deny them again. The
+declined browser also remembers the decline in `sessionStorage` as a SHA-256 of
+the code plus the session's expiry time
+(`web/src/lib/state/pipe-declined.ts`), so a reload does not ask again. The
+entry never holds the code itself, the salt, or the passphrase, and a 6-digit
+code's hash is brute-forceable, so it is treated as no more secret than the
+code the user already typed on that device.
+
+**Confirmation off.** The first device to open `/receive` wins and every later
+device gets `409 already_connected`. Anyone who learns the 6-digit code first
+can take the transfer, so this mode suits codes shared over a channel the
+sender trusts.
+
+**No burn on rejected receivers.** A wrong 6-digit code never reaches a session
+(the code is the lookup key), so a per-session failed-attempt counter can only
+ever count people who held the right code. Late, extra, declined, and room-full
+receivers therefore never end a session or count against it; online code
+guessing is bounded by the `/join` rate limit and the 3-minute window. An 11th
+waiting device gets `409 room_full` and the session stays alive.
+
+**A started stream is never cut by a burn.** Sender cancel returns `409
+streaming` once bytes flow, and the rendezvous TTL cleanup skips streaming
+sessions until `maxTransferDuration` (10 minutes). Only the stream itself
+failing, either side disconnecting, or a server shutdown ends it.
+
+The API never logs 6-digit codes, verification numbers, sender tokens,
+connection IDs, client keys, or User-Agents. Device labels live in memory only,
+for the session's lifetime.
+
 ## Structured Credentials
 
 Structured credentials are a browser-side text-secret encoding, not a new server

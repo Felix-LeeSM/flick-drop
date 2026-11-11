@@ -29,6 +29,30 @@ send-secret routes and worker ownership are unchanged.
 
 The API also publishes async jobs through an outbox table and NATS JetStream.
 
+`internal/piperelay` implements the live relay ("Send with code") behind
+`/api/pipe/*` (`internal/httpapi/piperelay.go`). Its sessions live only in the
+memory of one API process: nothing reaches `api.db`, NATS, the worker, or
+object storage, and a restart drops every open session. Because the sender's
+long-poll (`/wait`), the receivers' `/join` and `/receive`, and the stream
+(`/send`) must all reach the process that holds the session, the relay depends
+on the single API replica in `deploy/base/api.yaml` (`replicas: 1`); scaling the
+API out would first need session-sticky routing by code. The flow:
+
+1. Sender `POST /api/pipe/init` gets the 6-digit code, salt, and sender token.
+2. Each receiver `POST /api/pipe/join` with the code gets a connection ID (and,
+   with confirmation on, its own 3-digit number), then holds
+   `GET /api/pipe/receive` open.
+3. Sender long-polls `GET /api/pipe/wait?since=N` (up to 25 seconds per poll,
+   under the 100-second proxy idle cut) for the waiting list or, with
+   confirmation off, for the first receiver.
+4. With confirmation on the sender calls `POST /api/pipe/select` or
+   `POST /api/pipe/decline` per connection; `POST /api/pipe/cancel` burns the
+   session before streaming.
+5. Sender `POST /api/pipe/send` streams into the chosen receiver's `/receive`.
+
+`docs/architecture/security-model.md` (Live Relay) defines what each credential
+unlocks and why rejected receivers never burn a session.
+
 ### `flick-worker`
 
 Long-running worker Deployment. It consumes NATS JetStream jobs and performs
