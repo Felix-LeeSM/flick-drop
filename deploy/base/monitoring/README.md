@@ -194,7 +194,7 @@ from a pod-network pod, 401 from a hostNetwork pod). Its ClusterRole grants only
 `nodes/metrics` get; the API-server proxy path would avoid hostNetwork but needs
 `nodes/proxy`, which also reaches kubelet exec. The Alloy HTTP server listens on
 `127.0.0.1:12346` so the debug UI is not published on the node IP, so the pod
-has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160Mi (measured 39-96Mi right after start; the request tracks the settled size, so up to ~32Mi of the start-up peak sits outside the scheduler's accounting).
+has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160Mi (measured 39-96Mi right after start; the request sits below that peak, so up to ~32Mi of the start-up peak sits outside the scheduler's accounting).
 
 ## Grafana — the admin view
 
@@ -216,10 +216,16 @@ percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
 Pods table, per-node history graphs, and per-container actual memory (working
 set) and CPU graphs from cAdvisor (see `alloy-cadvisor` above). Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
-`Nodes down` is the larger of two counts: nodes whose Ready condition is not
-true (`kube_node_status_condition`, from the kube-state-metrics nodes collector)
-and failed node-exporter scrapes. The second count keeps the panel honest when
-the node hosting the single kube-state-metrics replica is the one that died.
+`Nodes down` counts nodes whose Ready condition is not true
+(`kube_node_status_condition`, from the kube-state-metrics nodes collector), and
+counts 1 while kube-state-metrics itself fails its scrape
+(`up{job="kube-state-metrics"} == 0`): when the node hosting the single
+kube-state-metrics replica dies, the Ready series go stale, but the static
+scrape target keeps reporting `up=0` until the replica is rescheduled and
+reports that node NotReady. Failed node-exporter scrapes are not a substitute:
+the headless Service drops a dead node's NotReady pod from DNS within about a
+minute, so the target vanishes instead of reporting `up=0`. A restarting
+kube-state-metrics pod also reads as 1 for a scrape or two.
 The Container restarts panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
