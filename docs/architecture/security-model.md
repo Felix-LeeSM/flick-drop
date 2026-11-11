@@ -246,11 +246,22 @@ network (an IPv4 address or an IPv6 /64) can hold at most 3 waiting
 connections per session (`MaxPendingPerNetwork`); the next one gets `409
 network_full`.
 
-Residual risk: someone who holds the right 6-digit code and keeps polling
-`/status` keeps their slots for the session's 3-minute window. The per-network
-cap means filling all 10 slots takes at least 4 networks, and the sender sees
-every such row and can deny it, but a code holder with many networks can still
-crowd the room until the sender asks for a new code.
+One connection holds at most 2 open `/status` calls
+(`MaxStatusPollsPerConnection`; the next gets `409 poll_in_progress`), and
+`/status` is rate-limited to 120 calls a minute per client network
+(`internal/httpapi/piperelay.go` `pipeStatusRatePerMinute`), so a connection ID
+cannot pile up server goroutines and sockets.
+
+Residual risk: someone who holds the right 6-digit code can keep slots for the
+session's 3-minute window in two ways. They can keep polling `/status`, or they
+can skip polling and re-join roughly every 35 seconds as each idle connection
+drops, spending only `/join` rate-limit tokens. The per-network cap means
+filling all 10 slots takes at least 4 networks, and the sender sees every such
+row and can deny it, but a code holder with many networks can still crowd the
+room until the sender asks for a new code. Keying by IPv6 /64 also still hands
+a holder of a larger prefix (a /56 has 256 /64s, a /48 has 65,536) that many
+separate join buckets and per-network caps. A global or per-session cap on
+joins is a possible future hardening; it is not implemented.
 
 The sender can deny a single row. That device ends with "The sender declined
 this device", its slot reopens, and the session stays alive. The API also blocks
