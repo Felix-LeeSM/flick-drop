@@ -381,28 +381,54 @@ func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
 	}
 }
 
-// TestPurgeKeepsStreamingObjectProtected opens an S3 body just before the
-// secret expires. The expiry purge must not delete its row while the stream may
-// still run, because that row is what keeps reconciliation away from the object.
-func TestPurgeKeepsStreamingObjectProtected(t *testing.T) {
+// 열람은 secrets 행과 관리 행을 즉시 지운다. 그래도 수신자에게 아직 스트리밍 중일 수
+// 있는 객체는 객체 키와 유예 마감만 담은 secret_open_grace 행이 openObjectGrace 동안
+// 재조정(reconciliation)으로부터 보호하고, 유예가 지나면 객체는 고아로 삭제 예약되며
+// 유예 행도 reaper가 지운다.
+func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) {
+	// Given: 방금 열람한 S3 시크릿
 	ctx := context.Background()
-	now := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
 	conn := openTestDB(t, ctx)
 	objects := newMockObjectStore()
 	store := newLargeTestStore(t, conn, objects)
-	f := secretFixture{
-		id: "late", storageBackend: StorageS3, storageKey: managedObjectPrefix + "late",
-		expiresAt: now.Add(-time.Minute), consumedAt: now.Add(-2 * time.Minute), createdAt: now.Add(-time.Hour),
-	}
-	insertSecret(t, ctx, conn, f)
-	if _, err := conn.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at, outcome) values (?, ?, ?, 'opened')`,
-		f.id, make([]byte, 32), f.expiresAt.Format(managementTimeFormat)); err != nil {
+	store.SetNowForTest(func() time.Time { return now })
+	created, err := store.CreateLarge(ctx, CreateLargeInput{Kind: KindFile, EncryptedFilename: ageField(200), SizeBytes: 100, TTLSeconds: 600})
+	if err != nil {
 		t.Fatal(err)
 	}
-	objects.objects[f.storageKey] = ageBody(100)
-	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
+	key := managedObjectPrefix + created.ID
+	objects.objects[key] = ageBody(100)
+	if err := store.Finalize(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openS3(t, ctx, conn, store, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened.Body.Close()
 
-	// ClaimOnce runs the expiry purge and then one reconciliation page.
+	// Then: 시크릿 ID로 찾을 수 있는 행은 없고, 유예 행은 키와 마감만 가진다
+	count := func(query string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := conn.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(`select count(*) from secrets where id = ?`, created.ID) + count(`select count(*) from secret_management where secret_id = ?`, created.ID); n != 0 {
+		t.Fatalf("%d rows still remember the opened ID", n)
+	}
+	if n := count(`select count(*) from pragma_table_info('secret_open_grace') where name not in ('object_key', 'grace_until')`); n != 0 {
+		t.Fatalf("secret_open_grace has %d columns beyond the key and deadline", n)
+	}
+	if n := count(`select count(*) from secret_open_grace where object_key = ?`, key); n != 1 {
+		t.Fatalf("grace rows for the streaming object = %d, want 1", n)
+	}
+
+	// When: reaper가 유예 직전과 유예 마감에 각각 한 번씩 돈다
+	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
 	tick := func(at time.Time) int {
 		t.Helper()
 		reaper.SetNowForTest(func() time.Time { return at })
@@ -411,18 +437,20 @@ func TestPurgeKeepsStreamingObjectProtected(t *testing.T) {
 		}
 		return len(readOutboxEvents(t, ctx, conn))
 	}
-	if n := tick(now); n != 0 {
+	if n := tick(now.Add(openObjectGrace - time.Nanosecond)); n != 0 {
 		t.Fatalf("%d object delete jobs while the body may still stream, want 0", n)
 	}
-	var rows int
-	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 1 {
-		t.Fatalf("streaming row count = %d (%v), want it kept", rows, err)
+	if n := count(`select count(*) from secret_open_grace`); n != 1 {
+		t.Fatalf("grace row purged before its deadline (%d rows)", n)
 	}
-	if n := tick(f.consumedAt.Add(openObjectGrace)); n != 1 {
+	if n := tick(now.Add(openObjectGrace)); n != 1 {
 		t.Fatalf("%d object delete jobs after the grace, want 1", n)
 	}
-	if err := conn.QueryRowContext(ctx, `select count(*) from secrets where id = ?`, f.id).Scan(&rows); err != nil || rows != 0 {
-		t.Fatalf("row count after the grace = %d (%v), want purged", rows, err)
+	if jobs := readOutboxEvents(t, ctx, conn); jobs[0].ObjectKey != key {
+		t.Fatalf("deleted %q, want %q", jobs[0].ObjectKey, key)
+	}
+	if n := count(`select count(*) from secret_open_grace`); n != 0 {
+		t.Fatalf("grace rows after the deadline = %d, want purged", n)
 	}
 }
 

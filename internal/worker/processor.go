@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -116,12 +117,12 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result Pro
 		err = p.acknowledger.AcknowledgeObjectCleanup(ackCtx, event)
 	}()
 
-	canonicalPayload, err := event.JSON()
+	deadLetterPayload, err := deadLetterPayloadJSON(event)
 	if err != nil {
 		return ProcessResult{}, err
 	}
 
-	started, err := p.store.Start(ctx, event.JobID, event.Kind, string(canonicalPayload), p.maxAttempts)
+	started, err := p.store.Start(ctx, event.JobID, event.Kind, deadLetterPayload, p.maxAttempts)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrJobProcessing):
@@ -149,7 +150,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result Pro
 		return result, ctx.Err()
 	}
 	if jobErr != nil {
-		return p.finishFailed(ctx, event, string(canonicalPayload), started.Attempt, result, jobErr)
+		return p.finishFailed(ctx, event, deadLetterPayload, started.Attempt, result, jobErr)
 	}
 	if err := p.store.MarkSucceeded(ctx, started.Attempt.ID); err != nil {
 		return result, err
@@ -174,6 +175,29 @@ func (p *Processor) ProcessMessage(ctx context.Context, payloadJSON []byte) (eve
 		return events.MessageRetry, nil
 	}
 	return events.MessageAck, nil
+}
+
+// deadLetterPayloadJSON validates the event and returns the payload a dead
+// letter stores. An object delete drops its object_key: the key
+// (managed/secrets/{id}) names a secret, dead_letters is never pruned, and no
+// one replays a dead letter (a dead receipt is terminal). The live job keeps
+// its key for every attempt, and after the dead-letter acknowledgement the API
+// reconciliation scan re-finds a surviving object with a fresh job.
+func deadLetterPayloadJSON(event events.JobEvent) (string, error) {
+	payload, err := event.JSON()
+	if err != nil {
+		return "", err
+	}
+	if event.Kind != events.KindDeleteOCIObject {
+		return string(payload), nil
+	}
+	event.ObjectKey = ""
+	// Validate would reject the keyless event, so marshal it directly.
+	redacted, err := json.Marshal(event)
+	if err != nil {
+		return "", fmt.Errorf("marshal dead-letter payload: %w", err)
+	}
+	return string(redacted), nil
 }
 
 func (p *Processor) finishFailed(

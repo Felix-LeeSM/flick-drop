@@ -89,8 +89,12 @@ No response contains ciphertext, encrypted filenames, keys, access proofs, a
 recipient URL, or the raw management token again.
 
 Missing, malformed, wrong-ID, wrong, expired, and unknown tokens/records return
-the same `404` error code `management_unavailable`, with no status fields.
-Authenticated cancellation of `opened`, `locked`, or `unavailable` returns `409`
+the same `404` error code `management_unavailable`, with no status fields:
+`{"error":{"code":"management_unavailable","message":"management link is unavailable"}}`
+with `Cache-Control: no-store`. An opened delivery has no record left (see
+"Opened means forgotten"), so its status read and cancellation return that
+response byte for byte, as does a cancellation that loses the race to an open.
+Authenticated cancellation of `locked` or `unavailable` returns `409`
 code `not_cancellable` plus the same safe status snapshot, encoded as
 `{"error":{"code":"not_cancellable","message":"Delivery cannot be cancelled"},"status":{...}}`. Repeated cancellation
 of `cancelled` returns `200`; it does not schedule duplicate immediate jobs.
@@ -100,13 +104,17 @@ Malformed JSON returns `400`; rate limits use `429`; transient failures use
 shared by status/revoke; do not spend recipient proof-attempt counts.
 
 Public recipient metadata retains its existing fields and error behavior; do
-not add management-only outcomes or management credentials there. Existing
-public active/404/410 responses are not promised to conceal all delivery state.
+not add management-only outcomes or management credentials there. After an
+open, recipient metadata and a repeated `/open` return the unknown-ID `404`
+`not_found` response byte for byte; `410` remains for locked (consumed by
+invalid proofs) and expired secrets, which are not promised to conceal all
+delivery state.
 
 ## States, expiry, and minimum metadata
 
 Management authority ends at the original secret `expires_at`, including after
-an early open, lockout, cancellation, or abandoned upload. No extra history
+lockout, cancellation, or an abandoned upload. A successful open ends it at
+once, because the open deletes the management record. No extra history
 window or configurable management TTL is introduced. Authorize with server UTC
 and `now < expires_at`; at the boundary, the uniform unavailable response wins.
 
@@ -114,19 +122,41 @@ and `now < expires_at`; at the boundary, the uniform unavailable response wins.
 | --- | --- | --- |
 | `pending_upload` | Staged object not finalized, pending deadline not reached | `true` |
 | `active` | Available for one-time opening | `true` |
-| `opened` | The verified open transaction committed permission to release ciphertext | `false` |
 | `locked` | Five invalid access proofs exhausted access | `false` |
 | `cancelled` | Sender cancellation won before opening | `false` |
 | `unavailable` | Pending upload was reclaimed without activation | `false` |
 
-`opened` does not prove HTTP delivery, decryption, reading, or a recipient's
-identity. An interrupted HTTP response after commit is still `opened`.
-`consumed_at` alone is insufficient: current `recordFailedAccessTx` sets it for
-lockout as well as `OpenTx` for a successful open.
+There is no `opened` status. Earlier releases reported one until expiry; it
+is no longer written, and `internal/db/migrations.go:forgetOpenedSecrets`
+removes stored ones.
+
+### Opened means forgotten
+
+Once the verified open transaction commits, the server keeps nothing that
+says a delivery existed under that ID. `OpenTx` deletes the `secrets` row, its
+inline payload, and its `secret_management` record in that transaction. Every
+later request for the ID (management status, cancellation, recipient metadata,
+repeated open) gets the response an unknown ID gets. A sender who sees
+"Management link unavailable" for a delivery they shared cannot tell from the
+server whether it was opened or the link is wrong; the product accepts that.
+The commit does not prove HTTP delivery, decryption, reading, or a
+recipient's identity; an interrupted response after commit is still forgotten.
+
+A bucket body may still be streaming after the commit. A separate
+`secret_open_grace` row holding only the object key and a grace deadline (the
+30-minute stream limit plus 5 minutes) keeps reconciliation from deleting it;
+the API reaper deletes that row after the deadline. The managed key itself is
+`managed/secrets/{id}`, so during the grace the key still names the ID. The
+existing `delete_oci_object` job queued after streaming also carries the key,
+and its `outbox_events` row is pruned one hour after publishing (a `failed`
+row stays for diagnosis and keeps the key until it publishes). Inline
+deliveries queue no job on open.
+Aggregate usage counters (`usage_counters`) count opens without IDs.
 
 Add an API-owned `secret_management` record for new deliveries containing only
 `secret_id`, `token_hash`, the original `expires_at`, and nullable `outcome`
-(`opened`, `locked`, `cancelled`, or `unavailable`). Create the record in the
+(`locked`, `cancelled`, or `unavailable`; the column CHECK still admits the
+retired `opened` value). Create the record in the
 same transaction as the secret. There is no cascade from payload/secret-row
 deletion to management metadata: early cleanup must not erase the sender's
 outcome. Pending/active come from the live secret row; record terminal outcomes
@@ -164,7 +194,8 @@ or commit must roll everything back. An acknowledged cancellation is irreversibl
 
 `OpenTx`, proof lockout, cancellation, expiry, and `Finalize` must use compatible
 conditional mutations and affected-row checks. Exactly one terminal transition
-wins. A completed open prevents cancellation; completed cancellation prevents
+wins. A completed open prevents cancellation, and the losing cancellation
+returns the unknown-ID `404`; completed cancellation prevents
 all later open/finalize success, including a finalize already performing HEAD.
 Recheck state and expiry at the mutation, not only before network I/O. Do not
 change a cancellation into `opened` merely because an object still exists.
@@ -256,5 +287,5 @@ provider and permissions rather than infer them from an S3-compatible label.
   rows, legacy keys, or keys outside `managed/secrets/`.
 - Browser checks cover initial recipient sharing, Model B fragment preservation,
   refresh/new-device management, no persistent key handoff, invalid/expired URLs,
-  locked versus opened copy, and cancellation races. Inspect requests/storage;
+  opened deliveries reading as unavailable, locked copy, and cancellation races. Inspect requests/storage;
   management tokens and recipient keys must never cross their defined boundaries.

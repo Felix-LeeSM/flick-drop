@@ -31,6 +31,58 @@ func newTestReaper(t *testing.T, conn *sql.DB, store *Store, outbox outboxEnqueu
 	return reaper
 }
 
+// 발행된 outbox 행은 객체 키나 시크릿 ID를 담고 있으므로 보존 기간(1시간)이 지나면
+// reaper가 지운다. 아직 보존 기간 안인 발행 행과 진단에 필요한 failed·pending 행은 남는다.
+func TestReaperPrunesPublishedOutboxRowsAfterRetention(t *testing.T) {
+	// Given: 오래된 발행 행, 최근 발행 행, 오래된 failed 행, pending 행
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	outbox := newTestOutbox(t, conn)
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	for _, row := range []struct {
+		id, state   string
+		publishedAt any
+	}{
+		{"published-old", events.StatePublished, now.Add(-time.Hour).Format(time.RFC3339Nano)},
+		{"published-recent", events.StatePublished, now.Add(-time.Hour + time.Second).Format(time.RFC3339Nano)},
+		{"failed-old", events.StateFailed, nil},
+		{"pending", events.StatePending, nil},
+	} {
+		created := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+		if _, err := conn.ExecContext(ctx, `insert into outbox_events (id, subject, payload_json, state, next_attempt_at, published_at, created_at, updated_at)
+			values (?, 'test.jobs', '{"object_key":"managed/secrets/synthetic"}', ?, ?, ?, ?, ?)`,
+			row.id, row.state, created, row.publishedAt, created, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// When: reaper가 한 번 돈다
+	reaper := newTestReaper(t, conn, store, outbox, 10)
+	reaper.SetNowForTest(func() time.Time { return now })
+	if _, err := reaper.ClaimOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: 보존 기간이 지난 발행 행만 사라진다
+	rows, err := conn.QueryContext(ctx, `select id from outbox_events order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var left []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, id)
+	}
+	if want := []string{"failed-old", "pending", "published-recent"}; !reflect.DeepEqual(left, want) {
+		t.Fatalf("outbox rows = %v, want %v", left, want)
+	}
+}
+
 func TestReaperPurgesRequestsAtOriginalDeadline(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)

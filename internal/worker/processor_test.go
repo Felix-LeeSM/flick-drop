@@ -167,6 +167,63 @@ func TestProcessorFailedJobLogsErrorWithStack(t *testing.T) {
 	}
 }
 
+// 열람된 객체의 삭제가 실패해도 worker.db(시도·영수증·데드레터)와 로그에 객체 키나
+// 시크릿 ID가 남지 않는다. 버킷 SDK 오류 문자열이 키를 품어도 가려진다.
+func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
+	// Given: 오류 문구에 키를 담는 버킷과 열람 뒤 삭제 작업
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	ctx := context.Background()
+	store := newTestReceiptStore(t, ctx)
+	const secretID = "SYNTHsecretIDforLeakCheck"
+	key := "managed/secrets/" + secretID
+	bucket := &fakeObjectDeleter{err: errors.New(`Delete "https://bucket.example/` + key + `": dial tcp: connection refused`)}
+	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, bucket, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack := acknowledgeFunc(func(context.Context, events.JobEvent) error { return nil })
+	processor, err := NewProcessor(store, handler, ProcessorOptions{MaxAttempts: 2, Acknowledger: ack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := (events.JobEvent{JobID: "job_opened_delete", Kind: events.KindDeleteOCIObject, ObjectKey: key,
+		Backend: "s3_object", Reason: events.ReasonConsumed, RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When: 재시도 한도까지 실패해 데드레터가 된다
+	for range 2 {
+		_, _ = processor.Process(ctx, payload)
+		if _, err := store.db.ExecContext(ctx, `update job_receipts set updated_at = '2000-01-01T00:00:00Z'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Then: 저장된 행 어디에도, 로그에도 ID가 없고 데드레터는 남아 있다
+	var stored string
+	if err := store.db.QueryRowContext(ctx, `select
+		(select group_concat(coalesce(last_error, '') || state) from job_receipts) ||
+		(select group_concat(coalesce(error, '')) from job_attempts) ||
+		(select group_concat(payload_json || error) from dead_letters)`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, StateDead) || !strings.Contains(stored, "job_opened_delete") {
+		t.Fatalf("job did not dead-letter: %s", stored)
+	}
+	for name, text := range map[string]string{"worker.db": stored, "log": buf.String()} {
+		if strings.Contains(text, secretID) {
+			t.Fatalf("%s keeps the opened secret ID: %s", name, text)
+		}
+	}
+	if !strings.Contains(buf.String(), "connection refused") {
+		t.Fatalf("log lost the failure cause: %s", buf.String())
+	}
+}
+
 func TestProcessorDeadLettersAtRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)

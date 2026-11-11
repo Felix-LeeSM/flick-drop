@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -85,6 +86,13 @@ func TestManagementHTTPAuthorizationAndOutcomes(t *testing.T) {
 				t.Fatalf("cleanup: %d", resp.Code)
 			}
 			resp = performJSON(t, f.router, http.MethodGet, path+"/management", nil, headers)
+			if outcome == "opened" {
+				// Opened means forgotten: the valid token now gets the unknown-ID body.
+				if resp.Code != http.StatusNotFound || resp.Body.String() != rejection {
+					t.Fatalf("opened delivery distinguished: %d %s", resp.Code, resp.Body.String())
+				}
+				return
+			}
 			decodeBody(t, resp, &snapshot)
 			if snapshot["status"] != outcome || snapshot["can_cancel"] != false {
 				t.Fatalf("terminal snapshot: %v", snapshot)
@@ -165,5 +173,56 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	text["size_bytes"] = 2048
 	if resp := performJSON(t, router, http.MethodPost, "/api/secrets", text); resp.Code != http.StatusBadRequest {
 		t.Fatalf("large text create status = %d, want 400", resp.Code)
+	}
+}
+
+// 열람이 끝난 시크릿은 서버가 그 ID의 존재를 잊는다. 관리 조회·취소와 수신자
+// 메타데이터·재열람 모두 한 번도 없던 ID와 상태 코드·헤더·본문이 바이트 단위로 같고,
+// DB와 outbox에도 그 ID가 남지 않는다.
+func TestOpenedSecretIsIndistinguishableFromUnknownID(t *testing.T) {
+	// Given: 열람된 시크릿 하나와 한 번도 만들어진 적 없는 ID
+	f := newTestRouterFixture(t, Options{OpenRatePerMinute: 100})
+	resp := performJSON(t, f.router, http.MethodPost, "/api/secrets", validCreateSecretBody())
+	var created createSecretResponse
+	decodeBody(t, resp, &created)
+	headers := map[string]string{"Authorization": "Bearer " + created.ManagementToken}
+	proof := map[string]string{"access_proof": base64.StdEncoding.EncodeToString([]byte("proof"))}
+	if resp := performJSON(t, f.router, http.MethodPost, "/api/secrets/"+created.ID+"/open", proof); resp.Code != http.StatusOK {
+		t.Fatalf("open: %d", resp.Code)
+	}
+	unknownID := "AAAAAAAAAAAAAAAAAAAAAAAA"
+
+	// When / Then: 같은 요청을 두 ID에 보내면 응답이 완전히 같다
+	for _, req := range []struct {
+		name, method, suffix string
+		body                 any
+		headers              map[string]string
+	}{
+		{"management status", http.MethodGet, "/management", nil, headers},
+		{"management revoke", http.MethodPost, "/revoke", map[string]any{}, headers},
+		{"recipient metadata", http.MethodGet, "", nil, nil},
+		{"recipient reopen", http.MethodPost, "/open", proof, nil},
+	} {
+		t.Run(req.name, func(t *testing.T) {
+			opened := performJSON(t, f.router, req.method, "/api/secrets/"+created.ID+req.suffix, req.body, req.headers)
+			unknown := performJSON(t, f.router, req.method, "/api/secrets/"+unknownID+req.suffix, req.body, req.headers)
+			if opened.Code != unknown.Code || !reflect.DeepEqual(opened.Header(), unknown.Header()) || opened.Body.String() != unknown.Body.String() {
+				t.Fatalf("opened %d %v %q, unknown %d %v %q", opened.Code, opened.Header(), opened.Body.String(), unknown.Code, unknown.Header(), unknown.Body.String())
+			}
+			if opened.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", opened.Code)
+			}
+		})
+	}
+	for _, query := range []string{
+		`select count(*) from secrets where id = ?`,
+		`select count(*) from secret_payloads where secret_id = ?`,
+		`select count(*) from secret_management where secret_id = ?`,
+		`select count(*) from outbox_events where instr(payload_json, ?) > 0`,
+	} {
+		var n int
+		if err := f.db.QueryRow(query, created.ID).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("%s: %d rows remember the opened ID (%v)", query, n, err)
+		}
 	}
 }

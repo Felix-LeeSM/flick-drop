@@ -1,12 +1,6 @@
 import { DEFAULT_API_BASE_URL, SecretApiError } from './secrets';
 
-export type ManagementStatus =
-	| 'pending_upload'
-	| 'active'
-	| 'opened'
-	| 'locked'
-	| 'cancelled'
-	| 'unavailable';
+export type ManagementStatus = 'pending_upload' | 'active' | 'locked' | 'cancelled' | 'unavailable';
 export type ManagementSnapshot = {
 	id: string;
 	status: ManagementStatus;
@@ -51,7 +45,6 @@ function snapshotFrom(value: unknown, id: string): ManagementSnapshot {
 	const statuses: ManagementStatus[] = [
 		'pending_upload',
 		'active',
-		'opened',
 		'locked',
 		'cancelled',
 		'unavailable'

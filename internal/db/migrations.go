@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func MigrateAPI(ctx context.Context, conn *sql.DB) error {
@@ -83,6 +84,17 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
 		)`,
 		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
+		// An opened secret's rows are deleted in the open transaction, but its
+		// bucket body may still be streaming to the recipient. This row alone
+		// keeps object reconciliation away from that body until grace_until; it
+		// holds no secret ID column, kind, or size (the managed key itself is
+		// managed/secrets/{id}). grace_until uses the fixed-width
+		// secrets.managementTimeFormat so the reaper's purge compares as text.
+		`create table if not exists secret_open_grace (
+			object_key text primary key,
+			grace_until datetime not null
+		)`,
+		`create index if not exists idx_secret_open_grace_until on secret_open_grace(grace_until)`,
 		// Daily aggregate usage counters (internal/usage): counts only, no IDs,
 		// IPs, or content metadata. Secrets and requests rows are hard-deleted on
 		// expiry, so these rows are the durable usage history; they are never
@@ -143,7 +155,61 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			where reclaim_enqueued_at is null and consumed_at is null`); err != nil {
 		return fmt.Errorf("create reclaim-pending index: %w", err)
 	}
+	if err := forgetOpenedSecrets(ctx, conn, time.Now().UTC()); err != nil {
+		return err
+	}
+	// Earlier releases never deleted published outbox rows, whose payloads name
+	// object keys and secret IDs. This clears that backlog at once; afterwards
+	// the API reaper prunes them in bounded batches (events.PurgePublishedTx).
+	// The hour mirrors events.PublishedRetention; db cannot import events
+	// because the events tests import db. Failed rows stay for diagnosis.
+	if _, err := conn.ExecContext(ctx, `delete from outbox_events where state = 'published'
+			and julianday(published_at) <= julianday(?)`, time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("purge published outbox events: %w", err)
+	}
 	return normalizeRequestsSchema(ctx, conn)
+}
+
+// forgetOpenedSecrets removes what earlier releases kept after a successful
+// open: the consumed secrets row (with its payload, by cascade) and the
+// 'opened' management outcome. An opened row is one with consumed_at set and
+// view_count > 0; a lockout sets consumed_at without a view, so locked rows
+// stay. An object-store row opened within objectGrace (storage_usage.go, the
+// secrets openObjectGrace) may still be streaming, so its key and deadline move
+// to secret_open_grace before the row goes. Runtime opens delete these rows
+// themselves, so after the first run this is a no-op.
+func forgetOpenedSecrets(ctx context.Context, conn *sql.DB, now time.Time) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin opened secrets purge: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	const opened = `consumed_at is not null and view_count > 0`
+	graceMinutes := objectGrace.Minutes()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		// strftime's %f stops at milliseconds; the literal pads it to the
+		// nanosecond width of secrets.managementTimeFormat.
+		{`insert or ignore into secret_open_grace (object_key, grace_until)
+			select storage_key, strftime('%Y-%m-%dT%H:%M:%f000000Z', julianday(consumed_at) + ? / 1440.0)
+			from secrets where ` + opened + ` and storage_backend in ('s3_object', 'r2_object')
+				and julianday(consumed_at) > julianday(?)`, []any{graceMinutes, now.Add(-objectGrace).Format(time.RFC3339Nano)}},
+		{`delete from secret_management where outcome = 'opened'
+			or secret_id in (select id from secrets where ` + opened + `)`, nil},
+		{`delete from secrets where ` + opened, nil},
+	} {
+		if _, err := tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			return fmt.Errorf("purge opened secrets: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit opened secrets purge: %w", err)
+	}
+	return nil
 }
 
 // dropAESGCMSecrets removes a secrets table that still has the AES-GCM `nonce`

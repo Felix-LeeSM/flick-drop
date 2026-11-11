@@ -119,18 +119,35 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 }
 
 func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, now time.Time) (bool, error) {
+	// A just-opened body may still be streaming to the recipient; its secret
+	// row is already gone, and the open handler enqueues its delete when the
+	// stream ends. The grace record protects it until the stream deadline has
+	// certainly passed, then it is reconciled like any orphan.
+	var graceRaw string
+	err := tx.QueryRowContext(ctx, `select grace_until from secret_open_grace where object_key = ?`, key).Scan(&graceRaw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("check streaming object protection: %w", err)
+	}
+	if err == nil {
+		graceUntil, err := parseTime(graceRaw)
+		if err != nil {
+			return false, fmt.Errorf("parse streaming grace: %w", err)
+		}
+		if now.Before(graceUntil) {
+			return true, nil
+		}
+	}
 	var state, expiresRaw, createdRaw string
 	var consumedRaw sql.NullString
-	err := tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
+	err = tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("check live object protection: %w", err)
 	}
-	// A just-opened body may still be streaming to the recipient; the open
-	// handler enqueues its delete when the stream ends. Protect it until the
-	// stream deadline has certainly passed, then reconcile it like any orphan.
+	// Only a locked row is still consumed here (opens delete their row), and
+	// lockout queues its object delete at once; the grace stays as a margin.
 	if consumedRaw.Valid {
 		consumed, err := parseTime(consumedRaw.String)
 		if err != nil {

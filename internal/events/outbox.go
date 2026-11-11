@@ -171,6 +171,28 @@ func (s *OutboxStore) MarkPublished(ctx context.Context, id string) error {
 	return requireAffected(result)
 }
 
+// PublishedRetention is how long a published outbox row stays for diagnosis.
+// Payloads name object keys (managed/secrets/{id}) and secret IDs, and the
+// JetStream work-queue stream drops messages once acknowledged, so pruning
+// these rows is what lets the API forget an opened secret.
+// internal/db/migrations.go pins the same value for its one-time purge.
+const PublishedRetention = time.Hour
+
+// PurgePublishedTx deletes up to limit outbox rows published at least
+// PublishedRetention before now. Pending and failed rows stay: they are still
+// due for delivery or needed to diagnose a broken publish. published_at uses
+// RFC3339Nano (varying width), so the comparison goes through julianday.
+func PurgePublishedTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
+	cutoff := formatTime(now.Add(-PublishedRetention))
+	if _, err := tx.ExecContext(ctx, `delete from outbox_events where id in (
+		select id from outbox_events
+		where state = ? and julianday(published_at) <= julianday(?)
+		order by published_at limit ?)`, StatePublished, cutoff, limit); err != nil {
+		return fmt.Errorf("purge published outbox events: %w", err)
+	}
+	return nil
+}
+
 func (s *OutboxStore) MarkFailed(ctx context.Context, id string, publishErr error, nextAttemptAt time.Time) error {
 	if publishErr == nil {
 		return fmt.Errorf("publish error is required")

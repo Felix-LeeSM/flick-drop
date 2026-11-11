@@ -127,7 +127,9 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 	}
 }
 
-func TestStoreOpenTxLeavesPayloadForCleanup(t *testing.T) {
+// 열람 트랜잭션이 secrets 행과 인라인 페이로드를 함께 지운다. 이전 릴리스가 남긴
+// delete_secret 작업이 뒤늦게 와도 Cleanup은 지울 것이 없다고 답할 뿐이다.
+func TestStoreOpenTxForgetsSecretAndPayload(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	store := newTestStore(t, conn)
@@ -164,24 +166,24 @@ func TestStoreOpenTxLeavesPayloadForCleanup(t *testing.T) {
 		t.Fatalf("commit tx: %v", err)
 	}
 
-	if _, err := store.Get(ctx, created.ID); !errors.Is(err, ErrConsumed) {
-		t.Fatalf("get after open error = %v, want ErrConsumed", err)
+	if _, err := store.Get(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get after open error = %v, want ErrNotFound", err)
 	}
 
 	var payloadCount int
 	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads: %v", err)
 	}
-	if payloadCount != 1 {
-		t.Fatalf("payload count after mark consumed = %d, want 1", payloadCount)
+	if payloadCount != 0 {
+		t.Fatalf("payload count after open = %d, want 0", payloadCount)
 	}
 
 	cleaned, err := store.Cleanup(ctx, created.ID)
 	if err != nil {
-		t.Fatalf("cleanup consumed payload: %v", err)
+		t.Fatalf("cleanup opened payload: %v", err)
 	}
-	if !cleaned {
-		t.Fatal("cleanup cleaned = false, want true")
+	if cleaned {
+		t.Fatal("cleanup cleaned = true, want nothing left to clean")
 	}
 }
 
@@ -249,8 +251,8 @@ func TestStoreOpenTxRequiresValidProofAndConsumesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin second open tx: %v", err)
 	}
-	if _, err := store.OpenTx(ctx, tx, created.ID, "proof-hash"); !errors.Is(err, ErrConsumed) {
-		t.Fatalf("second open error = %v, want ErrConsumed", err)
+	if _, err := store.OpenTx(ctx, tx, created.ID, "proof-hash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second open error = %v, want ErrNotFound", err)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback second open tx: %v", err)
@@ -413,13 +415,13 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 		t.Fatalf("commit model B open tx: %v", err)
 	}
 
-	// Model B is still one-time: a second open is consumed.
+	// Model B is still one-time: a second open finds nothing.
 	tx, err = conn.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin second open tx: %v", err)
 	}
-	if _, err := store.OpenTx(ctx, tx, created.ID, ""); !errors.Is(err, ErrConsumed) {
-		t.Fatalf("second model B open error = %v, want ErrConsumed", err)
+	if _, err := store.OpenTx(ctx, tx, created.ID, ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second model B open error = %v, want ErrNotFound", err)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback second open tx: %v", err)

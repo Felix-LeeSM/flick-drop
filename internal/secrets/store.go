@@ -658,27 +658,32 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, ErrExpired
 	}
 
-	result, err := tx.ExecContext(ctx, `update secrets
-		set view_count = view_count + 1,
-			consumed_at = ?,
-			updated_at = ?
-		where id = ? and consumed_at is null`,
-		formatTime(now),
-		formatTime(now),
-		id,
-	)
+	// Opened means forgotten: the secret row (its inline payload cascades) and
+	// its management record go in this transaction, so every later request for
+	// the ID gets the unknown-ID response. An inline body was already loaded
+	// into secret.Ciphertext. A lost race reads as unknown too.
+	result, err := tx.ExecContext(ctx, `delete from secrets where id = ? and consumed_at is null`, id)
 	if err != nil {
-		return Secret{}, fmt.Errorf("mark secret opened: %w", err)
+		return Secret{}, fmt.Errorf("delete opened secret: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return Secret{}, fmt.Errorf("read open row count: %w", err)
 	}
 	if affected != 1 {
-		return Secret{}, ErrConsumed
+		return Secret{}, ErrNotFound
 	}
-	if err := recordManagementOutcomeTx(ctx, tx, id, "opened"); err != nil {
-		return Secret{}, err
+	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id = ?`, id); err != nil {
+		return Secret{}, fmt.Errorf("delete opened management record: %w", err)
+	}
+	// A bucket body may still be streaming. With its row gone, only this
+	// key-and-deadline record keeps reconciliation away until the stream
+	// deadline has certainly passed (reconciliation.go:protectObjectTx).
+	if secret.Body != nil {
+		if _, err := tx.ExecContext(ctx, `insert into secret_open_grace (object_key, grace_until) values (?, ?)`,
+			secret.StorageKey, now.Add(openObjectGrace).Format(managementTimeFormat)); err != nil {
+			return Secret{}, fmt.Errorf("protect streaming object: %w", err)
+		}
 	}
 	if err := usage.Increment(ctx, tx, now, usage.SecretOpened, 1); err != nil {
 		return Secret{}, err

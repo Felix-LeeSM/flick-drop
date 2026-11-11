@@ -58,7 +58,8 @@ for (const model of ['a', 'b']) {
 						'Synthetic managed delivery'
 					);
 					await sender.getByRole('button', { name: 'Refresh status', exact: true }).click();
-					await sender.getByRole('heading', { name: 'Opened', exact: true }).waitFor();
+					// The server forgets an opened delivery: management reads as an unknown link.
+					await sender.getByText('Management link unavailable.', { exact: true }).waitFor();
 					await recipient.reload();
 					await recipient
 						.getByText('This secret is no longer available.', { exact: true })

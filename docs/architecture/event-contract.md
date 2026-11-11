@@ -80,6 +80,18 @@ The publisher sends the stored `payload_json` bytes to
 `published`; on publish failure it records the error and schedules the next
 attempt.
 
+Published rows are pruned. Payloads name object keys (`managed/secrets/{id}`)
+and secret IDs, and the JetStream work-queue stream drops a message once it is
+acknowledged, so the outbox would otherwise be the lasting record of every
+delivery. Each API reaper tick (`internal/secrets/reaper.go:ClaimOnce`) calls
+`internal/events/outbox.go:PurgePublishedTx`, which deletes up to the reaper
+batch size of rows whose `published_at` is at least `PublishedRetention`
+(1 hour) old. `internal/db/migrations.go:MigrateAPI` deletes the backlog that
+earlier releases kept, with the same cutoff. The publisher itself is unchanged.
+`pending` and `failed` rows are never pruned: they are still due or needed to
+diagnose a broken publish, so a `failed` row can keep an object key or secret
+ID until it publishes and ages out.
+
 ## Consumer
 
 The worker uses a durable pull consumer for the job subject.
@@ -117,6 +129,15 @@ Expected behavior:
 - missing OCI object: success for cleanup jobs
 - transient API/OCI/NATS error: retry
 - repeated failure: dead-letter with error summary
+
+Worker error text and dead letters never carry an object key. A failed
+`delete_oci_object` is named by job ID, reason, and backend
+(`internal/worker/cleanup.go:objectDeleteError`, which also masks the key
+inside the bucket SDK's message), and its `dead_letters.payload_json` omits
+`object_key` (`internal/worker/processor.go:deadLetterPayloadJSON`). Dead
+letters are not replayed; after the dead-letter acknowledgement releases the
+API claim, reconciliation re-lists a surviving managed object and queues a
+fresh job. A dead-lettered `delete_secret` still stores its `secret_id`.
 
 The worker owns `worker.db` and records receipts, attempts, and dead letters.
 The worker calls internal API endpoints for API-owned mutations.
