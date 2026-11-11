@@ -38,6 +38,19 @@ const (
 	maxFailedAccessAttempts = 5
 )
 
+// Pre-register every kind/storage combination the store emits so the
+// flick_secret_created_total children exist at 0 from process start. A
+// CounterVec child materializes only at its first Inc, so after every api
+// restart the series vanishes until the next delivery and the usage dashboard
+// reads "No data" (#374).
+func init() {
+	for _, kind := range []string{KindText, KindFile} {
+		for _, backend := range []string{StorageSQLite, StorageS3, storage.SecondaryBackend} {
+			telemetry.SecretCreated.WithLabelValues(kind, backend)
+		}
+	}
+}
+
 type KDFParams struct {
 	Algorithm     string `json:"algorithm"`
 	Salt          string `json:"salt"`
