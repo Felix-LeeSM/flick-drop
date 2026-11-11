@@ -13,4 +13,5 @@ resources:
   - vmsingle.yaml
   - loki.yaml
   - alloy.yaml
+  - alloy-cadvisor.yaml
   - grafana.yaml

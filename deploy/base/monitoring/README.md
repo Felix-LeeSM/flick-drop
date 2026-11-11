@@ -178,6 +178,20 @@ lookahead, which RE2 lacks); every other namespace is dropped before a line is
 read. Traefik must emit its access log in JSON for the dashboard queries to
 parse (the ops overlay enables `accessLog` with `format: json`).
 
+## alloy-cadvisor — per-container usage
+
+`alloy-cadvisor.yaml` is a second Alloy DaemonSet that scrapes each node's
+kubelet `/metrics/cadvisor` and remote-writes two series to vmsingle:
+`container_memory_working_set_bytes` and `container_cpu_usage_seconds_total`
+(job `cadvisor`, `container=""` rows and the per-cgroup `id`/`name` labels
+dropped). It runs with `hostNetwork: true` because the node host firewall drops
+pod-network traffic to the kubelet port 10250 (measured 2026-11-11: no answer
+from a pod-network pod, 401 from a hostNetwork pod). Its ClusterRole grants only
+`nodes/metrics` get; the API-server proxy path would avoid hostNetwork but needs
+`nodes/proxy`, which also reaches kubelet exec. The Alloy HTTP server listens on
+`127.0.0.1:12346` so the debug UI is not published on the node IP, so the pod
+has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node (measured 39-96Mi right after start).
+
 ## Grafana — the admin view
 
 Serves the provisioned `Flick 사용량·큐·접속` dashboard (panels are labelled in
@@ -191,12 +205,12 @@ error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
 A second provisioned dashboard, `Flick 클러스터: 노드와 파드`
 (`cluster.json`), shows where everything runs. Its main panel is a Treemap
 nesting node → namespace → pod → container: tile area is the container's
-memory *request* (16MiB minimum when none is set; actual usage is not scraped,
-because cAdvisor is not a scrape target), tile colour is the container state,
+memory *request* (16MiB minimum when none is set), tile colour is the container state,
 and hovering a tile shows what the component does, its image, pod phase,
 namespace and node. Below it sit a Nodes table (free/total memory and disk with
 percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
-Pods table, and per-node history graphs. Node names come from joining
+Pods table, per-node history graphs, and per-container actual memory (working
+set) and CPU graphs from cAdvisor (see `alloy-cadvisor` below). Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
 `Nodes down` counts nodes whose Ready condition is not true
 (`kube_node_status_condition`, from the kube-state-metrics nodes collector).

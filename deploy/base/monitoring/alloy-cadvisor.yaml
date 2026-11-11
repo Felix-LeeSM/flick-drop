@@ -1,0 +1,165 @@
+# Grafana Alloy DaemonSet that scrapes each node's kubelet cAdvisor endpoint
+# (per-container memory working set and CPU usage) and remote-writes the two
+# kept series to vmsingle. Separate from the log-shipping alloy DaemonSet in
+# alloy.yaml because this one needs hostNetwork.
+#
+# Why hostNetwork: the node host firewall drops pod-network traffic to the
+# kubelet port, so a pod-network pod gets no answer from $HOST_IP:10250
+# (measured 2026-11-11: curl 000 from a pod, 401 from a hostNetwork pod). The
+# API-server proxy path (/api/v1/nodes/<node>/proxy/metrics/cadvisor) would
+# work without hostNetwork but needs nodes/proxy, which also reaches kubelet
+# exec; this DaemonSet holds only nodes/metrics get.
+#
+# The HTTP server stays on 127.0.0.1 so hostNetwork does not publish alloy's
+# debug UI on the node IP; that is also why there is no HTTP readiness probe.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy-cadvisor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-cadvisor
+rules:
+  # Read-only kubelet metrics (/metrics, /metrics/cadvisor); unlike nodes/proxy
+  # it does not authorize exec, logs, or pod listings on the kubelet.
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-cadvisor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-cadvisor
+subjects:
+  - kind: ServiceAccount
+    name: alloy-cadvisor
+    namespace: flick
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-cadvisor-config
+data:
+  config.alloy: |
+    prometheus.scrape "cadvisor" {
+      job_name        = "cadvisor"
+      targets         = [{"__address__" = sys.env("HOST_IP") + ":10250", "node" = sys.env("NODE_NAME")}]
+      scheme          = "https"
+      metrics_path    = "/metrics/cadvisor"
+      scrape_interval = "30s"
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      // The k3s kubelet serves a self-signed certificate; the connection never
+      // leaves the node (hostNetwork to the node's own IP).
+      tls_config {
+        insecure_skip_verify = true
+      }
+      forward_to = [prometheus.relabel.cadvisor.receiver]
+    }
+
+    prometheus.relabel "cadvisor" {
+      // Only the two series the cluster dashboard reads; cAdvisor emits ~2000
+      // lines per node otherwise.
+      rule {
+        action        = "keep"
+        source_labels = ["__name__"]
+        regex         = "container_memory_working_set_bytes|container_cpu_usage_seconds_total"
+      }
+      // container="" rows are pod-level cgroups and the pause sandbox.
+      rule {
+        action        = "drop"
+        source_labels = ["container"]
+        regex         = ""
+      }
+      // id and name are per-cgroup paths and containerd IDs: unique per restart.
+      rule {
+        action = "labeldrop"
+        regex  = "id|name"
+      }
+      forward_to = [prometheus.remote_write.vmsingle.receiver]
+    }
+
+    prometheus.remote_write "vmsingle" {
+      endpoint {
+        url = "http://vmsingle.flick.svc.cluster.local:8428/api/v1/write"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy-cadvisor
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy-cadvisor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alloy-cadvisor
+    spec:
+      serviceAccountName: alloy-cadvisor
+      hostNetwork: true
+      # hostNetwork pods default to the node's resolv.conf; this keeps cluster
+      # DNS so the vmsingle Service name resolves.
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alloy
+          image: docker.io/grafana/alloy:v1.21.3
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+            # Loopback only: see the header comment. 12346 avoids any clash with
+            # a future hostNetwork use of alloy's default 12345.
+            - --server.http.listen-addr=127.0.0.1:12346
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # Measured 39-96Mi working set per node right after start (WAL replay
+          # included, 2026-11-11); the limit leaves headroom over that peak.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 160Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/alloy
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-cadvisor-config
+        - name: storage
+          emptyDir:
+            sizeLimit: 64Mi
