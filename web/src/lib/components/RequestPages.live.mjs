@@ -174,8 +174,12 @@ test('real API: cancellation rejects a later submission and never fabricates con
 		await sender.goto(links.submit);
 		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await sender.getByLabel('Message', { exact: true }).fill('Synthetic cancelled request');
-		owner.on('dialog', (dialog) => dialog.accept());
 		await owner.getByRole('button', { name: 'Cancel request', exact: true }).click();
+		// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
+		await owner
+			.getByRole('dialog')
+			.getByRole('button', { name: 'Cancel request', exact: true })
+			.click();
 		await owner.getByRole('heading', { name: 'Cancelled', exact: true }).waitFor();
 		await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 		await sender.getByText('Submission outcome unknown.', { exact: true }).waitFor();

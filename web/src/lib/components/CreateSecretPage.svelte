@@ -6,12 +6,10 @@ import {
 	EyeOffIcon,
 	FileUpIcon,
 	FlameIcon,
-	LinkIcon,
 	LockKeyholeIcon,
 	QrCodeIcon,
 	ShieldCheckIcon,
 	TimerIcon,
-	UploadIcon,
 	WandSparklesIcon,
 	XIcon
 } from '@lucide/svelte';
@@ -27,11 +25,11 @@ import {
 	type PassphraseEnvelope,
 	SecretApiError
 } from '#lib/api/secrets.js';
-import CreateStageCard from '#lib/components/CreateStageCard.svelte';
 import CredentialForm from '#lib/components/CredentialForm.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import DeliveryTabs from '#lib/components/DeliveryTabs.svelte';
 import LifetimePicker from '#lib/components/LifetimePicker.svelte';
+import LockStageCard from '#lib/components/LockStageCard.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
 import PipeWaitingPanel from '#lib/components/PipeWaitingPanel.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
@@ -60,6 +58,7 @@ import { generatePassphrase } from '#lib/crypto/passphrase.js';
 import { sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
 import { bundleFiles } from '#lib/files/bundle.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
+import { holdMinimumStage, STAGE_FINISH_MS, sleep } from '#lib/stage-timing.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
 import { createPipeRelay, type PipePayload } from '#lib/state/pipe-relay.svelte.js';
 import { cn, formatBytes } from '#lib/utils.js';
@@ -118,7 +117,7 @@ let isCreating = $state(false);
 // One controller identifies the current attempt and suppresses stale callbacks.
 let abortController = $state<AbortController | null>(null);
 let uploadProgress = $state<FileUploadProgress | null>(null);
-// The stage card's done beat: every step checked, shown briefly before the
+// The stage card's lock beat: the ring completes and the lock closes, shown briefly before the
 // manage-page handoff takes over.
 let stageCardDone = $state(false);
 
@@ -196,36 +195,20 @@ const blockedTitle = $derived(
 		: 'Add a message, file or credential first'
 );
 
-// P2 stage card: the create folds the form into a step card while running.
-// File creates upload, so they get three steps; text and credentials go
-// straight from local encryption to the link.
-const FILE_STAGE_STEPS = [
-	{ icon: LockKeyholeIcon, label: 'Encrypt on this device' },
-	{ icon: UploadIcon, label: 'Upload encrypted file' },
-	{ icon: LinkIcon, label: 'Create the one-time link' }
-];
-const INLINE_STAGE_STEPS = [
-	{ icon: LockKeyholeIcon, label: 'Encrypt on this device' },
-	{ icon: LinkIcon, label: 'Create the one-time link' }
-];
-const stageSteps = $derived(mode === 'file' ? FILE_STAGE_STEPS : INLINE_STAGE_STEPS);
-const stageStep = $derived.by(() => {
-	if (stageCardDone) {
-		return stageSteps.length;
+// Lock stage card: the create folds the form into the progress ring while running.
+// A file large enough to upload reports progress, so its ring follows the upload
+// (full once finalizing); text, credentials, and small inline files creep.
+const stageRingProgress = $derived.by(() => {
+	if (uploadProgress === null) {
+		return null;
 	}
-	if (statusKind === 'encrypting') {
-		return 0;
+	if (statusKind === 'finalizing') {
+		return 1;
 	}
-	if (mode === 'file') {
-		return statusKind === 'finalizing' ? 2 : 1;
-	}
-	return statusKind === 'saving' ? 1 : 0;
-});
-const stageCardProgress = $derived(
-	statusKind === 'uploading' && uploadProgress?.total !== undefined && uploadProgress.total > 0
+	return uploadProgress.total !== undefined && uploadProgress.total > 0
 		? (uploadProgress.loaded ?? 0) / uploadProgress.total
-		: null
-);
+		: 0;
+});
 
 function submitCreate(event: SubmitEvent): void {
 	event.preventDefault();
@@ -243,6 +226,7 @@ async function createSecret(): Promise<void> {
 	}
 
 	isCreating = true;
+	const stageStartedAt = performance.now();
 	const controller = new AbortController();
 	abortController = controller;
 	uploadProgress = null;
@@ -263,13 +247,10 @@ async function createSecret(): Promise<void> {
 		if (isCredentialMode(mode)) {
 			credentialEnvelope = buildEnvelope(mode);
 		}
-		// Every stage step is checked; let the done beat land before the
-		// manage-page handoff takes over. shareUrl must stay after the beat:
-		// it flips hasResult, and hasResult replaces the stage card, so an
-		// earlier assignment would skip "Link ready" entirely.
-		stageCardDone = true;
-		await new Promise((beatTimer) => setTimeout(beatTimer, 900));
-		if (controller.signal.aborted || abortController !== controller) {
+		// shareUrl must stay after the lock beat: it flips hasResult, and
+		// hasResult replaces the stage card, so an earlier assignment would skip
+		// "Link ready" entirely.
+		if (!(await finishStage(stageStartedAt, controller))) {
 			return;
 		}
 		shareUrl = createShareUrl(window.location.origin, created.id, identity);
@@ -294,6 +275,18 @@ async function createSecret(): Promise<void> {
 		uploadProgress = null;
 		stageCardDone = false;
 	}
+}
+
+// Keeps the ring up for its minimum, then lets the lock beat land before the
+// manage-page handoff. False when the attempt was cancelled or superseded meanwhile.
+async function finishStage(startedAt: number, controller: AbortController): Promise<boolean> {
+	await holdMinimumStage(startedAt);
+	if (controller.signal.aborted || abortController !== controller) {
+		return false;
+	}
+	stageCardDone = true;
+	await sleep(STAGE_FINISH_MS);
+	return !controller.signal.aborted && abortController === controller;
 }
 
 async function openManagement(created: CreateSecretResponse): Promise<void> {
@@ -764,13 +757,14 @@ function typePanelId(type: CreateMode): string {
 				/>
 
 				{#if isCreating}
-					<!-- P2 stage card: the form folds away while the create runs.
+					<!-- Lock stage card: the form folds away while the create runs.
 					     Cancel only stops the encrypted PUT; finalize has its own status. -->
-					<CreateStageCard
-						steps={stageSteps}
-						step={stageStep}
-						status={status}
-						progress={stageCardProgress}
+					<LockStageCard
+						mode="lock"
+						phase={stageCardDone ? 'finishing' : 'waiting'}
+						caption="preparing your link"
+						status={stageCardDone ? 'Link ready' : status}
+						progress={stageRingProgress}
 						cancellable={statusKind === 'uploading'}
 						onCancel={cancelCreate}
 					/>
