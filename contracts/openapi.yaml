@@ -846,7 +846,10 @@ paths:
         "404":
           description: Rendezvous or connection not found (including a connection dropped for not polling).
         "409":
-          description: "`confirmation_disabled`: the session has no waiting room; open /receive directly."
+          description: >-
+            `confirmation_disabled`: the session has no waiting room; open
+            /receive directly. `poll_in_progress`: this connection already has
+            2 /status calls open; wait for one to return.
           content:
             application/json:
               schema:
@@ -855,6 +858,15 @@ paths:
           description: >-
             `not_selected`: the sender chose another device. `cancelled`: the
             sender cancelled the code. `expired` or `closed`: the session ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: >-
+            `rate_limited`: more than 120 /status calls a minute from this
+            client network (IPv4 address or IPv6 /64), counted across
+            /api/pipe/status and /api/v1/pipe/status.
           content:
             application/json:
               schema:

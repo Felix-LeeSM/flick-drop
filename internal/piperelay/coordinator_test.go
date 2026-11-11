@@ -453,6 +453,85 @@ func TestCoordinator_ChosenConnectionThatNeverReceivesEndsTheSession(t *testing.
 	}
 }
 
+func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *testing.T) {
+	// 청소기는 사실상 돌지 않는다(1시간). Send 쪽 대기가 직접 35초(여기서는 100ms) 기한을 지켜야 한다.
+	for _, sendFirst := range []bool{false, true} {
+		coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: time.Hour})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+		join, _ := coord.Join(init.Code, client(1))
+
+		sendDone := make(chan error, 1)
+		start := time.Now()
+		send := func() {
+			go func() {
+				_, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, strings.NewReader("x"))
+				sendDone <- err
+			}()
+		}
+		if sendFirst {
+			// Select보다 먼저 기다리기 시작한 Send도 선택 뒤의 기한을 다시 읽는다.
+			send()
+			time.Sleep(30 * time.Millisecond)
+		}
+		if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+			t.Fatalf("Select: %v", err)
+		}
+		if !sendFirst {
+			send()
+		}
+
+		select {
+		case err := <-sendDone:
+			if err != ErrSessionClosed {
+				t.Fatalf("sendFirst=%v: Send = %v, want ErrSessionClosed", sendFirst, err)
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Fatalf("sendFirst=%v: Send ended after %v", sendFirst, elapsed)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("sendFirst=%v: Send still waiting a second after the 100ms presence deadline", sendFirst)
+		}
+		if coord.ActiveSessions() != 0 {
+			t.Fatalf("sendFirst=%v: session survived its abandoned pick", sendFirst)
+		}
+		cancel()
+	}
+}
+
+func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
+	coord := newTestCoordinator(t, CoordinatorOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	join, _ := coord.Join(init.Code, client(1))
+
+	held := make(chan error, MaxStatusPollsPerConnection)
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		go func() {
+			_, err := coord.Status(ctx, init.Code, join.ConnectionID, 3*time.Second)
+			held <- err
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// 한 연결 ID로 롱폴을 더 쌓을 수 없다. 거절은 연결도 세션도 건드리지 않는다.
+	if _, err := coord.Status(ctx, init.Code, join.ConnectionID, time.Second); err != ErrPollInProgress {
+		t.Fatalf("status poll over the cap: %v, want ErrPollInProgress", err)
+	}
+	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		if err := decided(t, held); err != nil {
+			t.Fatalf("held poll %d: %v, want selected", i, err)
+		}
+	}
+	if selected, err := coord.Status(ctx, init.Code, join.ConnectionID, time.Second); err != nil || !selected {
+		t.Fatalf("status after the polls closed: %v %v", selected, err)
+	}
+}
+
 func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})

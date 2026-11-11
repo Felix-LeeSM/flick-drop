@@ -97,12 +97,14 @@ func (rl *rateLimiter) managementMiddleware(next http.Handler) http.Handler {
 	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientIP(r) + "|" + chi.URLParam(r, "id") })
 }
 
-// pipeJoinMiddleware guards POST /api/pipe/join and /api/v1/pipe/join, the
-// only online defence against 6-digit code guessing. It keys by client network
-// (clientNetwork: IPv6 collapsed to its /64, so one host cannot rotate through
-// its own prefix) and spends one bucket for both route prefixes.
-func (rl *rateLimiter) pipeJoinMiddleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientNetwork(r) + "|pipe-join" })
+// networkMiddleware keys the limiter by client network alone (clientNetwork:
+// IPv6 collapsed to its /64, so one host cannot rotate through its own prefix).
+// Every route that shares one limiter instance therefore spends one bucket,
+// whatever its path: the pipe routes use it so /api/pipe/X and
+// /api/v1/pipe/X share a bucket (internal/httpapi/router.go
+// pipeJoinLimiter, pipeStatusLimiter).
+func (rl *rateLimiter) networkMiddleware(next http.Handler) http.Handler {
+	return rl.middlewareByKey(next, rl.clientNetwork)
 }
 
 func (rl *rateLimiter) middlewareByKey(next http.Handler, bucketKey func(*http.Request) string) http.Handler {

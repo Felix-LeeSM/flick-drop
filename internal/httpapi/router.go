@@ -47,6 +47,7 @@ type Server struct {
 	pipeCoordinator          *piperelay.Coordinator
 	pipeInitLimiter          *rateLimiter
 	pipeJoinLimiter          *rateLimiter
+	pipeStatusLimiter        *rateLimiter
 	tracer                   trace.Tracer
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
@@ -127,6 +128,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		pipeCoordinator:          pipeCoordinator,
 		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
 		pipeJoinLimiter:          newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		pipeStatusLimiter:        newRateLimiter(pipeStatusRatePerMinute, opts.TrustedProxies),
 		tracer:                   tracer,
 	}
 	if opts.NewJobID != nil {
@@ -172,9 +174,12 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		// the open-rate limit, keyed by client network (IPv6 /64) and shared by
 		// both route prefixes. /status and /receive need a connection ID from
 		// /join, and the sender calls need the sender token from /init; a wrong
-		// ID or token answers 404 exactly like an unknown code.
-		r.With(server.pipeJoinLimiter.pipeJoinMiddleware).Post("/join", server.joinPipe)
-		r.Get("/status", server.statusPipe)
+		// ID or token answers 404 exactly like an unknown code. /status long-polls
+		// hold a goroutine and a socket each, so they carry their own
+		// per-network limit (pipeStatusRatePerMinute) on top of the coordinator's
+		// per-connection cap (piperelay.MaxStatusPollsPerConnection).
+		r.With(server.pipeJoinLimiter.networkMiddleware).Post("/join", server.joinPipe)
+		r.With(server.pipeStatusLimiter.networkMiddleware).Get("/status", server.statusPipe)
 		r.Get("/receive", server.receivePipe)
 		r.Get("/wait", server.waitPipe)
 		r.Post("/select", server.selectPipe)

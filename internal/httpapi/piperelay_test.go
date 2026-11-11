@@ -427,6 +427,53 @@ func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testin
 	}
 }
 
+func TestPipeRelay_StatusCapsConcurrentPollsAndRateLimitsPerNetwork(t *testing.T) {
+	f := newPipeFixture(t)
+	init := f.init(true)
+	join := f.mustJoin(init.Code, uaChromeWindows)
+
+	// 한 연결 ID의 동시 롱폴은 piperelay.MaxStatusPollsPerConnection(2)개까지다.
+	var held []<-chan *httptest.ResponseRecorder
+	for i := 0; i < piperelay.MaxStatusPollsPerConnection; i++ {
+		held = append(held, f.status(init.Code, join.ConnectionID))
+	}
+	time.Sleep(50 * time.Millisecond)
+	over := awaitRecorder(t, f.status(init.Code, join.ConnectionID))
+	if over.Code != http.StatusConflict || pipeErrorCode(t, over) != "poll_in_progress" {
+		t.Fatalf("third concurrent status: %d %s", over.Code, over.Body.String())
+	}
+	if rec := f.senderCall("/api/pipe/select", init, join.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("select: %d %s", rec.Code, rec.Body.String())
+	}
+	for i, ch := range held {
+		if rec := awaitRecorder(t, ch); rec.Code != http.StatusOK {
+			t.Fatalf("held status %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 네트워크(IPv6 /64)마다 분당 pipeStatusRatePerMinute번이고, /api/v1 경로도 같은 버킷을 쓴다.
+	statusFrom := func(path, remoteAddr string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = remoteAddr
+		req.Header.Set(pipeCodeHeader, "123456")
+		req.Header.Set(pipeConnectionHeader, "x")
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for i := 0; i < pipeStatusRatePerMinute; i++ {
+		if code := statusFrom("/api/pipe/status", "[2001:db8:5::"+strconv.Itoa(i%9+1)+"]:443"); code == http.StatusTooManyRequests {
+			t.Fatalf("status %d inside the per-network budget was rate limited", i)
+		}
+	}
+	if code := statusFrom("/api/v1/pipe/status", "[2001:db8:5::99]:443"); code != http.StatusTooManyRequests {
+		t.Fatalf("status over the per-network budget: %d, want 429", code)
+	}
+	if code := statusFrom("/api/pipe/status", "[2001:db8:6::1]:443"); code == http.StatusTooManyRequests {
+		t.Fatal("another /64 shared the status bucket")
+	}
+}
+
 func TestPipeRelay_JoinRateLimitSharesOneBucketPerIPv6Slash64AndAcrossPrefixes(t *testing.T) {
 	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{}, 2)
 

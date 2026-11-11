@@ -25,7 +25,13 @@ secret transfer between devices.
   for `CoordinatorOptions.PresenceTimeout` (`defaultPresenceTimeout`, 35
   seconds). Dropping frees the slot without a decline or a burn. A selected
   connection that does not call `Receive` within the same timeout ends the
-  session in `Coordinator.cleanExpired`, like the chosen receiver leaving.
+  session, like the chosen receiver leaving: a waiting `Send` enforces that
+  deadline itself (`Coordinator.waitForReceiver`), and `Coordinator.cleanExpired`
+  catches sessions with no `Send` waiting.
+- One connection holds at most `MaxStatusPollsPerConnection` (2) open `Status`
+  calls; the next gets `ErrPollInProgress`. The HTTP layer also rate-limits
+  `/status` per client network (`internal/httpapi/piperelay.go`
+  `pipeStatusRatePerMinute`, 120).
 - Residual risk: a holder of the right 6-digit code who keeps polling `Status`
   keeps its slots, up to `MaxPendingPerNetwork` per network; the sender can
   `Decline` those rows.

@@ -23,7 +23,13 @@ const (
 	// cuts idle responses at 100 seconds) and under the coordinator's 35-second
 	// presence timeout (internal/piperelay/coordinator.go defaultPresenceTimeout).
 	pipeWaitMaxHold = 25 * time.Second
-	pipeInitBodyMax = 1024
+	// pipeStatusRatePerMinute bounds /status calls per client network (IPv4
+	// address or IPv6 /64). One waiting receiver polls about 3 times a minute
+	// (25-second holds) and a network holds at most 3 waiting receivers per
+	// session (piperelay.MaxPendingPerNetwork), so 120 leaves room for several
+	// sessions behind one NAT while stopping a tight poll loop.
+	pipeStatusRatePerMinute = 120
+	pipeInitBodyMax         = 1024
 )
 
 type pipeInitRequest struct {
@@ -106,6 +112,8 @@ func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusConflict, "room_full", "too many devices are waiting on this code")
 	case errors.Is(err, piperelay.ErrNetworkFull):
 		writeError(w, http.StatusConflict, "network_full", "too many devices from this network are waiting on this code")
+	case errors.Is(err, piperelay.ErrPollInProgress):
+		writeError(w, http.StatusConflict, "poll_in_progress", "this device already has a status poll open")
 	case errors.Is(err, piperelay.ErrAwaitingDecision):
 		writeError(w, http.StatusConflict, "awaiting_decision", "the sender has not picked this device yet")
 	case errors.Is(err, piperelay.ErrNotPending):

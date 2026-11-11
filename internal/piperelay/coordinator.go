@@ -30,6 +30,7 @@ var (
 	ErrStreaming            = errors.New("piperelay: transfer is already streaming")
 	ErrNetworkFull          = errors.New("piperelay: too many receivers from one client network are waiting on this session")
 	ErrAwaitingDecision     = errors.New("piperelay: connection is still waiting for the sender's pick")
+	ErrPollInProgress       = errors.New("piperelay: connection already has the maximum open status polls")
 	ErrInvalidCode          = errors.New("piperelay: code must be a 6-digit numeric string")
 	ErrExpired              = errors.New("piperelay: rendezvous session expired")
 )
@@ -56,6 +57,11 @@ const (
 	// (an IPv4 address or an IPv6 /64, derived by the HTTP layer) in one
 	// session, so one network cannot fill the room alone.
 	MaxPendingPerNetwork = 3
+	// MaxStatusPollsPerConnection caps the concurrent Status calls of one
+	// connection. Two leave room for a client whose previous poll has not
+	// finished closing yet; the next one gets ErrPollInProgress, so one
+	// connection ID cannot pile up goroutines and sockets.
+	MaxStatusPollsPerConnection = 2
 )
 
 var bufferPool = sync.Pool{
@@ -626,6 +632,10 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 		s.mu.Unlock()
 		return true, nil
 	}
+	if conn.polls >= MaxStatusPollsPerConnection {
+		s.mu.Unlock()
+		return false, ErrPollInProgress
+	}
 	conn.polls++
 	conn.lastSeen = now
 	hold := min(maxWait, s.expiresAt.Sub(now))
@@ -925,18 +935,8 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 		return 0, ErrAlreadyConnected
 	}
 
-	select {
-	case <-s.receiverReady:
-	case <-s.done:
-		return 0, c.endCause(s)
-	case <-ctx.Done():
-		_ = s.pipeWriter.CloseWithError(ctx.Err())
-		c.burnSession(hash)
-		return 0, ctx.Err()
-	case <-time.After(time.Until(s.expiresAt)):
-		_ = s.pipeWriter.CloseWithError(ErrExpired)
-		c.burnSession(hash)
-		return 0, ErrExpired
+	if err := c.waitForReceiver(ctx, hash, s); err != nil {
+		return 0, err
 	}
 
 	// The stream starts only if nothing ended the session first: Cancel and
@@ -967,6 +967,79 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 
 	_ = s.pipeWriter.Close() // signals clean EOF to PipeReader
 	return n, nil
+}
+
+// waitForReceiver blocks Send until the chosen receiver opened Receive. It also
+// enforces the chosen connection's presence deadline itself, so a selected
+// receiver that never opens Receive ends the session presenceTimeout after
+// Select, not up to one cleaner interval later. Every session change wakes it
+// to re-read that deadline (a Select can land while Send already waits).
+func (c *Coordinator) waitForReceiver(ctx context.Context, hash [32]byte, s *Session) error {
+	expiry := time.NewTimer(time.Until(s.expiresAt))
+	defer expiry.Stop()
+	for {
+		s.mu.Lock()
+		changed := s.changed
+		var abandonAt time.Time
+		if s.selected != nil && !s.selected.attached {
+			abandonAt = s.selectedAt.Add(s.presenceTimeout)
+		}
+		s.mu.Unlock()
+
+		var abandoned <-chan time.Time
+		var abandonTimer *time.Timer
+		if !abandonAt.IsZero() {
+			abandonTimer = time.NewTimer(time.Until(abandonAt))
+			abandoned = abandonTimer.C
+		}
+		stop := func() {
+			if abandonTimer != nil {
+				abandonTimer.Stop()
+			}
+		}
+
+		select {
+		case <-s.receiverReady:
+			stop()
+			return nil
+		case <-s.done:
+			stop()
+			return c.endCause(s)
+		case <-ctx.Done():
+			stop()
+			_ = s.pipeWriter.CloseWithError(ctx.Err())
+			c.burnSession(hash)
+			return ctx.Err()
+		case <-expiry.C:
+			stop()
+			_ = s.pipeWriter.CloseWithError(ErrExpired)
+			c.burnSession(hash)
+			return ErrExpired
+		case <-changed:
+			stop()
+		case <-abandoned:
+			c.endIfChosenAbandoned(hash, s)
+		}
+	}
+}
+
+// endIfChosenAbandoned ends s when its chosen connection still has not opened
+// Receive past the presence timeout, the same rule Coordinator.cleanExpired
+// applies. The check and the end share one s.mu hold.
+func (c *Coordinator) endIfChosenAbandoned(hash [32]byte, s *Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessions[hash] != s {
+		return
+	}
+	s.mu.Lock()
+	if s.ended || s.streaming || !s.chosenAbandonedLocked(time.Now()) {
+		s.mu.Unlock()
+		return
+	}
+	cause := s.endLocked(ErrSessionClosed)
+	s.mu.Unlock()
+	c.dropLocked(hash, s, cause)
 }
 
 // ActiveSessions returns the current number of in-flight sessions (for telemetry/tests).
