@@ -154,23 +154,14 @@ async function startReceive(): Promise<void> {
 		const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
 		const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
 
-		if (result.kind === 'file') {
-			const bytes = await streamToBytes(decryptedStream);
-			receivedFileSize = bytes.length;
-			receivedFileName = await decryptFilename(result.encryptedFilename, derivedPassphrase);
-			receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
-			decrypted = true;
-			// Save right away so closing the dialog during the beat cannot lose the file.
-			downloadFile();
-			if (await settleRing(stageStartedAt, 'finishing', controller.signal)) {
-				currentState = 'done-file';
-			}
-		} else {
-			receivedText = await streamToText(decryptedStream);
-			decrypted = true;
-			if (await settleRing(stageStartedAt, 'finishing', controller.signal)) {
-				currentState = 'done-text';
-			}
+		const doneState = await storeReceived(
+			result,
+			decryptedStream,
+			derivedPassphrase,
+			controller.signal
+		);
+		if (doneState && (await settleRing(stageStartedAt, 'finishing', controller.signal))) {
+			currentState = doneState;
 		}
 	} catch (err) {
 		if (controller.signal.aborted) {
@@ -181,6 +172,32 @@ async function startReceive(): Promise<void> {
 			currentState = 'error';
 		}
 	}
+}
+
+// Keeps the decrypted content and marks it received; null when the receive was
+// cancelled meanwhile. A file is saved right away so closing the dialog during
+// the ring beat cannot lose it.
+async function storeReceived(
+	result: Awaited<ReturnType<typeof receivePipeStream>>,
+	decryptedStream: Awaited<ReturnType<typeof decryptPipeStream>>,
+	passphrase: string,
+	signal: AbortSignal
+): Promise<'done-file' | 'done-text' | null> {
+	if (result.kind !== 'file') {
+		receivedText = await streamToText(decryptedStream);
+		decrypted = true;
+		return 'done-text';
+	}
+	const bytes = await streamToBytes(decryptedStream);
+	receivedFileSize = bytes.length;
+	receivedFileName = await decryptFilename(result.encryptedFilename, passphrase);
+	if (signal.aborted) {
+		return null;
+	}
+	receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+	decrypted = true;
+	downloadFile();
+	return 'done-file';
 }
 
 // The sender encrypts the filename separately; a missing or unreadable one falls
