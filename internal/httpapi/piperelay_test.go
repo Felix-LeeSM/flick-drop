@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,16 +51,46 @@ type pipeFixture struct {
 
 func newPipeFixture(t *testing.T) pipeFixture {
 	t.Helper()
-	coord := piperelay.NewCoordinator(piperelay.CoordinatorOptions{MaxConcurrent: 10, TTL: 5 * time.Second})
+	return newPipeFixtureWith(t, piperelay.CoordinatorOptions{MaxConcurrent: 10, TTL: 5 * time.Second}, 100)
+}
+
+func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRatePerMinute int) pipeFixture {
+	t.Helper()
+	coord := piperelay.NewCoordinator(opts)
 	t.Cleanup(func() { _ = coord.Close() })
 	fixture := newTestRouterFixture(t, Options{
 		PipeRelayEnabled:    true,
 		PipeCoordinator:     coord,
 		AllowedOrigin:       "https://flick.example",
-		OpenRatePerMinute:   100,
+		OpenRatePerMinute:   openRatePerMinute,
 		CreateRatePerMinute: 100,
 	})
 	return pipeFixture{t: t, router: fixture.router, coord: coord}
+}
+
+// joinFrom는 remoteAddr(예: "[2001:db8::1]:443")에서 /join을 부른다.
+func (f pipeFixture) joinFrom(path, code, userAgent, remoteAddr string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req.RemoteAddr = remoteAddr
+	req.Header.Set(pipeCodeHeader, code)
+	req.Header.Set("User-Agent", userAgent)
+	rec := httptest.NewRecorder()
+	f.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// joinAddr는 i번째 기기마다 서로 다른 IPv4 주소를 준다(네트워크별 상한에 걸리지 않게).
+func joinAddr(i int) string {
+	return "198.51.100." + strconv.Itoa(i+1) + ":443"
+}
+
+// status는 /status 롱폴을 백그라운드로 한 번 열고 응답을 채널로 돌려준다.
+func (f pipeFixture) status(code, connectionID string) <-chan *httptest.ResponseRecorder {
+	out := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		out <- pipeDo(f.router, http.MethodGet, "/api/pipe/status", map[string]string{pipeCodeHeader: code, pipeConnectionHeader: connectionID}, nil)
+	}()
+	return out
 }
 
 func (f pipeFixture) init(requireConfirmation bool) pipeInitResponse {
@@ -184,6 +215,7 @@ func TestPipeRelay_Disabled(t *testing.T) {
 		}{
 			{http.MethodPost, "/init"},
 			{http.MethodPost, "/join"},
+			{http.MethodGet, "/status"},
 			{http.MethodGet, "/receive"},
 			{http.MethodGet, "/wait"},
 			{http.MethodPost, "/select"},
@@ -287,11 +319,11 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 
 	agents := []string{uaChromeWindows, uaSafariIPhone, uaFirefoxLinux}
 	var joins []pipeJoinResponse
-	var receives []<-chan *httptest.ResponseRecorder
+	var statuses []<-chan *httptest.ResponseRecorder
 	for _, ua := range agents {
 		join := f.mustJoin(init.Code, ua)
 		joins = append(joins, join)
-		receives = append(receives, f.receive(init.Code, join.ConnectionID))
+		statuses = append(statuses, f.status(init.Code, join.ConnectionID))
 	}
 
 	wait := f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 3 })
@@ -307,22 +339,115 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 	if joins[0].VerifyCode == joins[1].VerifyCode || joins[1].VerifyCode == joins[2].VerifyCode || joins[0].VerifyCode == joins[2].VerifyCode {
 		t.Fatalf("verify codes repeat: %v %v %v", joins[0].VerifyCode, joins[1].VerifyCode, joins[2].VerifyCode)
 	}
-	time.Sleep(50 * time.Millisecond) // 세 /receive가 모두 붙도록
+	// 아직 고르지 않은 연결은 /receive를 열어 둘 수 없다(프록시가 끊는 무응답 대기를 막는다).
+	early := awaitRecorder(t, f.receive(init.Code, joins[0].ConnectionID))
+	if early.Code != http.StatusConflict || pipeErrorCode(t, early) != "awaiting_decision" {
+		t.Fatalf("receive before select: %d %s", early.Code, early.Body.String())
+	}
 
 	if rec := f.senderCall("/api/pipe/select", init, joins[1].ConnectionID); rec.Code != http.StatusOK {
 		t.Fatalf("select: %d %s", rec.Code, rec.Body.String())
 	}
+	chosen := awaitRecorder(t, statuses[1])
+	var chosenStatus pipeStatusResponse
+	if err := json.Unmarshal(chosen.Body.Bytes(), &chosenStatus); err != nil || chosen.Code != http.StatusOK || chosenStatus.Status != "selected" {
+		t.Fatalf("chosen status: %d %s", chosen.Code, chosen.Body.String())
+	}
+	for _, i := range []int{0, 2} {
+		rec := awaitRecorder(t, statuses[i])
+		if rec.Code != http.StatusGone || pipeErrorCode(t, rec) != "not_selected" {
+			t.Fatalf("receiver %d status: %d %s", i, rec.Code, rec.Body.String())
+		}
+		if rec := awaitRecorder(t, f.receive(init.Code, joins[i].ConnectionID)); rec.Code != http.StatusGone || pipeErrorCode(t, rec) != "not_selected" {
+			t.Fatalf("receiver %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	received := f.receive(init.Code, joins[1].ConnectionID)
 	if rec := f.send(init, []byte("for the iPhone only")); rec.Code != http.StatusOK {
 		t.Fatalf("send: %d %s", rec.Code, rec.Body.String())
 	}
-
-	if rec := awaitRecorder(t, receives[1]); rec.Code != http.StatusOK || rec.Body.String() != "for the iPhone only" {
+	if rec := awaitRecorder(t, received); rec.Code != http.StatusOK || rec.Body.String() != "for the iPhone only" {
 		t.Fatalf("chosen receiver: %d %q", rec.Code, rec.Body.String())
 	}
-	for _, i := range []int{0, 2} {
-		rec := awaitRecorder(t, receives[i])
-		if rec.Code != http.StatusGone || pipeErrorCode(t, rec) != "not_selected" {
-			t.Fatalf("receiver %d: %d %s", i, rec.Code, rec.Body.String())
+}
+
+func TestPipeRelay_SelectOfAConnectionThatLeftIs409NotPending(t *testing.T) {
+	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{TTL: 5 * time.Second, PresenceTimeout: 50 * time.Millisecond}, 100)
+	init := f.init(true)
+	left := f.mustJoin(init.Code, uaChromeWindows)
+
+	// /status를 한 번도 열지 않은 연결은 presence 시간이 지나면 목록에서 빠진다.
+	time.Sleep(100 * time.Millisecond)
+	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
+	for _, connectionID := range []string{left.ConnectionID, "never-joined"} {
+		for _, path := range []string{"/api/pipe/select", "/api/pipe/decline"} {
+			rec := f.senderCall(path, init, connectionID)
+			if rec.Code != http.StatusConflict || pipeErrorCode(t, rec) != "not_pending" {
+				t.Fatalf("%s of a connection that is not waiting: %d %s", path, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	if f.coord.ActiveSessions() != 1 {
+		t.Fatal("a dropped connection burned the session")
+	}
+}
+
+func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testing.T) {
+	f := newPipeFixture(t)
+	init := f.init(true)
+
+	// 같은 /64 안의 서로 다른 주소 세 개, User-Agent도 서로 다르다.
+	agents := []string{uaChromeWindows, uaSafariIPhone, uaFirefoxLinux}
+	var first pipeJoinResponse
+	for i, ua := range agents {
+		rec := f.joinFrom("/api/pipe/join", init.Code, ua, "[2001:db8:1:2::"+strconv.Itoa(i+1)+"]:443")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("join %d from the /64: %d %s", i, rec.Code, rec.Body.String())
+		}
+		if i == 0 {
+			_ = json.Unmarshal(rec.Body.Bytes(), &first)
+		}
+	}
+	over := f.joinFrom("/api/pipe/join", init.Code, "curl/8", "[2001:db8:1:2:ffff::9]:443")
+	if over.Code != http.StatusConflict || pipeErrorCode(t, over) != "network_full" {
+		t.Fatalf("4th join from the same /64: %d %s", over.Code, over.Body.String())
+	}
+	if rec := f.joinFrom("/api/pipe/join", init.Code, "curl/8", "[2001:db8:1:3::1]:443"); rec.Code != http.StatusCreated {
+		t.Fatalf("join from the next /64: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 거절 차단도 /64 단위다: 같은 /64의 다른 주소로 바꿔도 같은 브라우저는 다시 못 들어온다.
+	if rec := f.senderCall("/api/pipe/decline", init, first.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("decline: %d %s", rec.Code, rec.Body.String())
+	}
+	rejoin := f.joinFrom("/api/pipe/join", init.Code, uaChromeWindows, "[2001:db8:1:2::abcd]:443")
+	if rejoin.Code != http.StatusForbidden || pipeErrorCode(t, rejoin) != "declined" {
+		t.Fatalf("rejoin from another address in the declined /64: %d %s", rejoin.Code, rejoin.Body.String())
+	}
+}
+
+func TestPipeRelay_JoinRateLimitSharesOneBucketPerIPv6Slash64AndAcrossPrefixes(t *testing.T) {
+	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{}, 2)
+
+	// 버킷 2개: 같은 /64의 두 주소가 다 쓰면, 셋째 주소도, /api/v1 경로도 막힌다.
+	for i, addr := range []string{"[2001:db8::1]:443", "[2001:db8::2]:443"} {
+		if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, addr); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("join %d inside the burst was rate limited", i)
+		}
+	}
+	for _, path := range []string{"/api/pipe/join", "/api/v1/pipe/join"} {
+		if rec := f.joinFrom(path, "123456", uaChromeWindows, "[2001:db8::3]:443"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s from a third address in the same /64: %d, want 429", path, rec.Code)
+		}
+	}
+	if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, "[2001:db8:0:1::1]:443"); rec.Code == http.StatusTooManyRequests {
+		t.Fatal("another /64 shared the bucket")
+	}
+	// IPv4는 주소마다 그대로 따로다.
+	for _, addr := range []string{"203.0.113.1:443", "203.0.113.1:443", "203.0.113.2:443"} {
+		if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, addr); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("IPv4 %s rate limited inside its own burst", addr)
 		}
 	}
 }
@@ -332,13 +457,13 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	init := f.init(true)
 
 	denied := f.mustJoin(init.Code, uaChromeWindows)
-	deniedReceive := f.receive(init.Code, denied.ConnectionID)
+	deniedStatus := f.status(init.Code, denied.ConnectionID)
 	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
 
 	if rec := f.senderCall("/api/pipe/decline", init, denied.ConnectionID); rec.Code != http.StatusOK {
 		t.Fatalf("decline: %d %s", rec.Code, rec.Body.String())
 	}
-	rec := awaitRecorder(t, deniedReceive)
+	rec := awaitRecorder(t, deniedStatus)
 	if rec.Code != http.StatusForbidden || pipeErrorCode(t, rec) != "declined" {
 		t.Fatalf("declined receiver: %d %s", rec.Code, rec.Body.String())
 	}
@@ -363,9 +488,11 @@ func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 	init := f.init(true)
 
 	for i := 0; i < piperelay.MaxPendingConnections; i++ {
-		f.mustJoin(init.Code, uaChromeWindows)
+		if rec := f.joinFrom("/api/pipe/join", init.Code, uaChromeWindows, joinAddr(i)); rec.Code != http.StatusCreated {
+			t.Fatalf("join %d: %d %s", i, rec.Code, rec.Body.String())
+		}
 	}
-	rec := f.join(init.Code, uaSafariIPhone)
+	rec := f.joinFrom("/api/pipe/join", init.Code, uaSafariIPhone, joinAddr(50))
 	if rec.Code != http.StatusConflict || pipeErrorCode(t, rec) != "room_full" {
 		t.Fatalf("11th join: %d %s", rec.Code, rec.Body.String())
 	}

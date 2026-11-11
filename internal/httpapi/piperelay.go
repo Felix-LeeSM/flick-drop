@@ -18,9 +18,10 @@ const (
 	pipeCodeHeader       = "X-Flick-Pipe-Code"
 	pipeSenderHeader     = "X-Flick-Pipe-Sender"
 	pipeConnectionHeader = "X-Flick-Pipe-Connection"
-	// pipeWaitMaxHold bounds one /wait long-poll. The sender re-polls with the
-	// returned version, so this only has to stay under proxy idle timeouts
-	// (Cloudflare cuts idle responses at 100 seconds).
+	// pipeWaitMaxHold bounds one /wait or /status long-poll. The caller
+	// re-polls, so this only has to stay under proxy idle timeouts (Cloudflare
+	// cuts idle responses at 100 seconds) and under the coordinator's 35-second
+	// presence timeout (internal/piperelay/coordinator.go defaultPresenceTimeout).
 	pipeWaitMaxHold = 25 * time.Second
 	pipeInitBodyMax = 1024
 )
@@ -103,6 +104,10 @@ func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusConflict, "already_connected", "another device is already receiving this transfer")
 	case errors.Is(err, piperelay.ErrRoomFull):
 		writeError(w, http.StatusConflict, "room_full", "too many devices are waiting on this code")
+	case errors.Is(err, piperelay.ErrNetworkFull):
+		writeError(w, http.StatusConflict, "network_full", "too many devices from this network are waiting on this code")
+	case errors.Is(err, piperelay.ErrAwaitingDecision):
+		writeError(w, http.StatusConflict, "awaiting_decision", "the sender has not picked this device yet")
 	case errors.Is(err, piperelay.ErrNotPending):
 		writeError(w, http.StatusConflict, "not_pending", "connection is no longer waiting")
 	case errors.Is(err, piperelay.ErrConfirmationDisabled):
@@ -161,15 +166,27 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pipeClientKey identifies a receiving client for the per-session decline
-// block: SHA-256 of the client IP (resolved through FLICK_TRUSTED_PROXIES the
-// same way as the rate limiter) and the User-Agent. Only the hash is kept, in
-// memory, for the session's lifetime. It is deliberately coarse: another
-// device behind the same NAT with the same browser and OS string is blocked
-// too for that one short session, and changing network or User-Agent gets
-// past it. The sender can decline again.
-func (s Server) pipeClientKey(r *http.Request) piperelay.ClientKey {
-	return sha256.Sum256([]byte(s.pipeJoinLimiter.clientIP(r) + "\n" + r.UserAgent()))
+// pipeJoinClient describes a receiving client to the coordinator by hashes
+// only. Both hashes start from the client network: the client IP resolved
+// through FLICK_TRUSTED_PROXIES the same way as the rate limiter, with IPv6
+// collapsed to its /64 (rateLimiter.clientNetwork), so rotating addresses
+// inside one IPv6 prefix escapes neither a decline nor the per-network cap.
+//
+//   - Key, for the per-session decline block, is SHA-256 of the network and
+//     the User-Agent. It is deliberately coarse: another device behind the same
+//     NAT or /64 with the same browser and OS string is blocked too for that
+//     one short session, and changing network or User-Agent gets past it. The
+//     sender can decline again.
+//   - Network, for piperelay.MaxPendingPerNetwork, is SHA-256 of the network.
+//
+// Only the hashes are kept, in memory, for the session's lifetime.
+func (s Server) pipeJoinClient(r *http.Request) piperelay.JoinClient {
+	network := s.pipeJoinLimiter.clientNetwork(r)
+	return piperelay.JoinClient{
+		Device:  pipeDeviceLabel(r.UserAgent()),
+		Key:     sha256.Sum256([]byte(network + "\n" + r.UserAgent())),
+		Network: sha256.Sum256([]byte("network\n" + network)),
+	}
 }
 
 func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +198,7 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.pipeCoordinator.Join(headers[0], pipeDeviceLabel(r.UserAgent()), s.pipeClientKey(r))
+	result, err := s.pipeCoordinator.Join(headers[0], s.pipeJoinClient(r))
 	if err != nil {
 		writePipeError(w, r, err)
 		return
@@ -193,6 +210,39 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		Device:              result.Device,
 		ExpiresIn:           result.ExpiresIn,
 	})
+}
+
+// statusPipe is a waiting receiver's long-poll (confirmation on). It answers
+// {"status":"selected"} once the sender picked this connection, and the
+// receiver then opens /receive; {"status":"waiting"} after at most
+// pipeWaitMaxHold; or the connection's end as an error (declined,
+// not_selected, cancelled, expired, closed). Polling is what keeps the
+// connection in the room.
+func (s Server) statusPipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeConnectionHeader)
+	if !ok {
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(pipeWaitMaxHold + 30*time.Second))
+
+	selected, err := s.pipeCoordinator.Status(r.Context(), headers[0], headers[1], pipeWaitMaxHold)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		writePipeError(w, r, err)
+		return
+	}
+	status := "waiting"
+	if selected {
+		status = "selected"
+	}
+	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: status})
 }
 
 func (s Server) waitPipe(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +357,8 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 
 	pr, salt, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), headers[0], headers[1])
 	if err != nil {
-		// A rejected or late receiver never counts against the session.
+		// A rejected, late, or not-yet-picked receiver never counts against
+		// the session.
 		writePipeError(w, r, err)
 		return
 	}

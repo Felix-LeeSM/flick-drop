@@ -28,6 +28,8 @@ var (
 	ErrNotPending           = errors.New("piperelay: connection is no longer waiting for a decision")
 	ErrConfirmationDisabled = errors.New("piperelay: session does not require confirmation")
 	ErrStreaming            = errors.New("piperelay: transfer is already streaming")
+	ErrNetworkFull          = errors.New("piperelay: too many receivers from one client network are waiting on this session")
+	ErrAwaitingDecision     = errors.New("piperelay: connection is still waiting for the sender's pick")
 	ErrInvalidCode          = errors.New("piperelay: code must be a 6-digit numeric string")
 	ErrExpired              = errors.New("piperelay: rendezvous session expired")
 )
@@ -37,13 +39,23 @@ const (
 	defaultTTL                 = 3 * time.Minute
 	defaultCleanInterval       = 30 * time.Second
 	defaultMaxTransferDuration = 10 * time.Minute
-	saltLengthBytes            = 16
-	tokenLengthBytes           = 32
-	connectionIDLengthBytes    = 16
-	pipeChunkBufferBytes       = 64 * 1024 // 64 KiB buffer matching age streaming chunk size
+	// defaultPresenceTimeout is how long a joined connection stays in the room
+	// without an open Status poll, and how long a chosen connection may take to
+	// open Receive. Status holds at most 25 seconds in the HTTP layer
+	// (internal/httpapi/piperelay.go pipeWaitMaxHold), so a receiver that keeps
+	// polling is never idle this long.
+	defaultPresenceTimeout  = 35 * time.Second
+	saltLengthBytes         = 16
+	tokenLengthBytes        = 32
+	connectionIDLengthBytes = 16
+	pipeChunkBufferBytes    = 64 * 1024 // 64 KiB buffer matching age streaming chunk size
 	// MaxPendingConnections caps the receivers one session holds undecided at
 	// once. The next joiner gets ErrRoomFull; the session itself stays alive.
 	MaxPendingConnections = 10
+	// MaxPendingPerNetwork caps the undecided receivers from one client network
+	// (an IPv4 address or an IPv6 /64, derived by the HTTP layer) in one
+	// session, so one network cannot fill the room alone.
+	MaxPendingPerNetwork = 3
 )
 
 var bufferPool = sync.Pool{
@@ -113,6 +125,7 @@ type Coordinator struct {
 	ttl                 time.Duration
 	cleanInterval       time.Duration
 	maxTransferDuration time.Duration
+	presenceTimeout     time.Duration
 	stopClean           chan struct{}
 	cleanDone           chan struct{}
 }
@@ -123,18 +136,28 @@ type CoordinatorOptions struct {
 	TTL                 time.Duration
 	CleanInterval       time.Duration
 	MaxTransferDuration time.Duration
+	// PresenceTimeout defaults to defaultPresenceTimeout (35 seconds).
+	PresenceTimeout time.Duration
 }
 
 // connection is one receiver that entered the right code. decided closes once
 // the sender (or first-connector-wins) settles it; result is nil for the chosen
 // connection and the reason otherwise.
+//
+// A waiting connection counts as present only while it polls Status: polls is
+// the number of open Status calls and lastSeen the last time one started or
+// ended. Session.pruneLocked drops a waiting connection idle longer than the
+// presence timeout.
 type connection struct {
 	id         string
 	index      int
 	verifyCode string
 	device     string
 	clientKey  ClientKey
+	network    ClientNetwork
 	joinedAt   time.Time
+	lastSeen   time.Time
+	polls      int
 	attached   bool
 	decided    chan struct{}
 	result     error
@@ -154,6 +177,19 @@ func (conn *connection) isDecided() bool {
 // package never sees either value.
 type ClientKey [32]byte
 
+// ClientNetwork identifies a receiving client's network (IPv4 address or IPv6
+// /64) for the MaxPendingPerNetwork cap. The HTTP layer derives it as a hash;
+// this package never sees the address.
+type ClientNetwork [32]byte
+
+// JoinClient is what Join knows about a receiving client.
+type JoinClient struct {
+	// Device is the coarse label shown to the sender, such as "Safari on iPhone".
+	Device  string
+	Key     ClientKey
+	Network ClientNetwork
+}
+
 // Session tracks the rendezvous lifecycle between sender and receivers.
 type Session struct {
 	codeHash            [32]byte
@@ -162,6 +198,7 @@ type Session struct {
 	requireConfirmation bool
 	createdAt           time.Time
 	expiresAt           time.Time
+	presenceTimeout     time.Duration
 
 	mu          sync.Mutex
 	connections map[string]*connection
@@ -170,6 +207,7 @@ type Session struct {
 	// in memory for the session's lifetime and is never logged.
 	declinedClients map[ClientKey]struct{}
 	selected        *connection
+	selectedAt      time.Time
 	streaming       bool
 	streamStartedAt time.Time
 	ended           bool
@@ -210,6 +248,10 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	if maxTransferDuration <= 0 {
 		maxTransferDuration = defaultMaxTransferDuration
 	}
+	presenceTimeout := opts.PresenceTimeout
+	if presenceTimeout <= 0 {
+		presenceTimeout = defaultPresenceTimeout
+	}
 
 	c := &Coordinator{
 		sessions:            make(map[[32]byte]*Session),
@@ -217,6 +259,7 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 		ttl:                 ttl,
 		cleanInterval:       cleanInterval,
 		maxTransferDuration: maxTransferDuration,
+		presenceTimeout:     presenceTimeout,
 		stopClean:           make(chan struct{}),
 		cleanDone:           make(chan struct{}),
 	}
@@ -314,6 +357,7 @@ func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, e
 		requireConfirmation: opts.RequireConfirmation,
 		createdAt:           now,
 		expiresAt:           now.Add(c.ttl),
+		presenceTimeout:     c.presenceTimeout,
 		connections:         make(map[string]*connection),
 		declinedClients:     make(map[ClientKey]struct{}),
 		version:             1,
@@ -372,6 +416,37 @@ func (s *Session) notifyLocked() {
 	s.changed = make(chan struct{})
 }
 
+// expiredLocked reports whether the rendezvous window closed. A streaming
+// session is exempt; Coordinator.cleanExpired bounds it by maxTransferDuration.
+// Caller holds s.mu.
+func (s *Session) expiredLocked(now time.Time) bool {
+	return !s.streaming && now.After(s.expiresAt)
+}
+
+// pruneLocked drops every waiting connection that has had no open Status poll
+// for the presence timeout, so a joiner that never polls (or stopped) frees its
+// slot. Dropping is not a decision: nothing is blocked and nothing burns.
+// It wakes Wait when it dropped anything. Caller holds s.mu.
+func (s *Session) pruneLocked(now time.Time) {
+	dropped := false
+	for id, conn := range s.connections {
+		idle := !conn.isDecided() && !conn.attached && conn.polls == 0 && now.Sub(conn.lastSeen) > s.presenceTimeout
+		if idle {
+			delete(s.connections, id)
+			dropped = true
+		}
+	}
+	if dropped {
+		s.notifyLocked()
+	}
+}
+
+// chosenAbandonedLocked reports whether the chosen connection never opened
+// Receive within the presence timeout after Select. Caller holds s.mu.
+func (s *Session) chosenAbandonedLocked(now time.Time) bool {
+	return s.selected != nil && !s.selected.attached && now.Sub(s.selectedAt) > s.presenceTimeout
+}
+
 func (s *Session) pendingLocked() []*connection {
 	pending := make([]*connection, 0, len(s.connections))
 	for _, conn := range s.connections {
@@ -387,6 +462,7 @@ func (s *Session) pendingLocked() []*connection {
 // connection with loserCause. Caller holds s.mu.
 func (s *Session) selectLocked(conn *connection, loserCause error) {
 	s.selected = conn
+	s.selectedAt = time.Now()
 	close(conn.decided)
 	for _, other := range s.connections {
 		if other != conn && !other.isDecided() {
@@ -404,12 +480,27 @@ func (s *Session) endedErrLocked() error {
 	return ErrSessionClosed
 }
 
+// endLocked marks the session ended with cause (the first cause wins) and
+// returns the cause that stuck. The caller then removes the session with
+// dropLocked. Marking happens under s.mu, the same lock Send holds to set
+// streaming, so a session either ends before its stream starts or streams
+// before anything can end it. Caller holds s.mu.
+func (s *Session) endLocked(cause error) error {
+	s.ended = true
+	if s.endCause == nil {
+		s.endCause = cause
+	}
+	return s.endCause
+}
+
 // Join admits a receiver that entered the right code and returns its
 // connection. With confirmation on, each connection gets its own random
 // verification number, unique among the session's undecided connections.
-// A late joiner (transfer already claimed), an 11th waiting joiner, or a client
-// the sender already declined is rejected without touching the session.
-func (c *Coordinator) Join(rawCode, device string, clientKey ClientKey) (JoinResult, error) {
+// A late joiner (transfer already claimed), an 11th waiting joiner, a 4th
+// waiting joiner from one client network, a client the sender already
+// declined, or a join after the rendezvous window closed is rejected without
+// touching the session.
+func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error) {
 	s, _, err := c.lookup(rawCode)
 	if err != nil {
 		return JoinResult{}, err
@@ -420,20 +511,34 @@ func (c *Coordinator) Join(rawCode, device string, clientKey ClientKey) (JoinRes
 		return JoinResult{}, fmt.Errorf("generate connection id: %w", err)
 	}
 
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ended {
 		return JoinResult{}, s.endedErrLocked()
 	}
-	if _, declined := s.declinedClients[clientKey]; declined {
+	if s.expiredLocked(now) {
+		return JoinResult{}, ErrExpired
+	}
+	if _, declined := s.declinedClients[client.Key]; declined {
 		return JoinResult{}, ErrDeclined
 	}
 	if s.selected != nil {
 		return JoinResult{}, ErrAlreadyConnected
 	}
+	s.pruneLocked(now)
 	pending := s.pendingLocked()
 	if len(pending) >= MaxPendingConnections {
 		return JoinResult{}, ErrRoomFull
+	}
+	fromNetwork := 0
+	for _, conn := range pending {
+		if conn.network == client.Network {
+			fromNetwork++
+		}
+	}
+	if fromNetwork >= MaxPendingPerNetwork {
+		return JoinResult{}, ErrNetworkFull
 	}
 
 	verifyCode := ""
@@ -454,9 +559,11 @@ func (c *Coordinator) Join(rawCode, device string, clientKey ClientKey) (JoinRes
 		id:         connID,
 		index:      s.nextIndex,
 		verifyCode: verifyCode,
-		device:     device,
-		clientKey:  clientKey,
-		joinedAt:   time.Now().UTC(),
+		device:     client.Device,
+		clientKey:  client.Key,
+		network:    client.Network,
+		joinedAt:   now,
+		lastSeen:   now,
 		decided:    make(chan struct{}),
 	}
 	s.connections[connID] = conn
@@ -467,17 +574,94 @@ func (c *Coordinator) Join(rawCode, device string, clientKey ClientKey) (JoinRes
 	result := JoinResult{
 		ConnectionID:        connID,
 		RequireConfirmation: s.requireConfirmation,
-		ExpiresIn:           max(0, int(time.Until(s.expiresAt).Seconds())),
+		ExpiresIn:           max(0, int(s.expiresAt.Sub(now).Seconds())),
 	}
 	if s.requireConfirmation {
 		result.VerifyCode = verifyCode
-		result.Device = device
+		result.Device = client.Device
 	}
 	return result, nil
 }
 
+// Status is a waiting receiver's long-poll (confirmation on only). It returns
+// selected=true once the sender picked this connection (the receiver then
+// opens Receive), an error once the connection was declined (ErrDeclined), not
+// chosen (ErrNotSelected), or the session ended, and selected=false after
+// maxWait while it is still waiting. An open Status call is what keeps a
+// waiting connection in the room: a connection with no Status call for the
+// presence timeout is dropped (Session.pruneLocked).
+func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWait time.Duration) (bool, error) {
+	s, _, err := c.lookup(rawCode)
+	if err != nil {
+		return false, err
+	}
+
+	s.mu.Lock()
+	conn, ok := s.connections[connID]
+	if ok && conn.isDecided() && conn.result != nil {
+		// A connection the sender already settled keeps its own answer, even
+		// after the session ends.
+		s.mu.Unlock()
+		return false, conn.result
+	}
+	if s.ended {
+		cause := s.endedErrLocked()
+		s.mu.Unlock()
+		return false, cause
+	}
+	if !ok {
+		s.mu.Unlock()
+		return false, ErrNotFound
+	}
+	if !s.requireConfirmation {
+		s.mu.Unlock()
+		return false, ErrConfirmationDisabled
+	}
+	now := time.Now()
+	if s.expiredLocked(now) {
+		s.mu.Unlock()
+		return false, ErrExpired
+	}
+	if conn.isDecided() {
+		s.mu.Unlock()
+		return true, nil
+	}
+	conn.polls++
+	conn.lastSeen = now
+	hold := min(maxWait, s.expiresAt.Sub(now))
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		conn.polls--
+		conn.lastSeen = time.Now()
+		s.mu.Unlock()
+	}()
+
+	timer := time.NewTimer(hold)
+	defer timer.Stop()
+	select {
+	case <-conn.decided:
+		if conn.result != nil {
+			return false, conn.result
+		}
+		return true, nil
+	case <-s.done:
+		return false, c.endCause(s)
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.expiredLocked(time.Now()) {
+			return false, ErrExpired
+		}
+		return false, nil
+	}
+}
+
 // Wait returns the sender's view of the session as soon as its version differs
-// from since, or after maxWait with the unchanged view (long-poll).
+// from since, or after maxWait with the current view (long-poll).
 func (c *Coordinator) Wait(ctx context.Context, rawCode, senderToken string, since uint64, maxWait time.Duration) (WaitSnapshot, error) {
 	s, _, err := c.lookupSender(rawCode, senderToken)
 	if err != nil {
@@ -493,17 +677,15 @@ func (c *Coordinator) Wait(ctx context.Context, rawCode, senderToken string, sin
 	defer timer.Stop()
 	select {
 	case <-changed:
-		snapshot, _, err = s.snapshot()
-		return snapshot, err
 	case <-s.done:
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return WaitSnapshot{}, s.endedErrLocked()
+		return WaitSnapshot{}, c.endCause(s)
 	case <-ctx.Done():
 		return WaitSnapshot{}, ctx.Err()
 	case <-timer.C:
-		return snapshot, nil
 	}
+	// A fresh snapshot also prunes connections that went idle during the hold.
+	snapshot, _, err = s.snapshot()
+	return snapshot, err
 }
 
 func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
@@ -512,9 +694,11 @@ func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
 	if s.ended {
 		return WaitSnapshot{}, nil, s.endedErrLocked()
 	}
-	if !s.streaming && time.Now().After(s.expiresAt) {
+	now := time.Now()
+	if s.expiredLocked(now) {
 		return WaitSnapshot{}, nil, ErrExpired
 	}
+	s.pruneLocked(now)
 	snapshot := WaitSnapshot{Version: s.version, Pending: []PendingConnection{}}
 	select {
 	case <-s.receiverReady:
@@ -536,28 +720,31 @@ func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
 }
 
 // Select hands the transfer to one undecided connection. Every other
-// undecided connection ends with ErrNotSelected.
+// undecided connection ends with ErrNotSelected. A connection that already left
+// the room (dropped as idle) or was already settled answers ErrNotPending.
 func (c *Coordinator) Select(rawCode, senderToken, connID string) error {
 	s, _, err := c.lookupSender(rawCode, senderToken)
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ended {
 		return s.endedErrLocked()
 	}
+	if s.expiredLocked(now) {
+		return ErrExpired
+	}
 	if !s.requireConfirmation {
 		return ErrConfirmationDisabled
-	}
-	conn, ok := s.connections[connID]
-	if !ok {
-		return ErrNotFound
 	}
 	if s.selected != nil {
 		return ErrAlreadyConnected
 	}
-	if conn.isDecided() {
+	s.pruneLocked(now)
+	conn, ok := s.connections[connID]
+	if !ok || conn.isDecided() {
 		return ErrNotPending
 	}
 	s.selectLocked(conn, ErrNotSelected)
@@ -569,7 +756,8 @@ func (c *Coordinator) Select(rawCode, senderToken, connID string) error {
 // block list, so the same client cannot rejoin this session. The key is coarse
 // by design: another client behind the same NAT with the same User-Agent is
 // blocked too for this one short session, and a client that changes network or
-// User-Agent gets through; the sender can decline it again.
+// User-Agent gets through; the sender can decline it again. A connection that
+// already left the room or was already settled answers ErrNotPending.
 func (c *Coordinator) Decline(rawCode, senderToken, connID string) error {
 	s, _, err := c.lookupSender(rawCode, senderToken)
 	if err != nil {
@@ -584,10 +772,7 @@ func (c *Coordinator) Decline(rawCode, senderToken, connID string) error {
 		return ErrConfirmationDisabled
 	}
 	conn, ok := s.connections[connID]
-	if !ok {
-		return ErrNotFound
-	}
-	if conn.isDecided() {
+	if !ok || conn.isDecided() {
 		return ErrNotPending
 	}
 	conn.result = ErrDeclined
@@ -600,7 +785,8 @@ func (c *Coordinator) Decline(rawCode, senderToken, connID string) error {
 // Cancel burns the whole session before streaming starts. Every waiting
 // receiver ends with ErrCancelled. A transfer that is already streaming is
 // never cut: Cancel returns ErrStreaming instead (the sender stops a stream by
-// aborting its own send request).
+// aborting its own send request). The streaming check and the end happen under
+// one s.mu hold, so a stream that Send starts concurrently is never cut.
 func (c *Coordinator) Cancel(rawCode, senderToken string) error {
 	s, hash, err := c.lookupSender(rawCode, senderToken)
 	if err != nil {
@@ -608,20 +794,26 @@ func (c *Coordinator) Cancel(rawCode, senderToken string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.sessions[hash] != s {
+		return ErrNotFound
+	}
 	s.mu.Lock()
-	streaming := s.streaming
-	s.mu.Unlock()
-	if streaming {
+	if s.streaming {
+		s.mu.Unlock()
 		return ErrStreaming
 	}
-	c.removeLocked(hash, ErrCancelled)
+	cause := s.endLocked(ErrCancelled)
+	s.mu.Unlock()
+	c.dropLocked(hash, s, cause)
 	return nil
 }
 
-// Receive blocks on one connection until it is chosen (then returns the pipe
-// once the sender starts), declined, not chosen, or the session ends. With
-// confirmation off the first connection to call Receive wins; later ones get
-// ErrAlreadyConnected. A rejected receiver never counts against the session.
+// Receive returns the pipe for the chosen connection once the sender starts.
+// With confirmation on, only the connection the sender selected may call it:
+// a still-waiting one gets ErrAwaitingDecision (it keeps polling Status), and a
+// declined or not-chosen one gets its own answer. With confirmation off the
+// first connection to call Receive wins; later ones get ErrAlreadyConnected.
+// A rejected receiver never counts against the session.
 func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, []byte, SessionMetadata, func(), error) {
 	s, hash, err := c.lookup(rawCode)
 	if err != nil {
@@ -649,25 +841,15 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 		s.mu.Unlock()
 		return nil, nil, SessionMetadata{}, nil, ErrAlreadyConnected
 	}
-	conn.attached = true
-	if !s.requireConfirmation && s.selected == nil && !conn.isDecided() {
+	if s.requireConfirmation && s.selected != conn {
+		s.mu.Unlock()
+		return nil, nil, SessionMetadata{}, nil, ErrAwaitingDecision
+	}
+	if !s.requireConfirmation && s.selected == nil {
 		s.selectLocked(conn, ErrAlreadyConnected)
 	}
+	conn.attached = true
 	s.mu.Unlock()
-
-	select {
-	case <-conn.decided:
-	case <-s.done:
-		return nil, nil, SessionMetadata{}, nil, c.endCause(s)
-	case <-ctx.Done():
-		c.detach(s, hash, conn)
-		return nil, nil, SessionMetadata{}, nil, ctx.Err()
-	case <-time.After(time.Until(s.expiresAt)):
-		return nil, nil, SessionMetadata{}, nil, ErrExpired
-	}
-	if conn.result != nil {
-		return nil, nil, SessionMetadata{}, nil, conn.result
-	}
 
 	s.receiverOnce.Do(func() {
 		close(s.receiverReady)
@@ -699,6 +881,8 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 	case <-s.done:
 		return nil, nil, SessionMetadata{}, nil, c.endCause(s)
 	case <-ctx.Done():
+		// The chosen receiver leaving before the stream starts ends the
+		// session: nobody else can take over.
 		cleanup()
 		return nil, nil, SessionMetadata{}, nil, ctx.Err()
 	case <-time.After(time.Until(s.expiresAt)):
@@ -711,22 +895,6 @@ func (c *Coordinator) endCause(s *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.endedErrLocked()
-}
-
-// detach handles a receiver that left. An undecided connection just leaves the
-// room (its slot reopens). The chosen receiver leaving before the stream starts
-// ends the session, since nobody else can take over.
-func (c *Coordinator) detach(s *Session, hash [32]byte, conn *connection) {
-	s.mu.Lock()
-	wasSelected := s.selected == conn
-	if !conn.isDecided() {
-		delete(s.connections, conn.id)
-		s.notifyLocked()
-	}
-	s.mu.Unlock()
-	if wasSelected {
-		c.burnSession(hash)
-	}
 }
 
 // Send sets stream metadata, waits for the chosen receiver, and copies body to
@@ -771,7 +939,14 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 		return 0, ErrExpired
 	}
 
+	// The stream starts only if nothing ended the session first: Cancel and
+	// cleanExpired check streaming and end the session under this same lock.
 	s.mu.Lock()
+	if s.ended {
+		cause := s.endedErrLocked()
+		s.mu.Unlock()
+		return 0, cause
+	}
 	s.streaming = true
 	s.streamStartedAt = time.Now().UTC()
 	s.mu.Unlock()
@@ -807,22 +982,25 @@ func (c *Coordinator) burnSession(hash [32]byte) {
 	c.removeLocked(hash, ErrSessionClosed)
 }
 
-// removeLocked deletes a session and wakes everyone blocked on it with cause.
+// removeLocked ends a session unconditionally and wakes everyone blocked on it.
 // Caller holds c.mu.
 func (c *Coordinator) removeLocked(hash [32]byte, cause error) {
 	s, ok := c.sessions[hash]
 	if !ok {
 		return
 	}
-	delete(c.sessions, hash)
-
 	s.mu.Lock()
-	s.ended = true
-	if s.endCause == nil {
-		s.endCause = cause
-	}
+	cause = s.endLocked(cause)
 	s.mu.Unlock()
+	c.dropLocked(hash, s, cause)
+}
 
+// dropLocked deletes an ended session and closes its channels and pipe with
+// cause. Caller holds c.mu and has already marked s ended with endLocked.
+func (c *Coordinator) dropLocked(hash [32]byte, s *Session, cause error) {
+	if c.sessions[hash] == s {
+		delete(c.sessions, hash)
+	}
 	s.closeOnce.Do(func() {
 		close(s.done)
 		_ = s.pipeWriter.CloseWithError(cause)
@@ -845,27 +1023,39 @@ func (c *Coordinator) runCleaner() {
 	}
 }
 
-// cleanExpired removes sessions past their rendezvous TTL. A session that is
-// already streaming is exempt from the TTL and is only cut once it exceeds
-// maxTransferDuration, so the 3-minute rendezvous window never truncates a
-// transfer that started near its end.
+// cleanExpired removes sessions past their rendezvous TTL and sessions whose
+// chosen connection never opened Receive, and drops idle waiting connections
+// from the rest. A session that is already streaming is exempt from the TTL and
+// is only cut once it exceeds maxTransferDuration, so the 3-minute rendezvous
+// window never truncates a transfer that started near its end. Each decision
+// and its end happen under one s.mu hold (see Session.endLocked).
 func (c *Coordinator) cleanExpired(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for hash, s := range c.sessions {
 		s.mu.Lock()
-		streaming, streamStartedAt := s.streaming, s.streamStartedAt
-		s.mu.Unlock()
-		if streaming {
-			if now.After(streamStartedAt.Add(c.maxTransferDuration)) {
-				c.removeLocked(hash, ErrExpired)
+		var cause error
+		switch {
+		case s.streaming:
+			if now.After(s.streamStartedAt.Add(c.maxTransferDuration)) {
+				cause = ErrExpired
 			}
+		case now.After(s.expiresAt):
+			cause = ErrExpired
+		case s.chosenAbandonedLocked(now):
+			// Same as the chosen receiver leaving before the stream starts.
+			cause = ErrSessionClosed
+		default:
+			s.pruneLocked(now)
+		}
+		if cause == nil {
+			s.mu.Unlock()
 			continue
 		}
-		if now.After(s.expiresAt) {
-			c.removeLocked(hash, ErrExpired)
-		}
+		cause = s.endLocked(cause)
+		s.mu.Unlock()
+		c.dropLocked(hash, s, cause)
 	}
 }
 

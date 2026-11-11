@@ -169,10 +169,12 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	registerPipeRoutes := func(r chi.Router) {
 		r.With(server.pipeInitLimiter.middleware).Post("/init", server.initPipe)
 		// /join is the only call that accepts a bare 6-digit code, so it carries
-		// the open-rate limit. /receive needs a connection ID from /join, and the
-		// sender calls need the sender token from /init; a wrong ID or token
-		// answers 404 exactly like an unknown code.
-		r.With(server.pipeJoinLimiter.middleware).Post("/join", server.joinPipe)
+		// the open-rate limit, keyed by client network (IPv6 /64) and shared by
+		// both route prefixes. /status and /receive need a connection ID from
+		// /join, and the sender calls need the sender token from /init; a wrong
+		// ID or token answers 404 exactly like an unknown code.
+		r.With(server.pipeJoinLimiter.pipeJoinMiddleware).Post("/join", server.joinPipe)
+		r.Get("/status", server.statusPipe)
 		r.Get("/receive", server.receivePipe)
 		r.Get("/wait", server.waitPipe)
 		r.Post("/select", server.selectPipe)

@@ -761,13 +761,17 @@ paths:
       operationId: joinPipe
       summary: Join a rendezvous as a receiver.
       description: >-
-        The only pipe call that accepts a bare 6-digit code; rate-limited per
-        client IP by FLICK_OPEN_RATE_PER_MIN. Returns an unguessable connection
-        ID scoped to the session. With confirmation on, the connection also gets
-        its own random 3-digit verify_code (unique among the session's waiting
-        connections) and a coarse device label parsed from the User-Agent; the
-        receiver shows verify_code so the sender can pick it. No rejection here
-        ends the session or counts against it.
+        The only pipe call that accepts a bare 6-digit code; rate-limited by
+        FLICK_OPEN_RATE_PER_MIN per client network (an IPv4 address or an IPv6
+        /64), with one bucket shared by /api/pipe/join and /api/v1/pipe/join.
+        Returns an unguessable connection ID scoped to the session. With
+        confirmation on, the connection also gets its own random 3-digit
+        verify_code (unique among the session's waiting connections) and a
+        coarse device label parsed from the User-Agent; the receiver shows
+        verify_code so the sender can pick it, then long-polls /status. A
+        waiting connection stays in the room only while it polls /status: one
+        with no open /status call for 35 seconds is dropped and its slot
+        reopens. No rejection here ends the session or counts against it.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
       responses:
@@ -791,14 +795,70 @@ paths:
           description: >-
             `already_connected`: another receiver already holds the transfer.
             `room_full`: 10 receivers are already waiting.
+            `network_full`: 3 receivers from this client network (IPv4
+            address or IPv6 /64) are already waiting.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Rendezvous expired, cancelled, or closed.
+          description: "`expired`: the 3-minute rendezvous window closed. `cancelled` or `closed`: the session ended."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "429":
-          description: Client rate limit.
+          description: Client network rate limit.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/status:
+    get:
+      operationId: statusPipe
+      summary: Long-poll a waiting connection until the sender decides.
+      description: >-
+        Confirmation on only. Returns at once with `selected` when the sender
+        picked this connection; the receiver then opens /receive, which streams
+        as soon as the sender starts. Otherwise holds up to 25 seconds and
+        returns `waiting`, and the receiver polls again; the hold stays under
+        proxy idle limits (Cloudflare cuts silent responses at 100 seconds).
+        An open /status call is what keeps the connection in the room: a
+        connection with no /status call for 35 seconds is dropped, which frees
+        its slot without ending the session. The connection's end comes back
+        as an error.
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeConnection"
+      responses:
+        "200":
+          description: Still waiting, or selected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeReceiverStatusResponse"
+        "400":
+          description: Missing or invalid header.
+        "403":
+          description: "`declined`: the sender declined this connection."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Rendezvous or connection not found (including a connection dropped for not polling).
+        "409":
+          description: "`confirmation_disabled`: the session has no waiting room; open /receive directly."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: >-
+            `not_selected`: the sender chose another device. `cancelled`: the
+            sender cancelled the code. `expired` or `closed`: the session ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: Live pipe relay is disabled.
   /api/pipe/receive:
@@ -806,10 +866,14 @@ paths:
       operationId: receivePipe
       summary: Receive the live stream on a joined connection.
       description: >-
-        Blocks until the connection is chosen (then streams ciphertext chunks
-        once the sender starts), declined, not chosen, or the session ends.
-        With confirmation off, the first connection to call /receive wins.
-        Leaving while still waiting frees the connection's slot.
+        With confirmation on, only the connection the sender selected (as
+        reported by /status) may open /receive; it returns the stream once the
+        sender starts, and a still-waiting connection gets 409
+        `awaiting_decision`. With confirmation off, the first connection to
+        call /receive wins and later ones get 409 `already_connected`. The
+        chosen receiver leaving before the stream starts ends the session; so
+        does a selected connection that does not open /receive within 35
+        seconds.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeConnection"
@@ -845,7 +909,11 @@ paths:
         "404":
           description: Rendezvous or connection not found.
         "409":
-          description: "`already_connected`: confirmation off and another receiver connected first, or this connection already has an open /receive."
+          description: >-
+            `already_connected`: confirmation off and another receiver connected
+            first, or this connection already has an open /receive.
+            `awaiting_decision`: confirmation on and the sender has not picked
+            this connection yet; keep polling /status.
           content:
             application/json:
               schema:
@@ -870,7 +938,8 @@ paths:
         sender re-polls with the returned version. `status` turns `ready` once
         the chosen receiver is attached and /send can stream. `connections`
         lists waiting receivers in join order (always empty with confirmation
-        off).
+        off); a receiver that stopped polling /status for 35 seconds drops out
+        of the list and bumps the version.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeSender"
@@ -917,15 +986,22 @@ paths:
         "400":
           description: Missing header.
         "404":
-          description: Rendezvous or connection not found, or wrong sender token.
+          description: Rendezvous not found, or wrong sender token.
         "409":
-          description: "`already_connected`, `not_pending` (declined or left), or `confirmation_disabled`."
+          description: >-
+            `already_connected`; `not_pending`: the connection was declined,
+            left the room (dropped for not polling /status), or never existed in
+            this session; or `confirmation_disabled`.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Rendezvous expired, cancelled, or closed.
+          description: "`expired`: the 3-minute rendezvous window closed. `cancelled` or `closed`: the session ended."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: Live pipe relay is disabled.
   /api/pipe/decline:
@@ -950,9 +1026,11 @@ paths:
         "400":
           description: Missing header.
         "404":
-          description: Rendezvous or connection not found, or wrong sender token.
+          description: Rendezvous not found, or wrong sender token.
         "409":
-          description: "`not_pending` or `confirmation_disabled`."
+          description: >-
+            `not_pending`: the connection was already settled, left the room, or
+            never existed in this session; or `confirmation_disabled`.
           content:
             application/json:
               schema:
@@ -1505,6 +1583,15 @@ components:
         connected_seconds:
           type: integer
           description: Seconds since the connection joined, measured by the server.
+    PipeReceiverStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [waiting, selected]
+          description: "`selected`: open /receive now. `waiting`: poll /status again."
     PipeActionResponse:
       type: object
       additionalProperties: false
