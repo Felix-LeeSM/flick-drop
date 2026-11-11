@@ -1,18 +1,16 @@
 <script lang="ts">
 import {
 	ActivityIcon,
-	CheckIcon,
 	ClockIcon,
 	CopyIcon,
 	FlameIcon,
 	QrCodeIcon,
 	RadioIcon,
-	ShieldCheckIcon,
-	XIcon,
 	ZapIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import LockStageCard from '#lib/components/LockStageCard.svelte';
+import PipePendingList from '#lib/components/PipePendingList.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
 import StageSteps from '#lib/components/StageSteps.svelte';
 import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
@@ -24,6 +22,7 @@ import {
 	type StagePhase,
 	sleep
 } from '#lib/stage-timing.js';
+import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
 import { cn } from '#lib/utils.js';
 
 // The relay's three stages. The burned step never renders as an active row —
@@ -44,13 +43,16 @@ type Props = {
 	progressPercent?: number;
 	completed?: boolean;
 	totalBytes?: number;
-	requireApproval?: boolean;
-	matchCode?: string;
-	approvalStatus?: 'idle' | 'pending' | 'approved' | 'rejected';
-	onApprove?: () => void;
-	onReject?: () => void;
-	deviceInfo?: string;
+	failed?: boolean;
+	/** Confirmation on: receivers wait in a list until the sender picks one. */
+	requireConfirmation?: boolean;
+	pending?: PendingReceiver[];
+	onSend?: (connectionId: string) => void;
+	onDeny?: (connectionId: string) => void;
 };
+
+// Mirrors MaxPendingConnections in internal/piperelay/coordinator.go.
+const PIPE_ROOM_CAPACITY = 10;
 
 let {
 	code,
@@ -62,12 +64,11 @@ let {
 	progressPercent = 0,
 	completed = false,
 	totalBytes = 0,
-	requireApproval = false,
-	matchCode = '482',
-	approvalStatus = 'idle',
-	onApprove,
-	onReject,
-	deviceInfo = 'Connected device'
+	failed = false,
+	requireConfirmation = false,
+	pending = [],
+	onSend = () => undefined,
+	onDeny = () => undefined
 }: Props = $props();
 
 let remainingSeconds = $state(180);
@@ -78,7 +79,6 @@ let streamStartedAt: number | null = null;
 let stagePhase = $state<StagePhase>('waiting');
 let stageSettled = $state(false);
 const streaming = $derived(progressPercent > 0);
-const failed = $derived(approvalStatus === 'rejected');
 const showStage = $derived(streaming && !stageSettled);
 
 $effect(() => {
@@ -113,10 +113,13 @@ let qrOpen = $state(false);
 let copied = $state(false);
 
 let timerInterval: number | null = null;
+// Drives the waiting list's "12s ago" labels.
+let now = $state(Date.now());
 
 onMount(() => {
 	remainingSeconds = expiresInSeconds;
 	timerInterval = window.setInterval(() => {
+		now = Date.now();
 		if (remainingSeconds > 0 && !completed) {
 			remainingSeconds -= 1;
 		}
@@ -198,14 +201,14 @@ let directReceiveUrl = $derived(
 				Send another secret
 			</Button>
 		</div>
-	{:else if failed && stageSettled}
-		<!-- A stream that broke after it started leaves a dead session; the code view
-		     would offer a code that no longer works. -->
+	{:else if failed && (stageSettled || !streaming)}
+		<!-- A broken stream or an ended session (expired, server error) leaves a dead
+		     code; the code view would offer a code that no longer works. -->
 		<div class="grid place-items-center gap-4" role="alert">
 			<div class="grid gap-2">
 				<h2 class="font-serif text-2xl font-normal text-foreground">Transfer failed</h2>
 				<p class="text-sm text-muted-foreground">{statusText}</p>
-				<p class="text-xs text-muted-foreground">The session was burned and wiped from memory.</p>
+				<p class="text-xs text-muted-foreground">The code no longer works. Nothing more will be sent.</p>
 			</div>
 			<Button type="button" size="cta" variant="outline" class="w-full mt-2" onclick={onReset}>
 				Start new secret
@@ -257,64 +260,10 @@ let directReceiveUrl = $derived(
 			</div>
 		</div>
 
-		<!-- 2-Step Confirmation Card -->
-		{#if requireApproval && approvalStatus === 'pending'}
-			<div class="rounded-2xl border-2 border-primary bg-primary/5 p-5 text-left space-y-4 shadow-md animate-in fade-in zoom-in-95">
-				<div class="flex items-start justify-between">
-					<div class="space-y-1">
-						<span class="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2.5 py-0.5 text-[11px] font-bold text-primary">
-							<ShieldCheckIcon class="size-3.5" aria-hidden="true" />
-							Receiver connected
-						</span>
-						<h3 class="text-base font-bold text-foreground">Confirm live transfer</h3>
-						<p class="text-xs text-muted-foreground">
-							Verify that this code matches the code shown on the receiver's device:
-						</p>
-					</div>
-				</div>
-
-				<!-- Match code callout -->
-				<div class="flex flex-col items-center justify-center rounded-xl bg-background border border-primary/30 p-3 text-center shadow-xs">
-					<span class="text-[10px] uppercase font-mono tracking-wider text-muted-foreground">Confirmation Code</span>
-					<div class="font-mono text-3xl font-extrabold text-primary tracking-widest pt-0.5">
-						{matchCode}
-					</div>
-				</div>
-
-				<div class="flex items-center justify-between text-[11px] text-muted-foreground px-1">
-					<span>Receiver: <strong class="text-foreground">{deviceInfo}</strong></span>
-					<span>Status: <strong class="text-amber-500">Pending approval</strong></span>
-				</div>
-
-				<div class="grid grid-cols-2 gap-3 pt-1">
-					<Button
-						type="button"
-						variant="outline"
-						class="border-destructive/40 text-destructive hover:bg-destructive/10"
-						onclick={onReject}
-					>
-						<XIcon class="size-4" aria-hidden="true" />
-						<span>Deny transfer</span>
-					</Button>
-					<Button
-						type="button"
-						class="bg-primary text-primary-foreground font-bold hover:bg-primary/90 shadow-sm"
-						onclick={onApprove}
-					>
-						<CheckIcon class="size-4" aria-hidden="true" />
-						<span>Approve & send</span>
-					</Button>
-				</div>
-			</div>
-		{:else if requireApproval && approvalStatus === 'rejected'}
-			<div class="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-center text-xs space-y-2">
-				<p class="font-bold text-destructive">Transfer denied</p>
-				<p class="text-muted-foreground text-[11px]">
-					Transfer was denied. The session was burned and wiped from memory.
-				</p>
-				<Button type="button" size="sm" variant="outline" onclick={onReset}>
-					Start new secret
-				</Button>
+		{#if requireConfirmation}
+			<!-- Below the 6-digit code, which stays the most prominent element. -->
+			<div class="rounded-2xl border border-border bg-muted/20 p-3">
+				<PipePendingList {pending} capacity={PIPE_ROOM_CAPACITY} {now} {onSend} {onDeny} />
 			</div>
 		{/if}
 

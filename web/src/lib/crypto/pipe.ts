@@ -23,17 +23,6 @@ export function formatPipeCode(raw: string): string {
 }
 
 /**
- * Derives a deterministic 3-digit confirmation code from the 6-digit pipe code
- * for out-of-band visual verification between sender and receiver.
- */
-export function deriveConfirmationCode(code: string): string {
-	const normalized = normalizePipeCode(code);
-	const num = Number.parseInt(normalized, 10);
-	const hash = Math.abs((num * 48_271) % 900) + 100;
-	return String(hash);
-}
-
-/**
  * Derives the symmetric encryption passphrase combining the 6-digit code,
  * the server-issued cryptographic salt, and an optional secret passphrase.
  */
@@ -154,76 +143,278 @@ export async function streamToText(stream: ReadableStream<Uint8Array>): Promise<
 	return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
+/**
+ * A failed pipe call. `reason` is the API's error code (`declined`,
+ * `room_full`, `not_selected`, …) or a status-derived fallback, so callers
+ * branch on it instead of on message text.
+ */
+export class PipeRelayError extends Error {
+	readonly reason: string;
+	readonly status: number;
+
+	constructor(reason: string, status: number, message: string) {
+		super(message);
+		this.name = 'PipeRelayError';
+		this.reason = reason;
+		this.status = status;
+	}
+}
+
+const PIPE_ERROR_MESSAGES: Record<string, string> = {
+	not_found: 'Invalid or expired 6-digit code.',
+	declined: 'The sender declined this device.',
+	room_full: 'Too many devices are trying to connect. Ask the sender for a new code.',
+	already_connected: 'Another device is already receiving this transfer.',
+	not_selected: 'The sender chose another device.',
+	cancelled: 'The sender cancelled this code.',
+	expired: 'This code expired.',
+	closed: 'This transfer session has ended.',
+	streaming: 'The transfer is already streaming.',
+	rate_limited: 'Too many attempts. Wait a minute and try again.',
+	capacity_exceeded: 'Server is at maximum capacity for live transfers. Please try again later.',
+	service_unavailable: 'Live transfer is currently disabled on this server.'
+};
+
+function statusReason(status: number): string {
+	switch (status) {
+		case 404:
+			return 'not_found';
+		case 429:
+			return 'rate_limited';
+		case 503:
+			return 'service_unavailable';
+		default:
+			return String(status);
+	}
+}
+
+async function pipeError(response: Response, fallback: string): Promise<PipeRelayError> {
+	let reason = '';
+	try {
+		const body = (await response.json()) as { error?: { code?: unknown } };
+		reason = typeof body.error?.code === 'string' ? body.error.code : '';
+	} catch {
+		// A non-JSON body (proxy error page, empty body) falls back to the status.
+	}
+	if (reason === '') {
+		reason = statusReason(response.status);
+	}
+	const message = PIPE_ERROR_MESSAGES[reason] ?? `${fallback} (${response.status})`;
+	return new PipeRelayError(reason, response.status, message);
+}
+
+function apiBase(baseUrl: string): string {
+	return baseUrl.replace(/\/+$/, '');
+}
+
 export type PipeInitResult = {
 	code: string;
 	salt: string;
 	expiresIn: number;
+	senderToken: string;
+	requireConfirmation: boolean;
 };
 
 /**
- * Calls POST /api/pipe/init to generate an uncolliding 6-digit code and 16-byte salt.
+ * Calls POST /api/pipe/init. The sender token it returns is the only credential
+ * for the sender-side calls; it stays in browser memory.
  */
 export async function initPipeRendezvous(
 	baseUrl: string,
+	requireConfirmation: boolean,
 	fetcher: typeof fetch = fetch
 ): Promise<PipeInitResult> {
-	const normalized = baseUrl.replace(/\/+$/, '');
-	const response = await fetcher(`${normalized}/api/pipe/init`, {
-		method: 'POST'
+	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/init`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ require_confirmation: requireConfirmation })
 	});
-
 	if (!response.ok) {
-		if (response.status === 429) {
-			throw new Error('Server is at maximum capacity for live transfers. Please try again later.');
-		}
-		if (response.status === 503) {
-			throw new Error('Live transfer is currently disabled on this server.');
-		}
-		throw new Error(`Failed to initialize transfer session (${response.status})`);
+		throw await pipeError(response, 'Failed to initialize transfer session');
 	}
 
-	const data = (await response.json()) as { code: string; salt: string; expires_in: number };
+	const data = (await response.json()) as {
+		code: string;
+		salt: string;
+		expires_in: number;
+		sender_token: string;
+		require_confirmation: boolean;
+	};
 	return {
 		code: data.code,
 		salt: data.salt,
-		expiresIn: data.expires_in
+		expiresIn: data.expires_in,
+		senderToken: data.sender_token,
+		requireConfirmation: data.require_confirmation
 	};
 }
 
+export type PipeJoinResult = {
+	connectionId: string;
+	requireConfirmation: boolean;
+	/** Present only when the sender requires confirmation. */
+	verifyCode?: string;
+	device?: string;
+	expiresIn: number;
+};
+
 /**
- * Long-polls GET /api/pipe/wait with X-Flick-Pipe-Code until receiver connects.
+ * Calls POST /api/pipe/join with the 6-digit code. With confirmation on, the
+ * server returns this device's own random 3-digit number to read to the sender.
  */
-export async function waitForReceiver(
+export async function joinPipe(
 	baseUrl: string,
 	code: string,
 	fetcher: typeof fetch = fetch,
 	signal?: AbortSignal
-): Promise<void> {
-	const normalizedCode = normalizePipeCode(code);
-	const normalized = baseUrl.replace(/\/+$/, '');
+): Promise<PipeJoinResult> {
+	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/join`, {
+		method: 'POST',
+		headers: { 'X-Flick-Pipe-Code': normalizePipeCode(code) },
+		signal
+	});
+	if (!response.ok) {
+		throw await pipeError(response, 'Join failed');
+	}
+	const data = (await response.json()) as {
+		connection_id: string;
+		require_confirmation: boolean;
+		verify_code?: string;
+		device?: string;
+		expires_in: number;
+	};
+	return {
+		connectionId: data.connection_id,
+		requireConfirmation: data.require_confirmation,
+		verifyCode: data.verify_code,
+		device: data.device,
+		expiresIn: data.expires_in
+	};
+}
 
-	const response = await fetcher(`${normalized}/api/pipe/wait`, {
+export type PipePendingConnection = {
+	connectionId: string;
+	index: number;
+	verifyCode: string;
+	device: string;
+	connectedSeconds: number;
+};
+
+export type PipeWaitResult = {
+	status: 'waiting' | 'ready';
+	version: number;
+	connections: PipePendingConnection[];
+};
+
+/**
+ * Long-polls GET /api/pipe/wait. Resolves as soon as the session differs from
+ * `since`, or after the server's hold time with the unchanged view.
+ */
+export async function waitForPipeUpdate(
+	baseUrl: string,
+	code: string,
+	senderToken: string,
+	since: number,
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal
+): Promise<PipeWaitResult> {
+	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/wait?since=${since}`, {
 		method: 'GET',
 		headers: {
-			'X-Flick-Pipe-Code': normalizedCode
+			'X-Flick-Pipe-Code': normalizePipeCode(code),
+			'X-Flick-Pipe-Sender': senderToken
 		},
 		signal
 	});
-
 	if (!response.ok) {
-		if (response.status === 404) {
-			throw new Error('Transfer code not found or expired.');
-		}
-		if (response.status === 410) {
-			throw new Error('Transfer session expired or burned.');
-		}
-		throw new Error(`Wait failed with status ${response.status}`);
+		throw await pipeError(response, 'Wait failed');
 	}
+	const data = (await response.json()) as {
+		status: 'waiting' | 'ready';
+		version: number;
+		connections: {
+			connection_id: string;
+			index: number;
+			verify_code: string;
+			device: string;
+			connected_seconds: number;
+		}[];
+	};
+	return {
+		status: data.status,
+		version: data.version,
+		connections: data.connections.map((connection) => ({
+			connectionId: connection.connection_id,
+			index: connection.index,
+			verifyCode: connection.verify_code,
+			device: connection.device,
+			connectedSeconds: connection.connected_seconds
+		}))
+	};
+}
+
+type SenderAction = {
+	path: 'select' | 'decline' | 'cancel';
+	baseUrl: string;
+	code: string;
+	senderToken: string;
+	connectionId?: string;
+	fetcher: typeof fetch;
+};
+
+async function senderAction(action: SenderAction): Promise<void> {
+	const headers: Record<string, string> = {
+		'X-Flick-Pipe-Code': normalizePipeCode(action.code),
+		'X-Flick-Pipe-Sender': action.senderToken
+	};
+	if (action.connectionId !== undefined) {
+		headers['X-Flick-Pipe-Connection'] = action.connectionId;
+	}
+	const response = await action.fetcher(`${apiBase(action.baseUrl)}/api/pipe/${action.path}`, {
+		method: 'POST',
+		headers
+	});
+	if (!response.ok) {
+		throw await pipeError(response, `${action.path} failed`);
+	}
+}
+
+/** Calls POST /api/pipe/select: the transfer goes to this connection only. */
+export function selectPipeConnection(
+	baseUrl: string,
+	code: string,
+	senderToken: string,
+	connectionId: string,
+	fetcher: typeof fetch = fetch
+): Promise<void> {
+	return senderAction({ path: 'select', baseUrl, code, senderToken, connectionId, fetcher });
+}
+
+/** Calls POST /api/pipe/decline: ends this connection; the session stays open. */
+export function declinePipeConnection(
+	baseUrl: string,
+	code: string,
+	senderToken: string,
+	connectionId: string,
+	fetcher: typeof fetch = fetch
+): Promise<void> {
+	return senderAction({ path: 'decline', baseUrl, code, senderToken, connectionId, fetcher });
+}
+
+/** Calls POST /api/pipe/cancel: burns the whole session before streaming starts. */
+export function cancelPipe(
+	baseUrl: string,
+	code: string,
+	senderToken: string,
+	fetcher: typeof fetch = fetch
+): Promise<void> {
+	return senderAction({ path: 'cancel', baseUrl, code, senderToken, fetcher });
 }
 
 export type SendPipeOptions = {
 	baseUrl: string;
 	code: string;
+	senderToken: string;
 	stream: ReadableStream<Uint8Array>;
 	kind?: 'text' | 'file';
 	encryptedFilename?: string;
@@ -235,12 +426,21 @@ export type SendPipeOptions = {
  * Streams encrypted bytes to POST /api/pipe/send.
  */
 export async function sendPipeStream(options: SendPipeOptions): Promise<number> {
-	const { baseUrl, code, stream, kind, encryptedFilename, fetcher = fetch, signal } = options;
-	const normalizedCode = normalizePipeCode(code);
-	const normalized = baseUrl.replace(/\/+$/, '');
+	const {
+		baseUrl,
+		code,
+		senderToken,
+		stream,
+		kind,
+		encryptedFilename,
+		fetcher = fetch,
+		signal
+	} = options;
+	const normalized = apiBase(baseUrl);
 
 	const headers: Record<string, string> = {
-		'X-Flick-Pipe-Code': normalizedCode,
+		'X-Flick-Pipe-Code': normalizePipeCode(code),
+		'X-Flick-Pipe-Sender': senderToken,
 		'Content-Type': 'application/octet-stream'
 	};
 	if (kind) {
@@ -270,13 +470,14 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 	const response = await fetcher(`${normalized}/api/pipe/send`, init);
 
 	if (!response.ok) {
-		if (response.status === 404) {
-			throw new Error('Transfer session not found or expired.');
-		}
 		if (response.status === 502) {
-			throw new Error('Receiver disconnected during live transfer.');
+			throw new PipeRelayError(
+				'receiver_disconnected',
+				502,
+				'Receiver disconnected during live transfer.'
+			);
 		}
-		throw new Error(`Send failed with status ${response.status}`);
+		throw await pipeError(response, 'Send failed');
 	}
 
 	const data = (await response.json()) as { status: string; bytes_transferred: number };
@@ -291,36 +492,29 @@ export type ReceivePipeResult = {
 };
 
 /**
- * Connects to GET /api/pipe/receive and returns the live response stream and metadata headers.
+ * Calls GET /api/pipe/receive on a joined connection. Resolves with the live
+ * stream once the sender picks this device (with confirmation off: once this
+ * device connected first and the sender started); rejects with a
+ * PipeRelayError otherwise.
  */
 export async function receivePipeStream(
 	baseUrl: string,
 	code: string,
+	connectionId: string,
 	fetcher: typeof fetch = fetch,
 	signal?: AbortSignal
 ): Promise<ReceivePipeResult> {
-	const normalizedCode = normalizePipeCode(code);
-	const normalized = baseUrl.replace(/\/+$/, '');
-
-	const response = await fetcher(`${normalized}/api/pipe/receive`, {
+	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/receive`, {
 		method: 'GET',
 		headers: {
-			'X-Flick-Pipe-Code': normalizedCode
+			'X-Flick-Pipe-Code': normalizePipeCode(code),
+			'X-Flick-Pipe-Connection': connectionId
 		},
 		signal
 	});
 
 	if (!response.ok) {
-		if (response.status === 404) {
-			throw new Error('Invalid or expired 6-digit code.');
-		}
-		if (response.status === 409) {
-			throw new Error('Another device is already receiving this transfer.');
-		}
-		if (response.status === 410) {
-			throw new Error('Transfer code burned due to too many failed attempts.');
-		}
-		throw new Error(`Receive failed with status ${response.status}`);
+		throw await pipeError(response, 'Receive failed');
 	}
 
 	if (!response.body) {

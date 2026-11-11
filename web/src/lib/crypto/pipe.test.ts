@@ -1,17 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
+	cancelPipe,
 	computePipePassphrase,
+	declinePipeConnection,
 	decryptPipeStream,
-	deriveConfirmationCode,
 	encryptPipeStream,
 	formatPipeCode,
 	initPipeRendezvous,
+	joinPipe,
 	normalizePipeCode,
+	PipeRelayError,
 	receivePipeStream,
+	selectPipeConnection,
 	sendPipeStream,
 	streamToBytes,
 	streamToText,
-	waitForReceiver
+	waitForPipeUpdate
 } from './pipe';
 
 describe('pipe code normalization and formatting', () => {
@@ -33,14 +37,6 @@ describe('pipe code normalization and formatting', () => {
 		expect(formatPipeCode('123456')).toBe('123-456');
 		expect(formatPipeCode('987-654')).toBe('987-654');
 		expect(formatPipeCode(' 555 444 ')).toBe('555-444');
-	});
-
-	it('derives a consistent 3-digit confirmation code from 6-digit codes', () => {
-		const code1 = deriveConfirmationCode('123456');
-		const code2 = deriveConfirmationCode('123-456');
-		expect(code1).toBe(code2);
-		expect(code1).toMatch(/^\d{3}$/);
-		expect(deriveConfirmationCode('987654')).toMatch(/^\d{3}$/);
 	});
 });
 
@@ -145,55 +141,170 @@ describe('streaming pipe crypto roundtrip', () => {
 });
 
 describe('client API hooks', () => {
-	it('initPipeRendezvous handles success and errors', async () => {
-		const mockFetchSuccess: typeof fetch = async () =>
-			new Response(JSON.stringify({ code: '123456', salt: 'salthex', expires_in: 180 }), {
-				status: 200,
-				headers: { 'Content-Type': 'application/json' }
-			});
+	const jsonResponse = (body: unknown, status = 200) =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { 'Content-Type': 'application/json' }
+		});
+	const errorResponse = (status: number, code: string) =>
+		jsonResponse({ error: { code, message: 'server text' } }, status);
 
-		const res = await initPipeRendezvous('http://localhost:8080/', mockFetchSuccess);
+	it('initPipeRendezvous sends the confirmation choice and maps the sender token', async () => {
+		let sentBody = '';
+		const mockFetchSuccess: typeof fetch = (_url, init) => {
+			sentBody = String(init?.body ?? '');
+			return Promise.resolve(
+				jsonResponse(
+					{
+						code: '123456',
+						salt: 'salthex',
+						expires_in: 180,
+						sender_token: 'tok',
+						require_confirmation: true
+					},
+					201
+				)
+			);
+		};
+
+		const res = await initPipeRendezvous('http://localhost:8080/', true, mockFetchSuccess);
+		expect(JSON.parse(sentBody)).toEqual({ require_confirmation: true });
 		expect(res).toEqual({
 			code: '123456',
 			salt: 'salthex',
-			expiresIn: 180
+			expiresIn: 180,
+			senderToken: 'tok',
+			requireConfirmation: true
 		});
 
-		const mockFetch429: typeof fetch = async () =>
-			new Response('Too many sessions', { status: 429 });
-		await expect(initPipeRendezvous('http://localhost:8080', mockFetch429)).rejects.toThrow(
+		const mockFetch429: typeof fetch = async () => errorResponse(429, 'capacity_exceeded');
+		await expect(initPipeRendezvous('http://localhost:8080', false, mockFetch429)).rejects.toThrow(
 			'maximum capacity'
 		);
 
 		const mockFetch503: typeof fetch = async () => new Response('Disabled', { status: 503 });
-		await expect(initPipeRendezvous('http://localhost:8080', mockFetch503)).rejects.toThrow(
+		await expect(initPipeRendezvous('http://localhost:8080', false, mockFetch503)).rejects.toThrow(
 			'currently disabled'
 		);
 	});
 
-	it('waitForReceiver handles 200, 404, 410, and generic errors', async () => {
-		let observedHeader = '';
-		const mockFetchSuccess: typeof fetch = (_url, init) => {
-			observedHeader = (init?.headers as Record<string, string>)?.['X-Flick-Pipe-Code'] ?? '';
+	it('joinPipe returns this connection and maps rejections to reasons', async () => {
+		let observedCode = '';
+		const mockFetch: typeof fetch = (_url, init) => {
+			observedCode = (init?.headers as Record<string, string>)['X-Flick-Pipe-Code'];
 			return Promise.resolve(
-				new Response(JSON.stringify({ status: 'connected' }), { status: 200 })
+				jsonResponse(
+					{
+						connection_id: 'conn-1',
+						require_confirmation: true,
+						verify_code: '042',
+						device: 'Safari on iPhone',
+						expires_in: 170
+					},
+					201
+				)
+			);
+		};
+		const joined = await joinPipe('http://localhost:8080', '123-456', mockFetch);
+		expect(observedCode).toBe('123456');
+		expect(joined).toEqual({
+			connectionId: 'conn-1',
+			requireConfirmation: true,
+			verifyCode: '042',
+			device: 'Safari on iPhone',
+			expiresIn: 170
+		});
+
+		for (const [status, code, message] of [
+			[409, 'room_full', 'Too many devices are trying to connect. Ask the sender for a new code.'],
+			[403, 'declined', 'The sender declined this device.'],
+			[409, 'already_connected', 'Another device is already receiving this transfer.']
+		] as const) {
+			const rejection = joinPipe('http://localhost:8080', '123456', () =>
+				Promise.resolve(errorResponse(status, code))
+			);
+			await expect(rejection).rejects.toBeInstanceOf(PipeRelayError);
+			await expect(rejection).rejects.toMatchObject({ reason: code, message });
+		}
+
+		// A proxy error page without a JSON body still maps by status.
+		await expect(
+			joinPipe('http://localhost:8080', '123456', () =>
+				Promise.resolve(new Response('<html>', { status: 404 }))
+			)
+		).rejects.toMatchObject({ reason: 'not_found', message: 'Invalid or expired 6-digit code.' });
+	});
+
+	it('waitForPipeUpdate sends the sender token and since, and maps the waiting list', async () => {
+		let observedUrl = '';
+		let observedHeaders: Record<string, string> = {};
+		const mockFetch: typeof fetch = (url, init) => {
+			observedUrl = String(url);
+			observedHeaders = init?.headers as Record<string, string>;
+			return Promise.resolve(
+				jsonResponse({
+					status: 'waiting',
+					version: 4,
+					connections: [
+						{
+							connection_id: 'c1',
+							index: 1,
+							verify_code: '150',
+							device: 'Chrome on Windows',
+							connected_seconds: 7
+						}
+					]
+				})
 			);
 		};
 
-		await waitForReceiver('http://localhost:8080', '123-456', mockFetchSuccess);
-		expect(observedHeader).toBe('123456');
+		const update = await waitForPipeUpdate('http://localhost:8080', '123-456', 'tok', 3, mockFetch);
+		expect(observedUrl).toBe('http://localhost:8080/api/pipe/wait?since=3');
+		expect(observedHeaders['X-Flick-Pipe-Code']).toBe('123456');
+		expect(observedHeaders['X-Flick-Pipe-Sender']).toBe('tok');
+		expect(update).toEqual({
+			status: 'waiting',
+			version: 4,
+			connections: [
+				{
+					connectionId: 'c1',
+					index: 1,
+					verifyCode: '150',
+					device: 'Chrome on Windows',
+					connectedSeconds: 7
+				}
+			]
+		});
 
-		const mockFetch404: typeof fetch = () =>
-			Promise.resolve(new Response('Not found', { status: 404 }));
-		await expect(waitForReceiver('http://localhost:8080', '123456', mockFetch404)).rejects.toThrow(
-			'Transfer code not found or expired.'
-		);
+		await expect(
+			waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 0, () =>
+				Promise.resolve(errorResponse(410, 'expired'))
+			)
+		).rejects.toThrow('This code expired.');
+	});
 
-		const mockFetch410: typeof fetch = () =>
-			Promise.resolve(new Response('Burned', { status: 410 }));
-		await expect(waitForReceiver('http://localhost:8080', '123456', mockFetch410)).rejects.toThrow(
-			'Transfer session expired or burned.'
-		);
+	it('select, decline, and cancel carry the sender token and connection', async () => {
+		const calls: { url: string; headers: Record<string, string> }[] = [];
+		const mockFetch: typeof fetch = (url, init) => {
+			calls.push({ url: String(url), headers: init?.headers as Record<string, string> });
+			return Promise.resolve(jsonResponse({ status: 'ok' }));
+		};
+
+		await selectPipeConnection('http://api', '123456', 'tok', 'c1', mockFetch);
+		await declinePipeConnection('http://api', '123456', 'tok', 'c2', mockFetch);
+		await cancelPipe('http://api', '123456', 'tok', mockFetch);
+
+		expect(calls.map((call) => call.url)).toEqual([
+			'http://api/api/pipe/select',
+			'http://api/api/pipe/decline',
+			'http://api/api/pipe/cancel'
+		]);
+		expect(calls.map((call) => call.headers['X-Flick-Pipe-Connection'])).toEqual([
+			'c1',
+			'c2',
+			undefined
+		]);
+		expect(calls.every((call) => call.headers['X-Flick-Pipe-Sender'] === 'tok')).toBe(true);
 	});
 
 	it('sendPipeStream passes headers, body, duplex and returns transferred bytes', async () => {
@@ -227,6 +338,7 @@ describe('client API hooks', () => {
 		const bytes = await sendPipeStream({
 			baseUrl: 'http://localhost:8080',
 			code: '987-654',
+			senderToken: 'tok',
 			stream: makeStream(),
 			kind: 'file',
 			encryptedFilename: 'enc_filename_token',
@@ -236,6 +348,7 @@ describe('client API hooks', () => {
 		expect(bytes).toBe(1024);
 		expect(capturedMethod).toBe('POST');
 		expect(capturedHeaders['X-Flick-Pipe-Code']).toBe('987654');
+		expect(capturedHeaders['X-Flick-Pipe-Sender']).toBe('tok');
 		expect(capturedHeaders['Flick-Kind']).toBe('file');
 		expect(capturedHeaders['Flick-Encrypted-Filename']).toBe('enc_filename_token');
 		// Plaintext HTTP/1.1 targets get a buffered Blob body: Chromium refuses
@@ -246,6 +359,7 @@ describe('client API hooks', () => {
 		await sendPipeStream({
 			baseUrl: 'https://flick.example',
 			code: '987-654',
+			senderToken: 'tok',
 			stream: makeStream(),
 			fetcher: mockFetch
 		});
@@ -257,6 +371,7 @@ describe('client API hooks', () => {
 			sendPipeStream({
 				baseUrl: 'http://localhost:8080',
 				code: '987654',
+				senderToken: 'tok',
 				stream: makeStream(),
 				fetcher: mockFetch502
 			})
@@ -265,8 +380,10 @@ describe('client API hooks', () => {
 
 	it('receivePipeStream retrieves headers and response stream', async () => {
 		const testBytes = new TextEncoder().encode('streamed stream');
-		const mockFetch: typeof fetch = () =>
-			Promise.resolve(
+		let observedConnection = '';
+		const mockFetch: typeof fetch = (_url, init) => {
+			observedConnection = (init?.headers as Record<string, string>)['X-Flick-Pipe-Connection'];
+			return Promise.resolve(
 				new Response(
 					new ReadableStream({
 						start(controller) {
@@ -284,8 +401,10 @@ describe('client API hooks', () => {
 					}
 				)
 			);
+		};
 
-		const res = await receivePipeStream('http://localhost:8080', '123-456', mockFetch);
+		const res = await receivePipeStream('http://localhost:8080', '123-456', 'conn-1', mockFetch);
+		expect(observedConnection).toBe('conn-1');
 		expect(res.salt).toBe('mock_salt_value');
 		expect(res.kind).toBe('text');
 		expect(res.encryptedFilename).toBe('none');
@@ -293,16 +412,13 @@ describe('client API hooks', () => {
 		const receivedText = await streamToText(res.stream);
 		expect(receivedText).toBe('streamed stream');
 
-		const mockFetch409: typeof fetch = () =>
-			Promise.resolve(new Response('Conflict', { status: 409 }));
 		await expect(
-			receivePipeStream('http://localhost:8080', '123456', mockFetch409)
-		).rejects.toThrow('Another device is already receiving this transfer.');
-
-		const mockFetch410: typeof fetch = () =>
-			Promise.resolve(new Response('Burned', { status: 410 }));
-		await expect(
-			receivePipeStream('http://localhost:8080', '123456', mockFetch410)
-		).rejects.toThrow('Transfer code burned due to too many failed attempts.');
+			receivePipeStream('http://localhost:8080', '123456', 'conn-1', () =>
+				Promise.resolve(errorResponse(410, 'not_selected'))
+			)
+		).rejects.toMatchObject({
+			reason: 'not_selected',
+			message: 'The sender chose another device.'
+		});
 	});
 });
