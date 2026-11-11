@@ -36,8 +36,12 @@ for (const model of ['a', 'b']) {
 				const recipientUrl = await sender.getByLabel('Share URL', { exact: true }).inputValue();
 				const recipient = await context.newPage();
 				if (operation === 'cancel') {
-					sender.on('dialog', (dialog) => dialog.accept());
 					await sender.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
+					// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
+					await sender
+						.getByRole('dialog')
+						.getByRole('button', { name: 'Cancel delivery', exact: true })
+						.click();
 					await sender.getByRole('heading', { name: 'Cancelled', exact: true }).waitFor();
 					await recipient.goto(recipientUrl);
 					await recipient

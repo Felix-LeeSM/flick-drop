@@ -353,8 +353,12 @@ test('lost open is never replayed; server conflict wins a cancellation race', as
 			await page.goto(`${baseUrl}${ownerPath}`);
 			await readyOwner(page);
 			if (race) {
-				page.on('dialog', (dialog) => dialog.accept());
 				await page.getByRole('button', { name: 'Cancel request', exact: true }).click();
+				// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
+				await page
+					.getByRole('dialog')
+					.getByRole('button', { name: 'Cancel request', exact: true })
+					.click();
 				await page.getByRole('heading', { name: 'Consumed', exact: true }).waitFor();
 				const index = mock.calls.findIndex((call) => call.path.endsWith('/revoke'));
 				assert.ok(mock.calls[index - 1].path.endsWith('/owner'));

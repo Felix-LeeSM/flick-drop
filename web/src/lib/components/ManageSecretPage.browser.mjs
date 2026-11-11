@@ -179,9 +179,15 @@ for (const model of ['a', 'b']) {
 					exact: false
 				})
 				.waitFor();
-			page.on('dialog', (dialog) => dialog.accept());
 			await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
+			// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
+			await page
+				.getByRole('dialog')
+				.getByRole('button', { name: 'Cancel delivery', exact: true })
+				.click();
 			await page.getByRole('heading', { name: 'Cancelled', exact: true }).waitFor();
+			// The closing modal keeps its own "Cancel delivery" button until its exit animation ends.
+			await page.getByRole('dialog').waitFor({ state: 'detached' });
 			assert.equal(
 				await page.getByRole('button', { name: 'Cancel delivery', exact: true }).count(),
 				0
@@ -201,8 +207,12 @@ test('a fresh management visit reconciles an open/cancel race from the server sn
 		await page.goto(`${baseUrl}${privatePath}`);
 		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
 		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 0);
-		page.on('dialog', (dialog) => dialog.accept());
 		await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
+		// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
+		await page
+			.getByRole('dialog')
+			.getByRole('button', { name: 'Cancel delivery', exact: true })
+			.click();
 		await page.getByRole('heading', { name: 'Opened', exact: true }).waitFor();
 		await page
 			.getByText('This does not confirm that anyone decrypted or read it.', { exact: false })
