@@ -10,6 +10,8 @@ import { cn } from '#lib/utils.js';
 type Props = {
 	mode: 'lock' | 'unlock';
 	phase: StagePhase;
+	/** Accessible name of the card; defaults to the create/open wording for the mode. */
+	label?: string;
 	/** Micro caption above the visual, e.g. "preparing your link". */
 	caption: string;
 	/** The status sentence under the visual; on 'failing' it carries the error. */
@@ -24,6 +26,7 @@ type Props = {
 let {
 	mode,
 	phase,
+	label,
 	caption,
 	status,
 	progress = null,
@@ -34,7 +37,7 @@ let {
 
 <section
 	class="grid gap-5 rounded-2xl border border-border bg-card p-6 shadow-sm"
-	aria-label={mode === 'lock' ? 'Creating your link' : 'Opening your secret'}
+	aria-label={label ?? (mode === 'lock' ? 'Creating your link' : 'Opening your secret')}
 >
 	<p class="micro text-muted-foreground">{caption}</p>
 	<div class="grid place-items-center gap-6 py-6">

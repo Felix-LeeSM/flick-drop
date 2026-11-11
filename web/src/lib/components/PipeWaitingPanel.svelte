@@ -165,6 +165,7 @@ let directReceiveUrl = $derived(
 		<LockStageCard
 			mode="lock"
 			phase={stagePhase}
+			label="Sending your secret"
 			caption="sending to receiver"
 			status={stagePhase === 'finishing'
 				? 'Burned from memory'
@@ -195,6 +196,19 @@ let directReceiveUrl = $derived(
 
 			<Button type="button" size="cta" class="w-full mt-2" onclick={onReset}>
 				Send another secret
+			</Button>
+		</div>
+	{:else if failed && stageSettled}
+		<!-- A stream that broke after it started leaves a dead session; the code view
+		     would offer a code that no longer works. -->
+		<div class="grid place-items-center gap-4" role="alert">
+			<div class="grid gap-2">
+				<h2 class="font-serif text-2xl font-normal text-foreground">Transfer failed</h2>
+				<p class="text-sm text-muted-foreground">{statusText}</p>
+				<p class="text-xs text-muted-foreground">The session was burned and wiped from memory.</p>
+			</div>
+			<Button type="button" size="cta" variant="outline" class="w-full mt-2" onclick={onReset}>
+				Start new secret
 			</Button>
 		</div>
 	{:else}

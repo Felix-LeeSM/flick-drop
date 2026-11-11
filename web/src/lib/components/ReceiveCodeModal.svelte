@@ -64,6 +64,9 @@ const step = $derived(
 // Unlock ring while connected: it keeps its minimum and plays the unlock (or
 // failure) beat before the received content or the error view shows.
 let ringPhase = $state<StagePhase>('waiting');
+// True once the content is decrypted: the relay has burned it, so the remaining
+// ring beat is pacing only and Cancel would throw the secret away.
+let decrypted = $state(false);
 let errorMessage = $state('');
 let statusMessage = $state('');
 let matchCode = $state('');
@@ -85,6 +88,7 @@ function reset(): void {
 	showPassphraseField = false;
 	currentState = 'input';
 	ringPhase = 'waiting';
+	decrypted = false;
 	errorMessage = '';
 	statusMessage = '';
 	receivedText = '';
@@ -133,6 +137,7 @@ async function startReceive(): Promise<void> {
 	matchCode = deriveConfirmationCode(normalized);
 	currentState = 'connecting';
 	ringPhase = 'waiting';
+	decrypted = false;
 	statusMessage = 'Waiting for the sender…';
 	errorMessage = '';
 	const controller = new AbortController();
@@ -154,12 +159,15 @@ async function startReceive(): Promise<void> {
 			receivedFileSize = bytes.length;
 			receivedFileName = await decryptFilename(result.encryptedFilename, derivedPassphrase);
 			receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+			decrypted = true;
+			// Save right away so closing the dialog during the beat cannot lose the file.
+			downloadFile();
 			if (await settleRing(stageStartedAt, 'finishing', controller.signal)) {
 				currentState = 'done-file';
-				downloadFile();
 			}
 		} else {
 			receivedText = await streamToText(decryptedStream);
+			decrypted = true;
 			if (await settleRing(stageStartedAt, 'finishing', controller.signal)) {
 				currentState = 'done-text';
 			}
@@ -391,15 +399,17 @@ async function copyText(): Promise<void> {
 						</p>
 					{/if}
 
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						class="text-xs text-muted-foreground hover:text-foreground"
-						onclick={() => reset()}
-					>
-						Cancel
-					</Button>
+					{#if !decrypted}
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							class="text-xs text-muted-foreground hover:text-foreground"
+							onclick={() => reset()}
+						>
+							Cancel
+						</Button>
+					{/if}
 				</div>
 			{:else if currentState === 'done-file'}
 				<div class="grid place-items-center gap-4 text-center">
