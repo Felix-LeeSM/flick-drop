@@ -106,7 +106,7 @@ func Load() (Config, error) {
 		MaxTTLSeconds:     defaultMaxTTLSeconds,
 		OpenRatePerMinute: defaultOpenRatePerMinute,
 		// /api/secrets (presigned upload issuance) becomes a DoS amplifier once
-		// large uploads bypass the server, so cap issuance per client IP + path.
+		// large uploads bypass the server, so cap issuance per client network.
 		CreateRatePerMinute: defaultCreateRatePerMinute,
 		// The expiration reaper sweeps expired/orphan secrets out of api.db. A
 		// minute is frequent enough that rows never linger; the partial index

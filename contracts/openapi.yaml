@@ -750,7 +750,8 @@ paths:
         /decline, /cancel, and /send; keep it in browser memory. With
         require_confirmation the session is a waiting room (up to 10 receivers
         wait for the sender to pick one); without it the first receiver to call
-        /receive wins. Rate-limited per client IP by FLICK_CREATE_RATE_PER_MIN.
+        /receive wins. Rate-limited per client network (IPv4 address or IPv6 /64) by
+        FLICK_CREATE_RATE_PER_MIN.
       requestBody:
         required: false
         content:

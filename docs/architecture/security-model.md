@@ -213,9 +213,8 @@ Credentials and what they unlock:
   subscriber usually holds a whole /64 and could otherwise rotate through
   2^64 fresh buckets. `/api/pipe/join` and `/api/v1/pipe/join` spend one
   bucket. It returns an unguessable connection ID that `/status` and
-  `/receive` need. Other rate-limited endpoints (`/api/secrets/{id}/open`,
-  secret and request creation, management, request calls, `/api/pipe/init`)
-  still key by the full client IP.
+  `/receive` need. Every other rate-limited endpoint keys by the same client
+  network (`internal/httpapi/ratelimit.go` `rateLimiter.middleware`).
 
 **Confirmation on ("Require confirmation before transfer").** The session is a
 waiting room. Every device that enters the right code is held as a pending
