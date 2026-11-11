@@ -818,7 +818,7 @@ test('protection rows explain themselves through the info popovers', async () =>
 		// Hovering the info button shows it; the popover lives outside the label, so
 		// clicking its text cannot toggle the switch.
 		await page.getByRole('button', { name: 'How confirmation works' }).hover();
-		await confirmPopover.getByText('Check that they match.').click();
+		await confirmPopover.getByText('Your receiver reads their number to you.').click();
 		assert.equal(
 			await page
 				.getByRole('switch', { name: 'Require confirmation before transfer' })

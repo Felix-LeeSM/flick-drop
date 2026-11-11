@@ -635,11 +635,11 @@ function typePanelId(type: CreateMode): string {
 				statusText={relay.statusText}
 				progressPercent={relay.progressPercent}
 				completed={relay.completed}
-				requireApproval={pipeRequireApproval}
-				matchCode={relay.matchCode}
-				approvalStatus={relay.approvalStatus}
-				onApprove={relay.approve}
-				onReject={relay.reject}
+				failed={relay.failed}
+				requireConfirmation={relay.requireConfirmation}
+				pending={relay.pending}
+				onSend={relay.sendTo}
+				onDeny={relay.deny}
 				onCancel={relay.cancel}
 				onReset={resetPipeAndForm}
 			/>
@@ -1039,9 +1039,9 @@ function typePanelId(type: CreateMode): string {
 						{#snippet details()}
 							<p class="mb-1 text-xs font-medium text-foreground">How confirmation works</p>
 							<ol class="list-decimal space-y-1 pl-4 text-[0.8125rem] text-muted-foreground marker:text-foreground/60">
-								<li>Both screens show the same 3-digit number.</li>
-								<li>Check that they match.</li>
-								<li>Tap "Approve &amp; send".</li>
+								<li>Each device that enters the code gets its own 3-digit number.</li>
+								<li>Your receiver reads their number to you.</li>
+								<li>Tap "Send" on the row with that number.</li>
 							</ol>
 						{/snippet}
 					</SwitchRow>

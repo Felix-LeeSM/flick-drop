@@ -128,3 +128,20 @@ func TestClientIPSkipsNonIPXFFEntries(t *testing.T) {
 		t.Fatalf("empty XFF entries should fall back to peer: got %q, want 127.0.0.1", got)
 	}
 }
+
+func TestClientNetworkCollapsesIPv6ToSlash64AndKeepsIPv4(t *testing.T) {
+	rl := newRateLimiter(10, nil)
+	for remoteAddr, want := range map[string]string{
+		"[2001:db8:1:2:aaaa::1]:443":  "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff::ff]:443": "2001:db8:1:2::/64",
+		"[2001:db8:1:3::1]:443":       "2001:db8:1:3::/64",
+		"203.0.113.5:443":             "203.0.113.5",
+		"[::ffff:203.0.113.5]:443":    "::ffff:203.0.113.5",
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/pipe/join", nil)
+		r.RemoteAddr = remoteAddr
+		if got := rl.clientNetwork(r); got != want {
+			t.Errorf("clientNetwork(%s) = %q, want %q", remoteAddr, got, want)
+		}
+	}
+}

@@ -51,7 +51,13 @@ async function receiveManually(receiverPage, code, passphrase) {
 	await receiverPage.getByLabel('6-digit transfer code').fill(code);
 }
 
-test('confirmation ON: manual code entry with passphrase, sender approves, text round-trips', async () => {
+// Reads the receiver's own 3-digit number (aria-label "Your number 2 7 1").
+async function readOwnNumber(receiverPage) {
+	const label = await receiverPage.getByRole('img', { name: /^Your number/ }).getAttribute('aria-label');
+	return label.replace('Your number ', '').replaceAll(' ', '');
+}
+
+test('confirmation ON: two devices wait, sender denies one and sends to the number read aloud', async () => {
 	const message = 'pipe e2e on-approval payload';
 	const passphrase = 'pipe-e2e-passphrase';
 
@@ -77,13 +83,27 @@ test('confirmation ON: manual code entry with passphrase, sender approves, text 
 	await openHome(receiver);
 	await receiveManually(receiver, code, passphrase);
 
-	await sender.getByText('Confirm live transfer').waitFor();
-	const senderMatch = (await sender.locator('div.font-mono.text-3xl').first().textContent())?.trim();
-	const receiverMatch = (await receiver.locator('div.font-mono.text-4xl').first().textContent())?.trim();
-	assert.match(senderMatch ?? '', /^\d{3}$/);
-	assert.equal(senderMatch, receiverMatch);
+	await receiver.getByText('Read this to the sender').waitFor();
+	const receiverNumber = await readOwnNumber(receiver);
+	assert.match(receiverNumber, /^\d{3}$/);
 
-	await sender.getByRole('button', { name: 'Approve & send' }).click();
+	// A second device enters the same code and gets its own, different number.
+	const otherContext = await browser.newContext();
+	const other = await otherContext.newPage();
+	other.setDefaultTimeout(20_000);
+	await openHome(other);
+	await receiveManually(other, code, '');
+	await other.getByText('Read this to the sender').waitFor();
+	const otherNumber = await readOwnNumber(other);
+	assert.notEqual(otherNumber, receiverNumber);
+
+	await sender.getByText('2 of 10 devices waiting').waitFor();
+	// Rows list in join order: connection 1 is the receiver, connection 2 the other device.
+	await sender.getByRole('button', { name: 'Deny connection 2' }).click();
+	await other.getByText('The sender declined this device').waitFor();
+	await sender.getByText('1 of 10 devices waiting').waitFor();
+
+	await sender.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` }).click();
 	await receiver.getByText('Secret decrypted directly in memory').waitFor();
 	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
 	assert.equal(received, message);
@@ -91,6 +111,7 @@ test('confirmation ON: manual code entry with passphrase, sender approves, text 
 
 	await senderContext.close();
 	await receiverContext.close();
+	await otherContext.close();
 });
 
 test('confirmation OFF: #code deep link auto-receives without approval or passphrase', async () => {
@@ -117,8 +138,6 @@ test('confirmation OFF: #code deep link auto-receives without approval or passph
 		receiver.waitForResponse((response) => new URL(response.url()).pathname === '/api/config'),
 		receiver.goto(`${baseUrl}/#code=${code}`)
 	]);
-	await receiver.getByText("Check sender's screen").waitFor();
-
 	await receiver.getByText('Secret decrypted directly in memory').waitFor();
 	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
 	assert.equal(received, message);

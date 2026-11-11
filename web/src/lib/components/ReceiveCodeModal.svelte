@@ -4,8 +4,11 @@ import {
 	CopyIcon,
 	DownloadIcon,
 	FlameIcon,
+	LoaderCircleIcon,
 	LockKeyholeIcon,
+	LogOutIcon,
 	ShieldCheckIcon,
+	UsersIcon,
 	XIcon,
 	ZapIcon
 } from '@lucide/svelte';
@@ -14,15 +17,18 @@ import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
 import ProgressRingLock from '#lib/components/ProgressRingLock.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
+import VerifyDigits from '#lib/components/VerifyDigits.svelte';
 import {
 	computePipePassphrase,
 	decryptPipeStream,
-	deriveConfirmationCode,
 	formatPipeCode,
+	joinPipe,
 	normalizePipeCode,
+	PipeRelayError,
 	receivePipeStream,
 	streamToBytes,
-	streamToText
+	streamToText,
+	waitForPipeSelection
 } from '#lib/crypto/pipe.js';
 import {
 	holdMinimumStage,
@@ -31,6 +37,11 @@ import {
 	type StagePhase,
 	sleep
 } from '#lib/stage-timing.js';
+import {
+	rememberDeclinedCode,
+	sessionExpiresAt,
+	wasDeclinedCode
+} from '#lib/state/pipe-declined.js';
 import { cn, formatBytes } from '#lib/utils.js';
 
 type Props = {
@@ -45,7 +56,19 @@ let {
 	initialCode = ''
 }: Props = $props();
 
-type ReceiveState = 'input' | 'connecting' | 'streaming' | 'done-file' | 'done-text' | 'error';
+// verify: confirmation is on and this device shows its own number while the
+// sender picks. declined / not-chosen / room-full end this code for this device.
+type ReceiveState =
+	| 'input'
+	| 'connecting'
+	| 'verify'
+	| 'streaming'
+	| 'done-file'
+	| 'done-text'
+	| 'declined'
+	| 'not-chosen'
+	| 'room-full'
+	| 'error';
 
 let rawCode = $state('');
 let codeFocused = $state(false);
@@ -53,14 +76,15 @@ let optionalPassphrase = $state('');
 let showPassphraseField = $state(false);
 
 let currentState = $state<ReceiveState>('input');
-// Entering the code is step 1; waiting on the sender's confirmation and the transfer is step 2.
+// Entering the code is step 1; waiting on the sender's pick and the transfer is step 2.
 const step = $derived(
 	currentState === 'input'
 		? 1
-		: currentState === 'connecting' || currentState === 'streaming'
+		: currentState === 'connecting' || currentState === 'verify' || currentState === 'streaming'
 			? 2
 			: undefined
 );
+const ringVisible = $derived(currentState === 'connecting' || currentState === 'streaming');
 // Unlock ring while connected: it keeps its minimum and plays the unlock (or
 // failure) beat before the received content or the error view shows.
 let ringPhase = $state<StagePhase>('waiting');
@@ -69,7 +93,8 @@ let ringPhase = $state<StagePhase>('waiting');
 let decrypted = $state(false);
 let errorMessage = $state('');
 let statusMessage = $state('');
-let matchCode = $state('');
+// This device's own server-drawn number, shown while the sender picks.
+let verifyCode = $state('');
 
 // Result payloads
 let receivedText = $state('');
@@ -96,7 +121,7 @@ function reset(): void {
 	receivedFileSize = 0;
 	receivedFileBlob = null;
 	copiedText = false;
-	matchCode = '';
+	verifyCode = '';
 }
 
 $effect(() => {
@@ -124,6 +149,32 @@ function handleCodeInput(event: Event): void {
 	}
 }
 
+// The rejections that end this code for this device with their own screen.
+function terminalState(err: unknown): ReceiveState | undefined {
+	if (!(err instanceof PipeRelayError)) {
+		return undefined;
+	}
+	switch (err.reason) {
+		case 'declined':
+			return 'declined';
+		case 'not_selected':
+			return 'not-chosen';
+		case 'room_full':
+			return 'room-full';
+		default:
+			return undefined;
+	}
+}
+
+// One receive attempt's timing: when its ring started and the local clock time
+// the session window closes, fixed when the join response arrived.
+type ReceiveAttempt = {
+	normalized: string;
+	signal: AbortSignal;
+	stageStartedAt: number;
+	sessionExpiresAt: number;
+};
+
 async function startReceive(): Promise<void> {
 	let normalized: string;
 	try {
@@ -134,43 +185,84 @@ async function startReceive(): Promise<void> {
 		return;
 	}
 
-	matchCode = deriveConfirmationCode(normalized);
+	// A device the sender declined does not even ask again within that session.
+	if (await wasDeclinedCode(normalized)) {
+		currentState = 'declined';
+		return;
+	}
+
 	currentState = 'connecting';
 	ringPhase = 'waiting';
 	decrypted = false;
-	statusMessage = 'Waiting for the sender…';
+	verifyCode = '';
+	statusMessage = 'Connecting to the sender…';
 	errorMessage = '';
 	const controller = new AbortController();
 	abortController = controller;
-	const stageStartedAt = performance.now();
+	const attempt: ReceiveAttempt = {
+		normalized,
+		signal: controller.signal,
+		stageStartedAt: performance.now(),
+		sessionExpiresAt: Date.now()
+	};
 
 	try {
-		const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
-		const result = await receivePipeStream(targetBaseUrl, normalized, fetch, controller.signal);
-
-		currentState = 'streaming';
-		statusMessage = 'Decrypting in your browser…';
-
-		const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
-		const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
-
-		const doneState = await storeReceived(
-			result,
-			decryptedStream,
-			derivedPassphrase,
-			controller.signal
-		);
-		if (doneState && (await settleRing(stageStartedAt, 'finishing', controller.signal))) {
-			currentState = doneState;
-		}
+		await joinAndReceive(attempt);
 	} catch (err) {
-		if (controller.signal.aborted) {
-			return;
-		}
-		errorMessage = err instanceof Error ? err.message : 'Transfer failed';
-		if (await settleRing(stageStartedAt, 'failing', controller.signal)) {
-			currentState = 'error';
-		}
+		await endReceive(attempt, err);
+	}
+}
+
+async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
+	const { normalized, signal } = attempt;
+	const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
+	const join = await joinPipe(targetBaseUrl, normalized, fetch, signal);
+	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
+	if (join.requireConfirmation && join.verifyCode) {
+		verifyCode = join.verifyCode;
+		currentState = 'verify';
+		// Short status polls keep this device in the sender's list; /receive
+		// opens only once picked, so no request sits silent behind a proxy.
+		await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
+	} else {
+		statusMessage = 'Waiting for the sender…';
+	}
+
+	const result = await receivePipeStream(
+		targetBaseUrl,
+		normalized,
+		join.connectionId,
+		fetch,
+		signal
+	);
+	if (currentState === 'verify') {
+		// The ring starts when the chosen device's stream arrives.
+		attempt.stageStartedAt = performance.now();
+	}
+	currentState = 'streaming';
+	statusMessage = 'Decrypting in your browser…';
+
+	const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
+	const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
+
+	const doneState = await storeReceived(result, decryptedStream, derivedPassphrase, signal);
+	if (doneState && (await settleRing(attempt.stageStartedAt, 'finishing', signal))) {
+		currentState = doneState;
+	}
+}
+
+async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> {
+	if (attempt.signal.aborted) {
+		return;
+	}
+	const endState = terminalState(err) ?? 'error';
+	if (endState === 'declined') {
+		await rememberDeclinedCode(attempt.normalized, attempt.sessionExpiresAt);
+	}
+	errorMessage = err instanceof Error ? err.message : 'Transfer failed';
+	// Only a visible ring plays the failure beat; the number view ends at once.
+	if (!ringVisible || (await settleRing(attempt.stageStartedAt, 'failing', attempt.signal))) {
+		currentState = endState;
 	}
 }
 
@@ -287,7 +379,13 @@ async function copyText(): Promise<void> {
 							<span class="micro text-muted-foreground">0B disk relay</span>
 						</div>
 						<h3 class="font-serif text-2xl leading-tight">
-							{step === 1 ? 'Connect to sender' : "Check sender's screen"}
+							{step === 1
+								? 'Connect to sender'
+								: currentState === 'verify'
+									? 'Read this to the sender'
+									: currentState === 'streaming'
+										? 'Receiving'
+										: 'Connecting'}
 						</h3>
 					</div>
 				{/if}
@@ -378,10 +476,10 @@ async function copyText(): Promise<void> {
 					<div class="grid gap-2">
 						<Button type="button" size="cta" disabled={rawCode.length !== 6} onclick={() => startReceive()}>
 							<ZapIcon class="size-4" aria-hidden="true" />
-							Verify & connect
+							Connect
 						</Button>
 						<p class="text-[0.6875rem] text-muted-foreground">
-							Next: you'll verify a 3-digit match code with the sender.
+							If the sender asked for confirmation, you'll read them a 3-digit number.
 						</p>
 					</div>
 				</div>
@@ -404,18 +502,6 @@ async function copyText(): Promise<void> {
 						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
 					</div>
 
-					{#if matchCode}
-						<div class="w-full rounded-2xl border border-primary/35 bg-primary/8 p-4">
-							<span class="micro text-muted-foreground">Confirmation Code</span>
-							<div class="pt-1 font-mono text-4xl font-extrabold tracking-widest text-primary">
-								{matchCode}
-							</div>
-						</div>
-						<p class="text-[11px] text-muted-foreground">
-							Verify this code matches the sender's screen.
-						</p>
-					{/if}
-
 					{#if !decrypted}
 						<Button
 							type="button"
@@ -427,6 +513,64 @@ async function copyText(): Promise<void> {
 							Cancel
 						</Button>
 					{/if}
+				</div>
+			{:else if currentState === 'verify'}
+				<div class="grid gap-5 text-center">
+					<p class="text-xs text-muted-foreground">
+						Read this number to the sender out loud or in chat. They pick your device by this number.
+					</p>
+					<VerifyDigits code={verifyCode} label="Your number {verifyCode.split('').join(' ')}" />
+					<p class="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+						<LoaderCircleIcon class="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+						Waiting for the sender to pick…
+					</p>
+					<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						class="h-11 justify-self-center text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onclick={() => reset()}
+					>
+						Not my transfer — disconnect
+					</Button>
+				</div>
+			{:else if currentState === 'declined' || currentState === 'not-chosen'}
+				<!-- Ends plainly without calling it an attack: the sender picked or turned away a device. -->
+				<div class="grid place-items-center gap-3 py-2 text-center" role="status">
+					<div class="grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+						<LogOutIcon class="size-6" aria-hidden="true" />
+					</div>
+					<div class="grid gap-1">
+						<h4 class="font-serif text-lg text-foreground">
+							{currentState === 'declined'
+								? 'The sender declined this device'
+								: 'The sender chose another device'}
+						</h4>
+						<p class="text-xs text-muted-foreground">
+							{currentState === 'declined'
+								? "This device received nothing and can't rejoin this code. If you were expecting a secret, ask the sender for a new code."
+								: 'This device was disconnected and received nothing. If you were expecting a secret, ask the sender for a new code.'}
+						</p>
+					</div>
+					<Button type="button" variant="outline" class="mt-1 w-full" onclick={() => reset()}>
+						Enter a new code
+					</Button>
+				</div>
+			{:else if currentState === 'room-full'}
+				<div class="grid place-items-center gap-3 py-2 text-center" role="alert">
+					<div class="grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+						<UsersIcon class="size-6" aria-hidden="true" />
+					</div>
+					<div class="grid gap-1">
+						<h4 class="font-serif text-lg text-foreground">Too many devices are trying to connect</h4>
+						<p class="text-xs text-muted-foreground">
+							Too many devices are trying to connect. Ask the sender for a new code.
+						</p>
+					</div>
+					<Button type="button" variant="outline" class="mt-1 w-full" onclick={() => reset()}>
+						Enter a new code
+					</Button>
 				</div>
 			{:else if currentState === 'done-file'}
 				<div class="grid place-items-center gap-4 text-center">

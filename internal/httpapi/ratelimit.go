@@ -89,18 +89,27 @@ func (rl *rateLimiter) cleanup() {
 // middleware applies the limiter keyed by client IP + request path. Requests
 // over the limit get 429 with a Retry-After hint.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, func(r *http.Request) string { return r.URL.Path })
+	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientIP(r) + "|" + r.URL.Path })
 }
 
 // Both management actions spend the same client/delivery bucket.
 func (rl *rateLimiter) managementMiddleware(next http.Handler) http.Handler {
-	return rl.middlewareByKey(next, func(r *http.Request) string { return chi.URLParam(r, "id") })
+	return rl.middlewareByKey(next, func(r *http.Request) string { return rl.clientIP(r) + "|" + chi.URLParam(r, "id") })
 }
 
-func (rl *rateLimiter) middlewareByKey(next http.Handler, resource func(*http.Request) string) http.Handler {
+// networkMiddleware keys the limiter by client network alone (clientNetwork:
+// IPv6 collapsed to its /64, so one host cannot rotate through its own prefix).
+// Every route that shares one limiter instance therefore spends one bucket,
+// whatever its path: the pipe routes use it so /api/pipe/X and
+// /api/v1/pipe/X share a bucket (internal/httpapi/router.go
+// pipeJoinLimiter, pipeStatusLimiter).
+func (rl *rateLimiter) networkMiddleware(next http.Handler) http.Handler {
+	return rl.middlewareByKey(next, rl.clientNetwork)
+}
+
+func (rl *rateLimiter) middlewareByKey(next http.Handler, bucketKey func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := rl.clientIP(r) + "|" + resource(r)
-		if !rl.allow(key, time.Now().UTC()) {
+		if !rl.allow(bucketKey(r), time.Now().UTC()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
 			return
@@ -129,6 +138,20 @@ func (rl *rateLimiter) clientIP(r *http.Request) string {
 		}
 	}
 	return peer
+}
+
+// clientNetwork is clientIP with an IPv6 address collapsed to its /64 prefix
+// (for example "2001:db8:1:2::/64"). One IPv6 subscriber usually holds a whole
+// /64, so keying by the full address would hand it 2^64 fresh buckets. IPv4
+// addresses (including IPv4-mapped IPv6) and unparsable values pass through
+// unchanged.
+func (rl *rateLimiter) clientNetwork(r *http.Request) string {
+	ip := rl.clientIP(r)
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func isTrustedIP(ip string, trusted []*net.IPNet) bool {
