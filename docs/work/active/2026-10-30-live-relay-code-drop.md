@@ -6,6 +6,23 @@
 **Milestone**: M14: Live Relay Code Drop  
 **Sub-issues**: [#318](https://github.com/Felix-LeeSM/flick-drop/issues/318), [#319](https://github.com/Felix-LeeSM/flick-drop/issues/319), [#320](https://github.com/Felix-LeeSM/flick-drop/issues/320)  
 
+> **Superseded in part (2026-11-11, PR #392).** This note is the original plan.
+> The durable design now lives in `docs/architecture/security-model.md` (Live
+> Relay), `docs/architecture/service-topology.md`, and `contracts/openapi.yaml`.
+> Where this note disagrees with them, they win. In particular:
+>
+> - There are **no failed-attempt counters and no failure burn**. A wrong code
+>   never reaches a session, so a counter could only count right-code holders.
+>   Online guessing is bounded by the `/join` rate limit
+>   (`FLICK_OPEN_RATE_PER_MIN` per client network, IPv6 collapsed to /64) and
+>   the 3-minute window. The `/receive` "5 failed code attempts" line under
+>   Section 3 "HTTP Endpoints" and the Section 4 brute-force row are superseded.
+> - Receivers call `POST /api/pipe/join` first. With confirmation on they
+>   long-poll `GET /api/pipe/status` and open `/receive` only once selected; the
+>   sender long-polls `/wait` and calls `/select`, `/decline`, `/cancel`, and
+>   `/send` with a sender token. The data-flow diagram in Section 3 shows the
+>   older receive-first flow.
+
 ---
 
 ## 1. Executive Summary & Problem Statement
@@ -90,7 +107,9 @@ A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit cod
   - Returns `{ "code": "741928", "salt": "<base64>", "expires_in": 180 }`.
 - `GET /api/v1/pipe/receive`:
   - Request header: `X-Flick-Pipe-Code: 741928` (never in query parameters).
-  - Rate limit: max 5 failed code attempts per 15 minutes per IP.
+  - ~~Rate limit: max 5 failed code attempts per 15 minutes per IP.~~
+    Superseded: no failed-attempt counter exists; `/join` carries the
+    per-network rate limit (see the note at the top).
   - Looks up `SHA256(code)`. If matched, hooks up `PipeReader` to `http.ResponseWriter` with streaming headers (`Content-Type: application/octet-stream`, `Transfer-Encoding: chunked`).
 - `POST /api/v1/pipe/send`:
   - Request header: `X-Flick-Pipe-Code: 741928`.
@@ -108,7 +127,7 @@ A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit cod
 
 | Threat Vector | Severity | Mitigation in Live Relay |
 | :--- | :--- | :--- |
-| **6-Digit Code Brute-Force** | High | 1) Code expires in **3 minutes**.<br>2) IP rate-limited to 5 failed attempts per 15 min.<br>3) **Single-Use Burn**: 3 failed code attempts globally burn the session.<br>4) Even if code is guessed, sender must approve or receiver must connect within the 3m window. |
+| **6-Digit Code Brute-Force** | High | *(Updated 2026-11-11; the original failed-attempt counter and 3-failure burn were removed.)*<br>1) Code expires in **3 minutes**.<br>2) `POST /api/pipe/join` is rate-limited by `FLICK_OPEN_RATE_PER_MIN` per client network (IPv4 address or IPv6 /64), one bucket across `/api/pipe` and `/api/v1/pipe`.<br>3) With confirmation on, a guesser who finds the code only joins the waiting room; the sender picks the row by the 3-digit number the real receiver reads out. See `docs/architecture/security-model.md` (Live Relay). |
 | **Access Log / Proxy Leaks** | High | Code is transmitted **strictly in request headers (`X-Flick-Pipe-Code`)**, never in URLs or query strings. Access loggers redact this header. |
 | **Storage Exhaustion / Disk DoS** | High | **0 bytes written to disk or S3**. Data flows through a 64 KiB RAM pipe. If sender or receiver closes the connection, the pipe tears down immediately. |
 | **Connection Leak / OOM** | Medium | Hard context timeouts (max 10 minutes per transfer session). Bounded concurrent pipes (`FLICK_PIPE_MAX_CONCURRENT = 100`). Empty buffer pools reused via `sync.Pool`. |

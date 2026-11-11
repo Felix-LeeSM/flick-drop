@@ -204,9 +204,18 @@ Credentials and what they unlock:
   `/decline`, `/cancel`, `/send`). A wrong token answers `404` exactly like an
   unknown code, so those calls are no code oracle, and knowing the 6-digit code
   is not enough to watch the list, pick a device, cancel, or inject a stream.
+  With the right token, `/select` and `/decline` answer `409 not_pending` for a
+  connection that already left or never existed.
 - `POST /api/pipe/join` is the only call that accepts a bare 6-digit code. It is
-  rate-limited per client IP by `FLICK_OPEN_RATE_PER_MIN` and returns an
-  unguessable connection ID that `/receive` needs.
+  rate-limited by `FLICK_OPEN_RATE_PER_MIN` per client network: the client IP
+  resolved through `FLICK_TRUSTED_PROXIES`, with an IPv6 address collapsed to
+  its /64 (`internal/httpapi/ratelimit.go` `clientNetwork`), because one IPv6
+  subscriber usually holds a whole /64 and could otherwise rotate through
+  2^64 fresh buckets. `/api/pipe/join` and `/api/v1/pipe/join` spend one
+  bucket. It returns an unguessable connection ID that `/status` and
+  `/receive` need. Other rate-limited endpoints (`/api/secrets/{id}/open`,
+  secret and request creation, management, request calls, `/api/pipe/init`)
+  still key by the full client IP.
 
 **Confirmation on ("Require confirmation before transfer").** The session is a
 waiting room. Every device that enters the right code is held as a pending
@@ -223,21 +232,43 @@ there is no receiver-side typing or mutual confirmation, and it proves only that
 the stream goes to the device that showed that number. It does not defend
 against a compromised server, which draws the numbers.
 
+A waiting receiver long-polls `/status` (up to 25 seconds per poll) and opens
+`/receive` only after `/status` reports it selected; `/receive` on a connection
+that is still waiting answers `409 awaiting_decision`. No waiting request is
+ever silent for long enough to be cut by a proxy idle limit (Cloudflare cuts at
+100 seconds). A waiting connection counts as present only while it polls: one
+with no open `/status` call for 35 seconds
+(`internal/piperelay/coordinator.go` `defaultPresenceTimeout`) drops out of the
+list, which frees its slot without a decline, a block, or a burn. A selected
+connection that does not open `/receive` within the same 35 seconds ends the
+session, like the chosen receiver leaving before the stream starts. One client
+network (an IPv4 address or an IPv6 /64) can hold at most 3 waiting
+connections per session (`MaxPendingPerNetwork`); the next one gets `409
+network_full`.
+
+Residual risk: someone who holds the right 6-digit code and keeps polling
+`/status` keeps their slots for the session's 3-minute window. The per-network
+cap means filling all 10 slots takes at least 4 networks, and the sender sees
+every such row and can deny it, but a code holder with many networks can still
+crowd the room until the sender asks for a new code.
+
 The sender can deny a single row. That device ends with "The sender declined
 this device", its slot reopens, and the session stays alive. The API also blocks
-the same client from rejoining the session: it keeps a SHA-256 of the client IP
-(resolved through `FLICK_TRUSTED_PROXIES`, the same way as the rate limiter) and
-the User-Agent, in memory only, for the session's lifetime
-(`internal/httpapi/piperelay.go` `pipeClientKey`). The block is deliberately
-coarse. Another device behind the same NAT with the same browser and OS string
-is blocked too for that one short session, and a determined person can change
-network or User-Agent to get back in; the sender can deny them again. The
-declined browser also remembers the decline in `sessionStorage` as a SHA-256 of
-the code plus the session's expiry time
-(`web/src/lib/state/pipe-declined.ts`), so a reload does not ask again. The
-entry never holds the code itself, the salt, or the passphrase, and a 6-digit
-code's hash is brute-forceable, so it is treated as no more secret than the
-code the user already typed on that device.
+the same client from rejoining the session: it keeps a SHA-256 of the client
+network (the client IP resolved through `FLICK_TRUSTED_PROXIES`, the same way as
+the rate limiter, with IPv6 collapsed to its /64) and the User-Agent, in memory
+only, for the session's lifetime (`internal/httpapi/piperelay.go`
+`pipeJoinClient`). The block is deliberately coarse. Another device behind the
+same NAT or IPv6 /64 with the same browser and OS string is blocked too for that
+one short session, and a determined person can change network or User-Agent to
+get back in; the sender can deny them again. The declined browser also
+remembers the decline in `sessionStorage` as a SHA-256 of the code plus the
+session's expiry time, computed once when `/join` answered
+(`web/src/lib/state/pipe-declined.ts` `sessionExpiresAt`), so a reload does not
+ask again and the memory lapses with that session. The entry never holds the
+code itself, the salt, or the passphrase, and a 6-digit code's hash is
+brute-forceable, so it is treated as no more secret than the code the user
+already typed on that device.
 
 **Confirmation off.** The first device to open `/receive` wins and every later
 device gets `409 already_connected`. Anyone who learns the 6-digit code first
@@ -246,15 +277,20 @@ sender trusts.
 
 **No burn on rejected receivers.** A wrong 6-digit code never reaches a session
 (the code is the lookup key), so a per-session failed-attempt counter can only
-ever count people who held the right code. Late, extra, declined, and room-full
-receivers therefore never end a session or count against it; online code
-guessing is bounded by the `/join` rate limit and the 3-minute window. An 11th
-waiting device gets `409 room_full` and the session stays alive.
+ever count people who held the right code. Late, extra, declined, idle,
+room-full, and network-full receivers therefore never end a session or count
+against it; online code guessing is bounded only by the `/join` rate limit (per
+client network, as above) and the 3-minute window. An 11th waiting device gets
+`409 room_full` and the session stays alive. `/join` and `/select` answer `410
+expired` once the window closed, even before cleanup removes the session.
 
 **A started stream is never cut by a burn.** Sender cancel returns `409
 streaming` once bytes flow, and the rendezvous TTL cleanup skips streaming
-sessions until `maxTransferDuration` (10 minutes). Only the stream itself
-failing, either side disconnecting, or a server shutdown ends it.
+sessions until `maxTransferDuration` (10 minutes). Cancel and the cleanup check
+for streaming and end the session under the same lock that `/send` holds to
+mark the stream started, so a cancel racing a starting stream either ends the
+session before any byte flows or loses with `409 streaming`. Only the stream
+itself failing, either side disconnecting, or a server shutdown ends it.
 
 The API never logs 6-digit codes, verification numbers, sender tokens,
 connection IDs, client keys, or User-Agents. Device labels live in memory only,
