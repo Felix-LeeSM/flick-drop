@@ -9,6 +9,7 @@ import {
 	type ManagementStatus,
 	managementTokenFromFragment
 } from '#lib/api/management.js';
+import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
@@ -58,6 +59,8 @@ function statusDot(status: ManagementStatus): string {
 let token = '';
 let snapshot = $state<ManagementSnapshot | null>(null);
 let recipientUrl = $state('');
+let cancelConfirmOpen = $state(false);
+let pendingCancel: { fresh: ManagementSnapshot; signal: AbortSignal } | null = null;
 let managementUrl = $state('');
 let usesPassphrase = $state(false);
 let busy = $state(false);
@@ -136,7 +139,7 @@ async function refresh(cancel = false): Promise<void> {
 		}
 		accept(fresh);
 		if (cancel && !expired) {
-			await cancelFreshDelivery(fresh, request.signal);
+			queueCancelFresh(fresh, request.signal);
 		}
 	} catch (error) {
 		if (!request.signal.aborted) {
@@ -150,20 +153,23 @@ async function refresh(cancel = false): Promise<void> {
 	}
 }
 
-async function cancelFreshDelivery(fresh: ManagementSnapshot, signal: AbortSignal): Promise<void> {
+function queueCancelFresh(fresh: ManagementSnapshot, signal: AbortSignal): void {
 	if (!fresh.can_cancel) {
 		notice = 'This delivery can no longer be cancelled.';
 		return;
 	}
-	if (
-		!window.confirm(
-			'Cancel this delivery permanently? The recipient link will stop working. This cannot recall content already delivered.'
-		)
-	) {
+	pendingCancel = { fresh, signal };
+	cancelConfirmOpen = true;
+}
+
+async function cancelPendingDelivery(): Promise<void> {
+	const pending = pendingCancel;
+	pendingCancel = null;
+	if (!pending || pending.signal.aborted) {
 		return;
 	}
-	const result = await api.revoke(secretId, token, signal);
-	if (!signal.aborted) {
+	const result = await api.revoke(secretId, token, pending.signal);
+	if (!pending.signal.aborted) {
 		accept(result);
 	}
 }
@@ -266,3 +272,10 @@ onMount(() => {
 	<a href={resolve('/')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">Create another</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={recipientUrl} />
+<ConfirmDialog
+	bind:open={cancelConfirmOpen}
+	title="Cancel this delivery?"
+	description="The recipient link will stop working. This cannot recall content already delivered."
+	confirmLabel="Cancel delivery"
+	onconfirm={() => { void cancelPendingDelivery(); }}
+/>
