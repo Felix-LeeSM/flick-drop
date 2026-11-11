@@ -276,26 +276,48 @@ func TestRevokeRacesOpenAndProofLockout(t *testing.T) {
 			close(start)
 			openErr, cancelErr := <-opened, <-cancelled
 			status, err := store.Management(ctx, created.ID, created.ManagementToken)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cancelErr == nil {
-				if status.Status != "cancelled" || !errors.Is(openErr, ErrNotFound) {
-					t.Fatalf("cancel winner: %v %v", status, openErr)
+			switch {
+			case cancelErr == nil:
+				if err != nil || status.Status != "cancelled" || !errors.Is(openErr, ErrNotFound) {
+					t.Fatalf("cancel winner: %v %v %v", status, err, openErr)
 				}
-			} else {
-				want := "opened"
-				if operation == "lockout" {
-					want = "locked"
+			case operation == "open":
+				// An opened delivery is forgotten: the losing cancellation and
+				// later reads see the unknown-ID result.
+				if openErr != nil || !errors.Is(cancelErr, ErrManagementUnavailable) || !errors.Is(err, ErrManagementUnavailable) {
+					t.Fatalf("open winner: %v %v %v", openErr, cancelErr, err)
 				}
-				if !errors.Is(cancelErr, ErrNotCancellable) || status.Status != want {
-					t.Fatalf("recipient winner: %v %v", status, cancelErr)
-				}
-				if (operation == "open" && openErr != nil) || (operation == "lockout" && !errors.Is(openErr, ErrInvalidAccess)) {
-					t.Fatal(openErr)
+			default:
+				if err != nil || !errors.Is(cancelErr, ErrNotCancellable) || status.Status != "locked" || !errors.Is(openErr, ErrInvalidAccess) {
+					t.Fatalf("lockout winner: %v %v %v %v", status, err, cancelErr, openErr)
 				}
 			}
 		})
+	}
+}
+
+// 취소 경합에서 열람이 먼저 커밋되면 Revoke는 모르는 ID와 같은
+// ErrManagementUnavailable을 돌려준다(HTTP 404 management_unavailable).
+func TestRevokeAfterCommittedOpenIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newTestStore(t, conn)
+	created, err := store.Create(ctx, CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenTx(ctx, tx, created.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := store.Revoke(ctx, created.ID, created.ManagementToken); !errors.Is(err, ErrManagementUnavailable) || status != (ManagementStatus{}) {
+		t.Fatalf("revoke after open: %+v %v", status, err)
 	}
 }
 

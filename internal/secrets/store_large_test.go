@@ -304,11 +304,8 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Cleanup(ctx, res.ID); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := store.Management(ctx, res.ID, res.ManagementToken); err != nil || status.Status != "opened" {
-		t.Fatalf("S3 outcome after cleanup: %+v %v", status, err)
+	if _, err := store.Management(ctx, res.ID, res.ManagementToken); !errors.Is(err, ErrManagementUnavailable) {
+		t.Fatalf("S3 management after open = %v, want unavailable", err)
 	}
 }
 
