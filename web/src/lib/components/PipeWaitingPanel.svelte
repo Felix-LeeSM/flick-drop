@@ -12,11 +12,18 @@ import {
 	ZapIcon
 } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
+import LockStageCard from '#lib/components/LockStageCard.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
 import StageSteps from '#lib/components/StageSteps.svelte';
-import SuccessCheck from '#lib/components/SuccessCheck.svelte';
 import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
+import {
+	holdMinimumStage,
+	STAGE_FAIL_MS,
+	STAGE_FINISH_MS,
+	type StagePhase,
+	sleep
+} from '#lib/stage-timing.js';
 import { cn } from '#lib/utils.js';
 
 // The relay's three stages. The burned step never renders as an active row —
@@ -64,6 +71,44 @@ let {
 }: Props = $props();
 
 let remainingSeconds = $state(180);
+// Lock stage: once bytes start streaming the code view gives way to the progress
+// ring, which keeps its minimum and plays the lock (or failure) beat before the
+// completed view or the error card shows. The relay reports 25/50/100.
+let streamStartedAt: number | null = null;
+let stagePhase = $state<StagePhase>('waiting');
+let stageSettled = $state(false);
+const streaming = $derived(progressPercent > 0);
+const failed = $derived(approvalStatus === 'rejected');
+const showStage = $derived(streaming && !stageSettled);
+
+$effect(() => {
+	if (streaming && streamStartedAt === null) {
+		streamStartedAt = performance.now();
+	}
+});
+
+$effect(() => {
+	if (!streaming || !(completed || failed)) {
+		return;
+	}
+	const startedAt = streamStartedAt ?? performance.now();
+	const ending = completed ? 'finishing' : 'failing';
+	let current = true;
+	void (async () => {
+		await holdMinimumStage(startedAt);
+		if (!current) {
+			return;
+		}
+		stagePhase = ending;
+		await sleep(ending === 'finishing' ? STAGE_FINISH_MS : STAGE_FAIL_MS);
+		if (current) {
+			stageSettled = true;
+		}
+	})();
+	return () => {
+		current = false;
+	};
+});
 let qrOpen = $state(false);
 let copied = $state(false);
 
@@ -116,9 +161,25 @@ let directReceiveUrl = $derived(
 </script>
 
 <div class="grid gap-6 text-center">
-	{#if completed}
+	{#if showStage}
+		<LockStageCard
+			mode="lock"
+			phase={stagePhase}
+			caption="sending to receiver"
+			status={stagePhase === 'finishing'
+				? 'Burned from memory'
+				: stagePhase === 'failing'
+					? statusText
+					: progressPercent >= 50
+						? 'Streaming to receiver…'
+						: 'Encrypting in your browser…'}
+			progress={progressPercent / 100}
+			cancellable={stagePhase === 'waiting'}
+			{onCancel}
+		/>
+	{:else if completed}
+		<!-- The ring already played the lock beat, so the completed view skips a second check. -->
 		<div class="grid place-items-center gap-4">
-			<SuccessCheck />
 			<div class="grid gap-2">
 				<p class="micro flex items-center justify-center gap-1.5 text-burn">
 					<FlameIcon class="size-3.5" aria-hidden="true" />
