@@ -9,7 +9,9 @@ import (
 )
 
 func TestRevokeHTTPContract(t *testing.T) {
-	for _, outcome := range []string{"cancelled", "opened", "locked"} {
+	// An opened delivery answers like an unknown ID
+	// (TestOpenedSecretIsIndistinguishableFromUnknownID).
+	for _, outcome := range []string{"cancelled", "locked"} {
 		t.Run(outcome, func(t *testing.T) {
 			f := newTestRouterFixture(t, Options{OpenRatePerMinute: 100})
 			resp := performJSON(t, f.router, http.MethodPost, "/api/secrets", validCreateSecretBody())
@@ -18,12 +20,8 @@ func TestRevokeHTTPContract(t *testing.T) {
 			path := "/api/secrets/" + created.ID
 			headers := map[string]string{"Authorization": "Bearer " + created.ManagementToken}
 			if outcome != "cancelled" {
-				attempts, proof := 1, "proof"
-				if outcome == "locked" {
-					attempts, proof = 5, "wrong"
-				}
-				for range attempts {
-					performJSON(t, f.router, http.MethodPost, path+"/open", map[string]string{"access_proof": base64.StdEncoding.EncodeToString([]byte(proof))})
+				for range 5 {
+					performJSON(t, f.router, http.MethodPost, path+"/open", map[string]string{"access_proof": base64.StdEncoding.EncodeToString([]byte("wrong"))})
 				}
 			}
 			for _, body := range []string{"{", "null", `{"unexpected":1}`, "{} {}"} {
