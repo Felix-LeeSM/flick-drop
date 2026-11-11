@@ -902,9 +902,6 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	}
 }
 
-// TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete covers a bucket read that
-// fails after the 200 status: the secret is consumed (lost by design), the
-// recipient gets a short body, and the object still gets its delete job.
 // 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 백엔드가
 // 비면 워커가 기본(primary) 버킷에서 지우므로 R2 객체는 재조정 유예가 지날 때까지 남는다.
 func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
@@ -953,6 +950,9 @@ func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 	}
 }
 
+// TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete covers a bucket read that
+// fails after the 200 status: the secret is consumed (lost by design), the
+// recipient gets a short body, and the object still gets its delete job.
 func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	objects := &streamObjects{body: ageBody(5000), readErr: errors.New("connection reset")}
 	fixture, id := newS3OpenFixture(t, objects)
