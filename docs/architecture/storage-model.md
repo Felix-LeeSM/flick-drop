@@ -151,7 +151,10 @@ Inline opens queue no cleanup job. A bucket-backed open keeps only the
 `secret_open_grace` row (object key and deadline) until 35 minutes after the
 open, and queues one `delete_oci_object` job after streaming. The managed key
 is `managed/secrets/{id}`, so the grace row and that outbox job still name the
-ID, and published `outbox_events` rows are not pruned today. Aggregate
+ID until the reaper prunes the published outbox row one hour after publish
+(`internal/events/outbox.go:PublishedRetention`, see
+[event contract](event-contract.md#outbox)). A `failed` outbox row is kept for
+diagnosis and can hold the key until it publishes. Aggregate
 `usage_counters` count opens without IDs. Locked, cancelled, and unavailable
 deliveries keep their documented retention.
 `internal/db/migrations.go:forgetOpenedSecrets` removes rows that earlier

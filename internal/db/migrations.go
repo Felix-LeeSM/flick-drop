@@ -158,6 +158,15 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	if err := forgetOpenedSecrets(ctx, conn, time.Now().UTC()); err != nil {
 		return err
 	}
+	// Earlier releases never deleted published outbox rows, whose payloads name
+	// object keys and secret IDs. This clears that backlog at once; afterwards
+	// the API reaper prunes them in bounded batches (events.PurgePublishedTx).
+	// The hour mirrors events.PublishedRetention; db cannot import events
+	// because the events tests import db. Failed rows stay for diagnosis.
+	if _, err := conn.ExecContext(ctx, `delete from outbox_events where state = 'published'
+			and julianday(published_at) <= julianday(?)`, time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("purge published outbox events: %w", err)
+	}
 	return normalizeRequestsSchema(ctx, conn)
 }
 

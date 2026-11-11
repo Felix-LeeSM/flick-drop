@@ -338,8 +338,8 @@ response an unknown ID gets, byte for byte. Management still distinguishes
 invalid-proof lockout and sender cancellation, which keep their outcomes until
 the original expiry. Residual traces remain outside that guarantee: a bucket
 body's `managed/secrets/{id}` key stays in `secret_open_grace` for 35 minutes
-and in its `delete_oci_object` outbox row (published outbox rows are not
-pruned), proxy access logs record request paths, and SQLite WAL pages and
+and in its `delete_oci_object` outbox row until the reaper prunes it one hour
+after publish (a `failed` row stays for diagnosis), proxy access logs record request paths, and SQLite WAL pages and
 backups may hold deleted rows. Raw management tokens belong only in the private browser fragment,
 the creation response, and the management Authorization header; exclude them
 from persistent browser storage, logs, telemetry, and worker messages.

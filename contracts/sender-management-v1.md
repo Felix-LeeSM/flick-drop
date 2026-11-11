@@ -148,9 +148,9 @@ A bucket body may still be streaming after the commit. A separate
 the API reaper deletes that row after the deadline. The managed key itself is
 `managed/secrets/{id}`, so during the grace the key still names the ID. The
 existing `delete_oci_object` job queued after streaming also carries the key,
-and `outbox_events` rows are not pruned after publishing, so for bucket-backed
-deliveries that key outlives the grace in the outbox. Inline deliveries queue
-no job on open.
+and its `outbox_events` row is pruned one hour after publishing (a `failed`
+row stays for diagnosis and keeps the key until it publishes). Inline
+deliveries queue no job on open.
 Aggregate usage counters (`usage_counters`) count opens without IDs.
 
 Add an API-owned `secret_management` record for new deliveries containing only

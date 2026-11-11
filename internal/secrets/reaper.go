@@ -196,6 +196,9 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 	if err := requests.PurgeExpiredTx(ctx, tx, now, r.batchSize, r.outbox); err != nil {
 		return 0, fmt.Errorf("purge expired requests: %w", err)
 	}
+	if err := events.PurgePublishedTx(ctx, tx, now, r.batchSize); err != nil {
+		return 0, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")

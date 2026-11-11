@@ -80,6 +80,18 @@ The publisher sends the stored `payload_json` bytes to
 `published`; on publish failure it records the error and schedules the next
 attempt.
 
+Published rows are pruned. Payloads name object keys (`managed/secrets/{id}`)
+and secret IDs, and the JetStream work-queue stream drops a message once it is
+acknowledged, so the outbox would otherwise be the lasting record of every
+delivery. Each API reaper tick (`internal/secrets/reaper.go:ClaimOnce`) calls
+`internal/events/outbox.go:PurgePublishedTx`, which deletes up to the reaper
+batch size of rows whose `published_at` is at least `PublishedRetention`
+(1 hour) old. `internal/db/migrations.go:MigrateAPI` deletes the backlog that
+earlier releases kept, with the same cutoff. The publisher itself is unchanged.
+`pending` and `failed` rows are never pruned: they are still due or needed to
+diagnose a broken publish, so a `failed` row can keep an object key or secret
+ID until it publishes and ages out.
+
 ## Consumer
 
 The worker uses a durable pull consumer for the job subject.

@@ -161,6 +161,54 @@ func TestMigrateAPIForgetsOpenedSecrets(t *testing.T) {
 	}
 }
 
+// 이전 릴리스가 영구히 남긴 발행 outbox 행은 마이그레이션이 지우고, 보존 기간(1시간)
+// 안의 발행 행과 failed·pending 행은 남긴다.
+func TestMigrateAPIPurgesPublishedOutboxRows(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, row := range []struct {
+		id, state   string
+		publishedAt any
+	}{
+		{"published-old", "published", now.Add(-2 * time.Hour).Format(time.RFC3339Nano)},
+		{"published-recent", "published", now.Add(-time.Minute).Format(time.RFC3339Nano)},
+		{"failed", "failed", nil},
+		{"pending", "pending", nil},
+	} {
+		if _, err := conn.Exec(`insert into outbox_events (id, subject, payload_json, state, next_attempt_at, published_at, created_at, updated_at)
+			values (?, 'jobs', '{}', ?, '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, row.id, row.state, row.publishedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	rows, err := conn.Query(`select id from outbox_events order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, id)
+	}
+	if want := []string{"failed", "pending", "published-recent"}; !slices.Equal(left, want) {
+		t.Fatalf("outbox rows = %v, want %v", left, want)
+	}
+}
+
 func TestMigrateAPICreatesOutboxEvents(t *testing.T) {
 	ctx := context.Background()
 	conn, err := OpenSQLite(ctx, ":memory:")
