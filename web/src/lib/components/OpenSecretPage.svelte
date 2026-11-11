@@ -9,7 +9,7 @@ import {
 	FlameIcon,
 	LockKeyholeOpenIcon
 } from '@lucide/svelte';
-import { onDestroy, onMount } from 'svelte';
+import { onDestroy, onMount, tick } from 'svelte';
 import {
 	createSecretApiClient,
 	type GetSecretMetadataResponse,
@@ -207,6 +207,20 @@ async function openSecret(): Promise<void> {
 		isOpening = false;
 		openStage = null;
 	}
+	if (statusKind === 'error') {
+		await refocusForm();
+	}
+}
+
+// The stage card replaced the form, taking the focused control with it; put focus
+// back where a retry starts (the passphrase field, else Open while it is usable).
+async function refocusForm(): Promise<void> {
+	await tick();
+	document
+		.querySelector<HTMLElement>(
+			'#open-passphrase:not(:disabled), form button[type="submit"]:not(:disabled)'
+		)
+		?.focus();
 }
 
 // Model B: the link is the capability. Open without a proof and decrypt with

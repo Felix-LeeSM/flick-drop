@@ -47,10 +47,11 @@ let {
 		{:else}
 			<LoaderCircleIcon class="size-8 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
 		{/if}
-		<!-- A failure is announced as an alert by the form it returns to, so the card stays a status. -->
+		<!-- A failure is announced as an alert by the form it returns to, so the failing
+		     text is shown here without a live region to avoid announcing it twice. -->
 		<p
-			role="status"
-			aria-live="polite"
+			role={phase === 'failing' ? undefined : 'status'}
+			aria-live={phase === 'failing' ? undefined : 'polite'}
 			class={cn('text-center text-sm', phase === 'failing' ? 'text-destructive' : 'text-muted-foreground')}
 		>
 			{status}

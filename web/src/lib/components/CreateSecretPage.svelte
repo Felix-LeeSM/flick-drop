@@ -196,18 +196,16 @@ const blockedTitle = $derived(
 );
 
 // Lock stage card: the create folds the form into the progress ring while running.
-// A file create has a measurable upload, so its ring follows the upload (empty
-// while encrypting, full once finalizing); text and credentials creep.
+// A file large enough to upload reports progress, so its ring follows the upload
+// (full once finalizing); text, credentials, and small inline files creep.
 const stageRingProgress = $derived.by(() => {
-	if (mode !== 'file') {
+	if (uploadProgress === null) {
 		return null;
 	}
 	if (statusKind === 'finalizing') {
 		return 1;
 	}
-	return statusKind === 'uploading' &&
-		uploadProgress?.total !== undefined &&
-		uploadProgress.total > 0
+	return uploadProgress.total !== undefined && uploadProgress.total > 0
 		? (uploadProgress.loaded ?? 0) / uploadProgress.total
 		: 0;
 });
