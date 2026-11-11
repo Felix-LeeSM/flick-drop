@@ -18,6 +18,7 @@ import {
 	type SecretKind
 } from '#lib/api/secrets.js';
 import CredentialView from '#lib/components/CredentialView.svelte';
+import LockStageCard from '#lib/components/LockStageCard.svelte';
 import SiteHeader from '#lib/components/SiteHeader.svelte';
 import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
@@ -28,6 +29,13 @@ import { type CredentialEnvelope, parseCredential } from '#lib/credentials/index
 import { deriveAccessProof } from '#lib/crypto/access.js';
 import { decodeKeyFragment } from '#lib/crypto/fragment.js';
 import { openFile, openText, unwrapIdentityOffThread } from '#lib/crypto/secret.js';
+import {
+	holdMinimumStage,
+	STAGE_FAIL_MS,
+	STAGE_FINISH_MS,
+	type StagePhase,
+	sleep
+} from '#lib/stage-timing.js';
 import { formatBytes } from '#lib/utils.js';
 import { resolve } from '$app/paths';
 
@@ -53,6 +61,8 @@ let downloadSize = $state(0);
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isOpening = $state(false);
+// Lock stage card shown in place of the open form while an open runs; null shows the form.
+let openStage = $state<StagePhase | null>(null);
 let isLoading = $state(true);
 let canRetryLoad = $state(false);
 let hasOpened = $state(false);
@@ -152,6 +162,8 @@ async function openSecret(): Promise<void> {
 	}
 
 	isOpening = true;
+	openStage = 'waiting';
+	const stageStartedAt = performance.now();
 	status = 'Opening';
 	statusKind = 'idle';
 	decryptedText = '';
@@ -165,6 +177,10 @@ async function openSecret(): Promise<void> {
 		} else {
 			await openPassphraseSecret();
 		}
+		// The ring keeps its minimum and plays the unlock beat before the content shows.
+		await holdMinimumStage(stageStartedAt);
+		openStage = 'finishing';
+		await sleep(STAGE_FINISH_MS);
 		passphrase = '';
 		revealPassphrase = false;
 		hasOpened = true;
@@ -183,8 +199,13 @@ async function openSecret(): Promise<void> {
 			linkUnusable = isUnavailable(error);
 		}
 		statusKind = 'error';
+		// The ring drains with the error before the form returns to show it as an alert.
+		await holdMinimumStage(stageStartedAt);
+		openStage = 'failing';
+		await sleep(STAGE_FAIL_MS);
 	} finally {
 		isOpening = false;
+		openStage = null;
 	}
 }
 
@@ -382,6 +403,17 @@ function revokeDownloadUrl(): void {
 					Create your own
 				</a>
 			</section>
+		{:else if openStage}
+			<LockStageCard
+				mode="unlock"
+				phase={openStage}
+				caption="opening your secret"
+				status={openStage === 'finishing'
+					? 'Unlocked'
+					: openStage === 'failing'
+						? status
+						: 'Decrypting in your browser…'}
+			/>
 		{:else}
 			<section class="grid gap-7">
 				<div class="grid gap-1.5">
