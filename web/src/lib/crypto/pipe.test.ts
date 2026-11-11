@@ -267,6 +267,38 @@ describe('client API hooks', () => {
 		}
 	});
 
+	it('waitForPipeSelection retries one 5xx, then fails, and names a dropped connection', async () => {
+		const sequence = (...responses: (() => Response)[]) => {
+			let calls = 0;
+			const fetcher: typeof fetch = () => Promise.resolve(responses[calls++]());
+			return { fetcher, calls: () => calls };
+		};
+		const status = (value: string) => () => jsonResponse({ status: value });
+		const proxyError = (code: number) => () => new Response('<html>', { status: code });
+
+		// Given: 프록시 524 한 번 뒤 정상 응답 → 실패 없이 선택까지 간다
+		const flaky = sequence(proxyError(524), status('waiting'), proxyError(502), status('selected'));
+		await waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', flaky.fetcher);
+		expect(flaky.calls()).toBe(4);
+
+		// Given: 5xx가 연달아 두 번 → 두 번째에서 실패한다
+		const down = sequence(proxyError(502), proxyError(503));
+		await expect(
+			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', down.fetcher)
+		).rejects.toMatchObject({ status: 503 });
+		expect(down.calls()).toBe(2);
+
+		// Given: 참가는 됐는데 /status가 404 → 거절이 아니라 연결이 끊긴 것으로 안내한다
+		await expect(
+			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', () =>
+				Promise.resolve(errorResponse(404, 'not_found'))
+			)
+		).rejects.toMatchObject({
+			reason: 'dropped',
+			message: 'This device was disconnected while waiting. Enter the code again.'
+		});
+	});
+
 	it('waitForPipeUpdate sends the sender token and since, and maps the waiting list', async () => {
 		let observedUrl = '';
 		let observedHeaders: Record<string, string> = {};

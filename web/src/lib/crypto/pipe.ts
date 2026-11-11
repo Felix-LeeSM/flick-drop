@@ -164,6 +164,9 @@ const PIPE_ERROR_MESSAGES: Record<string, string> = {
 	not_found: 'Invalid or expired 6-digit code.',
 	declined: 'The sender declined this device.',
 	room_full: 'Too many devices are trying to connect. Ask the sender for a new code.',
+	dropped: 'This device was disconnected while waiting. Enter the code again.',
+	poll_in_progress:
+		'This device is already waiting in another request. Wait a moment and try again.',
 	network_full:
 		'Too many devices on your network are already waiting for this code. Close one of them and try again.',
 	already_connected: 'Another device is already receiving this transfer.',
@@ -313,15 +316,31 @@ export async function waitForPipeSelection(
 		'X-Flick-Pipe-Code': normalizePipeCode(code),
 		'X-Flick-Pipe-Connection': connectionId
 	};
+	// One transient server or proxy failure (5xx, including Cloudflare's 502 and
+	// 524) is retried once; a second one in a row fails. The connection stays in
+	// the room for 35 seconds without a poll, so the retry is still in time.
+	let retried = false;
 	while (true) {
 		const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/status`, {
 			method: 'GET',
 			headers,
 			signal
 		});
-		if (!response.ok) {
-			throw await pipeError(response, 'Status check failed');
+		if (response.status >= 500 && !retried) {
+			retried = true;
+			continue;
 		}
+		if (!response.ok) {
+			const err = await pipeError(response, 'Status check failed');
+			// The join succeeded with this code, so not_found here means the server
+			// dropped this connection (no poll for 35 seconds, e.g. a sleeping tab).
+			// It is not a decline: the same code may be entered again.
+			if (err.reason === 'not_found') {
+				throw new PipeRelayError('dropped', response.status, PIPE_ERROR_MESSAGES.dropped);
+			}
+			throw err;
+		}
+		retried = false;
 		const data = (await response.json()) as { status: 'waiting' | 'selected' };
 		if (data.status === 'selected') {
 			return;

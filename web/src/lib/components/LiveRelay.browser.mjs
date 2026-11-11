@@ -836,3 +836,88 @@ test('Sender: Deny moves focus to the next row, then to the list heading', async
 		await page.close();
 	}
 });
+
+test('Sender: a Deny the server did not apply brings the row back with an error', async () => {
+	const page = await browser.newPage();
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/init') {
+				return fulfillConfirmedInit(route);
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				if (since === '0') {
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(2, 2) });
+				}
+				return;
+			}
+			if (path === '/api/pipe/decline') {
+				return route.fulfill({
+					status: 500,
+					headers: corsHeaders,
+					json: errorJson('internal_error')
+				});
+			}
+			return route.continue();
+		});
+		await startConfirmedSender(page);
+		await page.getByText('2 of 10 devices waiting').waitFor();
+
+		await page.getByRole('button', { name: 'Deny connection 1' }).click();
+
+		// The device is still waiting on the server, so its row returns in join order.
+		await page.getByText('Could not deny that device. Try again.').waitFor();
+		await page.getByText('2 of 10 devices waiting').waitFor();
+		const rows = page.getByRole('list', { name: 'Waiting devices' }).getByRole('listitem');
+		assert.match(await rows.first().textContent(), /Connection 1/);
+	} finally {
+		await page.close();
+	}
+});
+
+test('Receiver: a connection dropped while waiting says so and lets the same code in again', async () => {
+	const page = await browser.newPage();
+	let joins = 0;
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				joins += 1;
+				return route.fulfill({
+					status: 201,
+					headers: corsHeaders,
+					json: {
+						connection_id: `conn-${joins}`,
+						require_confirmation: true,
+						verify_code: '042',
+						device: 'Chrome on Linux',
+						expires_in: 170
+					}
+				});
+			}
+			if (path === '/api/pipe/status') {
+				// The tab slept past 35 seconds: the server dropped the connection.
+				return route.fulfill({ status: 404, headers: corsHeaders, json: errorJson('not_found') });
+			}
+			return route.continue();
+		});
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await openReceiveDialog(page);
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		const dropped = dialog.getByText(
+			'This device was disconnected while waiting. Enter the code again.'
+		);
+		await page.locator('#pipe-code-input').fill('741928');
+
+		await dropped.waitFor();
+		assert.equal(await dialog.getByText('Invalid or expired 6-digit code.').count(), 0);
+
+		// A drop is not a decline: the same code joins again.
+		await dialog.getByRole('button', { name: 'Try again' }).click();
+		await page.locator('#pipe-code-input').fill('741928');
+		await dropped.waitFor();
+		assert.equal(joins, 2);
+	} finally {
+		await page.close();
+	}
+});

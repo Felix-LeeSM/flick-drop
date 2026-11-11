@@ -7,6 +7,7 @@ import {
 	encryptPipeStream,
 	initPipeRendezvous,
 	type PipePendingConnection,
+	PipeRelayError,
 	selectPipeConnection,
 	sendPipeStream,
 	streamToBytes,
@@ -247,12 +248,25 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		if (code === null) {
 			return;
 		}
+		const denied = pending.find((receiver) => receiver.connectionId === connectionId);
+		const session = settled;
 		settled.add(connectionId);
 		pending = pending.filter((receiver) => receiver.connectionId !== connectionId);
 		try {
 			await declinePipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
-		} catch {
-			// The device already left or the session ended; the next poll shows the truth.
+		} catch (err) {
+			// not_pending: the device already left or was settled, so the row stays gone.
+			const alreadyGone = err instanceof PipeRelayError && err.reason === 'not_pending';
+			// A new session (or cancel) replaced `settled` meanwhile; this row is not ours to restore.
+			if (alreadyGone || session !== settled) {
+				return;
+			}
+			// The server did not decline it: the device is still waiting, so show it again.
+			settled.delete(connectionId);
+			if (denied && !pending.some((receiver) => receiver.connectionId === connectionId)) {
+				pending = [...pending, denied].sort((a, b) => a.index - b.index);
+			}
+			statusText = 'Could not deny that device. Try again.';
 		}
 	}
 
