@@ -164,6 +164,8 @@ const PIPE_ERROR_MESSAGES: Record<string, string> = {
 	not_found: 'Invalid or expired 6-digit code.',
 	declined: 'The sender declined this device.',
 	room_full: 'Too many devices are trying to connect. Ask the sender for a new code.',
+	network_full:
+		'Too many devices on your network are already waiting for this code. Close one of them and try again.',
 	already_connected: 'Another device is already receiving this transfer.',
 	not_selected: 'The sender chose another device.',
 	cancelled: 'The sender cancelled this code.',
@@ -290,6 +292,41 @@ export async function joinPipe(
 		device: data.device,
 		expiresIn: data.expires_in
 	};
+}
+
+/**
+ * Long-polls GET /api/pipe/status until the sender picks this connection
+ * (confirmation on). Each poll holds at most 25 seconds, so a proxy never sees
+ * a silent response, and the open poll is what keeps this device in the
+ * sender's list. Resolves once selected (open /receive next); rejects with a
+ * PipeRelayError when the device was declined, not chosen, or the session
+ * ended.
+ */
+export async function waitForPipeSelection(
+	baseUrl: string,
+	code: string,
+	connectionId: string,
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal
+): Promise<void> {
+	const headers = {
+		'X-Flick-Pipe-Code': normalizePipeCode(code),
+		'X-Flick-Pipe-Connection': connectionId
+	};
+	while (true) {
+		const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/status`, {
+			method: 'GET',
+			headers,
+			signal
+		});
+		if (!response.ok) {
+			throw await pipeError(response, 'Status check failed');
+		}
+		const data = (await response.json()) as { status: 'waiting' | 'selected' };
+		if (data.status === 'selected') {
+			return;
+		}
+	}
 }
 
 export type PipePendingConnection = {
@@ -492,10 +529,11 @@ export type ReceivePipeResult = {
 };
 
 /**
- * Calls GET /api/pipe/receive on a joined connection. Resolves with the live
- * stream once the sender picks this device (with confirmation off: once this
- * device connected first and the sender started); rejects with a
- * PipeRelayError otherwise.
+ * Calls GET /api/pipe/receive on a joined connection. With confirmation on,
+ * call it only after `waitForPipeSelection` resolved. Resolves with the live
+ * stream once the sender starts (with confirmation off: once this device
+ * connected first and the sender started); rejects with a PipeRelayError
+ * otherwise.
  */
 export async function receivePipeStream(
 	baseUrl: string,

@@ -27,7 +27,8 @@ import {
 	PipeRelayError,
 	receivePipeStream,
 	streamToBytes,
-	streamToText
+	streamToText,
+	waitForPipeSelection
 } from '#lib/crypto/pipe.js';
 import {
 	holdMinimumStage,
@@ -36,7 +37,11 @@ import {
 	type StagePhase,
 	sleep
 } from '#lib/stage-timing.js';
-import { rememberDeclinedCode, wasDeclinedCode } from '#lib/state/pipe-declined.js';
+import {
+	rememberDeclinedCode,
+	sessionExpiresAt,
+	wasDeclinedCode
+} from '#lib/state/pipe-declined.js';
 import { cn, formatBytes } from '#lib/utils.js';
 
 type Props = {
@@ -161,13 +166,13 @@ function terminalState(err: unknown): ReceiveState | undefined {
 	}
 }
 
-// One receive attempt's timing: when its ring started and how long the
-// session window had left at join.
+// One receive attempt's timing: when its ring started and the local clock time
+// the session window closes, fixed when the join response arrived.
 type ReceiveAttempt = {
 	normalized: string;
 	signal: AbortSignal;
 	stageStartedAt: number;
-	expiresIn: number;
+	sessionExpiresAt: number;
 };
 
 async function startReceive(): Promise<void> {
@@ -198,7 +203,7 @@ async function startReceive(): Promise<void> {
 		normalized,
 		signal: controller.signal,
 		stageStartedAt: performance.now(),
-		expiresIn: 0
+		sessionExpiresAt: Date.now()
 	};
 
 	try {
@@ -212,10 +217,13 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	const { normalized, signal } = attempt;
 	const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
 	const join = await joinPipe(targetBaseUrl, normalized, fetch, signal);
-	attempt.expiresIn = join.expiresIn;
-	if (join.verifyCode) {
+	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
+	if (join.requireConfirmation && join.verifyCode) {
 		verifyCode = join.verifyCode;
 		currentState = 'verify';
+		// Short status polls keep this device in the sender's list; /receive
+		// opens only once picked, so no request sits silent behind a proxy.
+		await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
 	} else {
 		statusMessage = 'Waiting for the sender…';
 	}
@@ -249,7 +257,7 @@ async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> 
 	}
 	const endState = terminalState(err) ?? 'error';
 	if (endState === 'declined') {
-		await rememberDeclinedCode(attempt.normalized, attempt.expiresIn);
+		await rememberDeclinedCode(attempt.normalized, attempt.sessionExpiresAt);
 	}
 	errorMessage = err instanceof Error ? err.message : 'Transfer failed';
 	// Only a visible ring plays the failure beat; the number view ends at once.

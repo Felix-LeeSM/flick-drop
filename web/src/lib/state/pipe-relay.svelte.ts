@@ -41,19 +41,24 @@ export type PendingReceiver = {
 
 // Keeps each known receiver's joinedAt so its relative time does not jitter
 // between polls; new receivers are placed from the server's connected_seconds.
+// Rows the sender already settled locally stay out even when a poll that was
+// in flight during the decision still lists them.
 function mergePending(
 	previous: PendingReceiver[],
 	connections: PipePendingConnection[],
+	settled: ReadonlySet<string>,
 	now: number
 ): PendingReceiver[] {
 	const known = new Map(previous.map((receiver) => [receiver.connectionId, receiver.joinedAt]));
-	return connections.map((connection) => ({
-		connectionId: connection.connectionId,
-		index: connection.index,
-		verifyCode: connection.verifyCode,
-		device: connection.device,
-		joinedAt: known.get(connection.connectionId) ?? now - connection.connectedSeconds * 1000
-	}));
+	return connections
+		.filter((connection) => !settled.has(connection.connectionId))
+		.map((connection) => ({
+			connectionId: connection.connectionId,
+			index: connection.index,
+			verifyCode: connection.verifyCode,
+			device: connection.device,
+			joinedAt: known.get(connection.connectionId) ?? now - connection.connectedSeconds * 1000
+		}));
 }
 
 /**
@@ -73,8 +78,14 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	// The sender token and salt never render; they stay out of reactive state.
 	let senderToken = '';
 	let salt = '';
-	// True once the sender committed to one receiver; polling stops.
+	// True once the sender committed to one receiver; the poll loop ends.
 	let sending = false;
+	// True while a Send click waits for /select; a second click is ignored and
+	// the one poll loop keeps running, so a failed select needs no new loop.
+	let selecting = false;
+	// Rows the sender denied or picked in this session. A /wait response that
+	// was already in flight when the sender decided must not bring them back.
+	let settled = new Set<string>();
 	let abortController: AbortController | null = null;
 
 	function fail(err: unknown, fallback: string): void {
@@ -133,7 +144,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			return;
 		}
 		if (requireConfirmation) {
-			pending = mergePending(pending, update.connections, Date.now());
+			pending = mergePending(pending, update.connections, settled, Date.now());
 			return;
 		}
 		if (update.status === 'ready') {
@@ -144,7 +155,8 @@ export function createPipeRelay(options: PipeRelayOptions) {
 
 	// Long-polls the session until the sender commits to a receiver. With
 	// confirmation on it keeps the waiting list fresh; with it off it streams as
-	// soon as the first receiver is attached.
+	// soon as the first receiver is attached. `start` runs exactly one loop per
+	// session; nothing else starts one.
 	async function poll(code: string, signal: AbortSignal): Promise<void> {
 		let since = 0;
 		try {
@@ -172,6 +184,8 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		const controller = new AbortController();
 		abortController = controller;
 		sending = false;
+		selecting = false;
+		settled = new Set();
 
 		try {
 			statusText = 'Initializing live transfer session...';
@@ -203,10 +217,10 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	async function sendTo(connectionId: string): Promise<void> {
 		const code = activeCode;
 		const signal = abortController?.signal;
-		if (code === null || signal === undefined || sending) {
+		if (code === null || signal === undefined || sending || selecting) {
 			return;
 		}
-		sending = true;
+		selecting = true;
 		statusText = 'Sending to the chosen device...';
 		try {
 			await selectPipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
@@ -214,12 +228,15 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			if (signal.aborted) {
 				return;
 			}
-			// The device left or was settled meanwhile: keep the session and the list.
-			sending = false;
+			// The device left or was settled meanwhile: keep the session and the
+			// list. The running poll loop shows the next server view.
+			selecting = false;
 			statusText = err instanceof Error ? err.message : 'That device is no longer waiting.';
-			void poll(code, signal);
 			return;
 		}
+		selecting = false;
+		sending = true;
+		settled.add(connectionId);
 		pending = [];
 		await streamPayload(code, signal);
 	}
@@ -230,6 +247,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		if (code === null) {
 			return;
 		}
+		settled.add(connectionId);
 		pending = pending.filter((receiver) => receiver.connectionId !== connectionId);
 		try {
 			await declinePipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
@@ -252,6 +270,8 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		senderToken = '';
 		salt = '';
 		sending = false;
+		selecting = false;
+		settled = new Set();
 		pending = [];
 		statusText = '';
 		progressPercent = 0;

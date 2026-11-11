@@ -96,7 +96,7 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 				});
 			}
 			// Never answered, so the dialog stays on step 2 waiting for the sender's pick.
-			if (path === '/api/pipe/receive') {
+			if (path === '/api/pipe/status' || path === '/api/pipe/receive') {
 				return;
 			}
 			return route.continue();
@@ -375,12 +375,16 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 		// The 6-digit code stays on screen above the list.
 		await page.getByLabel('Transfer code 741-928').waitFor();
 		const list = page.getByRole('list', { name: 'Waiting devices' });
-		await page.getByText('5 of 10 devices waiting').waitFor();
+		const count = page.getByText('5 of 10 devices waiting');
+		await count.waitFor();
+		// Devices joining or leaving are announced politely.
+		assert.equal(await count.getAttribute('aria-live'), 'polite');
 		await list.getByRole('listitem').first().waitFor();
 		assert.equal(await list.getByRole('listitem').count(), 3);
 
 		const more = page.getByRole('button', { name: 'Show 2 more' });
 		assert.equal(await more.getAttribute('aria-expanded'), 'false');
+		assert.equal(await more.getAttribute('aria-controls'), await list.getAttribute('id'));
 		await more.click();
 		assert.equal(await list.getByRole('listitem').count(), 5);
 		await list.getByText('Samsung Internet on Android').waitFor();
@@ -403,8 +407,9 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 });
 
 // An in-memory stand-in for the /api/pipe waiting room shared by every page in
-// the test: it hands out per-connection numbers, long-polls the sender, and
-// forwards the sender's real ciphertext to the chosen receiver only.
+// the test: it hands out per-connection numbers, long-polls the sender and the
+// waiting receivers (/status), and forwards the sender's real ciphertext to the
+// chosen receiver only once that receiver opens /receive after "selected".
 function createRelayMock() {
 	const salt = 'f0e1d2c3b4a59687';
 	const numbers = ['150', '271', '319', '428', '563'];
@@ -414,6 +419,7 @@ function createRelayMock() {
 	let changed = Promise.withResolvers();
 	const sent = Promise.withResolvers();
 	const joinCalls = new Map();
+	const hold = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	function bump() {
 		version += 1;
@@ -421,9 +427,121 @@ function createRelayMock() {
 		changed = Promise.withResolvers();
 	}
 
-	async function handle(page, path, route) {
-		const request = route.request();
-		const headers = request.headers();
+	// Settles one connection: 'selected', 'declined', or 'not_selected'.
+	function settle(connection, outcome) {
+		connection.outcome = outcome;
+		connection.decided.resolve(outcome);
+	}
+
+	function join(page, route) {
+		joinCalls.set(page, (joinCalls.get(page) ?? 0) + 1);
+		const index = connections.size + 1;
+		const id = `conn-${index}`;
+		const connection = {
+			index,
+			number: numbers[index - 1],
+			device: devices[(index - 1) % devices.length],
+			decided: Promise.withResolvers(),
+			outcome: null
+		};
+		connections.set(id, connection);
+		bump();
+		return route.fulfill({
+			status: 201,
+			headers: corsHeaders,
+			json: {
+				connection_id: id,
+				require_confirmation: true,
+				verify_code: connection.number,
+				device: connection.device,
+				expires_in: 170
+			}
+		});
+	}
+
+	async function wait(route) {
+		const since = Number(new URL(route.request().url()).searchParams.get('since'));
+		if (since === version) {
+			await Promise.race([changed.promise, hold(1500)]);
+		}
+		const pending = [...connections.entries()].filter(([, c]) => c.outcome === null);
+		return route.fulfill({
+			headers: corsHeaders,
+			json: {
+				status: 'waiting',
+				version,
+				connections: pending.map(([id, c]) => ({
+					connection_id: id,
+					index: c.index,
+					verify_code: c.number,
+					device: c.device,
+					connected_seconds: 1
+				}))
+			}
+		});
+	}
+
+	async function status(route, connection) {
+		const outcome = await Promise.race([
+			connection.decided.promise,
+			hold(1500).then(() => 'waiting')
+		]);
+		if (outcome === 'waiting' || outcome === 'selected') {
+			return route.fulfill({ headers: corsHeaders, json: { status: outcome } });
+		}
+		return route.fulfill({
+			status: outcome === 'declined' ? 403 : 410,
+			headers: corsHeaders,
+			json: errorJson(outcome)
+		});
+	}
+
+	async function receive(route, connection) {
+		if (connection.outcome !== 'selected') {
+			return route.fulfill({
+				status: 409,
+				headers: corsHeaders,
+				json: errorJson('awaiting_decision')
+			});
+		}
+		const body = await sent.promise;
+		return route.fulfill({
+			headers: {
+				...corsHeaders,
+				'Content-Type': 'application/octet-stream',
+				'X-Flick-Pipe-Salt': salt,
+				'Flick-Kind': 'text'
+			},
+			body
+		});
+	}
+
+	function decide(route, path, chosen) {
+		for (const [id, connection] of connections) {
+			if (connection.outcome !== null) {
+				continue;
+			}
+			if (id === chosen) {
+				settle(connection, path === '/api/pipe/select' ? 'selected' : 'declined');
+			} else if (path === '/api/pipe/select') {
+				settle(connection, 'not_selected');
+			}
+		}
+		bump();
+		return route.fulfill({ headers: corsHeaders, json: { status: 'ok' } });
+	}
+
+	function send(route) {
+		const body = route.request().postDataBuffer();
+		sent.resolve(body);
+		return route.fulfill({
+			headers: corsHeaders,
+			json: { status: 'completed', bytes_transferred: body.length }
+		});
+	}
+
+	function handle(page, path, route) {
+		const connection = connections.get(route.request().headers()['x-flick-pipe-connection']);
 		switch (path) {
 			case '/api/pipe/init':
 				return route.fulfill({
@@ -437,99 +555,19 @@ function createRelayMock() {
 						require_confirmation: true
 					}
 				});
-			case '/api/pipe/join': {
-				joinCalls.set(page, (joinCalls.get(page) ?? 0) + 1);
-				const index = connections.size + 1;
-				const id = `conn-${index}`;
-				const outcome = Promise.withResolvers();
-				connections.set(id, {
-					index,
-					number: numbers[index - 1],
-					device: devices[(index - 1) % devices.length],
-					outcome,
-					decided: false
-				});
-				bump();
-				return route.fulfill({
-					status: 201,
-					headers: corsHeaders,
-					json: {
-						connection_id: id,
-						require_confirmation: true,
-						verify_code: numbers[index - 1],
-						device: devices[(index - 1) % devices.length],
-						expires_in: 170
-					}
-				});
-			}
-			case '/api/pipe/wait': {
-				const since = Number(new URL(request.url()).searchParams.get('since'));
-				if (since === version) {
-					await Promise.race([changed.promise, new Promise((r) => setTimeout(r, 1500))]);
-				}
-				const pending = [...connections.entries()].filter(([, c]) => !c.decided);
-				return route.fulfill({
-					headers: corsHeaders,
-					json: {
-						status: 'waiting',
-						version,
-						connections: pending.map(([id, c]) => ({
-							connection_id: id,
-							index: c.index,
-							verify_code: c.number,
-							device: c.device,
-							connected_seconds: 1
-						}))
-					}
-				});
-			}
+			case '/api/pipe/join':
+				return join(page, route);
+			case '/api/pipe/wait':
+				return wait(route);
+			case '/api/pipe/status':
+				return status(route, connection);
+			case '/api/pipe/receive':
+				return receive(route, connection);
 			case '/api/pipe/select':
-			case '/api/pipe/decline': {
-				const chosen = headers['x-flick-pipe-connection'];
-				for (const [id, c] of connections) {
-					if (c.decided) {
-						continue;
-					}
-					if (id === chosen) {
-						c.decided = true;
-						c.outcome.resolve(path === '/api/pipe/select' ? 'selected' : 'declined');
-					} else if (path === '/api/pipe/select') {
-						c.decided = true;
-						c.outcome.resolve('not_selected');
-					}
-				}
-				bump();
-				return route.fulfill({ headers: corsHeaders, json: { status: 'ok' } });
-			}
-			case '/api/pipe/receive': {
-				const c = connections.get(headers['x-flick-pipe-connection']);
-				const outcome = await c.outcome.promise;
-				if (outcome !== 'selected') {
-					return route.fulfill({
-						status: outcome === 'declined' ? 403 : 410,
-						headers: corsHeaders,
-						json: errorJson(outcome)
-					});
-				}
-				const body = await sent.promise;
-				return route.fulfill({
-					headers: {
-						...corsHeaders,
-						'Content-Type': 'application/octet-stream',
-						'X-Flick-Pipe-Salt': salt,
-						'Flick-Kind': 'text'
-					},
-					body
-				});
-			}
-			case '/api/pipe/send': {
-				const body = request.postDataBuffer();
-				sent.resolve(body);
-				return route.fulfill({
-					headers: corsHeaders,
-					json: { status: 'completed', bytes_transferred: body.length }
-				});
-			}
+			case '/api/pipe/decline':
+				return decide(route, path, route.request().headers()['x-flick-pipe-connection']);
+			case '/api/pipe/send':
+				return send(route);
 			case '/api/pipe/cancel':
 				return route.fulfill({ headers: corsHeaders, json: { status: 'cancelled' } });
 			default:
@@ -588,14 +626,18 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		// Deny one row: only that device ends, the code stays live.
 		await sender.getByRole('button', { name: 'Deny connection 1' }).click();
 		const impostorDialog = impostor.getByRole('dialog', { name: 'Receive secret with code' });
-		await impostorDialog.getByRole('heading', { name: 'The sender declined this device' }).waitFor();
+		await impostorDialog
+			.getByRole('heading', { name: 'The sender declined this device' })
+			.waitFor();
 		await sender.getByText('2 of 10 devices waiting').waitFor();
 
 		// The declined browser remembers the decline: re-entering the code asks nothing.
 		const joinsBefore = relay.joinCalls.get(impostor);
 		await impostorDialog.getByRole('button', { name: 'Enter a new code' }).click();
 		await impostor.locator('#pipe-code-input').fill('741928');
-		await impostorDialog.getByRole('heading', { name: 'The sender declined this device' }).waitFor();
+		await impostorDialog
+			.getByRole('heading', { name: 'The sender declined this device' })
+			.waitFor();
 		assert.equal(relay.joinCalls.get(impostor), joinsBefore);
 
 		// Send to the row whose number the intended receiver reads out.
@@ -621,5 +663,176 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		for (const context of contexts) {
 			await context.close();
 		}
+	}
+});
+
+// A sender-only waiting room for the list tests below: /init opens a
+// confirmation session and the caller answers /wait, /select, and /decline.
+function senderRoomJson(version, count) {
+	return {
+		status: 'waiting',
+		version,
+		connections: Array.from({ length: count }, (_, i) => ({
+			connection_id: `c${i + 1}`,
+			index: i + 1,
+			verify_code: String(101 + i * 111).padStart(3, '0'),
+			device: 'Chrome on Windows',
+			connected_seconds: 3
+		}))
+	};
+}
+
+function fulfillConfirmedInit(route) {
+	return route.fulfill({
+		status: 201,
+		headers: corsHeaders,
+		json: {
+			code: '741928',
+			salt: 'f0e1d2c3b4a59687',
+			expires_in: 180,
+			sender_token: 'tok',
+			require_confirmation: true
+		}
+	});
+}
+
+async function startConfirmedSender(page) {
+	await page.goto(`${baseUrl}/`);
+	await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+	await page.getByLabel('Message', { exact: true }).fill('payload');
+	await page
+		.getByRole('group', { name: 'Delivery method' })
+		.getByRole('button', { name: 'Send with code' })
+		.click();
+	await page.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
+	await page.getByRole('button', { name: 'Start live transfer' }).click();
+}
+
+async function until(condition, what) {
+	const deadline = Date.now() + 5000;
+	while (!condition()) {
+		if (Date.now() > deadline) {
+			throw new Error(`timed out waiting for ${what}`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+test('Sender: a failed Send keeps exactly one /wait loop running', async () => {
+	const page = await browser.newPage();
+	const waits = [];
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/init') {
+				return fulfillConfirmedInit(route);
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				waits.push(since);
+				if (since === '0') {
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(2, 1) });
+				}
+				return; // unchanged: hold the long-poll
+			}
+			if (path === '/api/pipe/select') {
+				// The device left between the poll and the click.
+				return route.fulfill({ status: 409, headers: corsHeaders, json: errorJson('not_pending') });
+			}
+			return route.continue();
+		});
+		await startConfirmedSender(page);
+		await until(() => waits.length === 2, 'the held /wait');
+
+		const selected = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/pipe/select');
+		await page.getByRole('button', { name: 'Send to connection 1, number 101' }).click();
+		assert.equal((await selected).status(), 409);
+		await page.waitForTimeout(1000);
+
+		// One loop: the first poll, then the one held poll; the failed select starts no second loop.
+		assert.deepEqual(waits, ['0', '2']);
+		await page.getByRole('button', { name: 'Send to connection 1, number 101' }).waitFor();
+	} finally {
+		await page.close();
+	}
+});
+
+test('Sender: a /wait answer that was in flight during Deny does not bring the row back', async () => {
+	const page = await browser.newPage();
+	const waits = [];
+	const declined = Promise.withResolvers();
+	try {
+		await routeApi(page, async (path, route) => {
+			if (path === '/api/pipe/init') {
+				return fulfillConfirmedInit(route);
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				waits.push(since);
+				if (since === '0') {
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(2, 3) });
+				}
+				if (since === '2') {
+					// Built before the server applied the decline: it still lists connection 1.
+					await declined.promise;
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(3, 3) });
+				}
+				return;
+			}
+			if (path === '/api/pipe/decline') {
+				declined.resolve();
+				return route.fulfill({ headers: corsHeaders, json: { status: 'declined' } });
+			}
+			return route.continue();
+		});
+		await startConfirmedSender(page);
+		await page.getByText('3 of 10 devices waiting').waitFor();
+
+		await page.getByRole('button', { name: 'Deny connection 1' }).click();
+		// The stale answer arrived and the sender already polls again with its version.
+		await until(() => waits.includes('3'), 'the poll after the stale answer');
+		await page.waitForTimeout(200);
+
+		assert.equal(await page.getByRole('button', { name: 'Deny connection 1' }).count(), 0);
+		await page.getByText('2 of 10 devices waiting').waitFor();
+	} finally {
+		await page.close();
+	}
+});
+
+test('Sender: Deny moves focus to the next row, then to the list heading', async () => {
+	const page = await browser.newPage();
+	try {
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/init') {
+				return fulfillConfirmedInit(route);
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				if (since === '0') {
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(2, 2) });
+				}
+				return;
+			}
+			if (path === '/api/pipe/decline') {
+				return route.fulfill({ headers: corsHeaders, json: { status: 'declined' } });
+			}
+			return route.continue();
+		});
+		await startConfirmedSender(page);
+		await page.getByText('2 of 10 devices waiting').waitFor();
+		const focused = () =>
+			page.evaluate(
+				() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.id
+			);
+
+		await page.getByRole('button', { name: 'Deny connection 1' }).click();
+		await page.getByText('1 of 10 devices waiting').waitFor();
+		assert.equal(await focused(), 'Send to connection 2, number 212');
+
+		await page.getByRole('button', { name: 'Deny connection 2' }).click();
+		await page.getByText('0 of 10 devices waiting').waitFor();
+		assert.equal(await focused(), 'pipe-pending-heading');
+	} finally {
+		await page.close();
 	}
 });

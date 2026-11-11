@@ -17,14 +17,21 @@ async function codeKey(normalizedCode: string): Promise<string> {
 	return KEY_PREFIX + hex.join('');
 }
 
-/** Records the decline until the declining session's rendezvous window closes. */
+/**
+ * The local clock time (ms) the session's rendezvous window closes, from the
+ * `expires_in` that `/api/pipe/join` returned. Compute it when the join
+ * response arrives: the window counts from then, not from the later decline.
+ */
+export function sessionExpiresAt(expiresInSeconds: number, joinedAt: number = Date.now()): number {
+	return joinedAt + Math.max(0, expiresInSeconds) * 1000;
+}
+
+/** Records the decline until `expiresAt` (from `sessionExpiresAt`), when the declining session's window closes. */
 export async function rememberDeclinedCode(
 	normalizedCode: string,
-	expiresInSeconds: number,
-	storage: Storage = sessionStorage,
-	now: number = Date.now()
+	expiresAt: number,
+	storage: Storage = sessionStorage
 ): Promise<void> {
-	const expiresAt = now + Math.max(0, expiresInSeconds) * 1000;
 	storage.setItem(await codeKey(normalizedCode), String(expiresAt));
 }
 

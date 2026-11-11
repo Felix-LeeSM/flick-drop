@@ -15,6 +15,7 @@ import {
 	sendPipeStream,
 	streamToBytes,
 	streamToText,
+	waitForPipeSelection,
 	waitForPipeUpdate
 } from './pipe';
 
@@ -233,6 +234,37 @@ describe('client API hooks', () => {
 				Promise.resolve(new Response('<html>', { status: 404 }))
 			)
 		).rejects.toMatchObject({ reason: 'not_found', message: 'Invalid or expired 6-digit code.' });
+	});
+
+	it('waitForPipeSelection re-polls /status until selected and rejects with the end reason', async () => {
+		// Given: 서버가 두 번은 waiting, 세 번째에 selected를 준다
+		const answers = ['waiting', 'waiting', 'selected'];
+		const seen: { url: string; headers: Record<string, string> }[] = [];
+		const mockFetch: typeof fetch = (url, init) => {
+			seen.push({ url: String(url), headers: init?.headers as Record<string, string> });
+			return Promise.resolve(jsonResponse({ status: answers[seen.length - 1] }));
+		};
+
+		await waitForPipeSelection('http://localhost:8080/', '123-456', 'conn-1', mockFetch);
+
+		// Then: 고를 때까지 같은 연결로 /status를 세 번 불렀다
+		expect(seen).toHaveLength(3);
+		expect(seen[0]).toEqual({
+			url: 'http://localhost:8080/api/pipe/status',
+			headers: { 'X-Flick-Pipe-Code': '123456', 'X-Flick-Pipe-Connection': 'conn-1' }
+		});
+
+		// Then: 거절·미선택은 이유 코드와 함께 끝난다
+		for (const [status, code] of [
+			[403, 'declined'],
+			[410, 'not_selected']
+		] as const) {
+			await expect(
+				waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', () =>
+					Promise.resolve(errorResponse(status, code))
+				)
+			).rejects.toMatchObject({ reason: code });
+		}
 	});
 
 	it('waitForPipeUpdate sends the sender token and since, and maps the waiting list', async () => {
