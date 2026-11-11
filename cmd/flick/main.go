@@ -181,7 +181,11 @@ func runSend(ctx context.Context, args []string) error {
 		})
 	}
 	fmt.Println(result.Link)
-	fmt.Fprintf(os.Stderr, "Expires %s. Opens once, then it is gone.\n", result.ExpiresAt)
+	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
+		fmt.Fprintf(os.Stderr, "Expires %s. Opens once, then it is gone.\n", t.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(os.Stderr, "Expires %s. Opens once, then it is gone.\n", result.ExpiresAt)
+	}
 	if result.Model == "passphrase" {
 		fmt.Fprintln(os.Stderr, "The recipient needs the passphrase. Send it through a different channel than the link.")
 	}

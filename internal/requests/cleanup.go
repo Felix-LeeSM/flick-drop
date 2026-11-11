@@ -214,7 +214,7 @@ func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStor
 		// transition is delayed. Any DB error must fail closed, never mean absent.
 		// A just-opened object is protected for the stream grace whatever the
 		// request deadline, since its body may still be streaming.
-		err := tx.QueryRowContext(ctx, `select exists (select 1 from requests where (state = 'consumed' and final_key = ? and consumed_at > ?) or (expires_at > ? and ((state = 'submitted' and final_key = ?) or (state = 'uploading' and reservation_expires_at > ? and (upload_key = ? or final_key = ?)))))`, key, now.Add(-openObjectGrace).Format(timeFormat), now.Format(timeFormat), key, now.Format(timeFormat), key, key).Scan(&protected)
+		err := tx.QueryRowContext(ctx, `select exists (select 1 from requests where (state = 'consumed' and final_key = ? and consumed_at > ?) or (expires_at > ? and ((state = 'submitted' and final_key = ?) or (state = 'uploading' and reservation_expires_at > ? and (upload_key = ? or final_key = ?)))))`, key, now.Add(-openObjectGrace).UTC().Format(timeFormat), now.UTC().Format(timeFormat), key, now.UTC().Format(timeFormat), key, key).Scan(&protected)
 		if err != nil {
 			return 0, err
 		}

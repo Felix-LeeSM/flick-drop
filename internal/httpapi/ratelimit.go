@@ -100,7 +100,7 @@ func (rl *rateLimiter) managementMiddleware(next http.Handler) http.Handler {
 func (rl *rateLimiter) middlewareByKey(next http.Handler, resource func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := rl.clientIP(r) + "|" + resource(r)
-		if !rl.allow(key, time.Now()) {
+		if !rl.allow(key, time.Now().UTC()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
 			return

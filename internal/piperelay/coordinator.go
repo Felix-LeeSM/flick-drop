@@ -182,7 +182,7 @@ func (c *Coordinator) Init(ctx context.Context) (code string, salt []byte, expir
 	}
 
 	pr, pw := io.Pipe()
-	now := time.Now()
+	now := time.Now().UTC()
 	s := &Session{
 		codeHash:      hash,
 		salt:          salt,
