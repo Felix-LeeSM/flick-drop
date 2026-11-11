@@ -282,7 +282,9 @@ interrupted attempt whose outcome is unknown, not a handler failure. The worker
 counts only failed attempts with a non-NULL error toward its three-failure limit.
 The final failed attempt, `job_receipts.state = 'dead'`, and `dead_letters` row
 are committed atomically. Recovery also honors failed attempts already stored
-by earlier workers, without a schema migration.
+by earlier workers, without a schema migration. A dead-lettered
+`delete_oci_object` stores its payload without `object_key`, and worker error
+text names the job ID, reason, and backend instead of the key.
 See [event contract](event-contract.md) for recovery and acknowledgement rules.
 
 ## SQLite Settings

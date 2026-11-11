@@ -9,8 +9,11 @@ has three recorded handler failures; the worker does not run cleanup again.
 An older worker could acknowledge a `processing` receipt without completing its
 cleanup, or exhaust the former three-delivery broker limit. Updating the worker
 cannot recreate a message already removed from JetStream. `worker.db` receipts
-contain the job ID and kind, not the object key or full event; the matching API
-outbox row is the recovery source. Do not infer object keys or delete a bucket.
+contain the job ID and kind, not the object key or full event, and an object
+delete's dead letter omits its key; the matching API outbox row is the recovery
+source. The API reaper prunes published outbox rows one hour after publish, so
+recover within that hour; after it, managed object keys are found again by
+object reconciliation. Do not infer object keys or delete a bucket.
 
 ## Recover a Previously Stranded Job
 

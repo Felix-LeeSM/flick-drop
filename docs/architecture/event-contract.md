@@ -130,6 +130,15 @@ Expected behavior:
 - transient API/OCI/NATS error: retry
 - repeated failure: dead-letter with error summary
 
+Worker error text and dead letters never carry an object key. A failed
+`delete_oci_object` is named by job ID, reason, and backend
+(`internal/worker/cleanup.go:objectDeleteError`, which also masks the key
+inside the bucket SDK's message), and its `dead_letters.payload_json` omits
+`object_key` (`internal/worker/processor.go:deadLetterPayloadJSON`). Dead
+letters are not replayed; after the dead-letter acknowledgement releases the
+API claim, reconciliation re-lists a surviving managed object and queues a
+fresh job. A dead-lettered `delete_secret` still stores its `secret_id`.
+
 The worker owns `worker.db` and records receipts, attempts, and dead letters.
 The worker calls internal API endpoints for API-owned mutations.
 

@@ -17,6 +17,11 @@ Rules:
 - API-owned mutations must go through internal API calls.
 - Every job handler must be safe to replay after partial success.
 - Job payloads should contain IDs and safe metadata only.
+- Never put an object key in error text, logs, or stored worker rows: keys
+  (`managed/secrets/{id}`) name secrets and `worker.db` is never pruned.
+  `cleanup.go:objectDeleteError` reports job ID, reason, and backend and masks
+  the key in the bucket SDK's message; `processor.go:deadLetterPayloadJSON`
+  stores dead-lettered object deletes without `object_key`.
 
 - `processor.go:Processor.Process` acknowledges terminal `delete_oci_object`
   receipts for `managed/secrets/` and `managed/requests/` through `CleanupClient.AcknowledgeObjectCleanup`

@@ -336,10 +336,25 @@ that ID. Management status, cancellation (including a cancellation that loses
 the race to an open), recipient metadata, and a repeated open all return the
 response an unknown ID gets, byte for byte. Management still distinguishes
 invalid-proof lockout and sender cancellation, which keep their outcomes until
-the original expiry. Residual traces remain outside that guarantee: a bucket
-body's `managed/secrets/{id}` key stays in `secret_open_grace` for 35 minutes
-and in its `delete_oci_object` outbox row until the reaper prunes it one hour
-after publish (a `failed` row stays for diagnosis), proxy access logs record request paths, and SQLite WAL pages and
-backups may hold deleted rows. Raw management tokens belong only in the private browser fragment,
+the original expiry. Residual traces remain outside that guarantee:
+
+- a bucket body's `managed/secrets/{id}` key stays in `secret_open_grace` for
+  35 minutes;
+- the same key stays in its `delete_oci_object` outbox row until the reaper
+  prunes it one hour after publish, and indefinitely in a `failed` outbox row
+  kept for diagnosis;
+- while a delete job is live, NATS JetStream holds the key in the message until
+  the worker acknowledges it;
+- worker failures carry no key: `internal/worker/cleanup.go:objectDeleteError`
+  names the job ID, reason, and backend and masks the key in the bucket SDK's
+  message for `job_receipts.last_error`, `job_attempts.error`, `dead_letters`,
+  and the `worker job failed` log line, and
+  `internal/worker/processor.go:deadLetterPayloadJSON` drops `object_key` from
+  a dead-lettered object delete;
+- a job ID still links worker rows to an outbox row while that row exists;
+- proxy access logs record request paths, which include the secret ID;
+- SQLite WAL pages and backups may hold deleted rows.
+
+Raw management tokens belong only in the private browser fragment,
 the creation response, and the management Authorization header; exclude them
 from persistent browser storage, logs, telemetry, and worker messages.
