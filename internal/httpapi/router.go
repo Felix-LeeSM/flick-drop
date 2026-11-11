@@ -46,7 +46,7 @@ type Server struct {
 	pipeRelayEnabled         bool
 	pipeCoordinator          *piperelay.Coordinator
 	pipeInitLimiter          *rateLimiter
-	pipeReceiveLimiter       *rateLimiter
+	pipeJoinLimiter          *rateLimiter
 	tracer                   trace.Tracer
 	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
 	// *nats.Conn, so the nats package stays out of httpapi's imports.
@@ -126,7 +126,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		pipeRelayEnabled:         opts.PipeRelayEnabled,
 		pipeCoordinator:          pipeCoordinator,
 		pipeInitLimiter:          newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies),
-		pipeReceiveLimiter:       newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
+		pipeJoinLimiter:          newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies),
 		tracer:                   tracer,
 	}
 	if opts.NewJobID != nil {
@@ -168,8 +168,16 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	})
 	registerPipeRoutes := func(r chi.Router) {
 		r.With(server.pipeInitLimiter.middleware).Post("/init", server.initPipe)
+		// /join is the only call that accepts a bare 6-digit code, so it carries
+		// the open-rate limit. /receive needs a connection ID from /join, and the
+		// sender calls need the sender token from /init; a wrong ID or token
+		// answers 404 exactly like an unknown code.
+		r.With(server.pipeJoinLimiter.middleware).Post("/join", server.joinPipe)
+		r.Get("/receive", server.receivePipe)
 		r.Get("/wait", server.waitPipe)
-		r.With(server.pipeReceiveLimiter.middleware).Get("/receive", server.receivePipe)
+		r.Post("/select", server.selectPipe)
+		r.Post("/decline", server.declinePipe)
+		r.Post("/cancel", server.cancelPipe)
 		r.Post("/send", server.sendPipe)
 	}
 	r.Route("/api/pipe", registerPipeRoutes)
@@ -197,7 +205,7 @@ func (s Server) cors(next http.Handler) http.Handler {
 		if s.allowedOrigin != "" && origin == s.allowedOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Flick-Pipe-Code, Flick-Kind, Flick-Encrypted-Filename")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Flick-Pipe-Code, X-Flick-Pipe-Sender, X-Flick-Pipe-Connection, Flick-Kind, Flick-Encrypted-Filename")
 			// The open response carries its metadata in these headers.
 			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At, X-Flick-Pipe-Salt")
 			w.Header().Set("Vary", "Origin")

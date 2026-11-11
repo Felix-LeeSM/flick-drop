@@ -729,8 +729,20 @@ paths:
   /api/pipe/init:
     post:
       operationId: initPipe
-      summary: Initialize live relay pipe rendezvous.
-      description: Generates a 6-digit numeric pairing code and 16-byte random salt for real-time in-memory pipe transfer.
+      summary: Initialize a live relay rendezvous.
+      description: >-
+        Generates a 6-digit pairing code, a 16-byte random salt, and a sender
+        token. The sender token is the only credential for /wait, /select,
+        /decline, /cancel, and /send; keep it in browser memory. With
+        require_confirmation the session is a waiting room (up to 10 receivers
+        wait for the sender to pick one); without it the first receiver to call
+        /receive wins. Rate-limited per client IP by FLICK_CREATE_RATE_PER_MIN.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipeInitRequest"
       responses:
         "201":
           description: Pipe rendezvous initialized.
@@ -738,49 +750,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipeInitResponse"
+        "400":
+          description: Malformed body or unknown field.
         "429":
-          description: Server at maximum concurrent pipe relay capacity.
+          description: Server at maximum concurrent pipe relay capacity, or client rate limit.
         "503":
           description: Live pipe relay is disabled.
-  /api/pipe/wait:
-    get:
-      operationId: waitPipe
-      summary: Wait for receiver to connect.
-      description: Long-polls until the receiving device connects to the rendezvous session with matching code.
+  /api/pipe/join:
+    post:
+      operationId: joinPipe
+      summary: Join a rendezvous as a receiver.
+      description: >-
+        The only pipe call that accepts a bare 6-digit code; rate-limited per
+        client IP by FLICK_OPEN_RATE_PER_MIN. Returns an unguessable connection
+        ID scoped to the session. With confirmation on, the connection also gets
+        its own random 3-digit verify_code (unique among the session's waiting
+        connections) and a coarse device label parsed from the User-Agent; the
+        receiver shows verify_code so the sender can pick it. No rejection here
+        ends the session or counts against it.
       parameters:
-        - name: X-Flick-Pipe-Code
-          in: header
-          required: true
-          schema:
-            type: string
-          description: 6-digit numeric pairing code.
+        - $ref: "#/components/parameters/PipeCode"
       responses:
-        "200":
-          description: Receiver connected and ready to receive stream.
+        "201":
+          description: Connection admitted.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PipeStatusResponse"
+                $ref: "#/components/schemas/PipeJoinResponse"
         "400":
           description: Missing or invalid X-Flick-Pipe-Code header.
+        "403":
+          description: "`declined`: the sender declined this client (same client IP and User-Agent) earlier in this session."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Rendezvous not found or expired.
+        "409":
+          description: >-
+            `already_connected`: another receiver already holds the transfer.
+            `room_full`: 10 receivers are already waiting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Rendezvous expired or burned.
+          description: Rendezvous expired, cancelled, or closed.
+        "429":
+          description: Client rate limit.
         "503":
           description: Live pipe relay is disabled.
   /api/pipe/receive:
     get:
       operationId: receivePipe
-      summary: Receive live stream from sender.
-      description: Connects to the in-memory pipe and streams ciphertext chunks directly to the response writer.
+      summary: Receive the live stream on a joined connection.
+      description: >-
+        Blocks until the connection is chosen (then streams ciphertext chunks
+        once the sender starts), declined, not chosen, or the session ends.
+        With confirmation off, the first connection to call /receive wins.
+        Leaving while still waiting frees the connection's slot.
       parameters:
-        - name: X-Flick-Pipe-Code
-          in: header
-          required: true
-          schema:
-            type: string
-          description: 6-digit numeric pairing code.
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeConnection"
       responses:
         "200":
           description: Streaming raw ciphertext bytes.
@@ -803,27 +835,173 @@ paths:
                 type: string
                 format: binary
         "400":
-          description: Missing or invalid X-Flick-Pipe-Code header.
+          description: Missing or invalid header.
+        "403":
+          description: "`declined`: the sender declined this connection."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Rendezvous not found or expired.
+          description: Rendezvous or connection not found.
         "409":
-          description: Receiver already connected.
+          description: "`already_connected`: confirmation off and another receiver connected first, or this connection already has an open /receive."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "410":
-          description: Session burned due to excessive failed attempts.
+          description: >-
+            `not_selected`: the sender chose another device. `cancelled`: the
+            sender cancelled the code. `expired` or `closed`: the session ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/wait:
+    get:
+      operationId: waitPipe
+      summary: Long-poll the sender's view of the rendezvous.
+      description: >-
+        Returns at once when the session version differs from `since`,
+        otherwise holds up to 25 seconds and returns the unchanged view. The
+        sender re-polls with the returned version. `status` turns `ready` once
+        the chosen receiver is attached and /send can stream. `connections`
+        lists waiting receivers in join order (always empty with confirmation
+        off).
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeSender"
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Last version the sender has seen (0 or omitted for the first poll).
+      responses:
+        "200":
+          description: Current sender view.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeWaitResponse"
+        "400":
+          description: Missing header or invalid since.
+        "404":
+          description: Rendezvous not found, expired, or wrong sender token.
+        "410":
+          description: Rendezvous expired, cancelled, or closed.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/select:
+    post:
+      operationId: selectPipe
+      summary: Send to one waiting connection.
+      description: >-
+        Hands the transfer to the connection; every other waiting connection
+        ends with `not_selected`. The sender then calls /send.
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeSender"
+        - $ref: "#/components/parameters/PipeConnection"
+      responses:
+        "200":
+          description: Connection chosen.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeActionResponse"
+        "400":
+          description: Missing header.
+        "404":
+          description: Rendezvous or connection not found, or wrong sender token.
+        "409":
+          description: "`already_connected`, `not_pending` (declined or left), or `confirmation_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Rendezvous expired, cancelled, or closed.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/decline:
+    post:
+      operationId: declinePipe
+      summary: Decline one waiting connection.
+      description: >-
+        Ends that connection with `declined`, reopens its slot, and blocks the
+        same client (hash of client IP and User-Agent, held in memory for the
+        session only) from joining this session again. The session stays alive.
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeSender"
+        - $ref: "#/components/parameters/PipeConnection"
+      responses:
+        "200":
+          description: Connection declined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeActionResponse"
+        "400":
+          description: Missing header.
+        "404":
+          description: Rendezvous or connection not found, or wrong sender token.
+        "409":
+          description: "`not_pending` or `confirmation_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Rendezvous expired, cancelled, or closed.
+        "503":
+          description: Live pipe relay is disabled.
+  /api/pipe/cancel:
+    post:
+      operationId: cancelPipe
+      summary: Cancel the code before streaming starts.
+      description: >-
+        Burns the whole session; waiting receivers end with `cancelled`. A
+        transfer that is already streaming is never cut by this call (409
+        `streaming`); the sender stops a stream by aborting its own /send.
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeSender"
+      responses:
+        "200":
+          description: Session cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeActionResponse"
+        "400":
+          description: Missing header.
+        "404":
+          description: Rendezvous not found, expired, or wrong sender token.
+        "409":
+          description: "`streaming`: the transfer already started."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: Live pipe relay is disabled.
   /api/pipe/send:
     post:
       operationId: sendPipe
-      summary: Send live stream to receiver.
-      description: Streams incoming request body bytes directly into the in-memory pipe to the waiting receiver.
+      summary: Send the live stream to the chosen receiver.
+      description: >-
+        Waits for the chosen receiver (first-come with confirmation off, the
+        selected connection with it on), then streams the request body into the
+        in-memory pipe.
       parameters:
-        - name: X-Flick-Pipe-Code
-          in: header
-          required: true
-          schema:
-            type: string
-          description: 6-digit numeric pairing code.
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeSender"
         - name: Flick-Kind
           in: header
           required: false
@@ -849,13 +1027,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/PipeSendResponse"
         "400":
-          description: Missing or invalid X-Flick-Pipe-Code header.
+          description: Missing or invalid header.
         "404":
-          description: Rendezvous not found or expired.
+          description: Rendezvous not found, expired, or wrong sender token.
         "409":
           description: Sender already active on this session.
         "410":
-          description: Session burned.
+          description: Rendezvous expired, cancelled, or closed.
         "502":
           description: Stream transfer failed or receiver disconnected.
         "503":
@@ -969,6 +1147,27 @@ components:
       in: header
       name: X-Flick-Internal-Token
   parameters:
+    PipeCode:
+      name: X-Flick-Pipe-Code
+      in: header
+      required: true
+      schema:
+        type: string
+      description: 6-digit numeric pairing code (dashes and spaces are ignored).
+    PipeSender:
+      name: X-Flick-Pipe-Sender
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Sender token from /api/pipe/init. A wrong token answers 404 like an unknown code.
+    PipeConnection:
+      name: X-Flick-Pipe-Connection
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Connection ID from /api/pipe/join.
     SecretId:
       name: id
       in: path
@@ -1225,10 +1424,18 @@ components:
         pipe_relay_enabled:
           type: boolean
           description: Whether live in-memory pipe relay transfer is enabled on this server.
+    PipeInitRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        require_confirmation:
+          type: boolean
+          default: false
+          description: Hold receivers in a waiting room until the sender picks one.
     PipeInitResponse:
       type: object
       additionalProperties: false
-      required: [code, salt, expires_in]
+      required: [code, salt, expires_in, sender_token, require_confirmation]
       properties:
         code:
           type: string
@@ -1238,15 +1445,74 @@ components:
           description: Base64-encoded 16-byte cryptographic salt for key derivation.
         expires_in:
           type: integer
-          description: Session lifetime in seconds.
-    PipeStatusResponse:
+          description: Rendezvous window in seconds. A transfer that has started streaming is not cut by it.
+        sender_token:
+          type: string
+          description: Credential for the sender-side pipe calls. Never log it.
+        require_confirmation:
+          type: boolean
+    PipeJoinResponse:
+      type: object
+      additionalProperties: false
+      required: [connection_id, require_confirmation, expires_in]
+      properties:
+        connection_id:
+          type: string
+          description: Unguessable crypto/rand ID scoped to this session.
+        require_confirmation:
+          type: boolean
+        verify_code:
+          type: string
+          pattern: "^[0-9]{3}$"
+          description: Present only with confirmation on. Random per connection, independent of the 6-digit code. Never log it.
+        device:
+          type: string
+          description: Present only with confirmation on. Coarse label such as "Safari on iPhone"; the raw User-Agent is never stored.
+        expires_in:
+          type: integer
+          description: Seconds left in the rendezvous window.
+    PipeWaitResponse:
+      type: object
+      additionalProperties: false
+      required: [status, version, connections]
+      properties:
+        status:
+          type: string
+          enum: [waiting, ready]
+        version:
+          type: integer
+          description: Pass back as `since` on the next poll.
+        connections:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/PipePendingConnection"
+    PipePendingConnection:
+      type: object
+      additionalProperties: false
+      required: [connection_id, index, verify_code, device, connected_seconds]
+      properties:
+        connection_id:
+          type: string
+        index:
+          type: integer
+          description: 1-based join order within the session.
+        verify_code:
+          type: string
+          pattern: "^[0-9]{3}$"
+        device:
+          type: string
+        connected_seconds:
+          type: integer
+          description: Seconds since the connection joined, measured by the server.
+    PipeActionResponse:
       type: object
       additionalProperties: false
       required: [status]
       properties:
         status:
           type: string
-          enum: [ready]
+          enum: [selected, declined, cancelled]
     PipeSendResponse:
       type: object
       additionalProperties: false

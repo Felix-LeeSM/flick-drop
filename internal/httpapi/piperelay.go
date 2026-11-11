@@ -1,19 +1,62 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
 
+const (
+	pipeCodeHeader       = "X-Flick-Pipe-Code"
+	pipeSenderHeader     = "X-Flick-Pipe-Sender"
+	pipeConnectionHeader = "X-Flick-Pipe-Connection"
+	// pipeWaitMaxHold bounds one /wait long-poll. The sender re-polls with the
+	// returned version, so this only has to stay under proxy idle timeouts
+	// (Cloudflare cuts idle responses at 100 seconds).
+	pipeWaitMaxHold = 25 * time.Second
+	pipeInitBodyMax = 1024
+)
+
+type pipeInitRequest struct {
+	RequireConfirmation bool `json:"require_confirmation"`
+}
+
 type pipeInitResponse struct {
-	Code      string `json:"code"`
-	Salt      string `json:"salt"`
-	ExpiresIn int    `json:"expires_in"`
+	Code                string `json:"code"`
+	Salt                string `json:"salt"`
+	ExpiresIn           int    `json:"expires_in"`
+	SenderToken         string `json:"sender_token"`
+	RequireConfirmation bool   `json:"require_confirmation"`
+}
+
+type pipeJoinResponse struct {
+	ConnectionID        string `json:"connection_id"`
+	RequireConfirmation bool   `json:"require_confirmation"`
+	VerifyCode          string `json:"verify_code,omitempty"`
+	Device              string `json:"device,omitempty"`
+	ExpiresIn           int    `json:"expires_in"`
+}
+
+type pipePendingConnection struct {
+	ConnectionID     string `json:"connection_id"`
+	Index            int    `json:"index"`
+	VerifyCode       string `json:"verify_code"`
+	Device           string `json:"device"`
+	ConnectedSeconds int    `json:"connected_seconds"`
+}
+
+type pipeWaitResponse struct {
+	Status      string                  `json:"status"`
+	Version     uint64                  `json:"version"`
+	Connections []pipePendingConnection `json:"connections"`
 }
 
 type pipeStatusResponse struct {
@@ -25,13 +68,80 @@ type pipeSendResponse struct {
 	BytesTransferred int64  `json:"bytes_transferred"`
 }
 
-func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
+func (s Server) pipeEnabled(w http.ResponseWriter) bool {
 	if !s.pipeRelayEnabled || s.pipeCoordinator == nil {
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is disabled")
+		return false
+	}
+	return true
+}
+
+// requirePipeHeaders reads the named headers, answering 400 when one is missing.
+func requirePipeHeaders(w http.ResponseWriter, r *http.Request, names ...string) ([]string, bool) {
+	values := make([]string, len(names))
+	for i, name := range names {
+		values[i] = r.Header.Get(name)
+		if values[i] == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "missing "+name+" header")
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// writePipeError maps coordinator errors to responses. Messages are fixed
+// strings: codes, verification numbers, tokens, and User-Agents never appear.
+func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, piperelay.ErrInvalidCode):
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid 6-digit pipe code")
+	case errors.Is(err, piperelay.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "pipe rendezvous not found or expired")
+	case errors.Is(err, piperelay.ErrDeclined):
+		writeError(w, http.StatusForbidden, "declined", "the sender declined this device")
+	case errors.Is(err, piperelay.ErrAlreadyConnected):
+		writeError(w, http.StatusConflict, "already_connected", "another device is already receiving this transfer")
+	case errors.Is(err, piperelay.ErrRoomFull):
+		writeError(w, http.StatusConflict, "room_full", "too many devices are waiting on this code")
+	case errors.Is(err, piperelay.ErrNotPending):
+		writeError(w, http.StatusConflict, "not_pending", "connection is no longer waiting")
+	case errors.Is(err, piperelay.ErrConfirmationDisabled):
+		writeError(w, http.StatusConflict, "confirmation_disabled", "session does not require confirmation")
+	case errors.Is(err, piperelay.ErrStreaming):
+		writeError(w, http.StatusConflict, "streaming", "transfer is already streaming")
+	case errors.Is(err, piperelay.ErrNotSelected):
+		writeError(w, http.StatusGone, "not_selected", "the sender chose another device")
+	case errors.Is(err, piperelay.ErrCancelled):
+		writeError(w, http.StatusGone, "cancelled", "the sender cancelled this transfer")
+	case errors.Is(err, piperelay.ErrExpired):
+		writeError(w, http.StatusGone, "expired", "pipe rendezvous expired")
+	case errors.Is(err, piperelay.ErrSessionClosed):
+		writeError(w, http.StatusGone, "closed", "pipe session closed")
+	default:
+		if r.Context().Err() != nil {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "pipe relay request failed")
+	}
+}
+
+func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
 		return
 	}
 
-	code, salt, expiresIn, err := s.pipeCoordinator.Init(r.Context())
+	// The body is optional: an empty body means confirmation off.
+	var body pipeInitRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, pipeInitBodyMax))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid pipe init body")
+		return
+	}
+
+	result, err := s.pipeCoordinator.Init(r.Context(), piperelay.InitOptions{
+		RequireConfirmation: body.RequireConfirmation,
+	})
 	if err != nil {
 		if errors.Is(err, piperelay.ErrCapacityExceeded) {
 			w.Header().Set("Retry-After", "30")
@@ -43,63 +153,150 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, pipeInitResponse{
-		Code:      code,
-		Salt:      base64.StdEncoding.EncodeToString(salt),
-		ExpiresIn: expiresIn,
+		Code:                result.Code,
+		Salt:                base64.StdEncoding.EncodeToString(result.Salt),
+		ExpiresIn:           result.ExpiresIn,
+		SenderToken:         result.SenderToken,
+		RequireConfirmation: result.RequireConfirmation,
+	})
+}
+
+// pipeClientKey identifies a receiving client for the per-session decline
+// block: SHA-256 of the client IP (resolved through FLICK_TRUSTED_PROXIES the
+// same way as the rate limiter) and the User-Agent. Only the hash is kept, in
+// memory, for the session's lifetime. It is deliberately coarse: another
+// device behind the same NAT with the same browser and OS string is blocked
+// too for that one short session, and changing network or User-Agent gets
+// past it. The sender can decline again.
+func (s Server) pipeClientKey(r *http.Request) piperelay.ClientKey {
+	return sha256.Sum256([]byte(s.pipeJoinLimiter.clientIP(r) + "\n" + r.UserAgent()))
+}
+
+func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader)
+	if !ok {
+		return
+	}
+
+	result, err := s.pipeCoordinator.Join(headers[0], pipeDeviceLabel(r.UserAgent()), s.pipeClientKey(r))
+	if err != nil {
+		writePipeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, pipeJoinResponse{
+		ConnectionID:        result.ConnectionID,
+		RequireConfirmation: result.RequireConfirmation,
+		VerifyCode:          result.VerifyCode,
+		Device:              result.Device,
+		ExpiresIn:           result.ExpiresIn,
 	})
 }
 
 func (s Server) waitPipe(w http.ResponseWriter, r *http.Request) {
-	if !s.pipeRelayEnabled || s.pipeCoordinator == nil {
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is disabled")
+	if !s.pipeEnabled(w) {
 		return
 	}
-
-	code := r.Header.Get("X-Flick-Pipe-Code")
-	if code == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "missing X-Flick-Pipe-Code header")
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeSenderHeader)
+	if !ok {
 		return
 	}
-
-	// Extend deadlines for waiting on receiver and writing response (up to 4 minutes)
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(4 * time.Minute))
-	_ = rc.SetWriteDeadline(time.Now().Add(4 * time.Minute))
-
-	err := s.pipeCoordinator.WaitReceiver(r.Context(), code)
-	if err != nil {
-		switch {
-		case errors.Is(err, piperelay.ErrInvalidCode):
-			writeError(w, http.StatusBadRequest, "bad_request", "invalid 6-digit pipe code")
-		case errors.Is(err, piperelay.ErrNotFound):
-			writeError(w, http.StatusNotFound, "not_found", "pipe rendezvous not found or expired")
-		case errors.Is(err, piperelay.ErrExpired):
-			writeError(w, http.StatusGone, "expired", "pipe rendezvous expired")
-		case errors.Is(err, piperelay.ErrSessionBurned):
-			writeError(w, http.StatusGone, "burned", "pipe session burned")
-		case errors.Is(err, piperelay.ErrSessionClosed):
-			writeError(w, http.StatusGone, "closed", "pipe session closed")
-		default:
-			if r.Context().Err() != nil {
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "since must be a non-negative integer")
+			return
 		}
+		since = parsed
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(pipeWaitMaxHold + 30*time.Second))
+
+	snapshot, err := s.pipeCoordinator.Wait(r.Context(), headers[0], headers[1], since, pipeWaitMaxHold)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		writePipeError(w, r, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "ready"})
+	now := time.Now()
+	response := pipeWaitResponse{
+		Status:      "waiting",
+		Version:     snapshot.Version,
+		Connections: make([]pipePendingConnection, 0, len(snapshot.Pending)),
+	}
+	if snapshot.ReceiverReady {
+		response.Status = "ready"
+	}
+	for _, pending := range snapshot.Pending {
+		response.Connections = append(response.Connections, pipePendingConnection{
+			ConnectionID:     pending.ID,
+			Index:            pending.Index,
+			VerifyCode:       pending.VerifyCode,
+			Device:           pending.Device,
+			ConnectedSeconds: max(0, int(now.Sub(pending.JoinedAt).Seconds())),
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s Server) selectPipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeSenderHeader, pipeConnectionHeader)
+	if !ok {
+		return
+	}
+	if err := s.pipeCoordinator.Select(headers[0], headers[1], headers[2]); err != nil {
+		writePipeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "selected"})
+}
+
+func (s Server) declinePipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeSenderHeader, pipeConnectionHeader)
+	if !ok {
+		return
+	}
+	if err := s.pipeCoordinator.Decline(headers[0], headers[1], headers[2]); err != nil {
+		writePipeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "declined"})
+}
+
+func (s Server) cancelPipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeSenderHeader)
+	if !ok {
+		return
+	}
+	if err := s.pipeCoordinator.Cancel(headers[0], headers[1]); err != nil {
+		writePipeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "cancelled"})
 }
 
 func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
-	if !s.pipeRelayEnabled || s.pipeCoordinator == nil {
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is disabled")
+	if !s.pipeEnabled(w) {
 		return
 	}
-
-	code := r.Header.Get("X-Flick-Pipe-Code")
-	if code == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "missing X-Flick-Pipe-Code header")
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeConnectionHeader)
+	if !ok {
 		return
 	}
 
@@ -108,32 +305,10 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
-	pr, salt, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), code)
+	pr, salt, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), headers[0], headers[1])
 	if err != nil {
-		// Record failed attempt against this code for burn calculation
-		burned, _ := s.pipeCoordinator.RecordFailedAttempt(code)
-		if burned || errors.Is(err, piperelay.ErrSessionBurned) {
-			writeError(w, http.StatusGone, "burned", "pipe rendezvous burned due to excessive failed attempts")
-			return
-		}
-
-		switch {
-		case errors.Is(err, piperelay.ErrInvalidCode):
-			writeError(w, http.StatusBadRequest, "bad_request", "invalid 6-digit pipe code")
-		case errors.Is(err, piperelay.ErrNotFound):
-			writeError(w, http.StatusNotFound, "not_found", "pipe rendezvous not found or expired")
-		case errors.Is(err, piperelay.ErrExpired):
-			writeError(w, http.StatusGone, "expired", "pipe rendezvous expired")
-		case errors.Is(err, piperelay.ErrAlreadyConnected):
-			writeError(w, http.StatusConflict, "already_connected", "receiver is already connected to this pipe session")
-		case errors.Is(err, piperelay.ErrSessionClosed):
-			writeError(w, http.StatusGone, "closed", "pipe session closed")
-		default:
-			if r.Context().Err() != nil {
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		}
+		// A rejected or late receiver never counts against the session.
+		writePipeError(w, r, err)
 		return
 	}
 	defer cleanup()
@@ -157,14 +332,11 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) sendPipe(w http.ResponseWriter, r *http.Request) {
-	if !s.pipeRelayEnabled || s.pipeCoordinator == nil {
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is disabled")
+	if !s.pipeEnabled(w) {
 		return
 	}
-
-	code := r.Header.Get("X-Flick-Pipe-Code")
-	if code == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "missing X-Flick-Pipe-Code header")
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeSenderHeader)
+	if !ok {
 		return
 	}
 
@@ -176,32 +348,25 @@ func (s Server) sendPipe(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
-	n, err := s.pipeCoordinator.Send(r.Context(), code, piperelay.SessionMetadata{
+	n, err := s.pipeCoordinator.Send(r.Context(), headers[0], headers[1], piperelay.SessionMetadata{
 		Kind:              kind,
 		EncryptedFilename: encryptedFilename,
 	}, r.Body)
-
 	if err != nil {
 		switch {
-		case errors.Is(err, piperelay.ErrInvalidCode):
-			writeError(w, http.StatusBadRequest, "bad_request", "invalid 6-digit pipe code")
-		case errors.Is(err, piperelay.ErrNotFound):
-			writeError(w, http.StatusNotFound, "not_found", "pipe rendezvous not found or expired")
-		case errors.Is(err, piperelay.ErrExpired):
-			writeError(w, http.StatusGone, "expired", "pipe rendezvous expired")
 		case errors.Is(err, piperelay.ErrAlreadyConnected):
 			writeError(w, http.StatusConflict, "already_connected", "sender is already active on this pipe session")
-		case errors.Is(err, piperelay.ErrSessionBurned):
-			writeError(w, http.StatusGone, "burned", "pipe session burned")
-		case errors.Is(err, piperelay.ErrSessionClosed):
-			writeError(w, http.StatusGone, "closed", "pipe session closed")
 		case errors.Is(err, io.ErrClosedPipe):
 			writeError(w, http.StatusBadGateway, "receiver_disconnected", "receiver disconnected during live stream")
+		case errors.Is(err, piperelay.ErrInvalidCode), errors.Is(err, piperelay.ErrNotFound),
+			errors.Is(err, piperelay.ErrExpired), errors.Is(err, piperelay.ErrSessionClosed),
+			errors.Is(err, piperelay.ErrCancelled):
+			writePipeError(w, r, err)
 		default:
 			if r.Context().Err() != nil {
 				return
 			}
-			writeError(w, http.StatusBadGateway, "transfer_failed", err.Error())
+			writeError(w, http.StatusBadGateway, "transfer_failed", "live stream transfer failed")
 		}
 		return
 	}
