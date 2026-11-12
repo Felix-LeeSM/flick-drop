@@ -1,7 +1,10 @@
 # Advertising experiment
 
-Status: accepted implementation plan for M10 (#208–#210); no advertiser,
-ad-network approval, traffic baseline, or revenue result is established here.
+Status: M10 (#208–#210) is implemented — the public guides (#209) and the
+static sponsor slot (#210) ship, with the sponsor disabled (`SPONSOR = null` in
+`web/src/lib/components/sponsor.ts`). No advertiser, ad-network approval,
+traffic baseline, or revenue result is established here, and the measurement
+plan below has not started.
 
 Flick remains a free, ephemeral delivery tool. Advertising must not change
 the encryption boundary or require a click before creating or opening a link.
@@ -100,9 +103,14 @@ Revenue and costs use the same currency and billing period.
 
 Do not collect IDs, full URLs, query strings, fragments, tokens, passphrases,
 plaintext, filenames, IP addresses, referrers, fingerprints, or browser storage
-identifiers for this experiment. The current nginx access log is not a
-privacy-safe page-view dataset: it records request details. Do not export it
-to an advertiser or derive a user journey from it. No browser analytics SDK
+identifiers for this experiment. The `flick-web` nginx access log
+(`flick_private` format in `web/nginx.conf`) records time, method, path with
+delivery IDs replaced by `<id>`, status, size, duration, and User-Agent, with no
+client address, referrer, or query string. It is still not a page-view dataset:
+it logs every request, including assets and private routes, and is kept only as
+operational logs (Loki, 7-day retention per the `## Logs` section of
+[security-model.md](security-model.md)). Do not export it to an advertiser or
+derive a user journey from it. No browser analytics SDK
 is needed. A future aggregate counter must discard request details before
 incrementing an allowlisted bucket; measurement is unmeasured until verified.
 

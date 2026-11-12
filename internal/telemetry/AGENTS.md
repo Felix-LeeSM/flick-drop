@@ -25,9 +25,12 @@ caller: a failed or dead-lettered job attempt logs `"worker job failed"` with
 on `DefaultRegistry` in `init()`:
 
 - `flick_secret_created_total` (counter, labels `kind`, `storage`) — incremented
-  in `secrets.Store.Create` (sqlite_blob) and `CreateLarge` (s3_object).
+  in `secrets.Store.Create` (`storage` `sqlite_blob`) and `CreateLarge`
+  (`storage` `s3_object` or `r2_object`, the backend chosen by
+  `internal/storage/registry.go:ChooseBackend`).
 - `flick_secret_opened_total` (counter) — incremented in
-  `httpapi.openAndEnqueueCleanup` after `OpenTx` commits a one-time open.
+  `internal/httpapi/secrets.go:Server.openAndCommit` after the `OpenTx`
+  transaction commits a one-time open.
 - `flick_secret_reaped_total` (counter, label `reason` `expired`|`orphan`) —
   incremented in `secrets.Reaper.ClaimOnce` after the reaper tx commits.
 - `flick_jobs_processed_total` (counter, labels `kind`, `outcome`
@@ -60,8 +63,10 @@ worker's dedicated listener (`FLICK_WORKER_METRICS_ADDR`, default `:9091`)
 via `telemetry.NewMetricsServer` — the same bearer credential
 (`FLICK_METRICS_TOKEN`) guards both, and an unset token fails closed (401).
 The worker's Deployment exposes the port through the ClusterIP-only
-`flick-worker-metrics` Service (`deploy/base/worker.yaml`), which only the
-VictoriaMetrics scraper can reach. Bucket usage is gauged from the api.db size aggregate
+`flick-worker-metrics` Service (`deploy/base/worker.yaml`): the port is not
+exposed outside the cluster, but `deploy/` defines no NetworkPolicy, so any pod
+in the cluster can connect and `FLICK_METRICS_TOKEN` is the only guard against
+in-cluster readers. Bucket usage is gauged from the api.db size aggregate
 (`flick_storage_bytes_used`), deliberately not from a `ListObjectsV2` scan: a
 scan on every scrape is too costly for a health endpoint.
 
@@ -93,11 +98,22 @@ Rules:
 - Telemetry must never include plaintext secret content, passphrases, derived
   keys, ciphertext bodies, real credentials, or private bucket names.
 - Prefer stable event names and bounded labels — never IDs, ciphertext, or
-  access proofs. Failed access attempts are not counted: they are an attack
-  signal, not a delivery signal, and a counter would invite abuse.
-- The no-IDs rule above bounds **metric label cardinality**; trace span
+  access proofs. Failed access attempts get no Prometheus counter: they are an
+  attack signal, not a delivery signal, and a live counter would invite abuse.
+  Their only record is the daily aggregate `secret_open_failed` row in
+  `usage_counters` (`internal/usage/usage.go:SecretOpenFailed`, written by
+  `internal/secrets/store.go:Store.recordFailedAccessTx`), which has no HTTP
+  reader.
+- The rule against IDs in labels bounds **metric label cardinality**; trace span
   attributes may carry bounded request metadata (HTTP route template, content
   kind, storage backend, status) but, like logs and metrics, never ciphertext,
   passphrases, derived keys, KDF salts, or access proofs.
 - Metrics should describe system behavior without exposing user payloads or
   identifiers that can be used as secrets.
+- Logs, metric labels, and span attributes never carry client IP addresses or
+  delivery IDs (secret, request, or object-storage key IDs), and no setting
+  turns them on. The API rate limiter in `internal/httpapi/ratelimit.go` keeps
+  client networks in memory only. The full log policy, including the nginx
+  `flick_private` format in `web/nginx.conf` and the Loki masking in
+  `deploy/base/monitoring/alloy.yaml`, is the `## Logs` section of
+  `docs/architecture/security-model.md`.
