@@ -56,7 +56,7 @@ func (c *Client) Head(ctx context.Context, key string) (ObjectInfo, error) {
 		if isNotFound(err) {
 			return ObjectInfo{Key: key}, nil
 		}
-		return ObjectInfo{}, fmt.Errorf("head object %q: %w", key, err)
+		return ObjectInfo{}, fmt.Errorf("head object: %w", err)
 	}
 	return ObjectInfo{
 		Key:         key,
@@ -74,11 +74,11 @@ func (c *Client) Open(ctx context.Context, key string) (io.ReadCloser, int64, er
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("get object %q: %w", key, err)
+		return nil, 0, fmt.Errorf("get object: %w", err)
 	}
 	if out.ContentLength == nil {
 		out.Body.Close()
-		return nil, 0, fmt.Errorf("get object %q: no content length", key)
+		return nil, 0, fmt.Errorf("get object: no content length")
 	}
 	return out.Body, *out.ContentLength, nil
 }
@@ -90,7 +90,7 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	if err != nil && !isNotFound(err) {
-		return fmt.Errorf("delete object %q: %w", key, err)
+		return fmt.Errorf("delete object: %w", err)
 	}
 	return nil
 }

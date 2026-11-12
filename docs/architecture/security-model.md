@@ -362,6 +362,37 @@ Runbooks must document checkpoint/vacuum and backup retention behavior. The
 product should communicate that Flick is ephemeral delivery, not guaranteed
 physical erasure.
 
+## Logs
+
+Logs record that something happened, never who did it or to which delivery.
+Client IP addresses and delivery IDs are always removed; there is no setting
+that keeps them, because an operator option to log them would make the
+guarantee depend on trusting each operator's configuration. IPs are not hashed
+either: an unsalted hash of an IPv4 address is reversed by trying all 2^32
+addresses, and a salted one still links one client's actions for the whole
+retention period.
+
+- `flick-web` nginx (`web/nginx.conf`, log format `flick_private`): time,
+  method, path, status, size, duration, User-Agent. No client address, no
+  referrer (a referrer can carry `/s/{id}`), no query string, and the ID in
+  `/s/`, `/m/`, `/r/` paths becomes `<id>`. nginx error lines still name the
+  client address; Loki masks it.
+- Edge traefik (ops bootstrap): JSON access log with `ClientHost`,
+  `ClientAddr`, and `ClientPort` dropped and request headers dropped (the live
+  relay code, connection ID, and sender token travel in `X-Flick-Pipe-*`
+  headers). `RequestPath` keeps the ID at the source; Loki masks it.
+- API and worker: no per-request log. Error texts carry no secret ID or object
+  key (`internal/worker/cleanup.go:objectDeleteError`, `internal/secrets/reaper.go`,
+  `internal/storage/object.go`).
+- Loki (`deploy/base/monitoring/alloy.yaml`, `loki.process "private"`): every
+  shipped line has delivery IDs in web paths, API paths, and object keys
+  replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
+  (7-day retention).
+
+Abuse handling does not rely on logged IPs: the API rate limiters key by client
+network in memory only (`internal/httpapi/ratelimit.go`), and an edge proxy or
+CDN in front of a deployment applies its own blocking.
+
 ## Transport
 
 Production deployments require HTTPS at the ingress. Internal cluster traffic
@@ -472,7 +503,9 @@ the original expiry. Residual traces remain outside that guarantee:
   `internal/worker/processor.go:deadLetterPayloadJSON` drops `object_key` from
   a dead-lettered object delete;
 - a job ID still links worker rows to an outbox row while that row exists;
-- proxy access logs record request paths, which include the secret ID;
+- the edge proxy (traefik) writes request paths, which include the secret ID,
+  to its container log on the node until kubelet rotates it; Loki only ever
+  receives the masked line (see Logs);
 - SQLite WAL pages and backups may hold deleted rows.
 
 Raw management tokens belong only in the private browser fragment,

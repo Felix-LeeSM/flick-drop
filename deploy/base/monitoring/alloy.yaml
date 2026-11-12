@@ -97,7 +97,37 @@ data:
 
     loki.source.kubernetes "pods" {
       targets    = discovery.relabel.pod_logs.output
+      forward_to = [loki.process.private.receiver]
+    }
+
+    // Every line passes through here before Loki, always: delivery IDs and IP
+    // addresses become <id> and <ip>. The sources already leave them out
+    // (web/nginx.conf flick_private, the traefik ClientHost/ClientAddr drops in
+    // the ops bootstrap), so this is the safety net for anything that still
+    // carries one: a traefik RequestPath, an nginx error line ("client: ..."),
+    // an error text naming an object key. Time, method, path pattern, status,
+    // and User-Agent stay. Not configurable on purpose: see
+    // docs/architecture/security-model.md (Logs).
+    loki.process "private" {
       forward_to = [loki.write.loki.receiver]
+
+      // Delivery IDs in web and API paths and in object keys.
+      stage.replace {
+        expression = "(?:/(?:s|m|r|api/secrets|api/requests|api/v1/secrets|api/v1/requests)/|managed/(?:secrets|requests)/)([^/?\"<\\s]+)"
+        replace    = "<id>"
+      }
+      // IPv4. The excluded preceding characters keep version numbers such as
+      // Chrome/120.0.6099.109 in a User-Agent intact.
+      stage.replace {
+        expression = "(?:^|[^\\w./-])((?:\\d{1,3}\\.){3}\\d{1,3})"
+        replace    = "<ip>"
+      }
+      // IPv6: eight groups, or a "::" form (also ::ffff:<ip> once IPv4 is
+      // masked). Clock times such as 01:42:53 have neither, so they stay.
+      stage.replace {
+        expression = "(?:^|[^\\w./:-])((?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?|::[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6}(?::<ip>)?)"
+        replace    = "<ip>"
+      }
     }
 
     loki.write "loki" {

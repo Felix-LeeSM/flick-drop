@@ -237,7 +237,7 @@ func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now t
 	}
 	jobID, err := events.NewJobID()
 	if err != nil {
-		return fmt.Errorf("generate object delete job id for %s: %w", c.id, err)
+		return fmt.Errorf("generate object delete job id: %w", err)
 	}
 	reason := events.ReasonExpired
 	if c.state == "pending_upload" {
@@ -251,7 +251,7 @@ func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now t
 		Reason:      reason,
 		RequestedAt: now,
 	}); err != nil {
-		return fmt.Errorf("enqueue object delete for %s: %w", c.id, err)
+		return fmt.Errorf("enqueue object delete: %w", err)
 	}
 	return nil
 }

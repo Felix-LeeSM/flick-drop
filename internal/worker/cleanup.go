@@ -112,7 +112,8 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 		return CleanupResponse{}, fmt.Errorf("decode cleanup response: trailing JSON")
 	}
 	if decoded.ID != req.SecretID {
-		return CleanupResponse{}, fmt.Errorf("cleanup response id = %q, want %q", decoded.ID, req.SecretID)
+		// Neither ID goes into the text: worker errors land in logs and job tables.
+		return CleanupResponse{}, fmt.Errorf("cleanup response named a different secret")
 	}
 
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil
