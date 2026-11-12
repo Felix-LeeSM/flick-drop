@@ -28,6 +28,7 @@ import { Textarea } from '#lib/components/ui/textarea/index.js';
 import { type CredentialEnvelope, parseCredential } from '#lib/credentials/index.js';
 import { deriveAccessProof } from '#lib/crypto/access.js';
 import { decodeKeyFragment } from '#lib/crypto/fragment.js';
+import { recipientOf } from '#lib/crypto/age.js';
 import { openFile, openText, unwrapIdentityOffThread } from '#lib/crypto/secret.js';
 import {
 	holdMinimumStage,
@@ -81,6 +82,9 @@ let metadata = $state<GetSecretMetadataResponse | null>(null);
 // Set once the server has answered the open: from then on the secret is burned,
 // and a decryption failure is final rather than retryable.
 let consumedOnServer = false;
+// True once the open response body itself failed (the connection dropped while
+// it streamed), as opposed to the bytes arriving and failing to decrypt.
+let transportBroken = false;
 
 onMount(() => {
 	void loadModel();
@@ -99,6 +103,14 @@ async function loadModel(): Promise<void> {
 			const identity = decodeKeyFragment(window.location.hash);
 			if (!identity) {
 				status = 'This link is incomplete — the decryption key is missing from the URL.';
+				statusKind = 'error';
+				linkUnusable = true;
+				return;
+			}
+			// A messenger that cut or altered the link leaves a key that fails its
+			// checksum. Catch it here, before Open burns the secret for nothing.
+			if (!(await isIntactKey(identity))) {
+				status = 'This link is damaged. Ask the sender to send the full link again.';
 				statusKind = 'error';
 				linkUnusable = true;
 				return;
@@ -170,6 +182,7 @@ async function openSecret(): Promise<void> {
 	credential = null;
 	copyState = 'idle';
 	revokeDownloadUrl();
+	transportBroken = false;
 
 	try {
 		if (accessModel === 'b') {
@@ -191,8 +204,12 @@ async function openSecret(): Promise<void> {
 	} catch (error) {
 		if (consumedOnServer) {
 			// The server has already burned the secret, so retrying can only
-			// answer "consumed". Say what happened instead.
-			status = 'This secret was opened but could not be decrypted. It cannot be opened again.';
+			// answer "consumed". Say what happened and what to do instead.
+			status = transportBroken
+				? "The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again."
+				: accessModel === 'b'
+					? "This link is damaged, so the secret couldn't be decrypted. It can't be opened again. Ask the sender to send the full link again."
+					: "This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again.";
 			linkUnusable = true;
 		} else {
 			status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
@@ -251,18 +268,53 @@ async function openPassphraseSecret(): Promise<void> {
 	await render(await unwrapIdentityOffThread(opened.wrappedIdentity, passphrase), opened);
 }
 
+// The bech32 checksum inside the key detects a cut or altered link.
+async function isIntactKey(identity: string): Promise<boolean> {
+	try {
+		await recipientOf(identity);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+// Passes the open response body through, recording whether reading it failed:
+// a dropped connection, not a decryption failure.
+function watchTransport(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	const reader = body.getReader();
+	return new ReadableStream({
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read();
+				if (done) {
+					controller.close();
+				} else {
+					controller.enqueue(value);
+				}
+			} catch (error) {
+				transportBroken = true;
+				controller.error(error);
+			}
+		},
+		cancel(reason) {
+			return reader.cancel(reason);
+		}
+	});
+}
+
 async function render(identity: string, opened: OpenedSecret): Promise<void> {
+	const body = watchTransport(opened.body);
 	if (opened.kind === 'file') {
 		if (!opened.encryptedFilename) {
 			throw new Error('expected an encrypted filename for a file secret');
 		}
-		const file = await openFile(identity, opened.body, opened.encryptedFilename);
+		const file = await openFile(identity, body, opened.encryptedFilename);
 		downloadUrl = URL.createObjectURL(file.blob);
 		downloadFilename = file.filename;
 		downloadSize = file.blob.size;
 		openedKind = 'file';
 	} else {
-		decryptedText = await openText(identity, opened.body);
+		decryptedText = await openText(identity, body);
 		credential = parseCredential(decryptedText);
 		openedKind = 'text';
 	}
