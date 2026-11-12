@@ -680,6 +680,7 @@ func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 		"over 4096 chars":  `{"recipient":"age1pq1` + strings.Repeat("q", 4096) + `"}`,
 		"bad checksum":     `{"recipient":"` + valid[:len(valid)-1] + flipBech32(valid[len(valid)-1:]) + `"}`,
 		"right shape only": `{"recipient":"age1pq1` + strings.Repeat("q", 1952) + `"}`,
+		"trailing value":   `{"recipient":"` + valid + `"}{}`,
 		"unknown field":    `{"recipient":"` + valid + `","passphrase":"x"}`,
 		"not json":         `age1pq1qqqq`,
 		"recipient number": `{"recipient":1}`,

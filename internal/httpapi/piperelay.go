@@ -247,6 +247,10 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_recipient", "join body must be JSON with an age recipient")
 		return
 	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_recipient", "join body must contain exactly one JSON object")
+		return
+	}
 	if !validPipeRecipient(body.Recipient) {
 		writeError(w, http.StatusBadRequest, "invalid_recipient", "recipient must be a hybrid age recipient (age1pq1...)")
 		return

@@ -606,6 +606,14 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		// A passphrase left on in the link tab must not reach the code transfer:
 		// the receiver below enters none and still decrypts.
 		await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
+		const deliveryMethod = sender.getByRole('group', { name: 'Delivery method' });
+		// An empty link-tab passphrase doesn't block the code send either.
+		await deliveryMethod.getByRole('button', { name: 'Send with code' }).click();
+		assert.equal(
+			await sender.getByRole('button', { name: 'Start live transfer' }).isEnabled(),
+			true
+		);
+		await deliveryMethod.getByRole('button', { name: 'Create link' }).click();
 		await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
 		await sender
 			.getByRole('group', { name: 'Delivery method' })

@@ -175,8 +175,10 @@ const canCreate = $derived(
 		!isCreating &&
 		!bundling
 );
+// The link tab's passphrase never protects a code send (the receiver's key does),
+// so it neither gates nor explains the code CTA.
 const canPipe = $derived(
-	hasCreatePayload && passphraseReady && !isCreating && !bundling && relay.activeCode === null
+	hasCreatePayload && !isCreating && !bundling && relay.activeCode === null
 );
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
@@ -187,7 +189,7 @@ const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 const BLOCKED_CLASS = 'disabled:pointer-events-auto disabled:cursor-not-allowed';
 const blockedTitle = $derived(
 	hasCreatePayload
-		? usePassphrase && passphrase.length === 0
+		? delivery === 'link' && usePassphrase && passphrase.length === 0
 			? 'Set a passphrase to finish protecting this secret'
 			: undefined
 		: 'Add a message, file or credential first'
