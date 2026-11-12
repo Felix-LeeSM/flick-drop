@@ -5,8 +5,8 @@
 // request.
 //
 // sessionStorage holds a SHA-256 of the 6-digit code and the session's expiry
-// time, never the code itself or the salt, so the entry cannot rebuild the
-// pipe passphrase. A code is reused by a later, unrelated session once the
+// time, never the code itself and no key: a code transfer has no passphrase,
+// and the receiver's age identity never leaves memory. A code is reused by a later, unrelated session once the
 // first one ends, so each entry lapses with the session that declined it.
 
 const KEY_PREFIX = 'flick:pipe-declined:';

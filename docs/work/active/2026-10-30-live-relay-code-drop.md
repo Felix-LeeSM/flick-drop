@@ -22,6 +22,12 @@
 >   sender long-polls `/wait` and calls `/select`, `/decline`, `/cancel`, and
 >   `/send` with a sender token. The data-flow diagram in Section 3 shows the
 >   older receive-first flow.
+> - There is **no server salt and no code-derived key** (superseded
+>   2026-11-12). The receiving browser sends a fresh age recipient on `/join`,
+>   the sender gets it from `/wait` and encrypts to it, so a passive server
+>   cannot decrypt. Every `salt`, `scrypt(code, salt)`, and extra-passphrase
+>   line below is superseded by `docs/architecture/security-model.md` (Live
+>   Relay).
 
 ---
 
