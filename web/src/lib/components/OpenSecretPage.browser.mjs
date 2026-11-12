@@ -272,7 +272,9 @@ test('a cut-off link key is caught before Open, without consuming the secret', a
 		const opens = [];
 		await routeModelB(page, 'text', Buffer.from(age.web.text, 'base64'));
 		page.on('request', (request) => {
-			if (request.url().endsWith(`${secretPath}/open`)) opens.push(request.url());
+			if (request.url().endsWith(`${secretPath}/open`)) {
+				opens.push(request.url());
+			}
 		});
 
 		// When: 링크를 연다
@@ -301,7 +303,9 @@ test('a connection that drops while the opened body streams says so', async () =
 			window.fetch = async (input, init) => {
 				const response = await original(input, init);
 				const url = typeof input === 'string' ? input : input.url;
-				if (!url.endsWith(openPath)) return response;
+				if (!url.endsWith(openPath)) {
+					return response;
+				}
 				const reader = response.body.getReader();
 				let sent = false;
 				const body = new ReadableStream({

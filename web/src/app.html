@@ -36,12 +36,12 @@
 		     check runs before the app and says so plainly, while the page underneath
 		     stays usable where it still works. The check opens or consumes nothing. -->
 		<script>
-			(function () {
+			(() => {
 				var supported =
 					typeof window.CSSPropertyRule !== 'undefined' &&
 					window.CSS &&
 					CSS.supports('color', 'color-mix(in srgb, red, blue)');
-				if (supported) return;
+				if (supported) { return; }
 				var notice = document.createElement('p');
 				notice.setAttribute('role', 'alert');
 				notice.style.cssText =

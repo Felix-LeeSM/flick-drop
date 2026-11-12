@@ -27,8 +27,8 @@ import { Label } from '#lib/components/ui/label/index.js';
 import { Textarea } from '#lib/components/ui/textarea/index.js';
 import { type CredentialEnvelope, parseCredential } from '#lib/credentials/index.js';
 import { deriveAccessProof } from '#lib/crypto/access.js';
-import { decodeKeyFragment } from '#lib/crypto/fragment.js';
 import { recipientOf } from '#lib/crypto/age.js';
+import { decodeKeyFragment } from '#lib/crypto/fragment.js';
 import { openFile, openText, unwrapIdentityOffThread } from '#lib/crypto/secret.js';
 import {
 	holdMinimumStage,
@@ -163,6 +163,18 @@ function submitOpen(event: SubmitEvent): void {
 	void openSecret();
 }
 
+// The server has already burned the secret, so each message names what broke and
+// the one thing left to do: ask the sender again.
+function consumedFailureMessage(): string {
+	if (transportBroken) {
+		return "The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again.";
+	}
+	if (accessModel === 'b') {
+		return "This link is damaged, so the secret couldn't be decrypted. It can't be opened again. Ask the sender to send the full link again.";
+	}
+	return "This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again.";
+}
+
 async function openSecret(): Promise<void> {
 	if (hasOpened) {
 		status = 'Already opened in this tab';
@@ -205,11 +217,7 @@ async function openSecret(): Promise<void> {
 		if (consumedOnServer) {
 			// The server has already burned the secret, so retrying can only
 			// answer "consumed". Say what happened and what to do instead.
-			status = transportBroken
-				? "The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again."
-				: accessModel === 'b'
-					? "This link is damaged, so the secret couldn't be decrypted. It can't be opened again. Ask the sender to send the full link again."
-					: "This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again.";
+			status = consumedFailureMessage();
 			linkUnusable = true;
 		} else {
 			status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
