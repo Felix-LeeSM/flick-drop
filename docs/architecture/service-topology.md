@@ -41,9 +41,10 @@ request stays silent longer than 25 seconds before a decision
 (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the 100-second idle
 cut of a proxy such as Cloudflare. The flow:
 
-1. Sender `POST /api/pipe/init` gets the 6-digit code, salt, and sender token.
-2. Each receiver `POST /api/pipe/join` with the code gets a connection ID (and,
-   with confirmation on, its own 3-digit number).
+1. Sender `POST /api/pipe/init` gets the 6-digit code and sender token.
+2. Each receiver `POST /api/pipe/join` with the code and its browser-generated
+   age recipient gets a connection ID (and, with confirmation on, its own
+   3-digit number).
 3. With confirmation on, each receiver long-polls `GET /api/pipe/status` (up to
    25 seconds per poll) until it is selected, declined, not selected, or the
    session ends. A receiver with no open `/status` call for 35 seconds
@@ -51,13 +52,16 @@ cut of a proxy such as Cloudflare. The flow:
    the room. With confirmation off, the receiver opens `GET /api/pipe/receive`
    right after `/join`.
 4. Sender long-polls `GET /api/pipe/wait?since=N` (up to 25 seconds per poll)
-   for the waiting list or, with confirmation off, for the first receiver.
+   for the waiting list (each row carries that receiver's age recipient) or,
+   with confirmation off, for the first receiver (the `ready` answer carries
+   its recipient).
 5. With confirmation on the sender calls `POST /api/pipe/select` or
    `POST /api/pipe/decline` per connection; `POST /api/pipe/cancel` burns the
    session before streaming. Only the selected receiver then opens
    `GET /api/pipe/receive`; it must do so within 35 seconds or the session
    ends.
-6. Sender `POST /api/pipe/send` streams into the chosen receiver's `/receive`.
+6. Sender `POST /api/pipe/send` streams an age file encrypted to the chosen
+   receiver's recipient into that receiver's `/receive`.
 
 `docs/architecture/security-model.md` (Live Relay) defines what each credential
 unlocks and why rejected receivers never burn a session.

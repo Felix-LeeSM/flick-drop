@@ -3,13 +3,15 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
@@ -30,7 +32,36 @@ const (
 	// sessions behind one NAT while stopping a tight poll loop.
 	pipeStatusRatePerMinute = 120
 	pipeInitBodyMax         = 1024
+	// pipeRecipientMaxChars caps the receiver's age recipient. A hybrid
+	// ML-KEM-768 + X25519 recipient (web/src/lib/crypto/age.ts
+	// generateSecretIdentity) is 1,959 characters.
+	pipeRecipientMaxChars = 4096
+	pipeJoinBodyMax       = pipeRecipientMaxChars + 1024
 )
+
+// pipeRecipientPattern is a hybrid age recipient: the age1pq1 prefix, then
+// lowercase bech32 characters only.
+var pipeRecipientPattern = regexp.MustCompile(`^age1pq1[02-9ac-hj-np-z]+$`)
+
+// validPipeRecipient accepts only a recipient the sender's browser can encrypt
+// to: the cheap shape check first, then a full parse (bech32 checksum and the
+// ML-KEM-768 + X25519 key), the same rule request links apply
+// (internal/requests/validation.go). A canonical re-encoding is required so
+// one key has one spelling.
+func validPipeRecipient(raw string) bool {
+	if len(raw) > pipeRecipientMaxChars || !pipeRecipientPattern.MatchString(raw) {
+		return false
+	}
+	recipient, err := age.ParseHybridRecipient(raw)
+	return err == nil && recipient.String() == raw
+}
+
+type pipeJoinRequest struct {
+	// Recipient is the age public key the receiving browser generated for this
+	// one connection. The sender encrypts the stream to it, so the API relays
+	// only ciphertext it cannot open.
+	Recipient string `json:"recipient"`
+}
 
 type pipeInitRequest struct {
 	RequireConfirmation bool `json:"require_confirmation"`
@@ -38,7 +69,6 @@ type pipeInitRequest struct {
 
 type pipeInitResponse struct {
 	Code                string `json:"code"`
-	Salt                string `json:"salt"`
 	ExpiresIn           int    `json:"expires_in"`
 	SenderToken         string `json:"sender_token"`
 	RequireConfirmation bool   `json:"require_confirmation"`
@@ -57,12 +87,17 @@ type pipePendingConnection struct {
 	Index            int    `json:"index"`
 	VerifyCode       string `json:"verify_code"`
 	Device           string `json:"device"`
+	Recipient        string `json:"recipient"`
 	ConnectedSeconds int    `json:"connected_seconds"`
 }
 
+// pipeWaitResponse goes to the sender only. Recipient is the attached
+// receiver's age recipient once Status is "ready"; with confirmation off it is
+// how the sender learns whom to encrypt to.
 type pipeWaitResponse struct {
 	Status      string                  `json:"status"`
 	Version     uint64                  `json:"version"`
+	Recipient   string                  `json:"recipient,omitempty"`
 	Connections []pipePendingConnection `json:"connections"`
 }
 
@@ -167,7 +202,6 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, pipeInitResponse{
 		Code:                result.Code,
-		Salt:                base64.StdEncoding.EncodeToString(result.Salt),
 		ExpiresIn:           result.ExpiresIn,
 		SenderToken:         result.SenderToken,
 		RequireConfirmation: result.RequireConfirmation,
@@ -188,12 +222,13 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 //   - Network, for piperelay.MaxPendingPerNetwork, is SHA-256 of the network.
 //
 // Only the hashes are kept, in memory, for the session's lifetime.
-func (s Server) pipeJoinClient(r *http.Request) piperelay.JoinClient {
+func (s Server) pipeJoinClient(r *http.Request, recipient string) piperelay.JoinClient {
 	network := s.pipeJoinLimiter.clientNetwork(r)
 	return piperelay.JoinClient{
-		Device:  pipeDeviceLabel(r.UserAgent()),
-		Key:     sha256.Sum256([]byte(network + "\n" + r.UserAgent())),
-		Network: sha256.Sum256([]byte("network\n" + network)),
+		Device:    pipeDeviceLabel(r.UserAgent()),
+		Recipient: recipient,
+		Key:       sha256.Sum256([]byte(network + "\n" + r.UserAgent())),
+		Network:   sha256.Sum256([]byte("network\n" + network)),
 	}
 }
 
@@ -205,8 +240,23 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var body pipeJoinRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, pipeJoinBodyMax))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_recipient", "join body must be JSON with an age recipient")
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_recipient", "join body must contain exactly one JSON object")
+		return
+	}
+	if !validPipeRecipient(body.Recipient) {
+		writeError(w, http.StatusBadRequest, "invalid_recipient", "recipient must be a hybrid age recipient (age1pq1...)")
+		return
+	}
 
-	result, err := s.pipeCoordinator.Join(headers[0], s.pipeJoinClient(r))
+	result, err := s.pipeCoordinator.Join(headers[0], s.pipeJoinClient(r, body.Recipient))
 	if err != nil {
 		writePipeError(w, r, err)
 		return
@@ -291,6 +341,7 @@ func (s Server) waitPipe(w http.ResponseWriter, r *http.Request) {
 	}
 	if snapshot.ReceiverReady {
 		response.Status = "ready"
+		response.Recipient = snapshot.Recipient
 	}
 	for _, pending := range snapshot.Pending {
 		response.Connections = append(response.Connections, pipePendingConnection{
@@ -298,6 +349,7 @@ func (s Server) waitPipe(w http.ResponseWriter, r *http.Request) {
 			Index:            pending.Index,
 			VerifyCode:       pending.VerifyCode,
 			Device:           pending.Device,
+			Recipient:        pending.Recipient,
 			ConnectedSeconds: max(0, int(now.Sub(pending.JoinedAt).Seconds())),
 		})
 	}
@@ -363,7 +415,7 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
-	pr, salt, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), headers[0], headers[1])
+	pr, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), headers[0], headers[1])
 	if err != nil {
 		// A rejected, late, or not-yet-picked receiver never counts against
 		// the session.
@@ -375,7 +427,6 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Flick-Pipe-Salt", base64.StdEncoding.EncodeToString(salt))
 	if meta.Kind != "" {
 		w.Header().Set("Flick-Kind", meta.Kind)
 	}

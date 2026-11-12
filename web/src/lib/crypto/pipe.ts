@@ -1,4 +1,5 @@
-import { Decrypter, Encrypter, type ReadableStreamWithSize } from 'age-encryption';
+import { decryptWith, encryptToRecipient, generateSecretIdentity, recipientOf } from './age';
+import { base64ToBytes, bytesToBase64 } from './encoding';
 
 export const PIPE_CODE_LENGTH = 6;
 
@@ -23,88 +24,25 @@ export function formatPipeCode(raw: string): string {
 }
 
 /**
- * Derives the symmetric encryption passphrase combining the 6-digit code,
- * the server-issued cryptographic salt, and an optional secret passphrase.
+ * A fresh age identity for one receive attempt, and the recipient (public
+ * half) that goes to the API on /join. The identity stays in this browser's
+ * memory only: the sender encrypts to the recipient, so the API relays a
+ * stream it cannot decrypt.
  */
-export function computePipePassphrase(
-	code: string,
-	salt: string,
-	optionalPassphrase?: string
-): string {
-	const normalized = normalizePipeCode(code);
-	const base = `${normalized}:${salt.trim()}`;
-	if (optionalPassphrase && optionalPassphrase.trim() !== '') {
-		return `${base}:${optionalPassphrase.trim()}`;
-	}
-	return base;
+export async function createPipeReceiverKey(): Promise<{ identity: string; recipient: string }> {
+	const identity = await generateSecretIdentity();
+	return { identity, recipient: await recipientOf(identity) };
 }
 
-/**
- * Encrypts an input stream, buffer, or string to an age-formatted ciphertext stream
- * using symmetric passphrase encryption.
- */
-export async function encryptPipeStream(
-	input: ReadableStream<Uint8Array> | Uint8Array | string,
-	passphrase: string
-): Promise<ReadableStreamWithSize> {
-	if (passphrase === '') {
-		throw new Error('Passphrase cannot be empty');
-	}
-
-	const encrypter = new Encrypter();
-	encrypter.setPassphrase(passphrase);
-
-	let stream: ReadableStream<Uint8Array>;
-	if (typeof input === 'string') {
-		const bytes = new TextEncoder().encode(input);
-		stream = new ReadableStream({
-			start(controller) {
-				controller.enqueue(bytes);
-				controller.close();
-			}
-		});
-	} else if (input instanceof Uint8Array) {
-		stream = new ReadableStream({
-			start(controller) {
-				controller.enqueue(input);
-				controller.close();
-			}
-		});
-	} else {
-		stream = input;
-	}
-
-	return await encrypter.encrypt(stream);
+/** The Flick-Encrypted-Filename header value: an age file to `recipient`, base64. */
+export async function encryptPipeFilename(recipient: string, filename: string): Promise<string> {
+	return bytesToBase64(await encryptToRecipient(recipient, new TextEncoder().encode(filename)));
 }
 
-/**
- * Decrypts an age-formatted ciphertext stream or byte array using the derived passphrase.
- * Authenticates each 64 KiB chunk on the fly; fails if wrong passphrase or corrupted chunk.
- */
-export async function decryptPipeStream(
-	input: ReadableStream<Uint8Array> | Uint8Array,
-	passphrase: string
-): Promise<ReadableStream<Uint8Array>> {
-	if (passphrase === '') {
-		throw new Error('Passphrase cannot be empty');
-	}
-
-	const decrypter = new Decrypter();
-	decrypter.addPassphrase(passphrase);
-
-	let stream: ReadableStream<Uint8Array>;
-	if (input instanceof Uint8Array) {
-		stream = new ReadableStream({
-			start(controller) {
-				controller.enqueue(input);
-				controller.close();
-			}
-		});
-	} else {
-		stream = input;
-	}
-
-	return await decrypter.decrypt(stream);
+/** Opens a Flick-Encrypted-Filename header value with this receiver's identity. */
+export async function decryptPipeFilename(identity: string, encrypted: string): Promise<string> {
+	const plaintext = await decryptWith(identity, base64ToBytes(encrypted));
+	return new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 }
 
 /**
@@ -214,7 +152,6 @@ function apiBase(baseUrl: string): string {
 
 export type PipeInitResult = {
 	code: string;
-	salt: string;
 	expiresIn: number;
 	senderToken: string;
 	requireConfirmation: boolean;
@@ -240,14 +177,12 @@ export async function initPipeRendezvous(
 
 	const data = (await response.json()) as {
 		code: string;
-		salt: string;
 		expires_in: number;
 		sender_token: string;
 		require_confirmation: boolean;
 	};
 	return {
 		code: data.code,
-		salt: data.salt,
 		expiresIn: data.expires_in,
 		senderToken: data.sender_token,
 		requireConfirmation: data.require_confirmation
@@ -264,18 +199,22 @@ export type PipeJoinResult = {
 };
 
 /**
- * Calls POST /api/pipe/join with the 6-digit code. With confirmation on, the
- * server returns this device's own random 3-digit number to read to the sender.
+ * Calls POST /api/pipe/join with the 6-digit code and this device's age
+ * recipient (`createPipeReceiverKey`), which the API hands to the sender only.
+ * With confirmation on, the server returns this device's own random 3-digit
+ * number to read to the sender.
  */
 export async function joinPipe(
 	baseUrl: string,
 	code: string,
+	recipient: string,
 	fetcher: typeof fetch = fetch,
 	signal?: AbortSignal
 ): Promise<PipeJoinResult> {
 	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/join`, {
 		method: 'POST',
-		headers: { 'X-Flick-Pipe-Code': normalizePipeCode(code) },
+		headers: { 'X-Flick-Pipe-Code': normalizePipeCode(code), 'Content-Type': 'application/json' },
+		body: JSON.stringify({ recipient }),
 		signal
 	});
 	if (!response.ok) {
@@ -353,12 +292,16 @@ export type PipePendingConnection = {
 	index: number;
 	verifyCode: string;
 	device: string;
+	/** The age recipient this device generated; the sender encrypts to it when picking this row. */
+	recipient: string;
 	connectedSeconds: number;
 };
 
 export type PipeWaitResult = {
 	status: 'waiting' | 'ready';
 	version: number;
+	/** The attached receiver's age recipient, present once `status` is `ready`. */
+	recipient?: string;
 	connections: PipePendingConnection[];
 };
 
@@ -388,22 +331,26 @@ export async function waitForPipeUpdate(
 	const data = (await response.json()) as {
 		status: 'waiting' | 'ready';
 		version: number;
+		recipient?: string;
 		connections: {
 			connection_id: string;
 			index: number;
 			verify_code: string;
 			device: string;
+			recipient: string;
 			connected_seconds: number;
 		}[];
 	};
 	return {
 		status: data.status,
 		version: data.version,
+		recipient: data.recipient,
 		connections: data.connections.map((connection) => ({
 			connectionId: connection.connection_id,
 			index: connection.index,
 			verifyCode: connection.verify_code,
 			device: connection.device,
+			recipient: connection.recipient,
 			connectedSeconds: connection.connected_seconds
 		}))
 	};
@@ -542,7 +489,6 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 
 export type ReceivePipeResult = {
 	stream: ReadableStream<Uint8Array>;
-	salt: string;
 	kind?: string;
 	encryptedFilename?: string;
 };
@@ -578,13 +524,11 @@ export async function receivePipeStream(
 		throw new Error('Server response body is empty');
 	}
 
-	const salt = response.headers.get('X-Flick-Pipe-Salt') ?? '';
 	const kind = response.headers.get('Flick-Kind') ?? undefined;
 	const encryptedFilename = response.headers.get('Flick-Encrypted-Filename') ?? undefined;
 
 	return {
 		stream: response.body,
-		salt,
 		kind,
 		encryptedFilename
 	};

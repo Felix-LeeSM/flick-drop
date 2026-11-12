@@ -745,8 +745,10 @@ paths:
       operationId: initPipe
       summary: Initialize a live relay rendezvous.
       description: >-
-        Generates a 6-digit pairing code, a 16-byte random salt, and a sender
-        token. The sender token is the only credential for /wait, /select,
+        Generates a 6-digit pairing code and a sender token. The server issues
+        no key material: the sender encrypts to the age recipient each
+        receiver sends on /join, which /wait hands to the sender. The sender
+        token is the only credential for /wait, /select,
         /decline, /cancel, and /send; keep it in browser memory. With
         require_confirmation the session is a waiting room (up to 10 receivers
         wait for the sender to pick one); without it the first receiver to call
@@ -787,8 +789,19 @@ paths:
         waiting connection stays in the room only while it polls /status: one
         with no open /status call for 35 seconds is dropped and its slot
         reopens. No rejection here ends the session or counts against it.
+        The body carries the receiver's age recipient, generated fresh in the
+        receiving browser for this connection. The API keeps it in memory with
+        the connection and returns it only to the sender (/wait); the matching
+        identity never leaves the receiving browser, so the API relays a
+        stream it cannot decrypt.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipeJoinRequest"
       responses:
         "201":
           description: Connection admitted.
@@ -797,7 +810,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/PipeJoinResponse"
         "400":
-          description: Missing or invalid X-Flick-Pipe-Code header.
+          description: >-
+            `bad_request`: missing or invalid X-Flick-Pipe-Code header.
+            `invalid_recipient`: the body is missing, not JSON, has an unknown
+            field, or `recipient` is not a valid hybrid age recipient
+            (`age1pq1` followed by lowercase bech32 characters, at most 4096
+            characters, with a valid checksum and ML-KEM-768 + X25519 key).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: "`declined`: the sender declined this client (same client IP and User-Agent) earlier in this session."
           content:
@@ -906,12 +928,8 @@ paths:
         - $ref: "#/components/parameters/PipeConnection"
       responses:
         "200":
-          description: Streaming raw ciphertext bytes.
+          description: Streaming an age file encrypted to this connection's recipient.
           headers:
-            X-Flick-Pipe-Salt:
-              schema:
-                type: string
-              description: Base64-encoded 16-byte cryptographic salt.
             Flick-Kind:
               schema:
                 type: string
@@ -919,7 +937,7 @@ paths:
             Flick-Encrypted-Filename:
               schema:
                 type: string
-              description: Optional base64-encoded encrypted filename.
+              description: Optional base64-encoded age file of the filename, encrypted to this connection's recipient.
           content:
             application/octet-stream:
               schema:
@@ -966,7 +984,11 @@ paths:
         the chosen receiver is attached and /send can stream. `connections`
         lists waiting receivers in join order (always empty with confirmation
         off); a receiver that stopped polling /status for 35 seconds drops out
-        of the list and bumps the version.
+        of the list and bumps the version. Each listed connection carries its
+        age recipient, and once `status` is `ready` the top-level `recipient`
+        names the attached receiver's; with confirmation off that is how the
+        sender learns whom to encrypt to. Only the sender token holder sees
+        recipients.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeSender"
@@ -1540,14 +1562,11 @@ components:
     PipeInitResponse:
       type: object
       additionalProperties: false
-      required: [code, salt, expires_in, sender_token, require_confirmation]
+      required: [code, expires_in, sender_token, require_confirmation]
       properties:
         code:
           type: string
           description: 6-digit numeric pairing code.
-        salt:
-          type: string
-          description: Base64-encoded 16-byte cryptographic salt for key derivation.
         expires_in:
           type: integer
           description: Rendezvous window in seconds. A transfer that has started streaming is not cut by it.
@@ -1556,6 +1575,21 @@ components:
           description: Credential for the sender-side pipe calls. Never log it.
         require_confirmation:
           type: boolean
+    PipeJoinRequest:
+      type: object
+      additionalProperties: false
+      required: [recipient]
+      properties:
+        recipient:
+          $ref: "#/components/schemas/PipeRecipient"
+    PipeRecipient:
+      type: string
+      maxLength: 4096
+      pattern: "^age1pq1[02-9ac-hj-np-z]+$"
+      description: >-
+        Hybrid ML-KEM-768 + X25519 age recipient (about 1,960 characters)
+        that the receiving browser generated for this one connection. Public
+        key only; the identity never reaches the API.
     PipeJoinResponse:
       type: object
       additionalProperties: false
@@ -1587,6 +1621,10 @@ components:
         version:
           type: integer
           description: Pass back as `since` on the next poll.
+        recipient:
+          allOf:
+            - $ref: "#/components/schemas/PipeRecipient"
+          description: Present only when `status` is `ready`. The attached receiver's age recipient; encrypt the stream and filename to it.
         connections:
           type: array
           maxItems: 10
@@ -1595,7 +1633,7 @@ components:
     PipePendingConnection:
       type: object
       additionalProperties: false
-      required: [connection_id, index, verify_code, device, connected_seconds]
+      required: [connection_id, index, verify_code, device, recipient, connected_seconds]
       properties:
         connection_id:
           type: string
@@ -1607,6 +1645,10 @@ components:
           pattern: "^[0-9]{3}$"
         device:
           type: string
+        recipient:
+          allOf:
+            - $ref: "#/components/schemas/PipeRecipient"
+          description: This connection's age recipient; encrypt to it when selecting this connection.
         connected_seconds:
           type: integer
           description: Seconds since the connection joined, measured by the server.

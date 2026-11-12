@@ -2,15 +2,17 @@ package httpapi
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
@@ -68,9 +70,35 @@ func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRat
 	return pipeFixture{t: t, router: fixture.router, coord: coord}
 }
 
+// pipeTestRecipient는 userAgent 기기가 브라우저에서 만든 것으로 치는 진짜 하이브리드 age 수신자다.
+// 기기(User-Agent)마다 하나씩 만들어 두고 재사용하며, 기기마다 다르다.
+func pipeTestRecipient(userAgent string) string {
+	pipeTestRecipientsMu.Lock()
+	defer pipeTestRecipientsMu.Unlock()
+	if r, ok := pipeTestRecipients[userAgent]; ok {
+		return r
+	}
+	identity, err := age.GenerateHybridIdentity()
+	if err != nil {
+		panic(err)
+	}
+	r := identity.Recipient().String()
+	pipeTestRecipients[userAgent] = r
+	return r
+}
+
+var (
+	pipeTestRecipientsMu sync.Mutex
+	pipeTestRecipients   = map[string]string{}
+)
+
+func pipeJoinBody(userAgent string) io.Reader {
+	return strings.NewReader(`{"recipient":"` + pipeTestRecipient(userAgent) + `"}`)
+}
+
 // joinFrom는 remoteAddr(예: "[2001:db8::1]:443")에서 /join을 부른다.
 func (f pipeFixture) joinFrom(path, code, userAgent, remoteAddr string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req := httptest.NewRequest(http.MethodPost, path, pipeJoinBody(userAgent))
 	req.RemoteAddr = remoteAddr
 	req.Header.Set(pipeCodeHeader, code)
 	req.Header.Set("User-Agent", userAgent)
@@ -111,7 +139,7 @@ func (f pipeFixture) init(requireConfirmation bool) pipeInitResponse {
 }
 
 func (f pipeFixture) join(code, userAgent string) *httptest.ResponseRecorder {
-	return pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: code, "User-Agent": userAgent}, nil)
+	return pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: code, "User-Agent": userAgent}, pipeJoinBody(userAgent))
 }
 
 func (f pipeFixture) mustJoin(code, userAgent string) pipeJoinResponse {
@@ -245,17 +273,20 @@ func TestPipeRelay_ConfirmationOffFullFlow(t *testing.T) {
 	if len(init.Code) != 6 || init.SenderToken == "" || init.RequireConfirmation {
 		t.Fatalf("init = %+v", init)
 	}
-	saltBytes, err := base64.StdEncoding.DecodeString(init.Salt)
-	if err != nil || len(saltBytes) != 16 {
-		t.Fatalf("init salt invalid: %v, len = %d", err, len(saltBytes))
-	}
 
 	join := f.mustJoin(init.Code, uaChromeWindows)
 	if join.VerifyCode != "" || join.Device != "" || join.RequireConfirmation {
 		t.Fatalf("confirmation-off join leaked verification fields: %+v", join)
 	}
+	if w := f.waitFor(init, func(pipeWaitResponse) bool { return true }); w.Status != "waiting" || w.Recipient != "" {
+		t.Fatalf("wait before any receiver attached = %+v, want no recipient", w)
+	}
 	received := f.receive(init.Code, join.ConnectionID)
-	f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
+	// 확인 없는 모드에서 송신자는 ready 응답의 recipient로 누구에게 암호화할지 안다.
+	ready := f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
+	if ready.Recipient != pipeTestRecipient(uaChromeWindows) {
+		t.Fatalf("ready recipient = %q, want the attached receiver's", ready.Recipient)
+	}
 
 	payload := bytes.Repeat([]byte("Real-time live pipe streaming payload 1234567890\n"), 1024) // ~48 KiB
 	sendReq := httptest.NewRequest(http.MethodPost, "/api/pipe/send", bytes.NewReader(payload))
@@ -273,7 +304,7 @@ func TestPipeRelay_ConfirmationOffFullFlow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("receive status = %d", rec.Code)
 	}
-	if rec.Header().Get("X-Flick-Pipe-Salt") != init.Salt || rec.Header().Get("Flick-Kind") != "file" || rec.Header().Get("Flick-Encrypted-Filename") != "ZmlsZW5hbWUudHh0" {
+	if rec.Header().Get("X-Flick-Pipe-Salt") != "" || rec.Header().Get("Flick-Kind") != "file" || rec.Header().Get("Flick-Encrypted-Filename") != "ZmlsZW5hbWUudHh0" {
 		t.Fatalf("receive headers = %v", rec.Header())
 	}
 	if !bytes.Equal(rec.Body.Bytes(), payload) {
@@ -321,7 +352,14 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 	var joins []pipeJoinResponse
 	var statuses []<-chan *httptest.ResponseRecorder
 	for _, ua := range agents {
-		join := f.mustJoin(init.Code, ua)
+		rec := f.join(init.Code, ua)
+		if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), "age1pq1") {
+			t.Fatalf("join must not echo any recipient back to a receiver: %d %s", rec.Code, rec.Body.String())
+		}
+		var join pipeJoinResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &join); err != nil {
+			t.Fatalf("decode join: %v", err)
+		}
 		joins = append(joins, join)
 		statuses = append(statuses, f.status(init.Code, join.ConnectionID))
 	}
@@ -334,6 +372,9 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 		}
 		if len(conn.VerifyCode) != 3 {
 			t.Fatalf("verify code %q is not 3 digits", conn.VerifyCode)
+		}
+		if conn.Recipient != pipeTestRecipient(agents[i]) {
+			t.Fatalf("connection %d recipient is not the one that device sent", i)
 		}
 	}
 	if joins[0].VerifyCode == joins[1].VerifyCode || joins[1].VerifyCode == joins[2].VerifyCode || joins[0].VerifyCode == joins[2].VerifyCode {
@@ -364,6 +405,10 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 	}
 
 	received := f.receive(init.Code, joins[1].ConnectionID)
+	ready := f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
+	if ready.Recipient != pipeTestRecipient(uaSafariIPhone) {
+		t.Fatal("ready recipient is not the selected device's")
+	}
 	if rec := f.send(init, []byte("for the iPhone only")); rec.Code != http.StatusOK {
 		t.Fatalf("send: %d %s", rec.Code, rec.Body.String())
 	}
@@ -615,6 +660,54 @@ func TestPipeRelay_InvalidAndMissingCodes(t *testing.T) {
 	}
 }
 
+func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
+	f := newPipeFixture(t)
+	init := f.init(true)
+
+	valid := pipeTestRecipient("")
+	bodies := map[string]string{
+		"no body":          "",
+		"no recipient":     `{}`,
+		"empty recipient":  `{"recipient":""}`,
+		"wrong prefix":     `{"recipient":"age1qqqqqqqq"}`,
+		"scrypt-like":      `{"recipient":"AGE-SECRET-KEY-PQ-1QQQQ"}`,
+		"uppercase":        `{"recipient":"AGE1PQ1QQQQQQQQ"}`,
+		"non-bech32 b":     `{"recipient":"age1pq1qqqbqqq"}`,
+		"non-bech32 i":     `{"recipient":"age1pq1qqqiqqq"}`,
+		"non-bech32 o":     `{"recipient":"age1pq1qqqoqqq"}`,
+		"non-bech32 1":     `{"recipient":"age1pq1qqq1qqq"}`,
+		"prefix only":      `{"recipient":"age1pq1"}`,
+		"over 4096 chars":  `{"recipient":"age1pq1` + strings.Repeat("q", 4096) + `"}`,
+		"bad checksum":     `{"recipient":"` + valid[:len(valid)-1] + flipBech32(valid[len(valid)-1:]) + `"}`,
+		"right shape only": `{"recipient":"age1pq1` + strings.Repeat("q", 1952) + `"}`,
+		"trailing value":   `{"recipient":"` + valid + `"}{}`,
+		"unknown field":    `{"recipient":"` + valid + `","passphrase":"x"}`,
+		"not json":         `age1pq1qqqq`,
+		"recipient number": `{"recipient":1}`,
+	}
+	for name, body := range bodies {
+		rec := pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: init.Code, "User-Agent": uaChromeWindows}, strings.NewReader(body))
+		if rec.Code != http.StatusBadRequest || pipeErrorCode(t, rec) != "invalid_recipient" {
+			t.Fatalf("%s: %d %s, want 400 invalid_recipient", name, rec.Code, rec.Body.String())
+		}
+	}
+	// 잘못된 join은 대기실에 아무것도 남기지 않고, 진짜 수신자는 들어온다.
+	if w := f.waitFor(init, func(pipeWaitResponse) bool { return true }); len(w.Connections) != 0 {
+		t.Fatalf("rejected joins left connections: %+v", w.Connections)
+	}
+	if rec := pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: init.Code}, strings.NewReader(`{"recipient":"`+valid+`"}`)); rec.Code != http.StatusCreated {
+		t.Fatalf("real recipient: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// flipBech32는 bech32 문자 하나를 다른 문자로 바꿔 체크섬을 깨뜨린다.
+func flipBech32(c string) string {
+	if c == "q" {
+		return "p"
+	}
+	return "q"
+}
+
 func TestPipeRelay_CORS(t *testing.T) {
 	fixture := newTestRouterFixture(t, Options{
 		PipeRelayEnabled: true,
@@ -637,8 +730,8 @@ func TestPipeRelay_CORS(t *testing.T) {
 			t.Fatalf("Access-Control-Allow-Headers %q missing %s", allowHeaders, header)
 		}
 	}
-	if exposeHeaders := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(exposeHeaders, "X-Flick-Pipe-Salt") {
-		t.Fatalf("Access-Control-Expose-Headers %q missing X-Flick-Pipe-Salt", exposeHeaders)
+	if exposeHeaders := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(exposeHeaders, "Flick-Encrypted-Filename") {
+		t.Fatalf("Access-Control-Expose-Headers %q missing Flick-Encrypted-Filename", exposeHeaders)
 	}
 }
 

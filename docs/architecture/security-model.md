@@ -190,17 +190,50 @@ handles late writes even after capability metadata is gone.
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
 one browser to another through API memory; it writes nothing to SQLite or
-object storage. The browser derives the age passphrase from the 6-digit code,
-the server-issued salt, and an optional extra passphrase
-(`web/src/lib/crypto/pipe.ts` `computePipePassphrase`). The server issues both
-the code and the salt, so without the extra passphrase this mode trusts the
-server like Model B trusts the link holder: a server that turns malicious could
-decrypt the stream. It is not end-to-end encrypted against the server.
+object storage. The stream is end-to-end encrypted against a passive server:
+
+- The receiving browser generates a fresh hybrid ML-KEM-768 + X25519 age
+  identity for each receive attempt (`web/src/lib/crypto/pipe.ts`
+  `createPipeReceiverKey`, built on `web/src/lib/crypto/age.ts`
+  `generateSecretIdentity`). The identity stays in that attempt's browser
+  memory only (`web/src/lib/components/ReceiveCodeModal.svelte`
+  `joinAndReceive`): no browser storage, no URL, no request, no log.
+- `POST /api/pipe/join` carries only its recipient (public half) as
+  `{"recipient":"age1pq1..."}`. `internal/httpapi/piperelay.go` `joinPipe`
+  validates it at the HTTP boundary (`validPipeRecipient`: prefix `age1pq1`,
+  lowercase bech32 characters, at most `pipeRecipientMaxChars` 4,096
+  characters, then a full parse of the ML-KEM-768 + X25519 key with its
+  checksum in canonical form, as request links do; anything else is
+  `400 invalid_recipient`) and the coordinator keeps it in memory on
+  that connection.
+- `GET /api/pipe/wait` hands recipients to the sender token holder only: each
+  waiting row carries its recipient (confirmation on), and once `status` is
+  `ready` the top-level `recipient` names the attached receiver's
+  (confirmation off, where the first connector wins). Neither `/join` nor
+  `/status` nor `/receive` returns a recipient to any receiver.
+- The sender encrypts the stream and the filename to that recipient with age
+  (`web/src/lib/state/pipe-relay.svelte.ts` `streamPayload`, using
+  `encryptToRecipient` and `encryptPipeFilename`); age performs the key
+  agreement. The receiver decrypts with its identity (`decryptWith`,
+  `decryptPipeFilename`).
+
+The server issues no key material for a code transfer: no salt, no passphrase,
+and the 6-digit code only routes requests. A curious or passive server, its
+logs, or a dump of its memory therefore hold recipients and ciphertext but
+nothing that decrypts the stream. A code transfer takes no passphrase on either
+side; the link tab's "additional passphrase" never reaches it.
+
+Known limit: the key exchange is not authenticated against the server. An
+actively malicious server can swap in a recipient of its own on `/wait`, decrypt
+the stream, and re-encrypt it to the real receiver (a man-in-the-middle). The
+3-digit confirmation number does not detect this: the server draws it, and it is
+not derived from either key. Defending against an active server would need a
+check of the recipient over another channel; it is not implemented.
 
 Credentials and what they unlock:
 
-- `POST /api/pipe/init` returns the 6-digit code, the salt, and a random sender
-  token. Only the sender token unlocks the sender calls (`/wait`, `/select`,
+- `POST /api/pipe/init` returns the 6-digit code and a random sender token.
+  Only the sender token unlocks the sender calls (`/wait`, `/select`,
   `/decline`, `/cancel`, `/send`). A wrong token answers `404` exactly like an
   unknown code, so those calls are no code oracle, and knowing the 6-digit code
   is not enough to watch the list, pick a device, cancel, or inject a stream.
@@ -229,7 +262,8 @@ then sends to the matching row. Every other waiting device ends with "The sender
 chose another device" and receives nothing. The check is the sender's eyes:
 there is no receiver-side typing or mutual confirmation, and it proves only that
 the stream goes to the device that showed that number. It does not defend
-against a compromised server, which draws the numbers.
+against a compromised server, which draws the numbers and could swap the
+recipient (see the known limit above).
 
 A waiting receiver long-polls `/status` (up to 25 seconds per poll) and opens
 `/receive` only after `/status` reports it selected; `/receive` on a connection
@@ -276,7 +310,7 @@ remembers the decline in `sessionStorage` as a SHA-256 of the code plus the
 session's expiry time, computed once when `/join` answered
 (`web/src/lib/state/pipe-declined.ts` `sessionExpiresAt`), so a reload does not
 ask again and the memory lapses with that session. The entry never holds the
-code itself, the salt, or the passphrase, and a 6-digit code's hash is
+code itself or any key, and a 6-digit code's hash is
 brute-forceable, so it is treated as no more secret than the code the user
 already typed on that device.
 
@@ -303,7 +337,7 @@ session before any byte flows or loses with `409 streaming`. Only the stream
 itself failing, either side disconnecting, or a server shutdown ends it.
 
 The API never logs 6-digit codes, verification numbers, sender tokens,
-connection IDs, client keys, or User-Agents. Device labels live in memory only,
+connection IDs, client keys, recipients, or User-Agents. Device labels live in memory only,
 for the session's lifetime.
 
 ## Structured Credentials

@@ -46,7 +46,6 @@ const (
 	// (internal/httpapi/piperelay.go pipeWaitMaxHold), so a receiver that keeps
 	// polling is never idle this long.
 	defaultPresenceTimeout  = 35 * time.Second
-	saltLengthBytes         = 16
 	tokenLengthBytes        = 32
 	connectionIDLengthBytes = 16
 	pipeChunkBufferBytes    = 64 * 1024 // 64 KiB buffer matching age streaming chunk size
@@ -89,7 +88,6 @@ type InitOptions struct {
 type InitResult struct {
 	Code                string
 	SenderToken         string
-	Salt                []byte
 	ExpiresIn           int
 	RequireConfirmation bool
 }
@@ -111,7 +109,10 @@ type PendingConnection struct {
 	Index      int
 	VerifyCode string
 	Device     string
-	JoinedAt   time.Time
+	// Recipient is the age public key this receiver generated in its browser;
+	// the sender encrypts to it when it picks this connection.
+	Recipient string
+	JoinedAt  time.Time
 }
 
 // WaitSnapshot is the sender's view of a session at Version.
@@ -121,6 +122,10 @@ type WaitSnapshot struct {
 	ReceiverReady bool
 	// Pending lists undecided receivers in join order; empty when confirmation is off.
 	Pending []PendingConnection
+	// Recipient is the attached receiver's age public key once ReceiverReady
+	// is true, and empty before. With confirmation off it is the only way the
+	// sender learns whom to encrypt to.
+	Recipient string
 }
 
 // Coordinator manages in-memory live relay rendezvous sessions.
@@ -159,6 +164,7 @@ type connection struct {
 	index      int
 	verifyCode string
 	device     string
+	recipient  string
 	clientKey  ClientKey
 	network    ClientNetwork
 	joinedAt   time.Time
@@ -191,16 +197,19 @@ type ClientNetwork [32]byte
 // JoinClient is what Join knows about a receiving client.
 type JoinClient struct {
 	// Device is the coarse label shown to the sender, such as "Safari on iPhone".
-	Device  string
-	Key     ClientKey
-	Network ClientNetwork
+	Device string
+	// Recipient is the age public key the receiver generated in its browser
+	// (the HTTP layer validates its shape). The coordinator only stores it and
+	// hands it to the sender; the matching identity never leaves the browser.
+	Recipient string
+	Key       ClientKey
+	Network   ClientNetwork
 }
 
 // Session tracks the rendezvous lifecycle between sender and receivers.
 type Session struct {
 	codeHash            [32]byte
 	senderTokenHash     [32]byte
-	salt                []byte
 	requireConfirmation bool
 	createdAt           time.Time
 	expiresAt           time.Time
@@ -318,7 +327,7 @@ func randomToken(size int) (string, error) {
 }
 
 // Init creates a new rendezvous session, generating an uncolliding 6-digit
-// code, a random salt, and the sender token.
+// code and the sender token.
 func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -345,10 +354,6 @@ func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, e
 		return InitResult{}, errors.New("piperelay: failed to generate unique code")
 	}
 
-	salt := make([]byte, saltLengthBytes)
-	if _, err := rand.Read(salt); err != nil {
-		return InitResult{}, fmt.Errorf("generate salt: %w", err)
-	}
 	senderToken, err := randomToken(tokenLengthBytes)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("generate sender token: %w", err)
@@ -359,7 +364,6 @@ func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, e
 	s := &Session{
 		codeHash:            hash,
 		senderTokenHash:     sha256.Sum256([]byte(senderToken)),
-		salt:                salt,
 		requireConfirmation: opts.RequireConfirmation,
 		createdAt:           now,
 		expiresAt:           now.Add(c.ttl),
@@ -379,7 +383,6 @@ func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, e
 	return InitResult{
 		Code:                generatedCode,
 		SenderToken:         senderToken,
-		Salt:                salt,
 		ExpiresIn:           int(c.ttl.Seconds()),
 		RequireConfirmation: opts.RequireConfirmation,
 	}, nil
@@ -566,6 +569,7 @@ func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error
 		index:      s.nextIndex,
 		verifyCode: verifyCode,
 		device:     client.Device,
+		recipient:  client.Recipient,
 		clientKey:  client.Key,
 		network:    client.Network,
 		joinedAt:   now,
@@ -713,6 +717,7 @@ func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
 	select {
 	case <-s.receiverReady:
 		snapshot.ReceiverReady = true
+		snapshot.Recipient = s.selected.recipient
 	default:
 	}
 	if s.requireConfirmation {
@@ -722,6 +727,7 @@ func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
 				Index:      conn.index,
 				VerifyCode: conn.verifyCode,
 				Device:     conn.device,
+				Recipient:  conn.recipient,
 				JoinedAt:   conn.joinedAt,
 			})
 		}
@@ -824,10 +830,10 @@ func (c *Coordinator) Cancel(rawCode, senderToken string) error {
 // declined or not-chosen one gets its own answer. With confirmation off the
 // first connection to call Receive wins; later ones get ErrAlreadyConnected.
 // A rejected receiver never counts against the session.
-func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, []byte, SessionMetadata, func(), error) {
+func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, SessionMetadata, func(), error) {
 	s, hash, err := c.lookup(rawCode)
 	if err != nil {
-		return nil, nil, SessionMetadata{}, nil, err
+		return nil, SessionMetadata{}, nil, err
 	}
 
 	s.mu.Lock()
@@ -836,24 +842,24 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 		// A connection the sender already settled keeps its own answer, even
 		// after the session ends.
 		s.mu.Unlock()
-		return nil, nil, SessionMetadata{}, nil, conn.result
+		return nil, SessionMetadata{}, nil, conn.result
 	}
 	if s.ended {
 		cause := s.endedErrLocked()
 		s.mu.Unlock()
-		return nil, nil, SessionMetadata{}, nil, cause
+		return nil, SessionMetadata{}, nil, cause
 	}
 	if !ok {
 		s.mu.Unlock()
-		return nil, nil, SessionMetadata{}, nil, ErrNotFound
+		return nil, SessionMetadata{}, nil, ErrNotFound
 	}
 	if conn.attached {
 		s.mu.Unlock()
-		return nil, nil, SessionMetadata{}, nil, ErrAlreadyConnected
+		return nil, SessionMetadata{}, nil, ErrAlreadyConnected
 	}
 	if s.requireConfirmation && s.selected != conn {
 		s.mu.Unlock()
-		return nil, nil, SessionMetadata{}, nil, ErrAwaitingDecision
+		return nil, SessionMetadata{}, nil, ErrAwaitingDecision
 	}
 	if !s.requireConfirmation && s.selected == nil {
 		s.selectLocked(conn, ErrAlreadyConnected)
@@ -884,20 +890,18 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 			Kind:              s.kind,
 			EncryptedFilename: s.encryptedFilename,
 		}
-		salt := make([]byte, len(s.salt))
-		copy(salt, s.salt)
 		s.mu.Unlock()
-		return s.pipeReader, salt, meta, cleanup, nil
+		return s.pipeReader, meta, cleanup, nil
 	case <-s.done:
-		return nil, nil, SessionMetadata{}, nil, c.endCause(s)
+		return nil, SessionMetadata{}, nil, c.endCause(s)
 	case <-ctx.Done():
 		// The chosen receiver leaving before the stream starts ends the
 		// session: nobody else can take over.
 		cleanup()
-		return nil, nil, SessionMetadata{}, nil, ctx.Err()
+		return nil, SessionMetadata{}, nil, ctx.Err()
 	case <-time.After(time.Until(s.expiresAt)):
 		cleanup()
-		return nil, nil, SessionMetadata{}, nil, ErrExpired
+		return nil, SessionMetadata{}, nil, ErrExpired
 	}
 }
 

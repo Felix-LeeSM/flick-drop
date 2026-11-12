@@ -18,6 +18,13 @@ secret transfer between devices.
   `Decline` (that connection ends with `ErrDeclined`, its client key is blocked
   for the session, the slot reopens). With confirmation off the first
   connection to call `Receive` wins and later ones get `ErrAlreadyConnected`.
+- `JoinClient.Recipient` in `internal/piperelay/coordinator.go` is the
+  receiver's browser-generated age recipient (public key; the HTTP layer
+  `internal/httpapi/piperelay.go` `joinPipe` validates its shape). The
+  coordinator stores it on the connection and returns it only to the sender:
+  `PendingConnection.Recipient` per waiting row, and `WaitSnapshot.Recipient`
+  for the attached receiver once `WaitSnapshot.ReceiverReady` is true. `Init`
+  issues no key material (no salt).
 - A waiting receiver long-polls `Coordinator.Status` and calls `Receive` only
   after `Status` reports it selected; `Receive` on a still-waiting connection
   returns `ErrAwaitingDecision`. A waiting connection counts as present only
@@ -65,5 +72,7 @@ secret transfer between devices.
   `Cancel` and `cleanExpired` check `streaming` and call `Session.endLocked`
   under the same lock hold, so a race between them never cuts a started stream.
 - Never log verification numbers, 6-digit codes, sender tokens, connection IDs,
-  client keys, or User-Agents.
+  client keys, recipients, or User-Agents.
+- Never return a connection's recipient to a receiver: only the sender-token
+  calls (`Coordinator.Wait`) expose recipients.
 - No goroutines or background workers may survive beyond `Coordinator.Close()`.

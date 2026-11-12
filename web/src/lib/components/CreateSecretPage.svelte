@@ -123,12 +123,10 @@ let stageCardDone = $state(false);
 
 // Live pipe relay (Send with code): session state and runtime live in
 // #lib/state/pipe-relay.svelte.ts. The page owns the form-side confirmation
-// toggle and feeds payload and extra passphrase at send time.
+// toggle and feeds the payload at send time. The link tab's passphrase never
+// reaches a code transfer, which is encrypted to the receiver's age recipient.
 let pipeRequireApproval = $state(false);
-const relay = createPipeRelay({
-	getPayload: buildPipePayload,
-	getExtraPassphrase: () => (usePassphrase ? passphrase : '')
-});
+const relay = createPipeRelay({ getPayload: buildPipePayload });
 
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
@@ -177,9 +175,9 @@ const canCreate = $derived(
 		!isCreating &&
 		!bundling
 );
-const canPipe = $derived(
-	hasCreatePayload && passphraseReady && !isCreating && !bundling && relay.activeCode === null
-);
+// The link tab's passphrase never protects a code send (the receiver's key does),
+// so it neither gates nor explains the code CTA.
+const canPipe = $derived(hasCreatePayload && !isCreating && !bundling && relay.activeCode === null);
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 
@@ -189,7 +187,7 @@ const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 const BLOCKED_CLASS = 'disabled:pointer-events-auto disabled:cursor-not-allowed';
 const blockedTitle = $derived(
 	hasCreatePayload
-		? usePassphrase && passphrase.length === 0
+		? delivery === 'link' && usePassphrase && passphrase.length === 0
 			? 'Set a passphrase to finish protecting this secret'
 			: undefined
 		: 'Add a message, file or credential first'
@@ -933,9 +931,7 @@ function typePanelId(type: CreateMode): string {
 
 				{#if delivery === 'link'}
 					<!-- U2 switch row: the always-visible paragraph moved behind the
-					     info icon (hover or keyboard focus). Not "end-to-end" here:
-					     the API issues a code transfer's code and salt, so only a
-					     passphrase keeps that transfer from the server. -->
+					     info icon (hover or keyboard focus). -->
 					<SwitchRow
 						id="use-passphrase"
 						bind:checked={usePassphrase}

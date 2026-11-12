@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -62,7 +63,6 @@ func TestGenerateCode(t *testing.T) {
 // receiveResult는 Receive 한 번의 결과다: 받은 바이트 또는 오류.
 type receiveResult struct {
 	body []byte
-	salt []byte
 	meta SessionMetadata
 	err  error
 }
@@ -71,14 +71,14 @@ type receiveResult struct {
 func startReceive(ctx context.Context, coord *Coordinator, code, connID string) <-chan receiveResult {
 	out := make(chan receiveResult, 1)
 	go func() {
-		pr, salt, meta, cleanup, err := coord.Receive(ctx, code, connID)
+		pr, meta, cleanup, err := coord.Receive(ctx, code, connID)
 		if err != nil {
 			out <- receiveResult{err: err}
 			return
 		}
 		defer cleanup()
 		body, err := io.ReadAll(pr)
-		out <- receiveResult{body: body, salt: salt, meta: meta, err: err}
+		out <- receiveResult{body: body, meta: meta, err: err}
 	}()
 	return out
 }
@@ -95,9 +95,15 @@ func clientNetwork(n byte) ClientNetwork {
 	return k
 }
 
-// client는 n번 기기를 나타낸다: 기기마다 클라이언트 키와 네트워크가 따로다.
+// recipientOf는 n번 기기가 브라우저에서 만든 것으로 치는 age 수신자 문자열이다.
+// 코디네이터는 모양을 검사하지 않고 저장해 송신자에게 건네기만 한다.
+func recipientOf(n byte) string {
+	return fmt.Sprintf("age1pq1recipient%d", n)
+}
+
+// client는 n번 기기를 나타낸다: 기기마다 클라이언트 키, 네트워크, 수신자가 따로다.
 func client(n byte) JoinClient {
-	return JoinClient{Device: "d", Key: clientKey(n), Network: clientNetwork(n)}
+	return JoinClient{Device: "d", Recipient: recipientOf(n), Key: clientKey(n), Network: clientNetwork(n)}
 }
 
 func newTestCoordinator(t *testing.T, opts CoordinatorOptions) *Coordinator {
@@ -180,25 +186,37 @@ func TestCoordinator_LifecycleConfirmationOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() failed: %v", err)
 	}
-	if len(init.Code) != 6 || len(init.Salt) != 16 || init.ExpiresIn <= 0 || init.SenderToken == "" {
+	if len(init.Code) != 6 || init.ExpiresIn <= 0 || init.SenderToken == "" {
 		t.Fatalf("Init() invalid output: %+v", init)
 	}
 
-	join, err := coord.Join(init.Code, JoinClient{Device: "Chrome on Windows", Key: clientKey(1)})
+	if _, err := coord.Join(init.Code, client(2)); err != nil {
+		t.Fatalf("Join of a device that never opens Receive: %v", err)
+	}
+	join, err := coord.Join(init.Code, JoinClient{Device: "Chrome on Windows", Recipient: recipientOf(1), Key: clientKey(1)})
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}
 	if join.VerifyCode != "" || join.Device != "" || join.RequireConfirmation {
 		t.Fatalf("confirmation-off join leaked verification fields: %+v", join)
 	}
+	if snap := waitUntil(t, coord, init, func(WaitSnapshot) bool { return true }); snap.ReceiverReady || snap.Recipient != "" || len(snap.Pending) != 0 {
+		t.Fatalf("snapshot before any Receive = %+v, want no recipient and no pending list", snap)
+	}
 	received := startReceive(ctx, coord, init.Code, join.ConnectionID)
+
+	// 확인 없는 모드에서 송신자는 먼저 Receive를 연 기기의 수신자만 알게 된다.
+	ready := waitUntil(t, coord, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
+	if ready.Recipient != recipientOf(1) {
+		t.Fatalf("ready snapshot recipient = %q, want the attached receiver's %q", ready.Recipient, recipientOf(1))
+	}
 
 	payload := bytes.Repeat([]byte("Flick live relay streaming data chunk! 1234567890\n"), 4096) // ~200 KiB
 	if _, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{Kind: "file", EncryptedFilename: "dGVzdC50eHQ="}, bytes.NewReader(payload)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	got := recv(t, received)
-	if got.err != nil || !bytes.Equal(got.body, payload) || !bytes.Equal(got.salt, init.Salt) {
+	if got.err != nil || !bytes.Equal(got.body, payload) {
 		t.Fatalf("receive mismatch: err=%v len=%d", got.err, len(got.body))
 	}
 	if got.meta.Kind != "file" || got.meta.EncryptedFilename != "dGVzdC50eHQ=" {
@@ -286,7 +304,7 @@ func TestCoordinator_VerifyCodesArePerConnectionAndDistinct(t *testing.T) {
 
 	seen := map[string]bool{}
 	for i := 0; i < MaxPendingConnections; i++ {
-		join, err := coord.Join(init.Code, JoinClient{Device: "Safari on iPhone", Key: clientKey(byte(i)), Network: clientNetwork(byte(i))})
+		join, err := coord.Join(init.Code, JoinClient{Device: "Safari on iPhone", Recipient: recipientOf(byte(i)), Key: clientKey(byte(i)), Network: clientNetwork(byte(i))})
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
@@ -308,6 +326,9 @@ func TestCoordinator_VerifyCodesArePerConnectionAndDistinct(t *testing.T) {
 			t.Fatalf("pending[%d] = %+v, want join order with issued codes", i, p)
 		}
 	}
+	if snap.Recipient != "" {
+		t.Fatalf("snapshot recipient %q before any receiver attached", snap.Recipient)
+	}
 }
 
 func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
@@ -326,7 +347,12 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 		joins = append(joins, join)
 		polls = append(polls, pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 200*time.Millisecond))
 	}
-	waitPending(t, coord, init, 3)
+	pending := waitPending(t, coord, init, 3)
+	for i, p := range pending.Pending {
+		if p.ID != joins[i].ConnectionID || p.Recipient != recipientOf(byte(i)) {
+			t.Fatalf("pending[%d] = %+v, want its own recipient %q", i, p, recipientOf(byte(i)))
+		}
+	}
 
 	if err := coord.Select(init.Code, init.SenderToken, joins[1].ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
