@@ -252,7 +252,7 @@ test('a body that fails to authenticate after the open is final and shows nothin
 			.getByRole('alert')
 			.filter({
 				hasText:
-					"This link is damaged, so the secret couldn't be decrypted. It can't be opened again. Ask the sender to send the full link again."
+					"This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again."
 			})
 			.waitFor();
 		assert.equal(await open.isEnabled(), false);

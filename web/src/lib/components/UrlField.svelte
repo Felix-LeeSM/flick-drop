@@ -12,6 +12,8 @@ type Props = {
 	copyLabel?: string;
 	// The link the page exists to hand over gets a labeled primary copy button.
 	prominent?: boolean;
+	// Runs only after the clipboard write succeeds.
+	oncopied?: () => void;
 };
 
 let {
@@ -20,7 +22,8 @@ let {
 	class: className = '',
 	label = 'Share URL',
 	copyLabel = 'Copy to clipboard',
-	prominent = false
+	prominent = false,
+	oncopied
 }: Props = $props();
 
 let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -34,6 +37,7 @@ async function copy(): Promise<void> {
 	try {
 		await navigator.clipboard.writeText(value);
 		copyState = 'copied';
+		oncopied?.();
 		resetTimer = setTimeout(() => {
 			copyState = 'idle';
 		}, 2400);

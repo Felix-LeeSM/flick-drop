@@ -164,13 +164,12 @@ function submitOpen(event: SubmitEvent): void {
 }
 
 // The server has already burned the secret, so each message names what broke and
-// the one thing left to do: ask the sender again.
+// the one thing left to do: ask the sender again. A Model B key reaching this point
+// already passed isIntactKey, so a decrypt failure is damaged ciphertext rather than
+// a damaged link, and both models share one message.
 function consumedFailureMessage(): string {
 	if (transportBroken) {
 		return "The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again.";
-	}
-	if (accessModel === 'b') {
-		return "This link is damaged, so the secret couldn't be decrypted. It can't be opened again. Ask the sender to send the full link again.";
 	}
 	return "This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again.";
 }

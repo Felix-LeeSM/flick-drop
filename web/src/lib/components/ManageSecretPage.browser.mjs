@@ -204,7 +204,7 @@ for (const model of ['a', 'b']) {
 	});
 }
 
-test('leaving before the recipient link is handed off asks first, and stops asking after Copy', async () => {
+test('leaving before the recipient link is handed off asks first, in-app links too, and stops only after a successful Copy', async () => {
 	const page = await browser.newPage();
 	try {
 		await fixture(page);
@@ -226,11 +226,33 @@ test('leaving before the recipient link is handed off asks first, and stops aski
 		await asked;
 		assert.deepEqual(dialogs, ['beforeunload']);
 		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 1);
-		// Given Copy로 링크를 넘긴 뒤 When 새로고침하면 Then 묻지 않고 떠난다.
+		// Given 앱 안 링크(Create another) When 누르면 Then 확인을 묻고, 취소하면 머문다.
+		const confirmed = page.waitForEvent('dialog');
+		await page.getByRole('link', { name: 'Create another', exact: true }).click();
+		await confirmed;
+		await page.getByLabel('Share URL', { exact: true }).waitFor();
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm']);
+		// Given 클립보드 쓰기가 실패하면 When 새로고침하면 Then 아직 넘기지 않았으니 다시 묻는다.
+		await page.evaluate(() => {
+			navigator.clipboard.writeText = () =>
+				Promise.reject(new DOMException('denied', 'NotAllowedError'));
+		});
+		await page.getByRole('button', { name: 'Copy recipient link', exact: true }).click();
+		const askedAgain = page.waitForEvent('dialog');
+		await page.evaluate(() => location.reload());
+		await askedAgain;
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm', 'beforeunload']);
+		// Given Copy가 성공해 링크를 넘긴 뒤 When 새로고침하면 Then 묻지 않고 떠난다.
+		await page.evaluate(() => {
+			navigator.clipboard.writeText = (value) => {
+				window.copied.push(value);
+				return Promise.resolve();
+			};
+		});
 		await page.getByRole('button', { name: 'Copy recipient link', exact: true }).click();
 		await page.reload();
 		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
-		assert.deepEqual(dialogs, ['beforeunload']);
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm', 'beforeunload']);
 	} finally {
 		await page.close();
 	}
