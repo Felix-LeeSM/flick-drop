@@ -7,7 +7,11 @@ Flick stores only ciphertext and metadata on the server side.
 ```text
 api.db
   owner: flick-api
-  contains: secrets, small ciphertext BLOBs, audit_events, outbox_events
+  contains: secrets, secret_payloads (small ciphertext BLOBs),
+            secret_management, secret_open_grace, requests, request_payloads,
+            per-backend reconciliation cursors and pending claims,
+            usage_counters, outbox_events
+            (internal/db/migrations.go:MigrateAPI, internal/db/requests.go)
 
 worker.db
   owner: flick-worker
@@ -198,8 +202,10 @@ and retention locks remain operator-owned residual risks. Failed listing or
 blocked deletion must stay visible and retryable, not count as successful
 erasure. No new bucket-setting startup gate or automatic policy change is
 introduced. Provider lifecycle is an optional backstop, not an assumed
-configuration or deletion SLA. The API stores a single generation-fenced listing cursor and one pending job ID
-per key. Each tick gives expiry and listing their own bounded batch; a failed
+configuration or deletion SLA. The API stores one generation-fenced listing
+cursor per storage backend (`object_reconciliation_cursor_v2`) and one pending
+job ID per backend and key (`object_reconciliation_pending_v2`), as read and
+written by `internal/secrets/reconciliation.go`. Each tick gives expiry and listing their own bounded batch; a failed
 expiry batch does not prevent listing. Invalid provider cursors restart a pass;
 other listing failures retain the cursor and claims for retry. The worker
 acknowledges terminal receipts through the [internal API](../../contracts/internal-api.md).

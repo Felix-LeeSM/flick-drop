@@ -21,7 +21,7 @@ API-owned mutations.
 create table secrets (
   id text primary key,
   kind text not null check (kind in ('text', 'file')),
-  storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object')),
+  storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
   storage_key text not null,
   access_kdf_params_json text,
   access_proof_hash text,
@@ -44,6 +44,10 @@ create table secrets (
 
 create index idx_secrets_expires_at on secrets(expires_at);
 create index idx_secrets_consumed_at on secrets(consumed_at);
+create index idx_secrets_storage_key on secrets(storage_key);
+-- Covers both reaper conditions (active expiry and pending_upload orphan).
+create index idx_secrets_reclaim_pending on secrets(state, expires_at, created_at)
+  where reclaim_enqueued_at is null and consumed_at is null;
 
 create table secret_payloads (
   secret_id text primary key,
@@ -71,28 +75,19 @@ create table secret_open_grace (
 
 create index idx_secret_open_grace_until on secret_open_grace(grace_until);
 
-create table object_reconciliation_cursor (
-  id integer primary key check (id = 1),
+-- Per-backend reconciliation state; MigrateAPI seeds one row per backend.
+create table object_reconciliation_cursor_v2 (
+  backend text primary key check (backend in ('s3_object', 'r2_object')),
   continuation_token text not null default '',
   generation integer not null default 0
 );
 
-create table object_reconciliation_pending (
-  object_key text primary key,
-  job_id text not null unique
+create table object_reconciliation_pending_v2 (
+  backend text not null,
+  object_key text not null,
+  job_id text not null unique,
+  primary key (backend, object_key)
 );
-
-create table audit_events (
-  id integer primary key autoincrement,
-  secret_id text,
-  event_type text not null,
-  ip_hash text,
-  user_agent_hash text,
-  created_at datetime not null
-);
-
-create index idx_audit_events_secret_id on audit_events(secret_id);
-create index idx_audit_events_created_at on audit_events(created_at);
 
 create table outbox_events (
   id text primary key,
@@ -152,7 +147,9 @@ payload.
 ## Request schema
 
 M9 [request links](request-links.md) use separate API-owned metadata and inline/object storage.
-`internal/db/migrations.go:MigrateAPI` creates the following tables and index
+`internal/db/requests.go:requestsTableSchema` and
+`internal/db/requests.go:normalizeRequestsSchema`, both run by
+`internal/db/migrations.go:MigrateAPI`, create the following tables and indexes
 idempotently, without changing existing send secrets or worker tables:
 
 ```sql
@@ -169,7 +166,7 @@ create table requests (
   kind text check (kind in ('text', 'file')),
   size_bytes integer check (size_bytes >= 0),
   envelope_json text,
-  storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object')),
+  storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
   upload_key text,
   final_key text,
   ciphertext_sha256 blob check (length(ciphertext_sha256) = 32),
@@ -177,18 +174,24 @@ create table requests (
   consumed_at text,
   expires_at text not null,
   check ((attempt_token_hash is null) = (attempt_body_hash is null)),
-  check (state != 'uploading' or (storage_backend = 's3_object' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
-  check (state != 'submitted' or storage_backend != 's3_object' or (final_key is not null and ciphertext_sha256 is not null)),
+  check (state != 'uploading' or (storage_backend in ('s3_object', 'r2_object') and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
+  check (state != 'submitted' or storage_backend not in ('s3_object', 'r2_object') or (final_key is not null and ciphertext_sha256 is not null)),
   check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
 );
 
 create index idx_requests_expires_at on requests(expires_at, id);
+create index idx_requests_reservations on requests(reservation_expires_at, id)
+  where state = 'uploading';
+create unique index idx_requests_upload_key on requests(upload_key)
+  where upload_key is not null;
+create unique index idx_requests_final_key on requests(final_key)
+  where final_key is not null;
 
 create table request_payloads (
   request_id text primary key,
   ciphertext blob not null,
   foreign key (request_id) references requests(id) on delete cascade
-		);
+);
 ```
 
 `expires_at` is fixed-width UTC with nine fractional digits for exact indexed
@@ -221,20 +224,42 @@ Request reconciliation has independent API-owned progress, never shared with
 sender-secret cursors or claims:
 
 ```sql
-create table request_reconciliation_cursor (
-  id integer primary key check (id = 1),
+create table request_reconciliation_cursor_v2 (
+  backend text primary key check (backend in ('s3_object', 'r2_object')),
   continuation_token text not null default '',
   generation integer not null default 0
 );
-create table request_reconciliation_pending (
-  object_key text primary key,
-  job_id text not null unique
+create table request_reconciliation_pending_v2 (
+  backend text not null,
+  object_key text not null,
+  job_id text not null unique,
+  primary key (backend, object_key)
 );
 ```
 
-The cursor singleton is initialized idempotently. Scans commit cursor generation,
-claims and outbox rows together. A worker terminal ACK removes only the matching
-key/job-ID claim, so later PUTs can receive a new cleanup job after metadata is gone.
+`normalizeRequestsSchema` seeds one cursor row per backend (`s3_object`,
+`r2_object`) idempotently. `internal/requests/cleanup.go` scans each backend
+separately and commits that backend's cursor generation, claims, and outbox
+rows together. A worker terminal ACK removes only the matching
+backend/key/job-ID claim, so later PUTs can receive a new cleanup job after
+metadata is gone.
+
+## Legacy reconciliation tables
+
+`MigrateAPI` still creates the single-backend tables `object_reconciliation_cursor`,
+`object_reconciliation_pending` (`internal/db/migrations.go`),
+`request_reconciliation_cursor`, and `request_reconciliation_pending`
+(`internal/db/requests.go:normalizeRequestsSchema`). They predate the second
+storage backend: a single cursor row cannot track two buckets, and a pending
+table keyed on `object_key` alone collides when both backends hold the same key.
+No runtime code reads or writes them; they stay so that existing databases keep
+a valid schema without a destructive migration.
+
+## Backend widening
+
+`internal/db/migrations.go:widenSecretsBackends` and
+`internal/db/requests.go:widenRequestsBackends` rebuild `secrets` and `requests`
+in place when their stored CHECK constraints predate `'r2_object'`.
 
 ## `worker.db`
 
@@ -327,9 +352,11 @@ their consumed (locked) secret metadata, without changing legacy locked-row
 retention. Public management reads enforce
 the deadline even while cleanup is delayed. Cancellation deletes its live row and inline payload after committing the
 `cancelled` outcome and required object-delete outbox record in the same
-transaction. `object_reconciliation_cursor` has one row (`id = 1`); its generation
-fences concurrent listing results, and the continuation token advances only with
-the page's outbox jobs. `object_reconciliation_pending` permits one outstanding
-job per object key. A terminal worker acknowledgement deletes only the matching
-key/job-ID pair. These tables have no foreign key to delivery or management rows,
+transaction. `object_reconciliation_cursor_v2` has one row per backend
+(`s3_object`, `r2_object`); each row's generation fences concurrent listing
+results for that bucket, and its continuation token advances only with the
+page's outbox jobs (`internal/secrets/reconciliation.go`).
+`object_reconciliation_pending_v2` permits one outstanding job per backend and
+object key. A terminal worker acknowledgement deletes only the matching
+backend/key/job-ID triple. These tables have no foreign key to delivery or management rows,
 so late-object cleanup survives their expiry; completed claims leave no tombstone.

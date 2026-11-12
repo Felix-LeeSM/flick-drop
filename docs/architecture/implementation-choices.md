@@ -1,7 +1,7 @@
 # Implementation Choices
 
-These defaults are selected before code initialization so scaffolded code does
-not drift across services.
+These are the implementation defaults every Flick service follows, recorded so
+the services do not drift apart.
 
 ## Frontend
 
@@ -19,6 +19,18 @@ Rationale:
   allowed in browser code.
 
 If SSR-only needs appear later, the adapter choice can be revisited.
+
+### Supported browsers
+
+The web build uses Tailwind CSS 4 (`web/package.json`), whose output relies on
+CSS `@property` and `color-mix()`. Supported browsers are Safari 16.4+,
+Chrome 111+ (and Chromium-based Edge), and Firefox 128+. Older browsers,
+often an outdated iOS in-app browser, render a half-styled page.
+`web/src/app.html` runs an inline ES5 check (`window.CSSPropertyRule` and
+`CSS.supports('color', 'color-mix(in srgb, red, blue)')`) before the app loads
+and, when either is missing, inserts a `role="alert"` notice asking the reader
+to update the browser before opening a secret. The check opens or consumes
+nothing.
 
 ## Backend HTTP
 
@@ -67,9 +79,13 @@ Rationale:
   secondary (`r2_object`) resolved through `storage.Registry`, so free-tier
   capacity pools without moving existing objects. Placement honors per-backend
   byte ceilings (`storage.ChooseBackend`); see `storage-model.md`.
-- MinIO is the integration-test double: it is the only proof the manual presigned
-  POST signing (`internal/storage/presigned.go`) interoperates with a real S3
-  endpoint. The AWS SDK v2 only supports presigned PUT, hence the manual path.
+- Browser uploads use a presigned PUT from the SDK's `PresignPutObject`
+  (`internal/storage/presigned.go:PresignPUT`). The signature covers
+  `Content-Length`, so the bucket rejects any body that is not exactly the
+  declared age file length. Flick uses PUT rather than presigned POST because
+  OCI's S3 Compatibility API does not implement POST Object.
+- MinIO is the integration-test double: it proves the presigned PUT and
+  signed `Content-Length` interoperate with a real S3 endpoint.
 
 ## Containers
 
@@ -107,7 +123,13 @@ friendly.
 
 ## Passphrase KDF
 
-Passphrase input is required in the MVP. Share links contain only secret IDs.
+A passphrase is optional. Model A (passphrase) secrets derive an access proof
+and wrap the age identity with the passphrase; Model B (link-key) secrets carry
+a random key in the URL fragment (`#key=...`) and store no access KDF or proof
+hash (`docs/architecture/security-model.md`, "Model B — Passphrase Optional").
+The share link path and query contain only the secret ID in both models.
+
+The access proof KDF below applies to Model A only.
 
 Access proof KDF:
 
@@ -133,8 +155,10 @@ the access proof keeps PBKDF2. See
 The server must not receive the passphrase or a value that can directly decrypt
 the secret.
 
-The browser also derives a separate access proof with its own KDF salt. The API
-stores a hash of that proof and returns ciphertext only from an atomic verified
-open operation that marks the secret consumed. Invalid proof attempts increment
+For Model A the browser also derives a separate access proof with its own KDF
+salt. The API stores a hash of that proof and returns ciphertext only from an
+atomic verified open operation that deletes the `secrets` row, its inline
+payload, and its management record in one transaction
+(`internal/httpapi/secrets.go:openAndCommit`). Invalid proof attempts increment
 a server-side counter without storing passphrases or decrypt keys; the fifth
 failed attempt marks the secret consumed and removes its ciphertext payload.

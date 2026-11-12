@@ -1,9 +1,10 @@
 # age Format v1
 
-Status: contract for M13. `internal/clientcrypto/age.go` and
-`web/src/lib/crypto/age.ts` implement the client side, and the API stores and
-streams age files (see API Mapping). The browser pages and CLI switch over in
-the following M13 issues.
+Status: current payload format for every Flick client. `internal/clientcrypto/age.go`
+(used by the `flick` CLI in `internal/flickcli`) and `web/src/lib/crypto/age.ts`
+(used by the browser) implement the client side, and the API stores and streams
+age files without reading them (see API Mapping). Send links, request links,
+and the live relay all use this format.
 
 ## Why age
 
@@ -52,7 +53,13 @@ independent.
 | body | text secret (UTF-8) or file bytes | inline column or object storage, raw bytes |
 | filename | UTF-8 filename (file secrets only) | API field, base64 |
 
-The plaintext size limit is 256 MiB for every client and browser.
+The plaintext size limit is the deployment's `FLICK_MAX_FILE_BYTES`
+(default 268,435,456 bytes = 256 MiB, `internal/config/defaults.go`), which
+`GET /api/config` advertises as `max_file_bytes`. The browser
+(`web/src/lib/api/config.ts`) and the CLI (`internal/flickcli/client.go`) read
+that value and fall back to the same 256 MiB default only when `/api/config`
+is unreachable. A deployment without object storage advertises a smaller
+effective limit (`internal/config/config.go:EffectiveMaxFileBytes`).
 
 Ciphertext size is exact and depends only on the header length `H` and the
 plaintext length `n`:
@@ -95,7 +102,7 @@ passphrase, costs one scrypt run per open for body and filename together, and
 keeps the body format identical for Model A and Model B.
 
 The access proof is unchanged: PBKDF2-SHA-256, 600,000 iterations, its own salt
-(`internal/clientcrypto/crypto.go:DeriveAccessProof`). Because the server holds
+(`internal/clientcrypto/access.go:DeriveAccessProof`). Because the server holds
 the proof hash, a server-side attacker can test passphrases at PBKDF2 cost
 regardless of the scrypt work factor. scrypt raises the cost only for someone
 who obtains the stored files without the database. Passphrase strength remains
@@ -136,14 +143,17 @@ a client changed the format.
 - The server checks lengths and the age magic line only. It cannot read
   anything inside.
 - There is no presigned GET. The API streams the body from the bucket. It
-  starts the bucket read before marking the secret consumed, so a bucket that
-  cannot serve the body leaves the secret openable. A transfer that breaks after
+  starts the bucket read before committing the open (which deletes the secret
+  row), so a bucket that cannot serve the body leaves the secret openable. A transfer that breaks after
   the response has started loses the secret; the recipient's age decryption
   then fails at the missing final chunk instead of showing a partial file.
 - A stream may last at most 30 minutes (`secrets.OpenStreamTimeout`). The API
-  queues the bucket delete when the stream ends. Object reconciliation leaves a
-  just-opened object alone for 35 minutes, and the expiry purge keeps the
-  secret's row that long too, so neither deletes a body that is still streaming.
+  queues the bucket delete when the stream ends. The open transaction records
+  the object key in `secret_open_grace` for 35 minutes, and object
+  reconciliation leaves that key alone until then, so it never deletes a body
+  that is still streaming. An opened request link keeps its row and
+  `consumed_at` for the same 35 minutes
+  (`docs/architecture/database-schema.md`).
 - Limits: `/api/config` advertises sizes before encryption. The server's
   ciphertext caps add `AgeHeaderAllowanceBytes` (4,096), the 16-byte payload
   nonce, and 16 bytes per 64 KiB chunk (`internal/secrets/age.go`).
@@ -158,3 +168,37 @@ There is no passphrase and no wrapped identity. Bodies and filenames map to the
 API as for secrets: `size_bytes` is the exact age file length, the filename is
 `envelope.encrypted_filename` on submit, and open returns the raw body with
 `Flick-Kind` and `Flick-Encrypted-Filename` headers.
+
+## Live Relay (Send with Code)
+
+The live relay (`/api/pipe/*`, `internal/piperelay`) streams one age file from
+a sending browser to a receiving browser through API memory. Nothing is stored
+in SQLite or object storage, and the 6-digit code only routes requests; it is
+not key material. The full threat model is in
+`docs/architecture/security-model.md`, section "Live Relay (Send with Code)".
+
+- **Receiver identity.** For each receive attempt the receiving browser
+  generates a fresh hybrid identity (`AGE-SECRET-KEY-PQ-1...`, the same type as
+  Per-Secret Identity above) with `createPipeReceiverKey` in
+  `web/src/lib/crypto/pipe.ts`. The identity stays in that browser's memory
+  only: it is never stored, put in a URL, or sent.
+- **Recipient on join.** `POST /api/pipe/join` sends only the recipient
+  (`{"recipient":"age1pq1..."}`, `joinPipe` in `web/src/lib/crypto/pipe.ts`).
+  `internal/httpapi/piperelay.go:validPipeRecipient` accepts only a hybrid
+  recipient and answers `400 invalid_recipient` otherwise. The API hands
+  recipients only to the sender token holder, through `GET /api/pipe/wait`.
+- **Sender encryption.** The sender encrypts the body stream to that recipient
+  (`encryptToRecipient` from `web/src/lib/crypto/age.ts`, called in
+  `web/src/lib/state/pipe-relay.svelte.ts:streamPayload`) and, for a file, the
+  UTF-8 filename as a separate age file (`encryptPipeFilename`).
+- **Wire mapping.** `POST /api/pipe/send` carries the body as raw age bytes
+  (`Content-Type: application/octet-stream`) with `Flick-Kind` and, for files,
+  `Flick-Encrypted-Filename` (base64 age file). `GET /api/pipe/receive` returns
+  the same raw stream and headers. The receiver decrypts the body with
+  `decryptWith` and the filename with `decryptPipeFilename`.
+
+There is no passphrase and no wrapped identity in a code transfer. Known limit:
+the recipient exchange is not authenticated against the server, so an actively
+malicious server can substitute its own recipient on `/wait` (a
+man-in-the-middle); the 3-digit confirmation number does not detect this
+because the server draws it and it is not derived from either key.
