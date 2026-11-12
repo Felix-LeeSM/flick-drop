@@ -100,8 +100,9 @@ Recommended bucket boundary:
 - align bucket lifecycle cleanup with Flick TTL, cleanup lag, and backup policy
 
 M8 [sender management v1](../../contracts/sender-management-v1.md) adds
-List permission for the exclusive `managed/secrets/` prefix alongside existing
-Get/Put/Delete permissions. Verify pagination and late-PUT cleanup
+List permission for the exclusive `managed/secrets/` and `managed/requests/`
+prefixes (`internal/secrets/management.go`, `internal/requests/large.go`)
+alongside existing Get/Put/Delete permissions. Verify pagination and late-PUT cleanup
 against the configured provider. Existing lifecycle rules do not prove that
 recurring API reconciliation exists or is healthy. The operator retains control
 of historical versions, replicas, and retention/object-lock policies; blocked
@@ -169,8 +170,29 @@ FLICK_MAX_FILE_BYTES=268435456
 FLICK_DEFAULT_TTL_SECONDS=3600
 FLICK_MIN_TTL_SECONDS=300
 FLICK_MAX_TTL_SECONDS=604800
-FLICK_WORKER_CONCURRENCY=2
+FLICK_CSP_CONNECT_SRC=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
+FLICK_TRUSTED_PROXIES=<ingress-controller-pod-cidr>
 ```
+
+`FLICK_CSP_CONNECT_SRC` is read by the `flick-web` container
+(`web/nginx-templates/csp.conf.template`) and appended to the CSP
+`connect-src`. With `FLICK_STORAGE_LARGE_BACKEND=s3` the browser uploads large
+files straight to the presigned `FLICK_S3_ENDPOINT` URL, so the endpoint origin
+(`scheme://host[:port]`) must be listed or the browser blocks the upload. When
+the secondary backend is enabled (`FLICK_R2_ENABLED=true`), list both origins
+separated by a space.
+
+`FLICK_TRUSTED_PROXIES` is the comma-separated CIDR list whose peers may set
+`X-Forwarded-For` (`internal/config/config.go`,
+`internal/httpapi/ratelimit.go`). Behind an ingress controller the API's direct
+peer is always the controller pod, so leaving it empty makes every client share
+one per-minute rate-limit bucket for create and open. Set it to the pod CIDR
+that the ingress controller runs in (on a default k3s cluster that is the
+cluster CIDR `10.42.0.0/16`), and only to addresses that client traffic cannot
+reach directly. When a CDN or reverse proxy (for example Cloudflare)
+sits in front of the ingress, also list that provider's published egress ranges,
+so the API reads the real client address from the `X-Forwarded-For` hop the
+CDN added instead of bucketing every visitor under the CDN's address.
 
 Patch `Secret/flick-secrets` for sensitive values:
 
@@ -278,10 +300,16 @@ curl -fsS http://127.0.0.1:18080/readyz
 Then test through public HTTPS ingress:
 
 ```sh
-curl -fsS https://<domain>/api/healthz
-curl -fsS https://<domain>/api/readyz
 curl -fsS https://<domain>/healthz
+curl -fsS https://<domain>/api/config
 ```
+
+`/healthz` on the public host is answered by the `flick-web` nginx
+(`web/nginx.conf`), and `/api/config` proves that ingress routes `/api` to
+`flick-api` (`deploy/base/ingress.yaml`). The API registers its `/healthz` and
+`/readyz` probes at the root path only (`internal/httpapi/router.go`), so
+`https://<domain>/api/healthz` and `/api/readyz` return 404; check API readiness
+through the port-forward above.
 
 Production deployments require HTTPS at ingress. Plain public HTTP is not an
 acceptable production transport.
@@ -368,11 +396,15 @@ transit congestion and TCP packet loss. At 300 KB/s, a 256 MiB download takes
    sudo sysctl -w net.core.default_qdisc=fq
    sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
    ```
-5. **Direct Storage Routing (Cross-Reference Issue #259)**:
-   For deployments where origin egress or international transit remains a
-   bottleneck, consider direct storage delivery via presigned URLs or CDN-fronted
-   object storage (e.g., Cloudflare R2 or multi-bucket routing), which avoids
-   proxying large ciphertext through the single origin instance.
+5. **Secondary Object Backend (Cloudflare R2)**:
+   Flick can run a Cloudflare R2 bucket in parallel with the primary S3 bucket
+   (`FLICK_R2_ENABLED=true` and the `FLICK_R2_*` variables in
+   [Environment contract](../architecture/env-contract.md#r2-secondary-backend)).
+   New objects land on the primary until its `FLICK_S3_MAX_TOTAL_BYTES` ceiling
+   cannot fit them and then go to R2; existing objects never move
+   (`storage.ChooseBackend` in `internal/storage/registry.go`). Opens still
+   stream ciphertext through the API (`internal/storage/object.go`), so R2 adds
+   free-tier capacity, not a download path that bypasses the origin.
 
 ## Smoke Test
 

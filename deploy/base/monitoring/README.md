@@ -84,8 +84,8 @@ Useful series:
 ## VictoriaMetrics single — storage and queries
 
 `kube-state-metrics` and `node-exporter` only *expose* metrics; nothing stored
-or queried them until this. VictoriaMetrics single-node (`vmsingle`) scrapes all
-three targets, stores the series on a PVC, and serves the query API + `vmui` on
+or queried them until this. VictoriaMetrics single-node (`vmsingle`) scrapes the
+five targets listed below (`ConfigMap/vmsingle-scrape` in `vmsingle.yaml`), stores the series on a PVC, and serves the query API + `vmui` on
 `:8428`. Full Prometheus is too heavy for a ~1GB node; vmsingle is the
 low-footprint substitute (128Mi request, 384Mi limit, `--memory.allowedPercent=70`,
 14-day retention).
@@ -97,8 +97,12 @@ vmsingle itself still needs no API access; the `nodes/metrics` RBAC belongs to
 It uses static / `dns_sd` scraping instead of Kubernetes service discovery, so it
 needs **no API access and no RBAC**:
 
+- `vmsingle` (`127.0.0.1:8428`) — vmsingle's own metrics.
 - `flick-api:8080/metrics` — bearer-guarded; the token is mounted from
   `flick-secrets` (`FLICK_METRICS_TOKEN`).
+- `flick-worker` (`flick-worker-metrics:9091/metrics`) — the worker's dedicated
+  metrics listener (`Service/flick-worker-metrics` in `deploy/base/worker.yaml`),
+  bearer-guarded with the same mounted `FLICK_METRICS_TOKEN`.
 - `kube-state-metrics:8080` — stable Service DNS.
 - `node-exporter` — the headless Service's A record returns every pod IP, so each
   node is scraped on the overlay network (the FQDN
@@ -106,13 +110,14 @@ needs **no API access and no RBAC**:
 
 ### Token setup
 
-The `flick-api` scrape sends `Authorization: Bearer <flick-secrets/FLICK_METRICS_TOKEN>`.
-With the base placeholder (`replace-me-before-use`) the API returns **401** and the
-`flick-api` target stays down; set the real `FLICK_METRICS_TOKEN` in the private
+The `flick-api` and `flick-worker` scrapes send
+`Authorization: Bearer <flick-secrets/FLICK_METRICS_TOKEN>`. With the base
+placeholder (`replace-me-before-use`) the API and the worker return **401** and
+both targets stay down; set the real `FLICK_METRICS_TOKEN` in the private
 overlay (the same value the API runs with). Set it with **no trailing newline**
 (e.g. `printf %s "$token"`, not `echo`): the API compares the raw token, so a
-stray `\n` in the Secret value breaks the scrape. The other two targets are
-unauthenticated.
+stray `\n` in the Secret value breaks the scrape. The `vmsingle`,
+`kube-state-metrics`, and `node-exporter` targets are unauthenticated.
 
 ### Apply and inspect
 
@@ -123,7 +128,7 @@ kubectl -n flick rollout status deploy/vmsingle
 kubectl -n flick port-forward service/vmsingle 18428:8428
 # vmui dashboard:
 open http://127.0.0.1:18428/vmui
-# scrape target health (every target should be up=1; flick-api needs the token):
+# scrape target health (every target should be up=1; flick-api and flick-worker need the token):
 curl -fsS 'http://127.0.0.1:18428/api/v1/query?query=up' | jq '.data.result[] | {job:.metric.job, up:.value[1]}'
 ```
 
@@ -182,6 +187,31 @@ lookahead, which RE2 lacks); every other namespace is dropped before a line is
 read. Traefik must emit its access log in JSON for the dashboard queries to
 parse (the ops overlay enables `accessLog` with `format: json`).
 
+### Log privacy
+
+Shipped logs carry no client IP address and no delivery ID; the rule and its
+reasons live in `docs/architecture/security-model.md` (Logs). Three layers
+enforce it:
+
+- **Alloy, always.** Every line passes the `loki.process "private"` block in
+  `alloy.yaml` before `loki.write`. Its `stage.replace` stages rewrite delivery
+  IDs in `/s/`, `/m/`, `/r/`, `/api/secrets/`, `/api/requests/`, and
+  `/internal/secrets/` paths and in `managed/secrets/` and `managed/requests/`
+  object keys to `<id>`, and IPv4 and IPv6 addresses to `<ip>`. The stage has
+  no setting that turns it off.
+- **flick-web nginx at the source.** The `flick_private` `log_format` in
+  `web/nginx.conf` writes time, method, masked path, status, size, duration,
+  and User-Agent, and omits the client address, the referrer, and the query
+  string. nginx error lines still name the client address; the Alloy stage
+  masks it.
+- **Traefik at the source.** The edge Traefik access log is configured outside
+  this directory, by the operator's ops tooling. That configuration drops the
+  `ClientHost`, `ClientAddr`, and `ClientPort` fields and all request headers
+  (the live relay code and tokens travel in `X-Flick-Pipe-*` headers). Traefik's
+  `RequestPath` still carries the delivery ID; the Alloy stage masks it. An
+  operator reusing this stack with another ingress controller must apply the
+  equivalent field and header drops there.
+
 ## alloy-cadvisor — per-container usage
 
 `alloy-cadvisor.yaml` is a second Alloy DaemonSet that scrapes each node's
@@ -198,25 +228,33 @@ has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160M
 
 ## Grafana — the admin view
 
-Serves the provisioned `Flick 사용량·큐·접속` dashboard (panels are labelled in
-Korean): deliveries/opens/request links from VictoriaMetrics counters,
-aggregated over a selectable bucket — the dashboard variable offers
+Serves the provisioned `Flick 사용량·큐·접속` dashboard (`usage.json`; panels
+are labelled in Korean, quoted here as they appear in `grafana.yaml`):
+`전달 생성`, `열람`, and `요청 링크` from VictoriaMetrics counters,
+aggregated over a selectable bucket — the `버킷` dashboard variable offers
 1분/15분/1시간/1일, all in UTC (dashboards pin `timezone: utc`), and the
-`오늘(UTC 00:00부터)` link jumps to the UTC day boundary; outbox backlog
-and worker job outcomes from the queue series, pod phases, and the Loki
-access-log panels (requests by status, top paths by masked path pattern) plus
-error panels (app `level=ERROR` lines rate and raw view, traefik 4xx/5xx).
+`오늘(UTC 00:00부터)` link jumps to the UTC day boundary; `저장된(암호화된) 바이트`,
+`진행 중인 대용량 업로드`, `실행 중인 프로세스`, and `파드 단계별 수(flick)`;
+`outbox 백로그(발행 대기)`, `outbox 발행, 분당`, and `worker 작업, 분당` from the
+queue series; and the Loki access-log panels `상태코드별 요청, 분당(traefik 접속 로그)`
+and `최근 1시간 인기 경로` (by masked path pattern) plus the error panels
+`앱 에러, 분당` (app `level=ERROR` lines), `실패한 요청 4xx/5xx, 분당(traefik)`, and
+`최근 에러 로그` (raw view).
 A second provisioned dashboard, `Flick 클러스터: 노드와 파드`
-(`cluster.json`), shows where everything runs. Its main panel is a Treemap
-nesting node → namespace → pod → container: tile area is the container's
+(`cluster.json`), shows where everything runs. Its main panel is the Treemap
+`어디에 무엇이 도나: 노드 > 네임스페이스 > 파드 > 컨테이너`, nesting node → namespace → pod → container: tile area is the container's
 memory *request* (16MiB minimum when none is set), tile colour is the container state,
 and hovering a tile shows what the component does, its image, pod phase,
-namespace and node. Below it sit a Nodes table (free/total memory and disk with
-percentages, idle CPU, swap used), a Namespaces table, a pod-phase timeline, a
-Pods table, per-node history graphs, and per-container actual memory (working
-set) and CPU graphs from cAdvisor (see `alloy-cadvisor` above). Node names come from joining
+namespace and node. Below it sit the `노드` table (free/total memory and disk with
+percentages, idle CPU, swap used), the `네임스페이스` table, the `파드 상태 추이`
+timeline, the `현재 파드` table, history graphs (`노드별 파드 수`,
+`단계별 파드 수`, `노드별 가용 메모리`, `노드별 스왑 사용량`,
+`노드별 루트 디스크 사용률`, `노드별 CPU 사용률`), and the cAdvisor graphs
+`컨테이너별 실제 메모리` (working set) and `컨테이너별 CPU 사용량` (see
+`alloy-cadvisor` above). A `노드·네임스페이스·파드 읽는 법` text panel explains the
+terms. Node names come from joining
 node-exporter's pod IP to `kube_pod_info`, so no node name is hard-coded.
-`Nodes down` counts nodes whose Ready condition is not true
+`다운된 노드` counts nodes whose Ready condition is not true
 (`kube_node_status_condition`, from the kube-state-metrics nodes collector), and
 counts 1 while kube-state-metrics itself fails its scrape
 (`up{job="kube-state-metrics"} == 0`): when the node hosting the single
@@ -229,7 +267,7 @@ target vanishes instead of reporting `up=0`. A restarting kube-state-metrics
 pod also reads as 1 for a scrape or two, and while kube-state-metrics is down
 a second dead node is not counted (the panel reads 1, not 2) until the replica
 is rescheduled, about 5 minutes with the default eviction timeout.
-The Container restarts panels read high until 24 hours of samples exist,
+The `컨테이너 재시작(최근 24시간)` and `1시간별 컨테이너 재시작` panels read high until 24 hours of samples exist,
 because VictoriaMetrics `increase()` counts a new series from zero.
 
 The Treemap panel is a plugin: `GF_INSTALL_PLUGINS=marcusolsson-treemap-panel`

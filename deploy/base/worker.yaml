@@ -29,11 +29,6 @@ spec:
                 name: flick-config
             - secretRef:
                 name: flick-secrets
-          env:
-            - name: FLICK_WORKER_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           resources:
             requests:
               cpu: 25m

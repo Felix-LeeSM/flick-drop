@@ -23,7 +23,7 @@ S3-compatible object storage bucket for larger ciphertext
 
 ## Kubernetes Resources
 
-Expected generic manifests:
+Expected generic manifests (`deploy/base/kustomization.yaml`):
 
 ```text
 Namespace/flick
@@ -32,7 +32,9 @@ Deployment/flick-api
 Deployment/flick-worker
 Service/flick-web
 Service/flick-api
+Service/flick-worker-metrics
 Service/nats
+Service/nats-headless
 StatefulSet/nats
 PersistentVolumeClaim/flick-api-data
 PersistentVolumeClaim/flick-worker-data
@@ -41,6 +43,19 @@ ConfigMap/flick-config
 Secret/flick-secrets
 Ingress/flick
 ```
+
+`Service/flick-worker-metrics` (`deploy/base/worker.yaml`) is a ClusterIP
+Service for the worker's bearer-guarded `/metrics` listener on port `9091`.
+`Service/nats-headless` (`deploy/base/nats.yaml`) is the headless governing
+Service of `StatefulSet/nats`; clients connect through `Service/nats`.
+
+Opt-in monitoring lives in `deploy/base/monitoring/` and is applied separately
+with `kubectl apply -k deploy/base/monitoring`; `deploy/base/kustomization.yaml`
+does not include it. It adds kube-state-metrics, node-exporter, VictoriaMetrics
+single (`vmsingle`), Loki, two Alloy DaemonSets (`alloy` for logs,
+`alloy-cadvisor` for container usage), and Grafana with its own
+`Ingress/grafana`. Its components, scrape targets, and resource requests are
+documented in `deploy/base/monitoring/README.md`.
 
 ## Initial Resource Budget
 
