@@ -12,7 +12,6 @@ const resolved = writable<ResolvedTheme>('light');
 let initialized = false;
 let systemScheme: MediaQueryList | null = null;
 
-export const themePreference = { subscribe: preference.subscribe };
 export const resolvedTheme = { subscribe: resolved.subscribe };
 
 export function initializeTheme(): void {

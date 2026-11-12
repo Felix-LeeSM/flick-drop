@@ -5,9 +5,7 @@ import {
 	DownloadIcon,
 	FlameIcon,
 	LoaderCircleIcon,
-	LockKeyholeIcon,
 	LogOutIcon,
-	ShieldCheckIcon,
 	UsersIcon,
 	XIcon,
 	ZapIcon

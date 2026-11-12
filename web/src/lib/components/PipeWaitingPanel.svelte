@@ -13,7 +13,7 @@ import LockStageCard from '#lib/components/LockStageCard.svelte';
 import PipePendingList from '#lib/components/PipePendingList.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
 import StageSteps from '#lib/components/StageSteps.svelte';
-import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
+import { Button } from '#lib/components/ui/button/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
 import {
 	holdMinimumStage,
@@ -23,7 +23,6 @@ import {
 	sleep
 } from '#lib/stage-timing.js';
 import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
-import { cn } from '#lib/utils.js';
 
 // The relay's three stages. The burned step never renders as an active row —
 // reaching it swaps the whole panel to the completed view.
@@ -38,11 +37,9 @@ type Props = {
 	expiresInSeconds?: number;
 	onCancel: () => void;
 	onReset: () => void;
-	isLiveSession?: boolean;
 	statusText?: string;
 	progressPercent?: number;
 	completed?: boolean;
-	totalBytes?: number;
 	failed?: boolean;
 	/** Confirmation on: receivers wait in a list until the sender picks one. */
 	requireConfirmation?: boolean;
@@ -59,11 +56,9 @@ let {
 	expiresInSeconds = 180,
 	onCancel,
 	onReset,
-	isLiveSession = false,
 	statusText = 'Waiting for receiver...',
 	progressPercent = 0,
 	completed = false,
-	totalBytes = 0,
 	failed = false,
 	requireConfirmation = false,
 	pending = [],
