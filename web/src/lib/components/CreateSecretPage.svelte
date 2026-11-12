@@ -177,9 +177,7 @@ const canCreate = $derived(
 );
 // The link tab's passphrase never protects a code send (the receiver's key does),
 // so it neither gates nor explains the code CTA.
-const canPipe = $derived(
-	hasCreatePayload && !isCreating && !bundling && relay.activeCode === null
-);
+const canPipe = $derived(hasCreatePayload && !isCreating && !bundling && relay.activeCode === null);
 const hasResult = $derived(shareUrl.length > 0);
 const remainingSeconds = $derived(remainingSecondsFrom(expiresAt, nowTick));
 
