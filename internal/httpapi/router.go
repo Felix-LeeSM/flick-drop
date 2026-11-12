@@ -219,7 +219,7 @@ func (s Server) cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Flick-Pipe-Code, X-Flick-Pipe-Sender, X-Flick-Pipe-Connection, Flick-Kind, Flick-Encrypted-Filename")
 			// The open response carries its metadata in these headers.
-			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At, X-Flick-Pipe-Salt")
+			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At")
 			w.Header().Set("Vary", "Origin")
 		}
 
