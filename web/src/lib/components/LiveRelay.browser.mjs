@@ -54,6 +54,23 @@ function errorJson(code) {
 	return { error: { code, message: code } };
 }
 
+// 보내는 쪽 대기 화면은 받는 사람에게 헤더의 Code를 누르라고 안내한다.
+test('The header Code button opens the Receive dialog from the default link tab', async () => {
+	const page = await browser.newPage();
+	try {
+		await routeApi(page, (_path, route) => route.continue());
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+
+		await page.locator('header').getByRole('button', { name: 'Enter Code' }).click();
+
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		await dialog.locator('#pipe-code-input').waitFor({ state: 'visible' });
+	} finally {
+		await page.close();
+	}
+});
+
 test('The code tab Enter-it-here button opens the Receive dialog', async () => {
 	const page = await browser.newPage();
 	try {

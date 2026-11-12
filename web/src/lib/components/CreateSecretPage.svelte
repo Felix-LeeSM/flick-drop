@@ -621,10 +621,11 @@ function typePanelId(type: CreateMode): string {
 
 <svelte:window ondragover={onWindowDragOver} ondrop={onWindowDrop} />
 
-<!-- The header keeps logo + theme only: the request and code entry points live in
-     the adaptive heading below (prototype round R1), so `link`/`showEnterCode`
-     stay unpassed. SiteHeader still owns the #code= deep-link modal. -->
-<DeliveryFrame>
+<!-- The request entry point lives in the adaptive heading below (prototype round R1),
+     so `link` stays unpassed. The header Code button stays on every tab: a receiver
+     lands on the link tab, and the sender's waiting panel points them at the header.
+     SiteHeader owns that button's modal and the #code= deep-link modal. -->
+<DeliveryFrame showEnterCode>
 	{#if relay.activeCode !== null}
 		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
 			<PipeWaitingPanel
