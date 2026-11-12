@@ -1,16 +1,15 @@
 import { onDestroy } from 'svelte';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import { encryptToRecipient } from '#lib/crypto/age.js';
 import {
 	cancelPipe,
-	computePipePassphrase,
 	declinePipeConnection,
-	encryptPipeStream,
+	encryptPipeFilename,
 	initPipeRendezvous,
 	type PipePendingConnection,
 	PipeRelayError,
 	selectPipeConnection,
 	sendPipeStream,
-	streamToBytes,
 	waitForPipeUpdate
 } from '#lib/crypto/pipe.js';
 
@@ -24,10 +23,10 @@ export type PipePayload = {
 };
 
 export type PipeRelayOptions = {
-	// Both are read at send time, not at start time, so the page answers from
-	// its live form state. The extra passphrase never leaves browser memory.
+	// Read at send time, not at start time, so the page answers from its live
+	// form state. A code transfer takes no passphrase: the stream is encrypted to
+	// the chosen receiver's age recipient.
 	getPayload: () => PipePayload;
-	getExtraPassphrase: () => string;
 };
 
 /** One receiver waiting for the sender's pick, as the waiting panel lists it. */
@@ -36,6 +35,8 @@ export type PendingReceiver = {
 	index: number;
 	verifyCode: string;
 	device: string;
+	/** The age recipient this device generated; the stream is encrypted to it if picked. */
+	recipient: string;
 	/** Local clock time the connection joined, for the "12s ago" label. */
 	joinedAt: number;
 };
@@ -58,6 +59,7 @@ function mergePending(
 			index: connection.index,
 			verifyCode: connection.verifyCode,
 			device: connection.device,
+			recipient: connection.recipient,
 			joinedAt: known.get(connection.connectionId) ?? now - connection.connectedSeconds * 1000
 		}));
 }
@@ -76,9 +78,8 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	let completed = $state(false);
 	let failed = $state(false);
 	let expiresInSeconds = $state(180);
-	// The sender token and salt never render; they stay out of reactive state.
+	// The sender token never renders; it stays out of reactive state.
 	let senderToken = '';
-	let salt = '';
 	// True once the sender committed to one receiver; the poll loop ends.
 	let sending = false;
 	// True while a Send click waits for /select; a second click is ignored and
@@ -94,25 +95,26 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		failed = true;
 	}
 
-	async function streamPayload(code: string, signal: AbortSignal): Promise<void> {
+	// Encrypts to the receiver's own age recipient, so only that browser's
+	// in-memory identity can open the stream; the API relays ciphertext only.
+	async function streamPayload(
+		code: string,
+		recipient: string,
+		signal: AbortSignal
+	): Promise<void> {
 		try {
-			const passphrase = computePipePassphrase(code, salt, options.getExtraPassphrase());
 			const payload = options.getPayload();
 
 			statusText = 'Encrypting stream on-the-fly (age format)...';
 			progressPercent = 25;
-			const encryptedStream = await encryptPipeStream(payload.stream, passphrase);
+			const encryptedStream = await encryptToRecipient(recipient, payload.stream);
 
 			statusText = 'Streaming encrypted bytes directly to receiver...';
 			progressPercent = 50;
 
-			let encryptedFilename: string | undefined;
-			if (payload.filename) {
-				const filenameBytes = new TextEncoder().encode(payload.filename);
-				const encryptedFilenameStream = await encryptPipeStream(filenameBytes, passphrase);
-				const filenameCipherBytes = await streamToBytes(encryptedFilenameStream);
-				encryptedFilename = btoa(String.fromCharCode(...filenameCipherBytes));
-			}
+			const encryptedFilename = payload.filename
+				? await encryptPipeFilename(recipient, payload.filename)
+				: undefined;
 
 			await sendPipeStream({
 				baseUrl: DEFAULT_API_BASE_URL,
@@ -148,10 +150,15 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			pending = mergePending(pending, update.connections, settled, Date.now());
 			return;
 		}
-		if (update.status === 'ready') {
-			sending = true;
-			await streamPayload(code, signal);
+		if (update.status !== 'ready') {
+			return;
 		}
+		sending = true;
+		if (!update.recipient) {
+			fail(null, 'The receiver did not send an encryption key. Ask them to enter the code again.');
+			return;
+		}
+		await streamPayload(code, update.recipient, signal);
 	}
 
 	// Long-polls the session until the sender commits to a receiver. With
@@ -196,7 +203,6 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			}
 			activeCode = session.code;
 			senderToken = session.senderToken;
-			salt = session.salt;
 			requireConfirmation = session.requireConfirmation;
 			expiresInSeconds = session.expiresIn;
 			pending = [];
@@ -221,6 +227,11 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		if (code === null || signal === undefined || sending || selecting) {
 			return;
 		}
+		const chosen = pending.find((receiver) => receiver.connectionId === connectionId);
+		if (!chosen) {
+			statusText = 'That device is no longer waiting.';
+			return;
+		}
 		selecting = true;
 		statusText = 'Sending to the chosen device...';
 		try {
@@ -239,7 +250,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		sending = true;
 		settled.add(connectionId);
 		pending = [];
-		await streamPayload(code, signal);
+		await streamPayload(code, chosen.recipient, signal);
 	}
 
 	/** Turns one waiting receiver away; its slot reopens and the code stays live. */
@@ -282,7 +293,6 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		}
 		activeCode = null;
 		senderToken = '';
-		salt = '';
 		sending = false;
 		selecting = false;
 		settled = new Set();

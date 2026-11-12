@@ -19,7 +19,7 @@ const configJson = { payload_inline_max_bytes: 1_048_560, max_file_bytes: 268_43
 const corsHeaders = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Headers': '*',
-	'Access-Control-Expose-Headers': 'X-Flick-Pipe-Salt, Flick-Kind, Flick-Encrypted-Filename'
+	'Access-Control-Expose-Headers': 'Flick-Kind, Flick-Encrypted-Filename'
 };
 
 // The header carries no Enter code action (prototype round R1): the receive
@@ -163,16 +163,9 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 		assert.notEqual(color, 'rgba(0, 0, 0, 0)');
 		await page.emulateMedia({ forcedColors: 'none' });
 
-		const toggle = dialog.getByRole('button', { name: 'Has an additional passphrase?' });
-		assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
-		await toggle.click();
-		await dialog.getByLabel('Additional passphrase', { exact: true }).waitFor();
-		assert.equal(
-			await dialog
-				.getByRole('button', { name: 'Hide additional passphrase' })
-				.getAttribute('aria-expanded'),
-			'true'
-		);
+		// A code transfer is encrypted to this device's own key, so the receiver
+		// asks for no passphrase.
+		assert.equal(await dialog.getByLabel('Additional passphrase', { exact: true }).count(), 0);
 
 		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
 		await input.fill('741-928');
@@ -332,7 +325,6 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 					headers: corsHeaders,
 					json: {
 						code: '741928',
-						salt: 'f0e1d2c3b4a59687',
 						expires_in: 180,
 						sender_token: 'tok',
 						require_confirmation: true
@@ -354,6 +346,7 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 							index: i + 1,
 							verify_code: String(101 + i * 111).padStart(3, '0'),
 							device,
+							recipient: `age1pq1placeholder${i + 1}`,
 							connected_seconds: 12
 						}))
 					}
@@ -407,11 +400,14 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 });
 
 // An in-memory stand-in for the /api/pipe waiting room shared by every page in
-// the test: it hands out per-connection numbers, long-polls the sender and the
-// waiting receivers (/status), and forwards the sender's real ciphertext to the
-// chosen receiver only once that receiver opens /receive after "selected".
+// the test: it hands out per-connection numbers, keeps each receiver's age
+// recipient for the sender's list, long-polls the sender and the waiting
+// receivers (/status), and forwards the sender's real ciphertext to the chosen
+// receiver only once that receiver opens /receive after "selected". It records
+// any request that carries an age identity, which must never leave a browser.
 function createRelayMock() {
-	const salt = 'f0e1d2c3b4a59687';
+	const leakedIdentities = [];
+	const joinBodies = [];
 	const numbers = ['150', '271', '319', '428', '563'];
 	const devices = ['Chrome on Windows', 'Safari on iPhone', 'Firefox on Android'];
 	const connections = new Map();
@@ -435,10 +431,13 @@ function createRelayMock() {
 
 	function join(page, route) {
 		joinCalls.set(page, (joinCalls.get(page) ?? 0) + 1);
+		const body = route.request().postDataJSON();
+		joinBodies.push(body);
 		const index = connections.size + 1;
 		const id = `conn-${index}`;
 		const connection = {
 			index,
+			recipient: body.recipient,
 			number: numbers[index - 1],
 			device: devices[(index - 1) % devices.length],
 			decided: Promise.withResolvers(),
@@ -475,6 +474,7 @@ function createRelayMock() {
 					index: c.index,
 					verify_code: c.number,
 					device: c.device,
+					recipient: c.recipient,
 					connected_seconds: 1
 				}))
 			}
@@ -509,7 +509,6 @@ function createRelayMock() {
 			headers: {
 				...corsHeaders,
 				'Content-Type': 'application/octet-stream',
-				'X-Flick-Pipe-Salt': salt,
 				'Flick-Kind': 'text'
 			},
 			body
@@ -541,6 +540,11 @@ function createRelayMock() {
 	}
 
 	function handle(page, path, route) {
+		const request = route.request();
+		const wire = `${JSON.stringify(request.headers())}${request.postData() ?? ''}`;
+		if (wire.includes('AGE-SECRET-KEY')) {
+			leakedIdentities.push(path);
+		}
 		const connection = connections.get(route.request().headers()['x-flick-pipe-connection']);
 		switch (path) {
 			case '/api/pipe/init':
@@ -549,7 +553,6 @@ function createRelayMock() {
 					headers: corsHeaders,
 					json: {
 						code: '741928',
-						salt,
 						expires_in: 180,
 						sender_token: 'tok',
 						require_confirmation: true
@@ -575,7 +578,7 @@ function createRelayMock() {
 		}
 	}
 
-	return { handle, joinCalls };
+	return { handle, joinCalls, joinBodies, leakedIdentities };
 }
 
 async function readOwnNumber(page) {
@@ -600,6 +603,10 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		const sender = await openPage();
 		const message = 'Real-time live relay transfer test';
 		await sender.getByLabel('Message', { exact: true }).fill(message);
+		// A passphrase left on in the link tab must not reach the code transfer:
+		// the receiver below enters none and still decrypts.
+		await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
+		await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
 		await sender
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Send with code' })
@@ -659,6 +666,15 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			.waitFor();
 		await sender.getByRole('heading', { name: 'Transfer complete!' }).waitFor();
 		await sender.getByText('live pipe burned').waitFor();
+		// Each device sent only its own fresh recipient on /join, and no request
+		// from any page carried an age identity.
+		assert.equal(relay.joinBodies.length, 3);
+		for (const body of relay.joinBodies) {
+			assert.deepEqual(Object.keys(body), ['recipient']);
+			assert.match(body.recipient, /^age1pq1[02-9ac-hj-np-z]+$/);
+		}
+		assert.equal(new Set(relay.joinBodies.map((body) => body.recipient)).size, 3);
+		assert.deepEqual(relay.leakedIdentities, []);
 	} finally {
 		for (const context of contexts) {
 			await context.close();
@@ -677,6 +693,7 @@ function senderRoomJson(version, count) {
 			index: i + 1,
 			verify_code: String(101 + i * 111).padStart(3, '0'),
 			device: 'Chrome on Windows',
+			recipient: `age1pq1placeholder${i + 1}`,
 			connected_seconds: 3
 		}))
 	};
@@ -688,7 +705,6 @@ function fulfillConfirmedInit(route) {
 		headers: corsHeaders,
 		json: {
 			code: '741928',
-			salt: 'f0e1d2c3b4a59687',
 			expires_in: 180,
 			sender_token: 'tok',
 			require_confirmation: true

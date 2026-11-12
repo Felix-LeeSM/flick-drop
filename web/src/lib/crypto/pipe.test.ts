@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { decryptWith, encryptToRecipient } from './age';
 import {
 	cancelPipe,
-	computePipePassphrase,
+	createPipeReceiverKey,
 	declinePipeConnection,
-	decryptPipeStream,
-	encryptPipeStream,
+	decryptPipeFilename,
+	encryptPipeFilename,
 	formatPipeCode,
 	initPipeRendezvous,
 	joinPipe,
@@ -41,103 +42,62 @@ describe('pipe code normalization and formatting', () => {
 	});
 });
 
-describe('computePipePassphrase', () => {
-	it('combines normalized code and salt', () => {
-		expect(computePipePassphrase('123-456', 'randomsalt123')).toBe('123456:randomsalt123');
-		expect(computePipePassphrase(' 987654 ', '  salt_val  ')).toBe('987654:salt_val');
-	});
-
-	it('appends optional passphrase when provided', () => {
-		expect(computePipePassphrase('123456', 'salt123', 'my-secret')).toBe(
-			'123456:salt123:my-secret'
-		);
-		expect(computePipePassphrase('123456', 'salt123', '  my-secret  ')).toBe(
-			'123456:salt123:my-secret'
-		);
-		expect(computePipePassphrase('123456', 'salt123', '')).toBe('123456:salt123');
-		expect(computePipePassphrase('123456', 'salt123', '   ')).toBe('123456:salt123');
-	});
-});
-
-describe('streaming pipe crypto roundtrip', () => {
-	const passphrase = computePipePassphrase('456789', 'test_salt_hex_value');
-
-	it('encrypts and decrypts string input', async () => {
-		const plaintext = 'Direct live relay test secret 🚀';
-		const encryptedStream = await encryptPipeStream(plaintext, passphrase);
-		const decryptedStream = await decryptPipeStream(encryptedStream, passphrase);
-		const result = await streamToText(decryptedStream);
-		expect(result).toBe(plaintext);
-	});
-
-	it('encrypts and decrypts Uint8Array input', async () => {
-		const originalBytes = new Uint8Array([0, 1, 2, 3, 254, 255, 42, 99]);
-		const encryptedStream = await encryptPipeStream(originalBytes, passphrase);
-		const decryptedStream = await decryptPipeStream(encryptedStream, passphrase);
-		const resultBytes = await streamToBytes(decryptedStream);
-		expect(resultBytes).toEqual(originalBytes);
-	});
-
-	it('encrypts and decrypts multi-chunk stream (> 64 KiB)', async () => {
-		// 140 KiB spans across 3 age chunks (64 KiB each)
-		const length = 140 * 1024;
-		const largePayload = new Uint8Array(length);
-		for (let i = 0; i < length; i++) {
-			largePayload[i] = i % 251;
-		}
-
-		const inputStream = new ReadableStream<Uint8Array>({
+describe('end-to-end pipe crypto', () => {
+	const plaintextStream = (bytes: Uint8Array) =>
+		new ReadableStream<Uint8Array>({
 			start(controller) {
-				// Enqueue in 16 KiB chunks
+				// 16 KiB씩 넣어 age 64 KiB 청크 경계를 여러 번 넘게 한다
 				const chunkSize = 16 * 1024;
-				for (let offset = 0; offset < length; offset += chunkSize) {
-					controller.enqueue(largePayload.subarray(offset, Math.min(offset + chunkSize, length)));
+				for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+					controller.enqueue(bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
 				}
 				controller.close();
 			}
 		});
 
-		const encryptedStream = await encryptPipeStream(inputStream, passphrase);
-		const decryptedStream = await decryptPipeStream(encryptedStream, passphrase);
-		const resultBytes = await streamToBytes(decryptedStream);
-		expect(resultBytes).toEqual(largePayload);
+	it('a stream encrypted to the receiver recipient opens only with that receiver identity', async () => {
+		// Given: 수신자가 브라우저에서 만든 키와, 같은 코드를 친 다른 기기의 키
+		const receiver = await createPipeReceiverKey();
+		const other = await createPipeReceiverKey();
+		expect(receiver.recipient).toMatch(/^age1pq1[02-9ac-hj-np-z]+$/);
+		expect(receiver.identity).not.toBe(other.identity);
+
+		const payload = new Uint8Array(140 * 1024);
+		for (let i = 0; i < payload.length; i++) {
+			payload[i] = i % 251;
+		}
+
+		// When: 송신자가 /wait로 받은 수신자 recipient에 암호화한다
+		const ciphertext = await streamToBytes(
+			await encryptToRecipient(receiver.recipient, plaintextStream(payload))
+		);
+
+		// Then: 그 수신자의 identity로만 열리고, 다른 identity는 실패한다
+		expect(
+			await streamToBytes(await decryptWith(receiver.identity, plaintextStream(ciphertext)))
+		).toEqual(payload);
+		await expect(decryptWith(other.identity, ciphertext)).rejects.toThrow();
 	});
 
-	it('fails closed when decrypting with wrong passphrase', async () => {
-		const plaintext = 'Classified live data';
-		const encryptedStream = await encryptPipeStream(plaintext, passphrase);
-		const wrongPassphrase = computePipePassphrase('999999', 'test_salt_hex_value');
+	it('the encrypted filename header opens only with the receiver identity', async () => {
+		const receiver = await createPipeReceiverKey();
+		const other = await createPipeReceiverKey();
 
-		await expect(decryptPipeStream(encryptedStream, wrongPassphrase)).rejects.toThrow();
+		const header = await encryptPipeFilename(receiver.recipient, 'report 2026 – 최종.pdf');
+
+		expect(header).not.toContain('report');
+		expect(await decryptPipeFilename(receiver.identity, header)).toBe('report 2026 – 최종.pdf');
+		await expect(decryptPipeFilename(other.identity, header)).rejects.toThrow();
 	});
 
 	it('fails closed when ciphertext is corrupted', async () => {
-		const plaintext = 'Untampered payload';
-		const encryptedStream = await encryptPipeStream(plaintext, passphrase);
-		const ciphertextBytes = await streamToBytes(encryptedStream);
+		const receiver = await createPipeReceiverKey();
+		const ciphertext = await encryptToRecipient(receiver.recipient, 'Untampered payload');
+		ciphertext[ciphertext.length - 1] ^= 0xff;
 
-		// Corrupt a byte in the encrypted payload body
-		ciphertextBytes[ciphertextBytes.length - 1] ^= 0xff;
-
-		const corruptedStream = new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.enqueue(ciphertextBytes);
-				controller.close();
-			}
-		});
-
-		const decryptedStream = await decryptPipeStream(corruptedStream, passphrase);
-		await expect(streamToText(decryptedStream)).rejects.toThrow();
-	});
-
-	it('rejects empty passphrases', async () => {
-		await expect(encryptPipeStream('hello', '')).rejects.toThrow('Passphrase cannot be empty');
-		const emptyStream = new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.close();
-			}
-		});
-		await expect(decryptPipeStream(emptyStream, '')).rejects.toThrow('Passphrase cannot be empty');
+		await expect(
+			streamToText(await decryptWith(receiver.identity, plaintextStream(ciphertext)))
+		).rejects.toThrow();
 	});
 });
 
@@ -158,7 +118,6 @@ describe('client API hooks', () => {
 				jsonResponse(
 					{
 						code: '123456',
-						salt: 'salthex',
 						expires_in: 180,
 						sender_token: 'tok',
 						require_confirmation: true
@@ -172,7 +131,6 @@ describe('client API hooks', () => {
 		expect(JSON.parse(sentBody)).toEqual({ require_confirmation: true });
 		expect(res).toEqual({
 			code: '123456',
-			salt: 'salthex',
 			expiresIn: 180,
 			senderToken: 'tok',
 			requireConfirmation: true
@@ -189,10 +147,12 @@ describe('client API hooks', () => {
 		);
 	});
 
-	it('joinPipe returns this connection and maps rejections to reasons', async () => {
+	it('joinPipe sends only the recipient, returns this connection, and maps rejections', async () => {
 		let observedCode = '';
+		let observedBody = '';
 		const mockFetch: typeof fetch = (_url, init) => {
 			observedCode = (init?.headers as Record<string, string>)['X-Flick-Pipe-Code'];
+			observedBody = String(init?.body ?? '');
 			return Promise.resolve(
 				jsonResponse(
 					{
@@ -206,8 +166,14 @@ describe('client API hooks', () => {
 				)
 			);
 		};
-		const joined = await joinPipe('http://localhost:8080', '123-456', mockFetch);
+		const joined = await joinPipe(
+			'http://localhost:8080',
+			'123-456',
+			'age1pq1recipient',
+			mockFetch
+		);
 		expect(observedCode).toBe('123456');
+		expect(JSON.parse(observedBody)).toEqual({ recipient: 'age1pq1recipient' });
 		expect(joined).toEqual({
 			connectionId: 'conn-1',
 			requireConfirmation: true,
@@ -221,7 +187,7 @@ describe('client API hooks', () => {
 			[403, 'declined', 'The sender declined this device.'],
 			[409, 'already_connected', 'Another device is already receiving this transfer.']
 		] as const) {
-			const rejection = joinPipe('http://localhost:8080', '123456', () =>
+			const rejection = joinPipe('http://localhost:8080', '123456', 'age1pq1recipient', () =>
 				Promise.resolve(errorResponse(status, code))
 			);
 			await expect(rejection).rejects.toBeInstanceOf(PipeRelayError);
@@ -230,7 +196,7 @@ describe('client API hooks', () => {
 
 		// A proxy error page without a JSON body still maps by status.
 		await expect(
-			joinPipe('http://localhost:8080', '123456', () =>
+			joinPipe('http://localhost:8080', '123456', 'age1pq1recipient', () =>
 				Promise.resolve(new Response('<html>', { status: 404 }))
 			)
 		).rejects.toMatchObject({ reason: 'not_found', message: 'Invalid or expired 6-digit code.' });
@@ -315,6 +281,7 @@ describe('client API hooks', () => {
 							index: 1,
 							verify_code: '150',
 							device: 'Chrome on Windows',
+							recipient: 'age1pq1one',
 							connected_seconds: 7
 						}
 					]
@@ -335,10 +302,19 @@ describe('client API hooks', () => {
 					index: 1,
 					verifyCode: '150',
 					device: 'Chrome on Windows',
+					recipient: 'age1pq1one',
 					connectedSeconds: 7
 				}
 			]
 		});
+
+		// Given: 확인 없는 모드에서 수신자가 붙으면 ready 응답에 그 수신자의 recipient가 실린다
+		const ready = await waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 4, () =>
+			Promise.resolve(
+				jsonResponse({ status: 'ready', version: 5, recipient: 'age1pq1first', connections: [] })
+			)
+		);
+		expect(ready).toMatchObject({ status: 'ready', recipient: 'age1pq1first', connections: [] });
 
 		await expect(
 			waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 0, () =>
@@ -458,7 +434,6 @@ describe('client API hooks', () => {
 					{
 						status: 200,
 						headers: {
-							'X-Flick-Pipe-Salt': 'mock_salt_value',
 							'Flick-Kind': 'text',
 							'Flick-Encrypted-Filename': 'none'
 						}
@@ -469,7 +444,6 @@ describe('client API hooks', () => {
 
 		const res = await receivePipeStream('http://localhost:8080', '123-456', 'conn-1', mockFetch);
 		expect(observedConnection).toBe('conn-1');
-		expect(res.salt).toBe('mock_salt_value');
 		expect(res.kind).toBe('text');
 		expect(res.encryptedFilename).toBe('none');
 

@@ -18,9 +18,10 @@ import ProgressRingLock from '#lib/components/ProgressRingLock.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
 import VerifyDigits from '#lib/components/VerifyDigits.svelte';
+import { decryptWith } from '#lib/crypto/age.js';
 import {
-	computePipePassphrase,
-	decryptPipeStream,
+	createPipeReceiverKey,
+	decryptPipeFilename,
 	formatPipeCode,
 	joinPipe,
 	normalizePipeCode,
@@ -72,8 +73,6 @@ type ReceiveState =
 
 let rawCode = $state('');
 let codeFocused = $state(false);
-let optionalPassphrase = $state('');
-let showPassphraseField = $state(false);
 
 let currentState = $state<ReceiveState>('input');
 // Entering the code is step 1; waiting on the sender's pick and the transfer is step 2.
@@ -109,8 +108,6 @@ function reset(): void {
 	abortController?.abort();
 	abortController = null;
 	rawCode = '';
-	optionalPassphrase = '';
-	showPassphraseField = false;
 	currentState = 'input';
 	ringPhase = 'waiting';
 	decrypted = false;
@@ -216,7 +213,10 @@ async function startReceive(): Promise<void> {
 async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	const { normalized, signal } = attempt;
 	const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
-	const join = await joinPipe(targetBaseUrl, normalized, fetch, signal);
+	// A fresh key per attempt: only its recipient goes to the API, and the
+	// identity lives in this function's memory until the attempt ends.
+	const { identity, recipient } = await createPipeReceiverKey();
+	const join = await joinPipe(targetBaseUrl, normalized, recipient, fetch, signal);
 	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
 	if (join.requireConfirmation && join.verifyCode) {
 		verifyCode = join.verifyCode;
@@ -242,10 +242,9 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	currentState = 'streaming';
 	statusMessage = 'Decrypting in your browser…';
 
-	const derivedPassphrase = computePipePassphrase(normalized, result.salt, optionalPassphrase);
-	const decryptedStream = await decryptPipeStream(result.stream, derivedPassphrase);
+	const decryptedStream = await decryptWith(identity, result.stream);
 
-	const doneState = await storeReceived(result, decryptedStream, derivedPassphrase, signal);
+	const doneState = await storeReceived(result, decryptedStream, identity, signal);
 	if (doneState && (await settleRing(attempt.stageStartedAt, 'finishing', signal))) {
 		currentState = doneState;
 	}
@@ -271,8 +270,8 @@ async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> 
 // the ring beat cannot lose it.
 async function storeReceived(
 	result: Awaited<ReturnType<typeof receivePipeStream>>,
-	decryptedStream: Awaited<ReturnType<typeof decryptPipeStream>>,
-	passphrase: string,
+	decryptedStream: ReadableStream<Uint8Array>,
+	identity: string,
 	signal: AbortSignal
 ): Promise<'done-file' | 'done-text' | null> {
 	if (result.kind !== 'file') {
@@ -282,7 +281,7 @@ async function storeReceived(
 	}
 	const bytes = await streamToBytes(decryptedStream);
 	receivedFileSize = bytes.length;
-	receivedFileName = await decryptFilename(result.encryptedFilename, passphrase);
+	receivedFileName = await decryptFilename(result.encryptedFilename, identity);
 	if (signal.aborted) {
 		return null;
 	}
@@ -296,14 +295,13 @@ async function storeReceived(
 // back to a generic name rather than failing the received file.
 async function decryptFilename(
 	encryptedFilename: string | undefined,
-	passphrase: string
+	identity: string
 ): Promise<string> {
 	if (!encryptedFilename) {
 		return 'downloaded-file';
 	}
 	try {
-		const encBytes = Uint8Array.from(atob(encryptedFilename), (c) => c.charCodeAt(0));
-		return await streamToText(await decryptPipeStream(encBytes, passphrase));
+		return await decryptPipeFilename(identity, encryptedFilename);
 	} catch {
 		return 'downloaded-file';
 	}
@@ -445,32 +443,6 @@ async function copyText(): Promise<void> {
 						<p class="text-[0.6875rem] text-muted-foreground">
 							Auto-connects immediately when 6 digits are typed.
 						</p>
-					</div>
-
-					<!-- Optional passphrase drawer -->
-					<div class="text-left">
-						<button
-							type="button"
-							class="text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground"
-							aria-expanded={showPassphraseField}
-							onclick={() => {
-								showPassphraseField = !showPassphraseField;
-							}}
-						>
-							{showPassphraseField ? 'Hide additional passphrase' : 'Has an additional passphrase?'}
-						</button>
-						{#if showPassphraseField}
-							<div class="mt-2">
-								<Label for="pipe-passphrase" class="sr-only">Additional passphrase</Label>
-								<input
-									id="pipe-passphrase"
-									type="password"
-									bind:value={optionalPassphrase}
-									placeholder="Sender's additional passphrase"
-									class="h-10 w-full rounded-lg border border-input bg-muted/30 px-3 font-mono text-base text-foreground placeholder:font-sans placeholder:text-muted-foreground focus:border-primary focus:outline-none md:text-sm"
-								/>
-							</div>
-						{/if}
 					</div>
 
 					<div class="grid gap-2">

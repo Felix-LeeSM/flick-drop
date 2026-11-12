@@ -35,19 +35,13 @@ async function openHome(page) {
 }
 
 // Opens the receive modal from the code tab's "Enter it here" sublink (the
-// header has no code trigger anymore) and connects with an optional passphrase.
-// The code must be typed last: the modal auto-connects on the 6th digit, and the
-// passphrase drawer only exists in the input state.
-async function receiveManually(receiverPage, code, passphrase) {
+// header has no code trigger anymore) and types the code; the modal
+// auto-connects on the 6th digit. A code transfer takes no passphrase: the
+// stream is encrypted to the receiving browser's own age recipient.
+async function receiveManually(receiverPage, code) {
 	await receiverPage.getByRole('button', { name: 'Send with code' }).click();
 	await receiverPage.getByRole('button', { name: 'Enter it here' }).click();
 	await receiverPage.getByText('Connect to sender').waitFor();
-	if (passphrase !== '') {
-		await receiverPage.getByRole('button', { name: 'Has an additional passphrase?' }).click();
-		// #pipe-passphrase: the label text also matches the create form's field
-		// underneath the modal, so locate by the modal input's own id.
-		await receiverPage.locator('#pipe-passphrase').fill(passphrase);
-	}
 	await receiverPage.getByLabel('6-digit transfer code').fill(code);
 }
 
@@ -59,17 +53,16 @@ async function readOwnNumber(receiverPage) {
 
 test('confirmation ON: two devices wait, sender denies one and sends to the number read aloud', async () => {
 	const message = 'pipe e2e on-approval payload';
-	const passphrase = 'pipe-e2e-passphrase';
 
 	const senderContext = await browser.newContext();
 	const sender = await senderContext.newPage();
 	sender.setDefaultTimeout(20_000);
 	await openHome(sender);
 	await sender.getByLabel('Message').fill(message);
-	// Passphrase ships OFF and lives on the link tab; the code flow reuses it
-	// (the pipe key derives from code + salt + passphrase), so set it there first.
+	// A passphrase left on in the link tab must not reach the code transfer: the
+	// receivers below enter none and the chosen one still decrypts.
 	await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-	await sender.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
+	await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
 	await sender.getByRole('button', { name: 'Send with code' }).click();
 	await sender.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
@@ -81,7 +74,7 @@ test('confirmation ON: two devices wait, sender denies one and sends to the numb
 	const receiver = await receiverContext.newPage();
 	receiver.setDefaultTimeout(20_000);
 	await openHome(receiver);
-	await receiveManually(receiver, code, passphrase);
+	await receiveManually(receiver, code);
 
 	await receiver.getByText('Read this to the sender').waitFor();
 	const receiverNumber = await readOwnNumber(receiver);
@@ -92,7 +85,7 @@ test('confirmation ON: two devices wait, sender denies one and sends to the numb
 	const other = await otherContext.newPage();
 	other.setDefaultTimeout(20_000);
 	await openHome(other);
-	await receiveManually(other, code, '');
+	await receiveManually(other, code);
 	await other.getByText('Read this to the sender').waitFor();
 	const otherNumber = await readOwnNumber(other);
 	assert.notEqual(otherNumber, receiverNumber);
