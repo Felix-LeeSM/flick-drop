@@ -90,6 +90,13 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		// *url.Error prints the request URL, which carries the secret ID; this
+		// text reaches the worker log and job tables, so keep only the operation
+		// and the cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return CleanupResponse{}, fmt.Errorf("call cleanup endpoint (%s): %w", urlErr.Op, urlErr.Err)
+		}
 		return CleanupResponse{}, fmt.Errorf("call cleanup endpoint: %w", err)
 	}
 	defer resp.Body.Close()
@@ -112,7 +119,8 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 		return CleanupResponse{}, fmt.Errorf("decode cleanup response: trailing JSON")
 	}
 	if decoded.ID != req.SecretID {
-		return CleanupResponse{}, fmt.Errorf("cleanup response id = %q, want %q", decoded.ID, req.SecretID)
+		// Neither ID goes into the text: worker errors land in logs and job tables.
+		return CleanupResponse{}, fmt.Errorf("cleanup response named a different secret")
 	}
 
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil

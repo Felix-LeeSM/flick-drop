@@ -34,7 +34,7 @@ func (c *Client) PresignPUT(ctx context.Context, key string, size int64, ttl tim
 		ContentLength: aws.Int64(size),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
-		return UploadInstruction{}, fmt.Errorf("presign put %q: %w", key, err)
+		return UploadInstruction{}, fmt.Errorf("presign put: %w", err)
 	}
 
 	// Content-Length is in the signature, so the browser has to send exactly
