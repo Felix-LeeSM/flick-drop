@@ -14,9 +14,6 @@ Boundary:
   `*sql.Tx` as the `Counter` handle — the single-connection SQLite pool makes
   an out-of-band write deadlock (see `internal/db/storage_usage.go` for the
   same pattern).
-- `usage.Store` (`Report`) reads the counters and the live secrets/requests
-  inventory for reports. It never writes the domain tables, and no HTTP route
-  exposes the report.
 - Table schema is created idempotently in `internal/db/migrations.go`
   (`MigrateAPI`), like every other table.
 
@@ -25,8 +22,8 @@ Rules:
 - Counter rows carry counts only: no secret or request IDs, no IPs, no user
   agents, no content metadata. A new metric must not add an identifier.
 - Deletion and cancellation are not subtracted from counters; they record
-  committed usage events. Current inventory comes from the live counts in
-  `Store.Report`.
+  committed usage events. Current inventory is the live `secrets` and
+  `requests` rows, not `usage_counters`.
 - `usage` must not import `internal/secrets` or `internal/requests` (they
   import `usage`); shared vocabulary such as the 'text'/'file' kind strings is
   pinned by a comment at `usage.go` `secretKindFile`.
