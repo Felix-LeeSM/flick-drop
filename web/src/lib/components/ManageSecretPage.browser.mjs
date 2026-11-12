@@ -204,6 +204,60 @@ for (const model of ['a', 'b']) {
 	});
 }
 
+test('leaving before the recipient link is handed off asks first, in-app links too, and stops only after a successful Copy', async () => {
+	const page = await browser.newPage();
+	try {
+		await fixture(page);
+		const configured = page.waitForResponse('**/api/config');
+		await page.goto(baseUrl);
+		await configured;
+		await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
+		await page.locator('form button[type="submit"]').click();
+		await page.waitForURL(`**${privatePath}`);
+		await page.getByLabel('Share URL', { exact: true }).waitFor();
+		const dialogs = [];
+		page.on('dialog', (dialog) => {
+			dialogs.push(dialog.type());
+			return dialog.dismiss();
+		});
+		// Given 링크를 아직 넘기지 않은 상태 When 새로고침하면 Then 브라우저가 먼저 묻고, 머무르면 링크가 남는다.
+		const asked = page.waitForEvent('dialog');
+		await page.evaluate(() => location.reload());
+		await asked;
+		assert.deepEqual(dialogs, ['beforeunload']);
+		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 1);
+		// Given 앱 안 링크(Create another) When 누르면 Then 확인을 묻고, 취소하면 머문다.
+		const confirmed = page.waitForEvent('dialog');
+		await page.getByRole('link', { name: 'Create another', exact: true }).click();
+		await confirmed;
+		await page.getByLabel('Share URL', { exact: true }).waitFor();
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm']);
+		// Given 클립보드 쓰기가 실패하면 When 새로고침하면 Then 아직 넘기지 않았으니 다시 묻는다.
+		await page.evaluate(() => {
+			navigator.clipboard.writeText = () =>
+				Promise.reject(new DOMException('denied', 'NotAllowedError'));
+		});
+		await page.getByRole('button', { name: 'Copy recipient link', exact: true }).click();
+		const askedAgain = page.waitForEvent('dialog');
+		await page.evaluate(() => location.reload());
+		await askedAgain;
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm', 'beforeunload']);
+		// Given Copy가 성공해 링크를 넘긴 뒤 When 새로고침하면 Then 묻지 않고 떠난다.
+		await page.evaluate(() => {
+			navigator.clipboard.writeText = (value) => {
+				window.copied.push(value);
+				return Promise.resolve();
+			};
+		});
+		await page.getByRole('button', { name: 'Copy recipient link', exact: true }).click();
+		await page.reload();
+		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
+		assert.deepEqual(dialogs, ['beforeunload', 'confirm', 'beforeunload']);
+	} finally {
+		await page.close();
+	}
+});
+
 test('an open that wins the cancellation race reads as an unavailable link', async () => {
 	const page = await browser.newPage();
 	try {

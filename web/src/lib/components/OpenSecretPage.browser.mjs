@@ -251,12 +251,90 @@ test('a body that fails to authenticate after the open is final and shows nothin
 		await page
 			.getByRole('alert')
 			.filter({
-				hasText: 'This secret was opened but could not be decrypted. It cannot be opened again.'
+				hasText:
+					"This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again."
 			})
 			.waitFor();
 		assert.equal(await open.isEnabled(), false);
 		await page.getByRole('link', { name: 'Create a new secret instead' }).waitFor();
 		assert.equal(await page.getByRole('textbox', { name: 'Decrypted secret' }).count(), 0);
+		assert.equal(await page.getByText(age.plaintext.text, { exact: false }).count(), 0);
+	} finally {
+		await page.close();
+	}
+});
+
+// 메신저가 링크 끝을 잘라 키 체크섬이 깨지면 Open 전에 막고, 서버의 /open을 부르지 않는다.
+test('a cut-off link key is caught before Open, without consuming the secret', async () => {
+	const page = await browser.newPage();
+	try {
+		// Given: 마지막 글자가 잘린 키
+		const opens = [];
+		await routeModelB(page, 'text', Buffer.from(age.web.text, 'base64'));
+		page.on('request', (request) => {
+			if (request.url().endsWith(`${secretPath}/open`)) {
+				opens.push(request.url());
+			}
+		});
+
+		// When: 링크를 연다
+		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment.slice(0, -1)}`);
+
+		// Then: 손상 안내가 뜨고 Open은 막히며 /open 요청은 없다
+		await page
+			.getByRole('alert')
+			.filter({ hasText: 'This link is damaged. Ask the sender to send the full link again.' })
+			.waitFor();
+		assert.equal(await page.getByRole('button', { name: 'Open', exact: true }).isEnabled(), false);
+		assert.equal(opens.length, 0);
+	} finally {
+		await page.close();
+	}
+});
+
+// 서버가 내준 뒤 본문을 받다가 연결이 끊기면, 복호화 실패가 아니라 연결 끊김으로 안내한다.
+test('a connection that drops while the opened body streams says so', async () => {
+	const page = await browser.newPage();
+	try {
+		// Given: /open 응답 본문이 첫 조각 뒤에 끊긴다
+		await routeModelB(page, 'text', Buffer.from(age.web.text, 'base64'));
+		await page.addInitScript((openPath) => {
+			const original = window.fetch;
+			window.fetch = async (input, init) => {
+				const response = await original(input, init);
+				const url = typeof input === 'string' ? input : input.url;
+				if (!url.endsWith(openPath)) {
+					return response;
+				}
+				const reader = response.body.getReader();
+				let sent = false;
+				const body = new ReadableStream({
+					async pull(controller) {
+						if (sent) {
+							controller.error(new TypeError('network error'));
+							return;
+						}
+						const { value } = await reader.read();
+						sent = true;
+						controller.enqueue(value.subarray(0, Math.max(1, value.length >> 1)));
+					}
+				});
+				return new Response(body, { status: response.status, headers: response.headers });
+			};
+		}, `${secretPath}/open`);
+		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment}`);
+
+		// When: Open을 누른다
+		await page.getByRole('button', { name: 'Open', exact: true }).click();
+
+		// Then: 연결 끊김 안내가 뜨고 내용은 보이지 않는다
+		await page
+			.getByRole('alert')
+			.filter({
+				hasText:
+					"The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again."
+			})
+			.waitFor();
 		assert.equal(await page.getByText(age.plaintext.text, { exact: false }).count(), 0);
 	} finally {
 		await page.close();

@@ -454,7 +454,7 @@ CSP directives:
 | Directive | Value | Why |
 | --- | --- | --- |
 | `default-src` | `'self'` | Same-origin baseline for anything not named below. |
-| `script-src` | `'self' 'unsafe-inline'` | The SvelteKit hydration bootstrap is inline and its hash changes every build, so nginx cannot pin it; app modules load from `'self'`. See the limitation below. |
+| `script-src` | `'self' 'unsafe-inline'` | The SvelteKit hydration bootstrap is inline and its hash changes every build, so nginx cannot pin it; app modules load from `'self'`. `web/src/app.html` also carries a small inline unsupported-browser check that makes no requests. See the limitation below. |
 | `style-src` | `'self' 'unsafe-inline'` | Tailwind v4 injects runtime `<style>`; `app.html` uses an inline `style` attribute. |
 | `img-src` | `'self' data:` | A CSS background uses an inline `data:` SVG. |
 | `connect-src` | `'self' ${FLICK_CSP_CONNECT_SRC}` | API is same-origin; the object-store origin for direct large-file uploads is appended at runtime (empty when the S3 backend is disabled). |

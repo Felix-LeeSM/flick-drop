@@ -4,7 +4,16 @@ import { onMount } from 'svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { cn } from '#lib/utils.js';
 
-let { recipientUrl, class: className }: { recipientUrl: string; class?: string } = $props();
+let {
+	recipientUrl,
+	class: className,
+	onshared
+}: {
+	recipientUrl: string;
+	class?: string;
+	// Runs only after the share sheet reports a completed share.
+	onshared?: () => void;
+} = $props();
 let supported = $state(false);
 let sharing = $state(false);
 let failed = $state(false);
@@ -29,6 +38,7 @@ async function share(): Promise<void> {
 	failed = false;
 	try {
 		await navigator.share(shareData);
+		onshared?.();
 	} catch (error) {
 		// AbortError also covers no available share target; copy and QR still work.
 		failed = !(error instanceof DOMException && error.name === 'AbortError');

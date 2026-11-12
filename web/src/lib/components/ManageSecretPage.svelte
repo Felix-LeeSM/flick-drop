@@ -19,6 +19,7 @@ import { Button } from '#lib/components/ui/button/index.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { clearCreatedDelivery, takeCreatedDelivery } from '#lib/state/created-delivery.js';
 import { cn } from '#lib/utils.js';
+import { beforeNavigate } from '$app/navigation';
 import { resolve } from '$app/paths';
 
 let { secretId }: { secretId: string } = $props();
@@ -54,6 +55,16 @@ function statusDot(status: ManagementStatus): string {
 let token = '';
 let snapshot = $state<ManagementSnapshot | null>(null);
 let recipientUrl = $state('');
+// The recipient link exists only in this tab's memory. Until the sender copies,
+// shares, or shows it as a QR code, leaving the page (a reload, a mobile tab
+// the OS discards while the sender switches to a messenger) would lose it for
+// good, so the browser asks first.
+let recipientLinkHandedOff = $state(false);
+const LEAVE_WITHOUT_LINK_PROMPT =
+	"You haven't copied or shared the recipient link yet. It can't be shown again after you leave. Leave anyway?";
+function handOffRecipientLink(): void {
+	recipientLinkHandedOff = true;
+}
 let cancelConfirmOpen = $state(false);
 let pendingCancel: { fresh: ManagementSnapshot; signal: AbortSignal } | null = null;
 let managementUrl = $state('');
@@ -180,6 +191,22 @@ async function cancelPendingDelivery(): Promise<void> {
 	}
 }
 
+// beforeNavigate covers in-app links (Create another, the logo) as well as a
+// reload or tab close: cancelling a 'leave' navigation shows the browser's own
+// unload prompt.
+beforeNavigate((navigation) => {
+	if (recipientUrl === '' || recipientLinkHandedOff) {
+		return;
+	}
+	if (navigation.type === 'leave') {
+		navigation.cancel();
+		return;
+	}
+	if (!window.confirm(LEAVE_WITHOUT_LINK_PROMPT)) {
+		navigation.cancel();
+	}
+});
+
 onMount(() => {
 	token = managementTokenFromFragment(window.location.hash) ?? '';
 	if (token) {
@@ -252,12 +279,14 @@ onMount(() => {
 			{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</section>
 		{#if recipientUrl}
-			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5">
+			<!-- A successful copy or share, opening the QR code, or a manual copy of the
+			     field counts as handing the link off, which ends the leave warning. -->
+			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5" oncopy={handOffRecipientLink}>
 				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">Send to your recipient</h2>
-				<UrlField value={recipientUrl} id="share-url" copyLabel="Copy recipient link" prominent />
+				<UrlField value={recipientUrl} id="share-url" copyLabel="Copy recipient link" prominent oncopied={handOffRecipientLink} />
 				<div class="flex flex-wrap items-start gap-2">
-					<NativeShareButton recipientUrl={recipientUrl} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
-					<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show QR</Button>
+					<NativeShareButton recipientUrl={recipientUrl} onshared={handOffRecipientLink} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
+					<Button variant="outline" size="seg" onclick={() => { qrOpen = true; handOffRecipientLink(); }}><QrCodeIcon class="size-4" aria-hidden="true" />Show QR</Button>
 				</div>
 				<p class="text-[0.8125rem] text-muted-foreground">{usesPassphrase ? 'Send the passphrase separately. The recipient needs both the link and the passphrase.' : 'Anyone with this full link can open it once. Share only with your recipient.'}</p>
 			</section>

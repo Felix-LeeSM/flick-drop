@@ -30,6 +30,28 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<!-- Tailwind 4 needs @property and color-mix (Safari 16.4+, Chrome 111+,
+		     Firefox 128+). Older browsers, often an outdated iOS in-app browser, get
+		     a half-styled page whose Open button may never enable. This plain ES5
+		     check runs before the app and says so plainly, while the page underneath
+		     stays usable where it still works. The check opens or consumes nothing. -->
+		<script>
+			// biome-ignore lint/complexity/useArrowFunction: ES5 so browsers older than the app still parse it.
+			(function () {
+				var supported =
+					typeof window.CSSPropertyRule !== 'undefined' &&
+					window.CSS &&
+					CSS.supports('color', 'color-mix(in srgb, red, blue)');
+				if (supported) { return; }
+				var notice = document.createElement('p');
+				notice.setAttribute('role', 'alert');
+				notice.style.cssText =
+					'margin:0;padding:12px 16px;background:#fff4d6;color:#3d2c00;font:0.9375rem/1.5 system-ui,sans-serif;border-bottom:1px solid #d9b44a';
+				notice.textContent =
+					'This browser is too old for Flick. Before opening a secret, update it, or open this link in a current Safari, Chrome, Edge, or Firefox. A secret can be opened only once.';
+				document.body.insertBefore(notice, document.body.firstChild);
+			})();
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>
