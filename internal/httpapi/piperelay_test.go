@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
@@ -67,15 +70,27 @@ func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRat
 	return pipeFixture{t: t, router: fixture.router, coord: coord}
 }
 
-// pipeTestRecipient는 userAgent 기기가 브라우저에서 만든 것으로 치는 age 수신자다.
-// 진짜 하이브리드 수신자와 같은 접두사·문자 집합·길이(1,959자)를 갖고, 기기마다 다르다.
+// pipeTestRecipient는 userAgent 기기가 브라우저에서 만든 것으로 치는 진짜 하이브리드 age 수신자다.
+// 기기(User-Agent)마다 하나씩 만들어 두고 재사용하며, 기기마다 다르다.
 func pipeTestRecipient(userAgent string) string {
-	fill := map[string]string{uaChromeWindows: "c", uaSafariIPhone: "s", uaFirefoxLinux: "f"}[userAgent]
-	if fill == "" {
-		fill = "q"
+	pipeTestRecipientsMu.Lock()
+	defer pipeTestRecipientsMu.Unlock()
+	if r, ok := pipeTestRecipients[userAgent]; ok {
+		return r
 	}
-	return "age1pq1" + strings.Repeat(fill, 1952)
+	identity, err := age.GenerateHybridIdentity()
+	if err != nil {
+		panic(err)
+	}
+	r := identity.Recipient().String()
+	pipeTestRecipients[userAgent] = r
+	return r
 }
+
+var (
+	pipeTestRecipientsMu sync.Mutex
+	pipeTestRecipients   = map[string]string{}
+)
 
 func pipeJoinBody(userAgent string) io.Reader {
 	return strings.NewReader(`{"recipient":"` + pipeTestRecipient(userAgent) + `"}`)
@@ -663,6 +678,8 @@ func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 		"non-bech32 1":     `{"recipient":"age1pq1qqq1qqq"}`,
 		"prefix only":      `{"recipient":"age1pq1"}`,
 		"over 4096 chars":  `{"recipient":"age1pq1` + strings.Repeat("q", 4096) + `"}`,
+		"bad checksum":     `{"recipient":"` + valid[:len(valid)-1] + flipBech32(valid[len(valid)-1:]) + `"}`,
+		"right shape only": `{"recipient":"age1pq1` + strings.Repeat("q", 1952) + `"}`,
 		"unknown field":    `{"recipient":"` + valid + `","passphrase":"x"}`,
 		"not json":         `age1pq1qqqq`,
 		"recipient number": `{"recipient":1}`,
@@ -673,14 +690,21 @@ func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 			t.Fatalf("%s: %d %s, want 400 invalid_recipient", name, rec.Code, rec.Body.String())
 		}
 	}
-	// 잘못된 join은 대기실에 아무것도 남기지 않고, 4096자 한도 안의 진짜 모양은 들어온다.
+	// 잘못된 join은 대기실에 아무것도 남기지 않고, 진짜 수신자는 들어온다.
 	if w := f.waitFor(init, func(pipeWaitResponse) bool { return true }); len(w.Connections) != 0 {
 		t.Fatalf("rejected joins left connections: %+v", w.Connections)
 	}
-	atCap := `{"recipient":"age1pq1` + strings.Repeat("q", 4096-len("age1pq1")) + `"}`
-	if rec := pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: init.Code}, strings.NewReader(atCap)); rec.Code != http.StatusCreated {
-		t.Fatalf("recipient at the 4096-char cap: %d %s", rec.Code, rec.Body.String())
+	if rec := pipeDo(f.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: init.Code}, strings.NewReader(`{"recipient":"`+valid+`"}`)); rec.Code != http.StatusCreated {
+		t.Fatalf("real recipient: %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+// flipBech32는 bech32 문자 하나를 다른 문자로 바꿔 체크섬을 깨뜨린다.
+func flipBech32(c string) string {
+	if c == "q" {
+		return "p"
+	}
+	return "q"
 }
 
 func TestPipeRelay_CORS(t *testing.T) {

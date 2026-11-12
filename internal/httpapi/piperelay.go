@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"time"
 
+	"filippo.io/age"
+
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
 
@@ -40,6 +42,19 @@ const (
 // pipeRecipientPattern is a hybrid age recipient: the age1pq1 prefix, then
 // lowercase bech32 characters only.
 var pipeRecipientPattern = regexp.MustCompile(`^age1pq1[02-9ac-hj-np-z]+$`)
+
+// validPipeRecipient accepts only a recipient the sender's browser can encrypt
+// to: the cheap shape check first, then a full parse (bech32 checksum and the
+// ML-KEM-768 + X25519 key), the same rule request links apply
+// (internal/requests/validation.go). A canonical re-encoding is required so
+// one key has one spelling.
+func validPipeRecipient(raw string) bool {
+	if len(raw) > pipeRecipientMaxChars || !pipeRecipientPattern.MatchString(raw) {
+		return false
+	}
+	recipient, err := age.ParseHybridRecipient(raw)
+	return err == nil && recipient.String() == raw
+}
 
 type pipeJoinRequest struct {
 	// Recipient is the age public key the receiving browser generated for this
@@ -232,7 +247,7 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_recipient", "join body must be JSON with an age recipient")
 		return
 	}
-	if len(body.Recipient) > pipeRecipientMaxChars || !pipeRecipientPattern.MatchString(body.Recipient) {
+	if !validPipeRecipient(body.Recipient) {
 		writeError(w, http.StatusBadRequest, "invalid_recipient", "recipient must be a hybrid age recipient (age1pq1...)")
 		return
 	}

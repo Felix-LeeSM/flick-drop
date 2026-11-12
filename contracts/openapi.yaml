@@ -813,8 +813,9 @@ paths:
           description: >-
             `bad_request`: missing or invalid X-Flick-Pipe-Code header.
             `invalid_recipient`: the body is missing, not JSON, has an unknown
-            field, or `recipient` is not a hybrid age recipient (`age1pq1`
-            followed by lowercase bech32 characters, at most 4096 characters).
+            field, or `recipient` is not a valid hybrid age recipient
+            (`age1pq1` followed by lowercase bech32 characters, at most 4096
+            characters, with a valid checksum and ML-KEM-768 + X25519 key).
           content:
             application/json:
               schema:

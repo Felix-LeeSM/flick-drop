@@ -200,9 +200,11 @@ object storage. The stream is end-to-end encrypted against a passive server:
   `joinAndReceive`): no browser storage, no URL, no request, no log.
 - `POST /api/pipe/join` carries only its recipient (public half) as
   `{"recipient":"age1pq1..."}`. `internal/httpapi/piperelay.go` `joinPipe`
-  validates it at the HTTP boundary (prefix `age1pq1`, lowercase bech32
-  characters only, at most `pipeRecipientMaxChars` 4,096 characters; anything
-  else is `400 invalid_recipient`) and the coordinator keeps it in memory on
+  validates it at the HTTP boundary (`validPipeRecipient`: prefix `age1pq1`,
+  lowercase bech32 characters, at most `pipeRecipientMaxChars` 4,096
+  characters, then a full parse of the ML-KEM-768 + X25519 key with its
+  checksum in canonical form, as request links do; anything else is
+  `400 invalid_recipient`) and the coordinator keeps it in memory on
   that connection.
 - `GET /api/pipe/wait` hands recipients to the sender token holder only: each
   waiting row carries its recipient (confirmation on), and once `status` is
