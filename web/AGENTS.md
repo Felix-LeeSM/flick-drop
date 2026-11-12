@@ -9,7 +9,9 @@ Directory structure principles:
   - `src/routes/`: pages and route-level load/actions.
   - `src/lib/api/`: typed API client and response mapping.
   - `src/lib/crypto/`: age (`age-encryption`) sealing for secrets and request
-    links, and the PBKDF2 access proof.
+    links, and the PBKDF2 access proof. `src/lib/crypto/pipe.ts` holds the
+    live relay (send-by-code) client: the `/api/pipe/*` calls, the receiver's
+    age key (`createPipeReceiverKey`), and filename encryption.
   - `src/lib/credentials/`: browser-only credential envelope build/parse/serialize (templates, schema).
   - `src/lib/components/`: reusable UI components.
   - `src/lib/state/`: browser-only state that does not persist passphrases or
@@ -60,6 +62,16 @@ Security invariants:
   handoff, consumed by `src/lib/components/ManageSecretPage.svelte`. Never move
   the handoff into browser storage or `goto()` state. The management route
   `src/routes/m/[id]/+page.svelte` remounts when the ID or fragment changes.
+  Until the recipient link is handed off (a successful `UrlField` `oncopied`,
+  a successful `NativeShareButton` `onshared`, opening the QR code, or a manual
+  copy event), `ManageSecretPage.svelte` warns before leaving through SvelteKit
+  `beforeNavigate`, as `contracts/sender-management-v1.md` requires; keep that
+  warning when changing the page.
+- The live relay receiver's age identity from
+  `src/lib/crypto/pipe.ts:createPipeReceiverKey` stays in that receive
+  attempt's memory only (`src/lib/components/ReceiveCodeModal.svelte`
+  `joinAndReceive`). Never put it in browser storage, URLs, requests, logs, or
+  telemetry; `POST /api/pipe/join` sends only its `age1pq1…` recipient.
 - `contracts/sender-management-v1.md` requires separate recipient-sharing and
   private-management-link actions. Never share the management page location
   as the recipient URL or send a management token to recipient `/open`.

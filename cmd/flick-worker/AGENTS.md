@@ -11,8 +11,10 @@ Directory structure:
 
 Keep job execution, idempotency, retry policy, NATS contracts, worker SQLite
 state, internal API calls, and telemetry implementation in named `internal/*`
-packages. (Structured logging and Prometheus metrics are implemented in
-`internal/telemetry`; tracing is planned — see #94 phase 3.)
+packages. (Structured logging, Prometheus metrics, and OpenTelemetry tracing
+are implemented in `internal/telemetry`; `cmd/flick-worker/main.go` calls
+`telemetry.SetupTracing`, which exports spans only when `FLICK_OTLP_ENDPOINT` is
+set.)
 
 Startup wiring should stay easy to read:
 

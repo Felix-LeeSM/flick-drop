@@ -237,7 +237,10 @@ All paths below are under `/api/requests`. Authorization failures, unknown IDs,
 and expired requests return the same `404 request_unavailable`; malformed input
 returns `400 invalid_request`, size violations `413 payload_too_large`, and
 conflicting state/attempt `409 request_conflict`. Temporary storage failures
-return `503 storage_unavailable` and do not consume or finalize.
+return `503 storage_unavailable` and do not consume or finalize. A `/upload`
+reservation that fits under no object storage backend's total-size ceiling
+returns `503 storage_full` (`internal/requests/large.go`,
+`internal/httpapi/requests.go:writeRequestError`) and reserves nothing.
 
 | Method and path | Authorization | Request / response |
 | --- | --- | --- |
@@ -280,8 +283,12 @@ batches, including consumed/cancelled requests, at the original deadline.
 
 Use existing create/open rate-limit configuration for issuance and mutating
 submission/owner operations. Metadata/owner/attempt reads must also have bounded
-per-client limits. Inline metadata, attempt, submit, open, and revoke share one
-per-client bucket across request IDs; rotating IDs does not bypass the limit.
+per-client limits. Every route under `/{id}` (metadata, submit, upload,
+finalize, abandon, attempt, owner, open, and revoke) shares one bucket per
+client network across request IDs (`internal/httpapi/router.go`
+`requestLimiter`, scope `perNetwork`), at `FLICK_OPEN_RATE_PER_MIN`; rotating
+IDs does not bypass the limit. Creation (`POST /`) has its own
+`FLICK_CREATE_RATE_PER_MIN` bucket.
 The browser polls owner status at most once per 10 seconds
 while visible, stops at terminal state/expiry, backs off on errors, and offers
 a manual refresh. No WebSocket or notification service is added.

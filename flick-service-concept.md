@@ -1,5 +1,13 @@
 # Flick Service Concept
 
+> **Status: original concept document, kept for orientation.** The durable
+> source of truth is `docs/architecture/*` (start with
+> [security model](docs/architecture/security-model.md),
+> [storage model](docs/architecture/storage-model.md), and
+> [service topology](docs/architecture/service-topology.md)) plus the contracts
+> in `contracts/`. Statements here were corrected on 2026-11-12 where they had
+> become wrong; where this document and those files disagree, those files win.
+
 Flick is a self-hosted, open-source service for sharing short-lived secrets
 and files through one-time links.
 
@@ -28,18 +36,26 @@ replacement.
 ## Product Flow
 
 Users create a text or file secret in the web UI and share the generated link.
+Text and file secrets use the same `/s/{id}` route.
 
 Example links:
 
 ```text
 https://drop.example.com/s/abc123
-https://drop.example.com/f/xyz789
+https://drop.example.com/s/abc123#key=AGE-SECRET-KEY-PQ-1...
 ```
 
-The URL contains only the secret ID. The recipient must enter the passphrase in
-the browser to decrypt the payload. The API, ingress logs, NATS messages,
-SQLite files, and S3-compatible object storage must never receive the passphrase or the
-derived key.
+With a passphrase (Model A, opt-in), the URL path contains only the secret
+ID and the recipient enters the passphrase in the browser. Without one
+(Model B, the default in the web UI and the CLI), the decryption key travels in the URL fragment (`#key=...`), which
+browsers do not send to the server. Either way, the API, ingress logs, NATS
+messages, SQLite files, and object storage never receive the passphrase, the
+derived key, or the decryption identity.
+
+Two flows were added after this concept: one-time request links (`/request`,
+`/r/{id}`; see [request links](docs/architecture/request-links.md)) and send
+with code, a live relay through API memory with nothing stored (see "Live
+Relay (Send with Code)" in the [security model](docs/architecture/security-model.md)).
 
 ## Security Model
 
@@ -51,39 +67,47 @@ The server should never know the plaintext secret, passphrase, or derived key.
 
 Upload flow:
 
-1. Browser asks the sender for a passphrase.
-2. Browser generates a random salt and derives an encryption key from the
-   passphrase.
-3. Browser encrypts text or file data with Web Crypto AES-GCM.
-4. Browser uploads ciphertext, nonce, KDF salt/parameters, and safe metadata.
-5. API stores small ciphertext in SQLite or larger ciphertext in OCI Object
-   Storage.
-6. API returns the secret ID.
-7. Browser creates an ID-only share link. The passphrase must be shared through
+1. Browser generates a fresh age identity for the secret and encrypts the text
+   or file to it as a standard age file in 64 KiB chunks
+   ([age format v1](contracts/age-format-v1.md)).
+2. Model A: the browser wraps that identity in an age scrypt passphrase file
+   and derives a separate PBKDF2 access proof from the same passphrase.
+   Model B: the identity goes into the link fragment instead.
+3. Browser uploads the age file, the age-encrypted filename, safe metadata, and
+   for Model A the wrapped identity, access-proof KDF parameters, and access
+   proof.
+4. API stores a small age file in SQLite. For a larger file, the API returns a
+   presigned PUT and the browser uploads the age file directly to object
+   storage, then calls `/finalize`.
+5. API returns the secret ID.
+6. Browser creates the share link. A Model A passphrase must be shared through
    a separate channel or pre-agreed with the recipient.
 
 Download flow:
 
 1. Recipient opens the share link.
-2. Browser asks the recipient for the passphrase.
-3. Browser requests ciphertext and KDF metadata by ID.
-4. Browser derives the key from the passphrase and decrypts locally.
-5. API records consume state.
-6. Worker receives cleanup jobs through NATS JetStream and deletes consumed or
-   expired data.
+2. Model A: the browser asks for the passphrase and proves it with the access
+   proof; the API releases the age file and wrapped identity only on a matching
+   proof hash. Model B: the browser reads the identity from the fragment.
+3. Browser decrypts locally and shows content only after the final chunk
+   authenticates.
+4. API deletes the secret row in the open transaction (one-time open).
+5. The API reaper hard-deletes expired rows, and the worker receives
+   object-delete jobs through NATS JetStream and deletes object-storage bodies
+   of opened, revoked, or expired secrets.
 
 Server-side components store:
 
 - secret ID
-- ciphertext location
-- nonce
-- KDF algorithm, salt, and parameters
-- encrypted filename
+- age file body (inline) or its object-storage backend and key
+- Model A only: the passphrase-wrapped identity, access-proof KDF parameters,
+  and the access proof hash
+- age-encrypted filename
 - content type
-- ciphertext size
+- age file size
 - expiration time
-- consume state
-- audit events without sensitive values
+- state and failed access-attempt count
+- daily aggregate usage counters (`usage_counters`), with no IDs
 
 Server-side components never store:
 
@@ -134,18 +158,22 @@ text secret: api.db BLOB
 file <= 1 MiB: api.db BLOB
 file > 1 MiB: S3-compatible object storage when enabled
 max file size: 256 MiB
-TTL options: 10 minutes, 1 hour, 24 hours
+TTL presets: 10 minutes, 1 hour (default), 24 hours, 7 days
+custom TTL: 5 minutes to 7 days (FLICK_MIN_TTL_SECONDS / FLICK_MAX_TTL_SECONDS)
 default max views: 1
 ```
 
 SQLite files:
 
 ```text
-api.db:
+api.db (main tables; full list in docs/architecture/database-schema.md):
   secrets
   secret_payloads
-  audit_events
+  secret_management
+  requests
+  request_payloads
   outbox_events
+  usage_counters
 
 worker.db:
   job_receipts
@@ -222,7 +250,7 @@ MVP includes:
 
 - text secret creation
 - file secret creation
-- browser-side AES-GCM encryption
+- browser-side age encryption (AES-GCM until M13 replaced it)
 - one-time consume flow
 - TTL expiration
 - SQLite BLOB storage for small payloads
@@ -240,6 +268,9 @@ Initial non-goals:
 - server-side content inspection
 - public file drive behavior
 - complex admin dashboard
-- direct-to-object-storage upload
+
+Direct-to-object-storage upload was listed as a non-goal here but is
+implemented: large files upload with a presigned PUT
+(`internal/storage/presigned.go`).
 
 See [roadmap](docs/ROADMAP.md).

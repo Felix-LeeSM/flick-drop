@@ -10,6 +10,7 @@ PR checks
   repo structure
   Kubernetes manifest structure
   env contract
+  TTL drift
   contracts
   Go checks
   MinIO storage integration tests
@@ -17,9 +18,11 @@ PR checks
   container image builds
   NATS compose smoke
 
-manual/nightly checks
-  k3d deploy smoke
-  OCI dev bucket smoke when credentials are configured
+scheduled/manual checks
+  k3d deploy smoke (weekly schedule or manual dispatch)
+
+manual operator checks (no workflow runs them)
+  OCI dev bucket smoke through the application UI
 
 release checks
   Docker Hub image publish on manual dispatch or v* tag push
@@ -36,9 +39,13 @@ mise run smoke-nats
 mise run smoke-k3d
 ```
 
-The `check` task includes shell, repo-structure, Kubernetes manifest structure,
-env-contract, contract, Go, MinIO storage integration, web, and local container
-image checks. The MinIO and image checks skip only when Docker is not available
+The `check` task runs `scripts/ci/all.sh`: shell, repo-structure, Kubernetes
+manifest structure, env-contract, TTL drift, contract, Go, MinIO storage
+integration, web, and local container image checks. The TTL drift check
+(`scripts/ci/ttl-drift.sh`) fails when the TTL defaults in
+`internal/config/defaults.go` differ from the `PUBLIC_FLICK_*_TTL_SECONDS`
+build arguments in `web/Dockerfile` and `.github/workflows/publish-images.yml`
+or from the `ttl_seconds` bounds in `contracts/openapi.yaml`. The MinIO and image checks skip only when Docker is not available
 locally; CI treats a missing Docker daemon as a failure.
 
 ## GitHub Repository Policy
@@ -65,8 +72,9 @@ Merge strategy:
 - Rebase merge disabled.
 - Delete head branches after merge.
 
-`k3d smoke` and OCI smoke checks are not required PR checks because they are
-slower infrastructure checks and require Docker plus k3d on the runner. The k3d
+`k3d smoke` is not a required PR check because it is a slower infrastructure
+check and requires Docker plus k3d on the runner; `.github/workflows/ci.yml`
+runs it on the weekly schedule or on a manual dispatch with `run_k3d=true`. The k3d
 smoke entrypoint uses the dedicated `deploy/k3d/` overlay so the generic public
 base does not try to pull placeholder images.
 
@@ -140,9 +148,33 @@ late callbacks, and cancellation/failure around finalize.
 `NativeShareButton.browser.mjs` runs through the create page with real browser
 encryption and mocked API/Web Share responses. It checks both link models,
 exact recipient URLs, unsupported browsers, cancellation, rejected shares,
-copy/QR fallbacks, and narrow-screen keyboard/touch controls. `test:browser`
-runs both component suites. These checks do not open a native OS share sheet;
+copy/QR fallbacks, and narrow-screen keyboard/touch controls. These checks do not open a native OS share sheet;
 verify the share sheet and selected target app on a real device separately.
+
+`pnpm --dir web test:browser` runs every
+`web/src/lib/components/*.browser.mjs` file with `node --test`
+(`web/package.json`). No CI job runs it; run it locally against a running web
+server. The current suites are:
+
+| Suite | Covers |
+| --- | --- |
+| `CreateForms.browser.mjs` | Create forms: lifetime presets and custom bounds, pending state, type and delivery tabs, layout at narrow widths, passphrase switch and generator. |
+| `LiveRelay.browser.mjs` | "Send with code" live relay UI with mocked pipe API: Receive dialog, `#code=` deep link, error and room-full states, sender waiting list, Deny and Send. |
+| `ManageSecretPage.browser.mjs` | Sender management page (described below). |
+| `NativeShareButton.browser.mjs` | Web Share and copy/QR fallbacks (described above). |
+| `OpenSecretPage.browser.mjs` | Recipient open page (described above). |
+| `RequestPages.browser.mjs` | Request flow (see [Request browser flow](#request-browser-flow)). |
+| `RequestUpload.browser.mjs` | Large request uploads (see [Large request uploads](#large-request-uploads)). |
+| `UnsupportedBrowser.browser.mjs` | The update notice for browsers missing a required feature, and its absence in a current browser. |
+
+`pnpm --dir web test:pipe` runs `tests/e2e/pipe-relay.live.mjs`, a two-device
+live relay E2E against a running dev stack (`scripts/dev/up.sh`). It opens the
+web at `http://localhost:5173` by default (`FLICK_WEB_URL` overrides it) because
+the API echoes CORS for exactly one origin, `FLICK_PUBLIC_BASE_URL`
+(`cmd/flick-api/main.go`, `internal/httpapi/router.go`), which `scripts/dev/up.sh` sets to
+`http://localhost:5173`. It covers
+sender confirmation with one denied device and the `#code=` deep link without
+confirmation.
 
 `ManageSecretPage.browser.mjs` extends the mocked browser suite with both access
 models, memory-only recipient handoff, separate copy/share/QR actions, reload,
@@ -283,8 +315,11 @@ credentials and removes its own containers, network, volumes, and image tag on e
 Run the script directly to check presigned uploads, size enforcement, and
 HEAD/GET/DELETE against MinIO without starting the application or NATS.
 
-Real OCI dev bucket smoke tests (S3-compatibility mode) are manual or scheduled
-and run only when the required secrets are present.
+No workflow runs a real OCI bucket check. Verifying OCI Object Storage in
+S3-compatibility mode is a manual operator step: the smoke test in
+`docs/runbook/oci-free-tier.md` creates and opens a file above
+`FLICK_PAYLOAD_INLINE_MAX_BYTES` through the application UI against the real
+bucket.
 
 ## Image Publish
 

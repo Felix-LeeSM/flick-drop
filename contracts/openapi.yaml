@@ -35,6 +35,12 @@ paths:
   /metrics:
     get:
       operationId: getMetrics
+      summary: Prometheus metrics for scraping
+      description: >
+        Requires the FLICK_METRICS_TOKEN bearer token, a credential separate
+        from the internal token. An unset configured token fails closed with 401.
+      security:
+        - metricsToken: []
       responses:
         "200":
           description: Prometheus metrics.
@@ -42,6 +48,12 @@ paths:
             text/plain:
               schema:
                 type: string
+        "401":
+          description: unauthorized for a missing or invalid metrics token, or when no metrics token is configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/config:
     get:
       operationId: getConfig
@@ -92,6 +104,21 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "413":
           description: Payload too large.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: rate_limited. Per client network (IPv4 address or IPv6 /64) by FLICK_CREATE_RATE_PER_MIN.
+          headers:
+            Retry-After:
+              schema: {type: string, const: "60"}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: storage_full when a large-file reservation fits under no object storage backend's total-size ceiling. Nothing is created.
           content:
             application/json:
               schema:
@@ -319,6 +346,34 @@ paths:
               schema:
                 type: string
                 format: binary
+        "400":
+          description: >
+            invalid_json when the body is not exactly one OpenSecretRequest
+            object, sensitive_field_forbidden when it names a field reserved for
+            client-only material, and invalid_access_proof when access_proof is
+            not base64. Nothing is consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: payload_too_large when the request body exceeds 64 KiB. Nothing is consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: >
+            rate_limited. FLICK_OPEN_RATE_PER_MIN per client network (IPv4
+            address or IPv6 /64) and secret ID, so guesses against one secret
+            do not slow the same client's access to another. Nothing is consumed.
+          headers:
+            Retry-After:
+              schema: {type: string, const: "60"}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >
             not_found for an unknown ID and for an already-opened secret,
@@ -368,6 +423,43 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Missing or invalid internal token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /internal/object-reconciliation/ack:
+    post:
+      operationId: acknowledgeObjectCleanup
+      summary: Internal worker endpoint that acknowledges a finished object delete.
+      description: >
+        Removes only the pending reconciliation claim matching backend, object
+        key, and job ID (contracts/internal-api.md). A claim that does not
+        exist, including one for an unknown backend, returns the same 204.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcknowledgeObjectCleanupRequest"
+      responses:
+        "204":
+          description: Acknowledged, or no matching claim remained.
+        "400":
+          description: invalid_json for a malformed body or unknown field; invalid_cleanup for a blank job ID or an object key outside managed/secrets/ and managed/requests/.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid internal token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: cleanup_ack_failed when the database write fails; the claim stays pending.
           content:
             application/json:
               schema:
@@ -1243,7 +1335,11 @@ components:
                     properties:
                       code: {const: rate_limited}
     RequestStorageUnavailable:
-      description: Temporary storage failure. No transition was committed; retry the same immutable submission only.
+      description: >
+        Temporary storage failure (storage_unavailable), or storage_full when a
+        large upload reservation fits under no object storage backend's
+        total-size ceiling. No transition was committed; retry the same
+        immutable submission only.
       headers:
         Cache-Control:
           $ref: "#/components/headers/RequestNoStore"
@@ -1255,7 +1351,7 @@ components:
               - properties:
                   error:
                     properties:
-                      code: {const: storage_unavailable}
+                      code: {enum: [storage_unavailable, storage_full]}
   securitySchemes:
     submissionToken:
       type: http
@@ -1273,6 +1369,10 @@ components:
       type: apiKey
       in: header
       name: X-Flick-Internal-Token
+    metricsToken:
+      type: http
+      scheme: bearer
+      description: Static pre-shared FLICK_METRICS_TOKEN for the Prometheus scraper; cannot reach /internal/*.
   parameters:
     PipeCode:
       name: X-Flick-Pipe-Code
@@ -1908,6 +2008,20 @@ components:
         reason:
           type: string
           enum: [consumed, expired, orphan, manual, retry]
+    AcknowledgeObjectCleanupRequest:
+      type: object
+      additionalProperties: false
+      required: [job_id, object_key]
+      properties:
+        backend:
+          type: string
+          description: Bucket the delete ran against (s3_object primary, r2_object secondary). Absent or empty means the primary; the value is not validated against this list.
+        job_id:
+          type: string
+          minLength: 1
+        object_key:
+          type: string
+          description: Key inside managed/secrets/ or managed/requests/ with a nonempty suffix.
     CleanupSecretResponse:
       type: object
       additionalProperties: false

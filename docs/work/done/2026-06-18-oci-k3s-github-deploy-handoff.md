@@ -1,5 +1,15 @@
 # OCI k3s GitHub Deploy Handoff
 
+> **Completed; kept as history.** Flick now runs in production from a private
+> ops repository, and the image publish workflow is
+> `.github/workflows/publish-images.yml`. The two-node placement in "Target
+> Topology" (API and NATS on the k3s server `flick-core`) is the June 2026 plan
+> and may not match the current cluster. The public deployment contract lives
+> in `docs/architecture/deployment-target.md`, `docs/runbook/k3s-base.md`, and
+> `docs/runbook/oci-free-tier.md`; where this note disagrees with them, they
+> win. This note moved from `docs/work/active/` to `docs/work/done/` on
+> 2026-11-12.
+
 This handoff covers deployment work that cannot be completed from the local
 repository because it requires real OCI instances, DNS, SSH, firewall rules, and
 a private production overlay.

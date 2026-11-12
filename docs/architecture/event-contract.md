@@ -43,9 +43,16 @@ Example:
   "reason": "expired",
   "backend": "s3_object",
   "requested_at": "2026-06-16T03:00:00Z",
-  "trace_id": "trc_01hxz"
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+  }
 }
 ```
+
+`trace_context` is optional W3C trace-context (`traceparent`, optional
+`tracestate`) that the outbox injects at enqueue time so the worker continues
+the producer's trace (`internal/events/job.go:JobEvent.TraceContext`). It
+carries telemetry IDs only and is absent when tracing is disabled.
 
 `backend` names the object-storage bucket the object lives on
 (`s3_object` primary, `r2_object` secondary; absent = primary, where every
@@ -148,9 +155,9 @@ and the API reaper cascades payload deletion when purging expired requests.
 No request capability, public key, envelope, or ciphertext enters the outbox.
 Large requests reuse `delete_oci_object` and the existing reasons. Request
 open/revoke/expiry/reservation expiry/abandon commit key-only cleanup with their
-state transition. Request scans use reason `orphan` and independent
-`request_reconciliation_cursor`/`request_reconciliation_pending` tables; the
-event JSON shape does not change.
+state transition. Request scans use reason `orphan` and independent per-backend
+`request_reconciliation_cursor_v2`/`request_reconciliation_pending_v2` tables
+(`internal/requests/cleanup.go`); the event JSON shape does not change.
 
 `internal/worker/store.go` claims each attempt for one minute, measured from
 `job_receipts.updated_at`. A delivery during that lease retries without invoking
@@ -191,8 +198,11 @@ its outcome, API access block, inline removal, and required outbox rows together
 Existing deletion kinds and reason `manual` cover cancellation. Recurring scans
 use `delete_oci_object` with reason `orphan`; the event JSON shape is unchanged.
 
-The API scans one bounded page of `managed/secrets/` per reaper tick and keeps one
-pending reconciliation job per object key plus a durable, generation-fenced cursor.
+The API scans one bounded page of `managed/secrets/` per storage backend per
+reaper tick and keeps one pending reconciliation job per backend and object key
+(`object_reconciliation_pending_v2`) plus a durable, generation-fenced cursor
+per backend (`object_reconciliation_cursor_v2`), as implemented in
+`internal/secrets/reconciliation.go`.
 A scan never queues deletion of an unexpired live active or pending upload.
 Database/list/enqueue failures cannot be treated as an absent live object or an
 empty successful page. Claims have no lease timeout.
@@ -203,7 +213,7 @@ references. Failures in either scan do not suppress the other scan.
 
 For every `delete_oci_object` in `managed/secrets/` or `managed/requests/`, the
 worker persists the terminal success/dead receipt first, then calls
-`POST /internal/object-reconciliation/ack` with its object key and job ID, before
+`POST /internal/object-reconciliation/ack` with its backend, object key, and job ID, before
 NATS Ack/Term. The [internal endpoint contract](../../contracts/internal-api.md)
 defines authentication and idempotency. Immediate cleanup jobs also acknowledge;
 an ID that has no matching reconciliation claim is a harmless no-op.

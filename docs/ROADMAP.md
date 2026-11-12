@@ -11,7 +11,9 @@ In scope:
 - Go worker service.
 - NATS JetStream job delivery.
 - SQLite `api.db` and `worker.db`.
-- Browser-side AES-GCM encryption.
+- Browser-side encryption in the standard age format
+  ([age format contract](../contracts/age-format-v1.md)); M13 replaced the
+  original AES-GCM format.
 - Model A passphrase input with browser-side KDF, or Model B random-key links.
 - Text secret creation and one-time open.
 - File secret creation and one-time download.
@@ -101,14 +103,19 @@ Out of scope:
 
 - backup/restore runbook ([runbook](runbook/backup-restore.md))
 - SQLite checkpoint/vacuum runbook ([runbook](runbook/sqlite-maintenance.md))
-- rate limiting
-- audit event viewer or export
-- CSP and security header tightening
+- rate limiting — done (#71; per client network, IPv6 collapsed to /64, in
+  `internal/httpapi/ratelimit.go`)
+- audit event viewer or export — not implemented; no audit event table exists
+- CSP and security header tightening — done (`web/nginx.conf`; see "Web
+  Response Headers" in [security model](architecture/security-model.md))
 
-## Planned Product Milestones
+## Product Milestones
 
 The historical implementation slices above are not GitHub milestone numbers.
-The following GitHub milestones are planned work, not completed features.
+The following sections match GitHub milestones. Status as of 2026-11-12: M8, M9,
+and M14 are closed; M10 through M13 are still open on GitHub but have no open
+issues. Check current state with
+`gh api 'repos/Felix-LeeSM/flick-drop/milestones?state=all'`.
 
 ### M8: Sharing UX and Anonymous Link Management
 
@@ -217,3 +224,25 @@ standard age format, so neither client holds a whole file in memory.
   widths, and an S3 round trip of a 256 MiB file.
 - Exclude custom cryptography, keeping the AES-GCM format for existing links,
   presigned GET URLs, and browser-to-browser transfer.
+
+### M14: Live Relay Code Drop
+
+Goal: send text or a file to a nearby device by a short code, streamed through
+API memory with nothing written to SQLite or object storage.
+
+- [#255](https://github.com/Felix-LeeSM/flick-drop/issues/255) with
+  [#318](https://github.com/Felix-LeeSM/flick-drop/issues/318) (in-memory
+  coordinator and `/api/pipe/*` endpoints),
+  [#319](https://github.com/Felix-LeeSM/flick-drop/issues/319) (browser pipe
+  crypto and streaming), and
+  [#320](https://github.com/Felix-LeeSM/flick-drop/issues/320) (UI and browser
+  tests).
+- The sender gets a 6-digit code valid for 3 minutes. With confirmation on, the
+  sender picks the receiver by a 3-digit number the receiver reads out.
+- Since #399 the receiving browser generates a fresh age key for each attempt
+  and the sender encrypts to it, so the relay server cannot decrypt the stream.
+- Durable design: "Live Relay (Send with Code)" in
+  [security model](architecture/security-model.md) and the live relay part of
+  [service topology](architecture/service-topology.md).
+- Exclude WebRTC peer-to-peer transfer, device address books, and any stored
+  copy of the payload.

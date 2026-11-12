@@ -6,7 +6,6 @@ data:
   FLICK_ENV: "production"
   FLICK_LOG_LEVEL: "info"
   FLICK_PUBLIC_BASE_URL: "http://flick.localhost"
-  FLICK_API_BASE_URL: "http://flick.localhost"
   FLICK_INTERNAL_API_BASE_URL: "http://flick-api:8080"
   FLICK_API_ADDR: ":8080"
   FLICK_API_DB_PATH: "/data/api.db"
@@ -27,4 +26,3 @@ data:
   FLICK_CSP_CONNECT_SRC: ""
   FLICK_OPEN_RATE_PER_MIN: "10"
   FLICK_TRUSTED_PROXIES: ""
-  FLICK_WORKER_CONCURRENCY: "2"

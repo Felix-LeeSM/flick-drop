@@ -38,13 +38,17 @@ a topic branch first.
 
 Milestones represent release-sized product slices, not individual PRs.
 
-Initial milestone shape:
+Initial milestone shape (the GitHub milestone titles):
 
 - `M0: Repository Foundation`
 - `M1: Local Secret MVP`
 - `M2: Worker and Cleanup`
-- `M3: S3-Compatible Object Storage`
+- `M3: OCI Object Storage`
 - `M4: k3s Deployment`
+
+Product milestones from M8 onward are described in `docs/ROADMAP.md`; list
+every milestone with its state using
+`gh api 'repos/Felix-LeeSM/flick-drop/milestones?state=all'`.
 
 Each milestone should have:
 

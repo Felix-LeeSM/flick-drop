@@ -8,9 +8,9 @@ Flick is designed around client-side encryption and short retention.
 The server should never know the plaintext secret, passphrase, or derived key.
 ```
 
-The browser derives an encryption key — from a user-entered passphrase in
-Model A, or from a random key in Model B — and encrypts payloads before
-upload. The API, worker, NATS, SQLite, S3-compatible object storage, logs, and
+The browser generates a fresh age identity per secret and encrypts payloads to
+it before upload; Model A wraps that identity with a key derived from a
+user-entered passphrase, and Model B carries it in the link fragment. The API, worker, NATS, SQLite, S3-compatible object storage, logs, and
 metrics handle ciphertext and safe metadata only.
 
 For Model A, the browser also derives a separate access proof from the same
@@ -58,8 +58,8 @@ S3-compatible object storage
 ## Required Invariants
 
 - Share link path and query contain only secret IDs, never encryption keys.
-  Model B secrets additionally carry a raw decryption key in the URL fragment
-  (`#key=...`); fragments are never transmitted to the API, so the key stays
+  Model B secrets additionally carry the secret's age identity in the URL
+  fragment (`#key=AGE-SECRET-KEY-PQ-1...`); fragments are never transmitted to the API, so the key stays
   client-side. Keys must never appear in the path or query string, where the
   server and access logs would see them.
 - Passphrases and derived keys must never be sent to the API.
@@ -83,7 +83,8 @@ S3-compatible object storage
   daily aggregate counters (`internal/usage`) are written with each state
   change and have no HTTP reader, admin dashboards run on the cluster-side
   Grafana (separate subdomain with its own login), and access-log search sees
-  IPs/paths/status codes but never secret content, passphrases, or ciphertext.
+  paths and status codes with client IPs and delivery IDs masked (see Logs),
+  never secret content, passphrases, or ciphertext.
 - Public repository files must not contain real credentials or production
   configuration.
 - A secret is either Model A or Model B, never a mix. Model A secrets carry an
@@ -116,7 +117,7 @@ proof hashes and never receives the passphrase or the identity in the clear.
 Flick supports two access control models. Both keep the plaintext out of the
 server: the difference is how the open operation is authorized.
 
-### Model A — Passphrase Required (Default)
+### Model A — Passphrase Required (Opt-In)
 
 The browser derives both the encryption key and a separate access proof from a
 user-entered passphrase, using distinct KDF parameters. The API stores only a
@@ -136,10 +137,13 @@ Security properties:
   the PBKDF2 cost, is what limits an offline guess against the stored
   access-proof hash.
 
-### Model B — Passphrase Optional (Link-Bearer)
+### Model B — Link-Bearer (Default)
 
-The browser generates a random 256-bit key, encrypts the payload directly with
-it (no KDF), and places the raw key in the URL fragment (`#key=...`). The API
+The browser generates the secret's fresh hybrid age identity, encrypts the
+payload to it, and places the identity itself (`AGE-SECRET-KEY-PQ-1…`, see
+[age format v1](../../contracts/age-format-v1.md) and
+`web/src/lib/crypto/fragment.ts`) in the URL fragment (`#key=...`), with no
+passphrase or KDF. The API
 stores `NULL` for the access KDF and access proof hash, and the open endpoint
 performs no proof validation. Whoever holds the full link (id plus fragment
 key) is authorized; the link is the capability.
@@ -152,6 +156,14 @@ Security properties:
 - One-time open (`max_views = 1`) bounds ciphertext release. The API accepts
   the ID without checking the fragment key; the browser needs the key to
   decrypt. Possession of an ID alone can therefore consume a Model B delivery.
+- The browser checks the fragment identity before Open
+  (`web/src/lib/components/OpenSecretPage.svelte` `isIntactKey`: the identity
+  must parse, which checks its bech32 checksum and length), so a link that a
+  messenger cut or altered is refused without consuming the delivery. After a
+  consuming Open, the page reports either a dropped connection (reading the
+  response body failed, `watchTransport`) or a payload that could not be
+  decrypted; both tell the recipient to ask the sender to send again, because
+  the delivery is gone.
 - Requires an honest-server assumption: a server that serves malicious client
   code could exfiltrate the fragment key from the browser. This is the
   web-E2EE limit shared with Model A; see Residual Risk.
@@ -246,8 +258,21 @@ Credentials and what they unlock:
   subscriber usually holds a whole /64 and could otherwise rotate through
   2^64 fresh buckets. `/api/pipe/join` and `/api/v1/pipe/join` spend one
   bucket. It returns an unguessable connection ID that `/status` and
-  `/receive` need. Every other rate-limited endpoint keys by the same client
-  network (`internal/httpapi/ratelimit.go` `rateLimiter.middleware`).
+  `/receive` need.
+
+Every rate-limited endpoint keys its buckets by that same client network plus a
+scope (`internal/httpapi/ratelimit.go` `rateLimiter.middleware`), and each
+limiter instance in `internal/httpapi/router.go` picks one of two scopes:
+
+- `perResourceID`: one bucket per client network and secret ID. Secret open
+  (`openLimiter`) and the two management calls, status and revoke
+  (`managementLimiter`, one shared bucket per delivery), use it, so guesses
+  against one secret are bounded without slowing the same client's access to
+  another.
+- `perNetwork`: one bucket per client network for every route on the limiter.
+  Secret and request creation, every `/api/requests/{id}` call
+  (`requestLimiter`, so rotating request IDs buys no fresh bucket), and the
+  live relay's `/init`, `/join`, and `/status` use it.
 
 **Confirmation on ("Require confirmation before transfer").** The session is a
 waiting room. Every device that enters the right code is held as a pending
@@ -472,12 +497,14 @@ image), so the CSP is rendered by the nginx envsubst entrypoint from
 origin.
 
 Limitation and upgrade path: `script-src 'unsafe-inline'` is weaker than a
-hash/nonce policy. Hashing is build-time only, but `connect-src` must stay
-runtime, and a `<meta>` CSP and an nginx CSP *intersect* rather than union — so
-the two cannot be combined to both pin scripts and allow a runtime origin. The
-app renders no untrusted HTML and `connect-src` already bounds exfiltration, so
-the inline-script allowance is an accepted trade-off until the bootstrap is
-externalized.
+hash/nonce policy. The HTML carries two inline scripts: the SvelteKit hydration
+bootstrap and the unsupported-browser check in `web/src/app.html` (it tests
+`CSSPropertyRule` and `color-mix` support and makes no requests). Hashing is
+build-time only, but `connect-src` must stay runtime, and a `<meta>` CSP and an
+nginx CSP *intersect* rather than union — so the two cannot be combined to both
+pin scripts and allow a runtime origin. The app renders no untrusted HTML and
+`connect-src` already bounds exfiltration, so the inline-script allowance is an
+accepted trade-off until both inline scripts are externalized.
 
 `Strict-Transport-Security` is intentionally not set on the pod (plain `:8080`,
 local `flick.localhost` base ingress); production overlays add HSTS at the
@@ -513,7 +540,11 @@ private management fragment never contains the recipient encryption key. Status
 and cancellation authority end at the original content expiry; neither operation
 returns content or grants decryption. Initial recipient-link sharing uses a
 browser-memory handoff. Refresh or a different device offers status/cancellation
-only, with no recipient-link recovery.
+only, with no recipient-link recovery. Because leaving loses that in-memory link
+for good, `ManageSecretPage.svelte` warns through SvelteKit `beforeNavigate`
+(the browser's unload prompt on reload or close, a confirm on in-app links)
+until the sender copies, shares, or shows the recipient link as a QR code; the
+warning keeps the link in memory and never persists it.
 
 A committed one-time open is a release decision, not evidence of a human read.
 Opened means forgotten: the open transaction deletes the secret and its

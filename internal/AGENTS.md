@@ -9,12 +9,14 @@ These packages are code boundaries, not service boundaries.
 - `requests`: API-owned request lifecycle, envelope validation, immutable large
   uploads, and request object reconciliation in `internal/requests/store.go`,
   `validation.go`, `large.go`, and `cleanup.go`.
-- `storage`: S3-compatible object storage for large payloads (SQLite BLOB lives in `internal/secrets`).
+- `storage`: S3-compatible object storage for large payloads, with a primary (`s3_object`) and optional secondary (`r2_object`) backend in `internal/storage/registry.go` (SQLite BLOB lives in `internal/secrets`).
+- `piperelay`: the in-memory live relay coordinator behind "send with code" (`/api/pipe/*`); nothing it relays is persisted (`internal/piperelay/coordinator.go:Coordinator`).
 - `events`: NATS JetStream publishing and consuming contracts.
 - `worker`: worker job execution and retry/idempotency logic.
 - `clientcrypto`: client-side encryption for non-browser clients; the Go mirror of `web/src/lib/crypto/`.
+- `usage`: daily aggregate usage counters in the api.db `usage_counters` table, written inside secrets and requests state-change transactions (`internal/usage/usage.go:Increment`).
 - `flickcli`: the `flick` command-line client's API calls, share links, and send/open flows.
-- `telemetry`: structured logging (`log/slog`) and Prometheus metrics (counters/gauges served on `/metrics`, guarded by `FLICK_METRICS_TOKEN` bearer auth) are implemented; tracing is planned (#94 phase 3).
+- `telemetry`: structured logging (`log/slog`), Prometheus metrics (counters/gauges served on `/metrics`, guarded by `FLICK_METRICS_TOKEN` bearer auth), and OpenTelemetry tracing (`internal/telemetry/tracing.go:SetupTracing`, on only when `FLICK_OTLP_ENDPOINT` is set).
 
 Service ownership rules:
 

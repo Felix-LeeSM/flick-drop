@@ -37,7 +37,6 @@ FLICK_NATS_STREAM = "FLICK_JOBS"
 FLICK_NATS_JOB_SUBJECT = "flick.jobs"
 
 # SQLite files under ./var (git-ignored).
-FLICK_DATA_DIR = "./var"
 FLICK_API_DB_PATH = "./var/api.db"
 FLICK_WORKER_DB_PATH = "./var/worker.db"
 
@@ -72,7 +71,6 @@ FLICK_OPEN_RATE_PER_MIN = "10"
 FLICK_CREATE_RATE_PER_MIN = "5"
 FLICK_TRUSTED_PROXIES = ""
 
-FLICK_WORKER_CONCURRENCY = "2"
 
 [tasks.doctor]
 description = "Show pinned tool versions and the resolved Flick environment"

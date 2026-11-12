@@ -22,9 +22,8 @@ Local development:
 | `PUBLIC_FLICK_MIN_TTL_SECONDS` | Browser-safe mirror of `FLICK_MIN_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `PUBLIC_FLICK_MAX_TTL_SECONDS` | Browser-safe mirror of `FLICK_MAX_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `PUBLIC_FLICK_DEFAULT_TTL_SECONDS` | Browser-safe mirror of `FLICK_DEFAULT_TTL_SECONDS` (initial lifetime preset). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
-| `FLICK_API_BASE_URL` | Public API origin. |
+| `FLICK_API_BASE_URL` | API origin used by local scripts only: `scripts/dev/up.sh` polls `${FLICK_API_BASE_URL}/healthz` and `scripts/smoke/local-secret-flow.sh` sends its requests there. No Go service reads it; the browser uses `PUBLIC_FLICK_API_BASE_URL`. |
 | `FLICK_INTERNAL_TOKEN` | Shared token for internal worker to API calls. |
-| `FLICK_DATA_DIR` | Base directory for local runtime data. |
 
 ## API
 
@@ -32,7 +31,6 @@ Local development:
 | --- | --- |
 | `FLICK_API_ADDR` | API listen address. |
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` on both the API and the worker's dedicated metrics listener. Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = both fail closed (401). |
-| `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address. Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |
 | `FLICK_API_DB_PATH` | SQLite file owned by API. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored as SQLite BLOB. Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
@@ -63,10 +61,9 @@ Local development:
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_WORKER_ID` | Stable worker instance label for logs/locks. |
 | `FLICK_WORKER_DB_PATH` | SQLite file owned by worker. |
-| `FLICK_WORKER_CONCURRENCY` | Parallel job execution limit. |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
+| `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address (`internal/config/config.go`). Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |
 
 ## Web
 
@@ -81,6 +78,16 @@ Runtime env for the nginx-served web container (distinct from the build-time
 | Variable | Purpose |
 | --- | --- |
 | `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when the large-file S3 backend is disabled. When `FLICK_STORAGE_LARGE_BACKEND=s3`, set the `FLICK_S3_ENDPOINT` origin (`scheme://host[:port]`); when `FLICK_R2_ENABLED=true` is also set, list both backend origins so the browser's direct presigned uploads pass CSP. Rendered into nginx by the envsubst entrypoint. |
+
+## CLI
+
+Read by the `flick` command-line client (`cmd/flick/main.go`) on the user's
+machine, not by any server process.
+
+| Variable | Purpose |
+| --- | --- |
+| `FLICK_URL` | Deployment URL for `flick send`, and for `flick open` when it is given a bare secret ID. `flick open` with a full link uses that link's origin (`cmd/flick/main.go` `runOpen`). The `-url` flag overrides both; when neither is set the CLI uses its built-in default. |
+| `FLICK_PASSPHRASE` | Passphrase for non-interactive use instead of a terminal prompt. Set but empty is an error. The passphrase stays on the client and is never sent to the API. |
 
 ## S3
 

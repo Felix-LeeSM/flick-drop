@@ -1,4 +1,4 @@
-# Active Work: Live Relay Code Drop (Zero-Storage Real-Time Transfer)
+# Work Note (done): Live Relay Code Drop (Zero-Storage Real-Time Transfer)
 
 **Date**: 2026-10-30  
 **Context**: Replaces WebRTC and persistent device address books (#255).  
@@ -6,6 +6,10 @@
 **Milestone**: M14: Live Relay Code Drop  
 **Sub-issues**: [#318](https://github.com/Felix-LeeSM/flick-drop/issues/318), [#319](https://github.com/Felix-LeeSM/flick-drop/issues/319), [#320](https://github.com/Felix-LeeSM/flick-drop/issues/320)  
 
+> **Completed (2026-11-12).** Milestone M14: Live Relay Code Drop is closed on
+> GitHub, and #399 made the transfer end-to-end encrypted to the receiver's age
+> key. This note moved from `docs/work/active/` to `docs/work/done/` as history.
+>
 > **Superseded in part (2026-11-11, PR #392).** This note is the original plan.
 > The durable design now lives in `docs/architecture/security-model.md` (Live
 > Relay), `docs/architecture/service-topology.md`, and `contracts/openapi.yaml`.
@@ -37,7 +41,7 @@ Flick users frequently need to transfer files or credentials directly between th
 - Existing **one-time links** require copying and pasting URLs into third-party messengers (Slack, KakaoTalk, Email), which exposes links in transit and defeats self-hosted privacy.
 - **QR code scanning** is practical only when scanning a large screen with a mobile camera; pointing a laptop's fixed webcam at a phone or between camera-less desktop PCs is exceptionally cumbersome or impossible.
 - **WebRTC P2P (PairDrop style)** suffers from high NAT traversal failure rates (10~20% without TURN), requires complex signaling, and fails in mobile carrier CGNAT environments.
-- **Persistent device address books / blind inboxes** violate Flick's core principle as an ephemeral delivery tool ([`AGENTS.md:38-42`](file:///Users/felix/Desktop/study/burn-links/AGENTS.md#L38-L42)) and risk storage exhaustion and Burn DoS.
+- **Persistent device address books / blind inboxes** violate Flick's core principle as an ephemeral delivery tool ([`AGENTS.md`](../../../AGENTS.md), "Product Principles") and risk storage exhaustion and Burn DoS.
 
 **The Solution**: **Live Relay Code Drop (실시간 HTTP 파이프 릴레이)**.
 A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit code. The server acts strictly as an in-memory byte pipe (`io.Pipe`) with **0 bytes written to Object Storage (S3) or SQLite disk**, consuming only a bounded 64 KiB RAM buffer during transfer.
@@ -50,7 +54,7 @@ A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit cod
    - Data exists on the server only in volatile RAM as an in-flight byte stream between the sender's HTTP request body and receiver's HTTP response writer.
    - Once transfer completes (or if interrupted), all bytes vanish immediately.
 2. **Encrypted Wire Transfer & Honest-Server Threat Model**:
-   - The payload is encrypted in the sender's browser using standard `age` streaming format ([`contracts/age-format-v1.md`](file:///Users/felix/Desktop/study/burn-links/contracts/age-format-v1.md)).
+   - The payload is encrypted in the sender's browser using standard `age` streaming format ([`contracts/age-format-v1.md`](../../../contracts/age-format-v1.md)).
    - **Threat Model**: A 6-digit numeric code provides $\approx 20$ bits of entropy, which defends against passive network eavesdroppers, reverse proxy caches, and offline disk scrapers (0 bytes stored). For users requiring protection against an actively hostile server, an optional passphrase field can be enabled, wrapping the stream in high-work-factor scrypt.
 3. **100% Network Traversal Reliability**:
    - Standard single-port HTTPS (443) communication. Works seamlessly through Cloudflare proxies, cellular CGNAT, and corporate firewalls without STUN/TURN servers.
@@ -61,7 +65,7 @@ A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit cod
 6. **Ultra-Low Memory Footprint on OCI Free Tier**:
    - Pipe buffer: 64 KiB per active transfer.
    - Rendezvous table: ~150 bytes per active 3-minute code.
-   - Strictly bounded concurrency to fit within `flick-api`'s 256 MiB memory ceiling ([`docs/architecture/deployment-target.md`](file:///Users/felix/Desktop/study/burn-links/docs/architecture/deployment-target.md)).
+   - Strictly bounded concurrency to fit within `flick-api`'s 256 MiB memory ceiling ([`docs/architecture/deployment-target.md`](../../architecture/deployment-target.md)).
 
 ---
 
@@ -104,7 +108,7 @@ A 100% ephemeral, real-time streaming transfer gated by a single-use 6-digit cod
   - `PipeReader *io.PipeReader`, `PipeWriter *io.PipeWriter`: instantiated on connection.
   - `Done chan struct{}`: signaled on completion or client disconnect.
 - **Garbage Collection**: Background ticker cleans up entries older than 3 minutes every 30 seconds. Max active entries bounded by `FLICK_PIPE_MAX_CONCURRENT` (default 100).
-- **Cluster Deployment Note**: This implementation runs on a single `flick-api` instance per OCI Free Tier topology ([`docs/architecture/deployment-target.md`](file:///Users/felix/Desktop/study/burn-links/docs/architecture/deployment-target.md)). If scaled horizontally in the future, session affinity on Ingress or NATS Core broadcast must be introduced.
+- **Cluster Deployment Note**: This implementation runs on a single `flick-api` instance per OCI Free Tier topology ([`docs/architecture/deployment-target.md`](../../architecture/deployment-target.md)). If scaled horizontally in the future, session affinity on Ingress or NATS Core broadcast must be introduced.
 
 #### 2. HTTP Endpoints (`internal/httpapi/piperelay.go`)
 - `POST /api/v1/pipe/init`:

@@ -13,8 +13,15 @@ The smoke script:
 4. applies `deploy/k3d`
 5. waits for NATS, API, worker, and web rollout readiness
 6. port-forwards API and web services to localhost
-7. checks API and web health endpoints
-8. creates, reads metadata for, and opens one synthetic encrypted text secret
+7. waits for API `/healthz`, API `/readyz`, and web `/healthz` to answer
+8. runs `scripts/smoke/web-headers.sh` against the port-forwarded web service,
+   which requires the CSP (with `frame-ancestors 'none'` and a non-wildcard
+   `connect-src 'self'`), `X-Frame-Options: DENY`,
+   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+   `Permissions-Policy` headers on the HTML response
+9. creates, reads metadata for, and opens one synthetic encrypted text secret,
+   then checks that the opened body matches and the `Flick-Kind` and
+   `Flick-Wrapped-Identity` response headers are present
 
 The synthetic secret uses fake ciphertext and a fake access proof. No
 passphrase, plaintext secret, derived key, OCI credential, bucket name, or

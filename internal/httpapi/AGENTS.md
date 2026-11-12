@@ -10,11 +10,15 @@ Directory structure:
 - If routes split into stable subdomains, add a local `AGENTS.md` before adding
   nested directories.
 - Handlers must not execute SQL directly, run migrations, set up NATS streams,
-  or call object-storage SDK logic. The router may carry `*sql.DB`
-  (`internal/httpapi/router.go`) only to inject into `internal/secrets.Store`
-  or `internal/requests.Store`
-  (including transaction boundaries delegated to Store methods) — never to run
-  queries itself.
+  or call object-storage SDK logic. `internal/httpapi/router.go:Server` carries
+  the API `*sql.DB` for three uses only: `readyz` pings it, and two secret
+  handlers own a transaction boundary that spans two packages —
+  `internal/httpapi/secrets.go:Server.openAndCommit` opens a `BeginTx` and
+  passes the `*sql.Tx` to `secrets.Store.OpenTx`, and
+  `internal/httpapi/secrets.go:Server.enqueueOpenedObjectCleanup` opens one for
+  `events.OutboxStore.EnqueueTx`. The handler only begins, commits, and rolls
+  back; every query runs inside the domain or outbox method that receives the
+  `*sql.Tx`.
 
 Rules:
 

@@ -81,6 +81,22 @@ The all-images script intentionally uses `FLICK_WEB_PUBLIC_API_BASE_URL` for
 this override so local development `PUBLIC_` values do not leak into deployment
 image builds by accident.
 
+`web/Dockerfile` also accepts the link lifetime bounds that the browser uses
+for client-side validation and the initial lifetime preset:
+
+| Build argument | Default | Server value it mirrors |
+| --- | --- | --- |
+| `PUBLIC_FLICK_MIN_TTL_SECONDS` | `300` | `FLICK_MIN_TTL_SECONDS` |
+| `PUBLIC_FLICK_MAX_TTL_SECONDS` | `604800` | `FLICK_MAX_TTL_SECONDS` |
+| `PUBLIC_FLICK_DEFAULT_TTL_SECONDS` | `3600` | `FLICK_DEFAULT_TTL_SECONDS` |
+
+`scripts/ci/ttl-drift.sh` keeps these defaults equal to the Go defaults in
+`internal/config/defaults.go` (it also checks `.github/workflows/publish-images.yml`
+and `contracts/openapi.yaml`). `scripts/ci/images.sh` does not pass them, so a
+deployment that changes the server TTL bounds must pass the matching
+`--build-arg` values to `docker build` itself; otherwise the browser offers or
+rejects lifetimes that the API decides differently.
+
 ## Runtime Defaults
 
 The API image defaults to:
@@ -101,6 +117,21 @@ mount the persistent volume there or override the database path explicitly.
 
 The web image serves static assets with Nginx on port `8080` and exposes
 `/healthz` for simple readiness checks.
+
+The web image reads one runtime variable at container start, not at build:
+
+```text
+FLICK_CSP_CONNECT_SRC=
+```
+
+The nginx base image's envsubst entrypoint renders
+`web/nginx-templates/csp.conf.template` into `/etc/nginx/snippets`, appending
+`FLICK_CSP_CONNECT_SRC` to the CSP `connect-src 'self'`. The empty default is
+correct while the large-object backend is disabled. A deployment with
+`FLICK_STORAGE_LARGE_BACKEND=s3` sets it to the `FLICK_S3_ENDPOINT` origin (and
+the R2 origin when `FLICK_R2_ENABLED=true`, space-separated) so the browser's
+direct presigned uploads are not blocked. `deploy/base/web.yaml` wires it from
+`ConfigMap/flick-config`.
 
 ## Boundaries
 

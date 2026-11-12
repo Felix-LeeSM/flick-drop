@@ -50,6 +50,15 @@ private management link is a separate, explicitly labelled action. Never share
 `window.location.href` as the recipient link. Explain: keep the management link
 private; a lost link cannot be recovered.
 
+Until the sender hands the recipient link off, leaving the page loses it for
+good, so `web/src/lib/components/ManageSecretPage.svelte` warns first through
+SvelteKit `beforeNavigate`: a reload or tab close gets the browser's own unload
+prompt, and an in-app link gets a `window.confirm` prompt. A handoff is a
+successful copy (`UrlField` `oncopied`), a successful device share
+(`NativeShareButton` `onshared`), opening the QR code, or a manual copy event
+inside the recipient-link section. A view without the in-memory recipient link
+(reload, direct visit, another device) never warns.
+
 A reload, direct visit, or another device gets status/cancellation only, for
 both access models. Do not reconstruct even a Model A recipient link in this
 view: the consistent message is "The recipient link is available only in the
@@ -285,7 +294,8 @@ provider and permissions rather than infer them from an S3-compatible label.
 - Fail listing, DB lookup, enqueue, delete, and terminal acknowledgement; verify
   bounded pending claims, recovery, pagination fairness, and no deletion of live
   rows, legacy keys, or keys outside `managed/secrets/`.
-- Browser checks cover initial recipient sharing, Model B fragment preservation,
+- Browser checks cover initial recipient sharing, the leave warning before
+  handoff and its absence after copy/share/QR, Model B fragment preservation,
   refresh/new-device management, no persistent key handoff, invalid/expired URLs,
   opened deliveries reading as unavailable, locked copy, and cancellation races. Inspect requests/storage;
   management tokens and recipient keys must never cross their defined boundaries.

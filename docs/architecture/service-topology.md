@@ -14,9 +14,10 @@ Browser
 
 ### `flick-web`
 
-SvelteKit frontend. It handles browser-side encryption and decryption. It may be
-served as static assets or a small Node runtime, depending on the selected
-SvelteKit adapter.
+SvelteKit frontend. It handles browser-side encryption and decryption. It is
+built with `@sveltejs/adapter-static` (`web/vite.config.ts`, fallback
+`200.html`) and served as static assets by nginx (`web/Dockerfile`); there is
+no Node runtime in production.
 
 ### `flick-api`
 
@@ -66,6 +67,18 @@ cut of a proxy such as Cloudflare. The flow:
 `docs/architecture/security-model.md` (Live Relay) defines what each credential
 unlocks and why rejected receivers never burn a session.
 
+`FLICK_PIPE_RELAY_ENABLED=false` (`internal/config/config.go` `Load`) starts the
+API without a coordinator (`cmd/flick-api/main.go`), and every `/api/pipe/*`
+call answers `503 service_unavailable`. The web UI still shows "Send with code";
+a send or receive attempt then reads "Live transfer is currently disabled on
+this server." (`web/src/lib/crypto/pipe.ts`).
+
+The relay is a server pipe rather than WebRTC peer-to-peer on purpose. Direct
+browser-to-browser connections fail behind many NATs and mobile carrier CGNAT
+unless a TURN relay is also run, so a TURN server would carry the bytes anyway;
+an HTTP pipe through `flick-api` works wherever the site itself loads and adds
+no extra service to operate.
+
 ### `flick-worker`
 
 Long-running worker Deployment. It consumes NATS JetStream jobs and performs
@@ -87,7 +100,14 @@ bodies.
 - API to worker: NATS JetStream jobs.
 - Worker to API: internal HTTP endpoints protected by `FLICK_INTERNAL_TOKEN`.
 - API/worker to object storage: AWS SDK for Go v2 over S3-compatible endpoints
-  (MinIO dev, OCI S3-compatibility prod) when enabled.
+  when enabled. The primary backend (`s3_object`, `FLICK_S3_*`) is MinIO in
+  development and OCI S3-compatibility in production. An optional secondary
+  backend (`r2_object`, `FLICK_R2_ENABLED=true` plus `FLICK_R2_*`;
+  `internal/config/config.go` rejects it unless
+  `FLICK_STORAGE_LARGE_BACKEND=s3`) such as Cloudflare R2 adds capacity and
+  never replaces the primary; the API places each new object on a backend with room, and the
+  worker resolves the delete target from the job event's `backend` field
+  ([event contract](event-contract.md)).
 
 Do not add gRPC in the initial version. It is a future option if internal HTTP
 contracts become too wide or streaming RPC becomes useful.

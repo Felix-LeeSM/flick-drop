@@ -23,8 +23,9 @@ Related contracts:
 | --- | --- | --- | --- |
 | API database | `/data/api.db` (SQLite WAL) | `flick-api-data` | No — source of truth for secrets and the outbox |
 | Worker database | `/data/worker.db` (SQLite WAL) | `flick-worker-data` | No — job receipts and idempotency state |
-| JetStream store | `/data/jetstream` | `nats-data` | Yes — the API re-creates the stream and replays from its outbox |
-| Large ciphertext | S3-compatible bucket | n/a (object storage) | No — but holds only browser-encrypted bytes |
+| JetStream store | `/data/jetstream` | `nats-data` | Partly — the API re-creates the stream and re-publishes outbox rows still `pending` or `failed`; jobs already published but not yet consumed are lost (see [JetStream](#jetstream)) |
+| Large ciphertext | Primary S3-compatible bucket (`FLICK_S3_BUCKET`) | n/a (object storage) | No — but holds only browser-encrypted bytes |
+| Large ciphertext | Secondary R2 bucket (`FLICK_R2_BUCKET`), only when `FLICK_R2_ENABLED=true` | n/a (object storage) | No — but holds only browser-encrypted bytes |
 
 The databases are small (kilobytes to low megabytes for typical one-time-secret
 traffic), so cold backups take seconds.
@@ -98,17 +99,31 @@ operation:
 - The API calls `EnsureStream` on startup (`cmd/flick-api/main.go`,
   `internal/events/nats.go`), so the stream and subject are re-created on an
   empty `nats-data` PVC.
-- The durable source of truth for pending jobs is the **outbox table in
-  `api.db`**, not JetStream; the outbox publisher re-delivers from there.
+- The outbox table in `api.db` is the durable source only for jobs **not yet
+  published**. The publisher picks up rows in state `pending` or `failed`
+  (`OutboxStore.ListDue` in `internal/events/outbox.go`). A row marked
+  `published` is never re-published, and `PurgePublishedTx` deletes it once
+  `PublishedRetention` (one hour) has passed.
 
-So a JetStream backup is best-effort. If you want one anyway, back up the
-`nats-data` PVC the same cold way (scale `statefulset/nats` to 0 first). After a
-restore with an empty `nats-data`, expect the API to re-create the stream and
-the outbox to re-publish any unacknowledged jobs.
+So an empty `nats-data` loses every job that JetStream had accepted but the
+worker had not yet consumed: the outbox no longer treats those jobs as due. For
+object-delete jobs the ciphertext object stays in the bucket until the API's
+managed-object reconciliation (`ReconcileOnce` in
+`internal/secrets/reconciliation.go` and `internal/requests/cleanup.go`) lists
+it again and enqueues a new delete, or until bucket lifecycle rules remove it
+(see [S3 Objects](#s3-objects)). Within the one-hour retention a lost job can
+also be re-published by hand from its outbox row; see
+[Worker cleanup recovery](worker-recovery.md).
+
+To keep in-flight jobs across a broker loss, back up the `nats-data` PVC the
+same cold way (scale `statefulset/nats` to 0 first). After a restore with an
+empty `nats-data`, expect the API to re-create the stream and the outbox to
+re-publish only the rows still `pending` or `failed`.
 
 ## S3 Objects
 
-The bucket holds only browser-encrypted ciphertext for large files. Object
+The primary bucket, and the secondary R2 bucket when `FLICK_R2_ENABLED=true`,
+hold only browser-encrypted ciphertext for large files. Object
 lifecycle is driven by the app, not by a backup tool:
 
 - The reaper hard-deletes reclaimable secret rows and enqueues an object-delete

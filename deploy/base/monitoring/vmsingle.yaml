@@ -1,12 +1,12 @@
 # VictoriaMetrics single-node: the storage + query layer for the opt-in
-# monitoring stack. It scrapes the flick API, kube-state-metrics, and
-# node-exporter, stores the series on a PVC, and serves vmui + the query API on
+# monitoring stack. It scrapes the flick API, the flick worker, kube-state-metrics,
+# node-exporter, and itself, stores the series on a PVC, and serves vmui + the query API on
 # :8428. Full Prometheus is avoided on a ~1GB node; vmsingle is the low-footprint
 # substitute.
 #
 # Scrape targets use static DNS / dns_sd rather than Kubernetes service
 # discovery, so vmsingle needs no API access and no RBAC (mirrors node-exporter):
-#   - flick-api / kube-state-metrics: single replicas, scraped by stable Service
+#   - flick-api / flick-worker / kube-state-metrics: single replicas, scraped by stable Service
 #     DNS (resolv.conf search domain resolves the short name).
 #   - node-exporter: a headless Service, so an A-record dns_sd lookup returns
 #     every pod IP and each node is scraped on the overlay network.
