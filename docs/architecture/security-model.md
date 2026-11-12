@@ -382,10 +382,11 @@ retention period.
   relay code, connection ID, and sender token travel in `X-Flick-Pipe-*`
   headers). `RequestPath` keeps the ID at the source; Loki masks it.
 - API and worker: no per-request log. Error texts carry no secret ID or object
-  key (`internal/worker/cleanup.go:objectDeleteError`, `internal/secrets/reaper.go`,
-  `internal/storage/object.go`).
+  key (`internal/worker/cleanup.go:objectDeleteError` and the cleanup call's
+  `*url.Error`, `internal/secrets/reaper.go`, `internal/storage/object.go`).
 - Loki (`deploy/base/monitoring/alloy.yaml`, `loki.process "private"`): every
-  shipped line has delivery IDs in web paths, API paths, and object keys
+  shipped line has delivery IDs in web paths, public and internal API paths
+  (`/api/secrets/`, `/api/requests/`, `/internal/secrets/`), and object keys
   replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
   (7-day retention).
 

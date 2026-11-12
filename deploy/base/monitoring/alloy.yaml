@@ -111,9 +111,11 @@ data:
     loki.process "private" {
       forward_to = [loki.write.loki.receiver]
 
-      // Delivery IDs in web and API paths and in object keys.
+      // Delivery IDs in web, public API, and internal API paths and in object
+      // keys. A backslash ends the ID too, so an escaped quote inside a JSON
+      // string (\") survives and the line still parses.
       stage.replace {
-        expression = "(?:/(?:s|m|r|api/secrets|api/requests|api/v1/secrets|api/v1/requests)/|managed/(?:secrets|requests)/)([^/?\"<\\s]+)"
+        expression = "(?:/(?:s|m|r|api/secrets|api/requests|internal/secrets)/|managed/(?:secrets|requests)/)([^/?\"<\\\\\\s]+)"
         replace    = "<id>"
       }
       // IPv4. The excluded preceding characters keep version numbers such as

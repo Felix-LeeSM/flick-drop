@@ -90,6 +90,13 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		// *url.Error prints the request URL, which carries the secret ID; this
+		// text reaches the worker log and job tables, so keep only the operation
+		// and the cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return CleanupResponse{}, fmt.Errorf("call cleanup endpoint (%s): %w", urlErr.Op, urlErr.Err)
+		}
 		return CleanupResponse{}, fmt.Errorf("call cleanup endpoint: %w", err)
 	}
 	defer resp.Body.Close()
