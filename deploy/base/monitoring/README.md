@@ -229,8 +229,9 @@ has no HTTP readiness probe. Requests 10m CPU / 64Mi memory per node, limit 160M
 ## Grafana — the admin view
 
 Serves the provisioned `Flick 사용량·큐·접속` dashboard (`usage.json`; panels
-are labelled in Korean, quoted here as they appear in `grafana.yaml`):
-`전달 생성`, `열람`, and `요청 링크` from VictoriaMetrics counters,
+are labelled in Korean, as in `grafana.yaml`):
+`전달 생성 (${window:text})`, `열람 (${window:text})`, and `요청 링크 (${window:text})`
+from VictoriaMetrics counters,
 aggregated over a selectable bucket — the `버킷` dashboard variable offers
 1분/15분/1시간/1일, all in UTC (dashboards pin `timezone: utc`), and the
 `오늘(UTC 00:00부터)` link jumps to the UTC day boundary; `저장된(암호화된) 바이트`,

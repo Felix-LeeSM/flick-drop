@@ -117,7 +117,7 @@ proof hashes and never receives the passphrase or the identity in the clear.
 Flick supports two access control models. Both keep the plaintext out of the
 server: the difference is how the open operation is authorized.
 
-### Model A — Passphrase Required (Default)
+### Model A — Passphrase Required (Opt-In)
 
 The browser derives both the encryption key and a separate access proof from a
 user-entered passphrase, using distinct KDF parameters. The API stores only a
@@ -137,7 +137,7 @@ Security properties:
   the PBKDF2 cost, is what limits an offline guess against the stored
   access-proof hash.
 
-### Model B — Passphrase Optional (Link-Bearer)
+### Model B — Link-Bearer (Default)
 
 The browser generates the secret's fresh hybrid age identity, encrypts the
 payload to it, and places the identity itself (`AGE-SECRET-KEY-PQ-1…`, see

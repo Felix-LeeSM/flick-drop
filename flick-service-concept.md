@@ -45,9 +45,9 @@ https://drop.example.com/s/abc123
 https://drop.example.com/s/abc123#key=AGE-SECRET-KEY-PQ-1...
 ```
 
-With a passphrase (Model A, the default), the URL path contains only the secret
+With a passphrase (Model A, opt-in), the URL path contains only the secret
 ID and the recipient enters the passphrase in the browser. Without one
-(Model B), the decryption key travels in the URL fragment (`#key=...`), which
+(Model B, the default in the web UI and the CLI), the decryption key travels in the URL fragment (`#key=...`), which
 browsers do not send to the server. Either way, the API, ingress logs, NATS
 messages, SQLite files, and object storage never receive the passphrase, the
 derived key, or the decryption identity.

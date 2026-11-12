@@ -162,7 +162,6 @@ Patch `ConfigMap/flick-config` for deployment-specific non-secret values:
 
 ```text
 FLICK_PUBLIC_BASE_URL=https://<domain>
-FLICK_API_BASE_URL=https://<domain>
 FLICK_INTERNAL_API_BASE_URL=http://flick-api:8080
 FLICK_STORAGE_LARGE_BACKEND=s3
 FLICK_PAYLOAD_INLINE_MAX_BYTES=1048576

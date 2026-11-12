@@ -86,7 +86,7 @@ machine, not by any server process.
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_URL` | Default deployment URL for `flick send` and `flick open`. The `-url` flag overrides it; when both are absent the CLI uses its built-in default. |
+| `FLICK_URL` | Deployment URL for `flick send`, and for `flick open` when it is given a bare secret ID. `flick open` with a full link uses that link's origin (`cmd/flick/main.go` `runOpen`). The `-url` flag overrides both; when neither is set the CLI uses its built-in default. |
 | `FLICK_PASSPHRASE` | Passphrase for non-interactive use instead of a terminal prompt. Set but empty is an error. The passphrase stays on the client and is never sent to the API. |
 
 ## S3

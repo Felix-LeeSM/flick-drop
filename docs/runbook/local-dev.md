@@ -55,8 +55,10 @@ Set `FLICK_DEV_SKIP_MINIO=1` to skip MinIO; the task then sets
 
 Keep `FLICK_STORAGE_LARGE_BACKEND` out of `.env.local` unless you mean to
 override the MinIO default: a value set there wins over the `s3` default in
-`scripts/dev/up.sh`. To test against a different S3-compatible store, set
-`FLICK_STORAGE_LARGE_BACKEND=s3` and the `FLICK_S3_*` values in `.env.local`.
+`scripts/dev/up.sh`. `scripts/dev/up.sh` always starts or reuses the local MinIO
+and `FLICK_DEV_SKIP_MINIO=1` forces storage off, so the task cannot point at
+another store. To test a different S3-compatible store, run `go run ./cmd/flick-api`
+yourself with `FLICK_STORAGE_LARGE_BACKEND=s3` and the `FLICK_S3_*` values set.
 
 ## Container Images
 
