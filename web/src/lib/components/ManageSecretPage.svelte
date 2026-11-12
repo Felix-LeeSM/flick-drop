@@ -54,6 +54,11 @@ function statusDot(status: ManagementStatus): string {
 let token = '';
 let snapshot = $state<ManagementSnapshot | null>(null);
 let recipientUrl = $state('');
+// The recipient link exists only in this tab's memory. Until the sender copies,
+// shares, or shows it as a QR code, leaving the page (a reload, a mobile tab
+// the OS discards while the sender switches to a messenger) would lose it for
+// good, so the browser asks first.
+let recipientLinkHandedOff = $state(false);
 let cancelConfirmOpen = $state(false);
 let pendingCancel: { fresh: ManagementSnapshot; signal: AbortSignal } | null = null;
 let managementUrl = $state('');
@@ -180,6 +185,17 @@ async function cancelPendingDelivery(): Promise<void> {
 	}
 }
 
+$effect(() => {
+	if (recipientUrl === '' || recipientLinkHandedOff) {
+		return;
+	}
+	const warn = (event: BeforeUnloadEvent) => {
+		event.preventDefault();
+	};
+	window.addEventListener('beforeunload', warn);
+	return () => window.removeEventListener('beforeunload', warn);
+});
+
 onMount(() => {
 	token = managementTokenFromFragment(window.location.hash) ?? '';
 	if (token) {
@@ -252,7 +268,20 @@ onMount(() => {
 			{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</section>
 		{#if recipientUrl}
-			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5">
+			<!-- Any copy, share, or QR action in here (or a manual copy of the field)
+			     counts as handing the link off, which ends the leave warning. -->
+			<section
+				aria-labelledby="recipient-link-heading"
+				class="grid gap-2.5"
+				onclickcapture={(event) => {
+					if ((event.target as Element).closest('button')) {
+						recipientLinkHandedOff = true;
+					}
+				}}
+				oncopy={() => {
+					recipientLinkHandedOff = true;
+				}}
+			>
 				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">Send to your recipient</h2>
 				<UrlField value={recipientUrl} id="share-url" copyLabel="Copy recipient link" prominent />
 				<div class="flex flex-wrap items-start gap-2">
