@@ -124,9 +124,6 @@ data:
         { "type": "timeseries", "title": "최근 1시간 인기 경로", "datasource": "loki", "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
           "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
           "targets": [{"expr": "topk(10, sum by (RequestPath) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1h])))", "legendFormat": "{{RequestPath}}"}] },
-        { "type": "table", "title": "최근 하루 고유 클라이언트 IP", "datasource": "loki", "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
-          "targets": [{"expr": "count by (ClientHost) (count_over_time({namespace=\"kube-system\", app=\"traefik\"} | json [1d]))", "instant": true, "format": "table"}],
-          "transformations": [{"id": "organize", "options": {"renameByName": {"ClientHost": "클라이언트 IP", "Value": "요청 수"}}}] },
 
         { "type": "timeseries", "title": "앱 에러, 분당", "datasource": "loki", "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
           "description": "flick-api와 flick-worker가 남기는 JSON 구조화 slog ERROR 기록입니다.",
