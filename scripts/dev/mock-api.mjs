@@ -25,7 +25,7 @@
 // 합성 평문을 적어 두면, 재생 때 /api/pipe/join 요청의 새 recipient 로 그 평문을
 // 다시 암호화해 /api/pipe/receive 응답으로 돌려준다. long-poll(/wait, /status,
 // /receive)은 녹화에서 그보다 먼저 끝난 pipe 요청이 모두 재생될 때까지 붙잡는다.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,6 +34,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const defaultCassetteDir = join(repoRoot, 'var/mock-api');
 const storagePrefix = '/__storage/';
 // 상대 기기의 동작을 기다리는 코드로 보내기 long-poll 요청.
+const longPollMaxWaitMs = 30_000;
 const longPollKeys = new Set([
 	'GET /api/pipe/wait',
 	'GET /api/pipe/status',
@@ -78,7 +79,18 @@ function loadCassette(path) {
 	if (!Array.isArray(cassette.exchanges)) {
 		throw new Error(`exchanges 배열이 없다: ${path}`);
 	}
+	// 손으로 쓴 카세트의 "Content-Type" 도 녹화본처럼 소문자 이름으로 읽는다.
+	for (const exchange of cassette.exchanges) {
+		exchange.headers = Object.fromEntries(
+			Object.entries(exchange.headers).map(([name, value]) => [name.toLowerCase(), value])
+		);
+	}
 	return cassette;
+}
+
+// 링크의 #fragment 에는 복호화 키가 있으므로 로그에는 경로만 남긴다.
+function linkForLog(link) {
+	return link ? ` 링크 경로: ${new URL(link).pathname} (전체 링크는 카세트 link 필드)` : '';
 }
 
 function exchangeKey(method, url) {
@@ -113,6 +125,11 @@ function sendJson(res, status, body) {
 	res.end(JSON.stringify(body));
 }
 
+// RFC 3339 시각만 옮긴다. Date.parse 는 "1" 같은 값도 날짜로 읽기 때문이다.
+function isTimestamp(value) {
+	return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value);
+}
+
 function shiftTime(value, offsetMs) {
 	return new Date(Date.parse(value) + offsetMs).toISOString();
 }
@@ -123,16 +140,14 @@ function shiftTime(value, offsetMs) {
 // Flick-Expires-At 헤더를 "녹화 시점부터 흐른 시간"만큼 뒤로 민다.
 function buildResponse(exchange, offsetMs) {
 	const headers = { ...exchange.headers };
-	if (headers['flick-expires-at']) {
+	if (isTimestamp(headers['flick-expires-at'])) {
 		headers['flick-expires-at'] = shiftTime(headers['flick-expires-at'], offsetMs);
 	}
 	let body = Buffer.from(exchange.body, exchange.bodyEncoding);
 	const isJson = /json/.test(headers['content-type'] ?? '') && exchange.body.length > 0;
 	if (offsetMs !== 0 && isJson) {
 		const shifted = JSON.parse(exchange.body, (key, value) =>
-			key.endsWith('_at') && typeof value === 'string' && Number.isFinite(Date.parse(value))
-				? shiftTime(value, offsetMs)
-				: value
+			key.endsWith('_at') && isTimestamp(value) ? shiftTime(value, offsetMs) : value
 		);
 		body = Buffer.from(JSON.stringify(shifted));
 	}
@@ -152,18 +167,26 @@ export function createReplayer(cassette) {
 	let served = new Map();
 	// 재생한 exchange 의 카세트 내 순번.
 	let replayed = new Set();
+	// reset 마다 올린다. 이전 세대의 long-poll 은 새 세대의 순서 기록을 건드리지 않는다.
+	let generation = 0;
 	// 재생 중 /api/pipe/join 이 보낸 받는 브라우저의 age recipient.
 	let pipeRecipient = null;
 
 	// long-poll 응답은 녹화에서 그보다 먼저 끝난 pipe 요청이 모두 재생될 때까지 붙잡는다.
 	// 예: 보내는 쪽의 "받는 사람 접속" /wait 응답은 받는 쪽 /join 이 재생된 뒤에 나간다.
-	async function waitForEarlierPipeExchanges(position) {
+	// 녹화와 다른 횟수로 polling 하면 앞선 요청이 끝내 재생되지 않을 수 있어, 실제 long-poll
+	// 처럼 longPollMaxWaitMs 가 지나면 기다리지 않고 응답한다.
+	async function waitForEarlierPipeExchanges(position, startedGeneration) {
 		const earlier = cassette.exchanges
 			.map((exchange, index) => ({ exchange, index }))
 			.filter(({ exchange, index }) => index < position && exchange.path.startsWith('/api/pipe/'))
 			.map(({ index }) => index);
-		while (!earlier.every((index) => replayed.has(index))) {
+		const deadline = Date.now() + longPollMaxWaitMs;
+		while (!earlier.every((index) => replayed.has(index)) && Date.now() < deadline) {
 			await new Promise((resolveTick) => setTimeout(resolveTick, 25));
+			if (generation !== startedGeneration) {
+				throw new Error('/__mock/reset 으로 끊긴 long-poll');
+			}
 		}
 	}
 
@@ -187,10 +210,11 @@ export function createReplayer(cassette) {
 			const exchange = matches[Math.min(index, matches.length - 1)];
 			const position = cassette.exchanges.indexOf(exchange);
 			if (longPollKeys.has(key)) {
-				await waitForEarlierPipeExchanges(position);
+				await waitForEarlierPipeExchanges(position, generation);
 			}
 			replayed.add(position);
-			const offsetMs = Date.now() - Date.parse(cassette.recordedAt);
+			// 녹화 세션이 길었어도 각 응답이 녹화된 시각 기준으로 옮긴다.
+			const offsetMs = Date.now() - Date.parse(exchange.at ?? cassette.recordedAt);
 			const response = buildResponse(exchange, offsetMs);
 			const isPipeBody = key === 'GET /api/pipe/receive' && response.status === 200;
 			if (!isPipeBody || cassette.pipe === undefined) {
@@ -202,6 +226,7 @@ export function createReplayer(cassette) {
 			return reencryptPipe(response, cassette.pipe, pipeRecipient);
 		},
 		reset() {
+			generation += 1;
 			served = new Map();
 			replayed = new Set();
 			pipeRecipient = null;
@@ -316,6 +341,10 @@ export async function startMockApi({
 	let currentPath = cassettePath(cassetteDir, cassette);
 	let current;
 	if (mode === 'record') {
+		// 커밋한 테스트 카세트를 실수로 덮어쓰지 않도록, 있는 파일은 지운 뒤에만 다시 녹화한다.
+		if (existsSync(currentPath)) {
+			throw new Error(`이미 있는 카세트다. 다시 녹화하려면 먼저 지운다: ${currentPath}`);
+		}
 		mkdirSync(cassetteDir, { recursive: true });
 		current = { target, recordedAt: new Date().toISOString(), link: '', exchanges: [] };
 		writeFileSync(currentPath, JSON.stringify(current, null, '\t'));
@@ -328,9 +357,7 @@ export async function startMockApi({
 		currentPath = cassettePath(cassetteDir, name);
 		current = loadCassette(currentPath);
 		replayer = createReplayer(current);
-		log(
-			`[mock-api] 카세트 ${name} (${current.exchanges.length}건)${current.link ? ` 링크: ${current.link}` : ''}`
-		);
+		log(`[mock-api] 카세트 ${name} (${current.exchanges.length}건)${linkForLog(current.link)}`);
 	}
 
 	async function record(req, res, requestBody) {
@@ -362,6 +389,7 @@ export async function startMockApi({
 		const exchange = {
 			method: req.method,
 			path: pathname,
+			at: new Date().toISOString(),
 			status: upstream.status,
 			headers: responseHeaders,
 			...encoded
@@ -441,7 +469,7 @@ export async function startMockApi({
 	log(
 		mode === 'record'
 			? `[mock-api] 녹화 중 http://localhost:${boundPort} -> ${target}, 저장: ${currentPath}`
-			: `[mock-api] 재생 중 http://localhost:${boundPort}, 카세트: ${currentPath} (${current.exchanges.length}건)${current.link ? `\n[mock-api] 링크: ${current.link}` : ''}`
+			: `[mock-api] 재생 중 http://localhost:${boundPort}, 카세트: ${currentPath} (${current.exchanges.length}건)${linkForLog(current.link)}`
 	);
 	return server;
 }

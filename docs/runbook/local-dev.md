@@ -98,8 +98,12 @@ an expired management page.
 
 - `POST http://localhost:8090/__mock/reset` restarts every sequence from the
   first recording.
-- `POST http://localhost:8090/__mock/use/<name>` switches to
-  `var/mock-api/<name>.json` in replay mode.
+- `POST http://localhost:8090/__mock/use/<name>` switches to `<name>.json` in
+  the cassette directory (`var/mock-api/`, or `FLICK_MOCK_DIR`) in replay mode.
+
+Recording refuses a cassette name that already exists; delete the file first to
+record it again. Logs show only the path of the cassette's `link`, never its
+`#key=` fragment.
 
 Browser tests replay committed cassettes from `tests/fixtures/cassettes/`
 through `routeCassette` in `scripts/dev/mock-api.mjs`, which answers `/api/*`
@@ -123,8 +127,9 @@ Limits:
   Playwright `route.abort()` for those.
 - Live relay timing replays only in recorded order: a long-poll
   (`/api/pipe/wait`, `/api/pipe/status`, `/api/pipe/receive`) answers once
-  every `/api/pipe/*` request recorded before it has replayed, and streamed
-  bodies replay whole.
+  every `/api/pipe/*` request recorded before it has replayed, or after 30
+  seconds when the browser polls a different number of times than the
+  recording did. Streamed bodies replay whole.
 
 Large uploads: while recording, the mock rewrites every presigned `url` in a
 JSON response to `http://localhost:8090/__storage/<base64url of the original>`,
@@ -142,7 +147,7 @@ replays as recorded.
 
 `node --test scripts/dev/mock-api.test.mjs` checks the record-then-replay round
 trip against a stub upstream, the timestamp shift, the storage rewrite, the
-live relay re-encryption, and the long-poll order.
+live relay re-encryption, the long-poll order, and that logs omit the link key.
 
 ## Container Images
 

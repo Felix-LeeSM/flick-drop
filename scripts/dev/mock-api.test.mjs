@@ -324,3 +324,46 @@ test('long-poll 응답은 녹화에서 앞선 상대 기기의 요청이 재생�
 	assert.equal(doneBeforeJoin, false);
 	assert.deepEqual(await wait, { status: 'ready' });
 });
+
+test('재생 로그에는 링크의 복호화 키가 남지 않고, 날짜가 아닌 *_at 값과 헤더 대소문자를 견딘다', async () => {
+	// Given: 키가 든 링크와, 손으로 쓴 대문자 헤더·날짜가 아닌 *_at 값을 가진 카세트
+	const recordedAt = new Date(Date.now() - 60_000).toISOString();
+	writeFileSync(
+		join(cassetteDir, 'edge.json'),
+		JSON.stringify({
+			recordedAt,
+			link: 'http://localhost:5173/s/s3#key=AGE-SECRET-KEY-PQ-1SYNTHETIC',
+			exchanges: [
+				{
+					method: 'GET',
+					path: '/api/secrets/s3',
+					status: 200,
+					headers: { 'Content-Type': 'application/json', 'Flick-Expires-At': 'never' },
+					body: JSON.stringify({ format_at: '1', expires_at: recordedAt }),
+					bodyEncoding: 'utf8'
+				}
+			]
+		})
+	);
+	const lines = [];
+
+	// When: 재생 서버를 띄우고 응답을 받는다
+	const player = await startMockApi({
+		mode: 'replay',
+		cassette: 'edge',
+		cassetteDir,
+		port: 0,
+		log: (line) => lines.push(line)
+	});
+	servers.push(player);
+	const response = await fetch(`${baseUrl(player)}/api/secrets/s3`);
+	const body = await response.json();
+
+	// Then: 로그에는 경로만 있고, 날짜가 아닌 값은 그대로이며, 시각은 1분 옮겨진다
+	assert.equal(lines.join('\n').includes('AGE-SECRET-KEY'), false);
+	assert.ok(lines.join('\n').includes('/s/s3'));
+	assert.equal(response.status, 200);
+	assert.equal(response.headers.get('flick-expires-at'), 'never');
+	assert.equal(body.format_at, '1');
+	assert.ok(Math.abs(Date.parse(body.expires_at) - Date.now()) < 5000);
+});
