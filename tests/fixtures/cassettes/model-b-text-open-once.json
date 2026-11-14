@@ -1,0 +1,79 @@
+{
+	"target": "http://localhost:8080",
+	"recordedAt": "2026-11-14T16:34:00.824Z",
+	"link": "http://127.0.0.1:5174/s/J5BDsKJXN1SX--qXrGsGEmXz#key=AGE-SECRET-KEY-PQ-1RQ4NEZNEA8UCLXFN3TKX8ZN2SJZVERTFNMJN9CUAM7037U0MXG8SVZKMFV",
+	"exchanges": [
+		{
+			"method": "GET",
+			"path": "/api/config",
+			"status": 200,
+			"headers": {
+				"cache-control": "public, max-age=300",
+				"content-type": "application/json",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "{\"payload_inline_max_bytes\":1044208,\"max_file_bytes\":1044208,\"pipe_relay_enabled\":true}\n",
+			"bodyEncoding": "utf8"
+		},
+		{
+			"method": "POST",
+			"path": "/api/secrets",
+			"status": 201,
+			"headers": {
+				"cache-control": "no-store",
+				"content-type": "application/json",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "{\"management_token\":\"2p9NvFtv9mpagIg-udtYok-vrK_GvjRdVL46ijksw5E\",\"management_expires_at\":\"2026-11-14T17:34:12.817393Z\",\"id\":\"J5BDsKJXN1SX--qXrGsGEmXz\",\"expires_at\":\"2026-11-14T17:34:12.817393Z\"}\n",
+			"bodyEncoding": "utf8"
+		},
+		{
+			"method": "GET",
+			"path": "/api/secrets/J5BDsKJXN1SX--qXrGsGEmXz/management",
+			"status": 200,
+			"headers": {
+				"cache-control": "no-store",
+				"content-type": "application/json",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "{\"id\":\"J5BDsKJXN1SX--qXrGsGEmXz\",\"status\":\"active\",\"expires_at\":\"2026-11-14T17:34:12.817393Z\",\"management_expires_at\":\"2026-11-14T17:34:12.817393Z\",\"can_cancel\":true}\n",
+			"bodyEncoding": "utf8"
+		},
+		{
+			"method": "GET",
+			"path": "/api/secrets/J5BDsKJXN1SX--qXrGsGEmXz",
+			"status": 200,
+			"headers": {
+				"content-type": "application/json",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "{\"id\":\"J5BDsKJXN1SX--qXrGsGEmXz\",\"kind\":\"text\",\"size_bytes\":1682,\"expires_at\":\"2026-11-14T17:34:12.817393Z\"}\n",
+			"bodyEncoding": "utf8"
+		},
+		{
+			"method": "POST",
+			"path": "/api/secrets/J5BDsKJXN1SX--qXrGsGEmXz/open",
+			"status": 200,
+			"headers": {
+				"cache-control": "no-store",
+				"content-type": "application/octet-stream",
+				"flick-expires-at": "2026-11-14T17:34:12.817393Z",
+				"flick-kind": "text",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IENmVXVIR1MzVmVzWUtWR1Z1T3hzVlF3SktIbFI4NUpSS0Rmcy81YjR1aHV2dVRtZGJWenovTGdzcStUSkVsUStVS090Q0ZkWmZhMWl0YTNXdG5hSjk5V1NkMEN1NDc4UXlXUmZONnRDSTl4MU16UHZFVUxzODhyRHFMZWlCZ2dkbzgzVG5iL1pmSWVKSmpHTmtXTWVUNzFwMCtmVzBwSmNSOTdFdm4rZS9XTnRrM3dNOEgrUFNtS2srKzhIc25ObVpjSDV6dkVQcUNPRUlmYzMvVHpvR01TU3MyY1ZlYmNwL2c3YlY5TFhtZFhHZ0tQOEc1Uy9MczdqT21ON1N2UUE5dDJnQlBwNEFRNWZDSVVzZm85Q3IzOWUzTXpiNGZTemxyWm9Nbmh5b0dNck1OWXQ0SGpXVXBuc2VBc2JDNldqL25TZ1g4aUJ5SEZrakxwSFRDbmZzUElKNHRyMVJPVDZlVjlZbFEyNlZZeHFwQmdiN1R4WXRpakxNMmtFejhsaERCMFQ0bldlTU5Fc1BPRnREekxWa0xzeUNzMlpFUklrR2tMUzNPNExrTnAvazdOdG9TWmZuWktBWUwyUlh3cUdGTlVlOEJKNFphK051OHZtVmgrT29OOXdId3d1MlcrOEVXR3lUak1vODRhNjFDV1I1YnZ2Qk1wWmtERStENEZ3RUJWVVRqY2s1RTBqQ1kwRkVVbklFeWlHRk01TzhwbEpFdUxWazJrL3pta1JYUWthdmQvK2kyQkRrNSt2WHRhQWtjUFBqUkdJRGMxVmlJN1VkWjMxQWUxcjduaENER1ZrMFlDa2NHTWcyUGUzSHd2VW1sL21xSDFGUGZTUjJxaDZkYWxLRUhpZGZ3c0ZLUXB4R083WnlIRWhJRU9NbElwUFJqY0JxZVMrd1RWeU5WN3JLQXBmUUtaYU1acG5WbnFJSEQ4bjZLUVJMSGdDUnVkMXYycEdaU2pUQzgrdmNpclp6aVdXV2YxZ2FrOU93bSsycHRuK2t4WVJWT1JVZXNMUXpad25CNkYvV1o2Mit2Z1J5ejZkd0dQNllwbGZ0aTFzR2w0RS9RWVJUSm9qSGRRN25aSVVPRjNFT2ZiYzVrZTk3WDRsTTh5em9pMnp4STA5dkNUSzRoa0JldEc2aEEyUURpY3hWdEVpR2hBeEhvT1hBT0ZlbUtRVk1sQ0NzcnE1WG83Ri9vQWt1VEgwRndBYlZzWHdzeHdnNlJqSWxnNGphdVR6QkkrTUdpc3gvYmk5aTcyV2pBYTY3djdIV3IvMUxXT1crekE1R1doSEhSWC9SNU55ek03b3JhbE9SY2s2OW52eDdwSzlzZm5FcGVobzJQc2sxUW5VNkhpaWxINVczRzlPS2w0ZTNRQXMrZ2JWZmYxdHY0Y0haMWQ4bGhTMTg4dVhlQjlPbWUveDFyMW85bDR6Wm8rSWRYSkptalhIazk2YU9CSnVtM2hwdHdkOTRMVUMrTzVIRXJrcUx3Vm1mR2d3ZjJSZHBaWGZibCtmU3pYcytwditUalNVTU5nQWtzY1IxdisxRGZEOWRRRjNVOVpPZkZCQUh2NzlodGN0TlAzUnlUNytSeVZGWUVKYmkwNkU5NW5ISjdjM0dLZlY0eFh0OG9SRFgwWWhFVGhYRDFuVkRrMW9vUjh6ZXVPLzhrZXBJTEpsR3RRclY4ckVJUVpRUkJ5bDE5c1M1VzZGN0tnbmNleE80dnp2OXVZSS9GeDJSNEhLOGt0VjVKWWx5YkFtV204YVppNjR2U2RjY3E3czJOVkhHclZkTnNNK2ZFTzVlR0dKSzNFMlZaMGY4R3pjY3d4aFhBeTVJTmEyTSsvbmRyeGhRMi84YmRjSnJmZFpkMmtsdXRmejNjTkJURE1uQ3ZyMjhtRC9meE1EaCthZXN5VS8vQS85UitKSjV3cFEyeGZZTEhuYnhqc1dFS29mZm1lcDVETmR4M1MvOTFJNW5aeWc2dTdLNDQ0djdERzBLUQpsRGQ1bFdvcGtjaXJ0SmJoSFBqSXhFaGE3WjhMWGRKK1AySVM2cTJFb1BZCi0tLSBpQ1RlemlaR285OVZzQXRQc3ViY0JKNkt2NkNIT3lzcVhJdkFlbFl4K3Z3CrBDEs+VrJTuPqXpTmwMQk2QyhOZLsNZtnTYFot8JOuBKdI1wCHtka+VJoKm+Uw3XxyaZN4KX24=",
+			"bodyEncoding": "base64"
+		},
+		{
+			"method": "GET",
+			"path": "/api/secrets/J5BDsKJXN1SX--qXrGsGEmXz",
+			"status": 404,
+			"headers": {
+				"content-type": "application/json",
+				"x-content-type-options": "nosniff"
+			},
+			"body": "{\"error\":{\"code\":\"not_found\",\"message\":\"secret was not found\"}}\n",
+			"bodyEncoding": "utf8"
+		}
+	]
+}

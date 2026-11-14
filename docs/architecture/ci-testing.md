@@ -130,6 +130,19 @@ pnpm --dir web test:browser
 ```
 
 `FLICK_WEB_URL` can point the browser check at another running web instance.
+
+Mocked browser suites (`web/src/lib/components/*.browser.mjs`) take their API
+responses from recorded cassettes where a real response sequence exists:
+record the flow once against a local stack with
+`scripts/dev/mock-api.mjs` into `tests/fixtures/cassettes/`, then replay it
+with `routeCassette` from the same file (procedure in
+`docs/runbook/local-dev.md`, "Mock API for Prototypes"). The first example is
+the "recorded Model B cassette" test in `OpenSecretPage.browser.mjs`, replaying
+`tests/fixtures/cassettes/model-b-text-open-once.json`. Hand-written
+`route.fulfill` responses stay for states a real API cannot be made to produce
+on demand (dropped connections, specific 503/429 retries). Cassettes replay
+the API's past answers, so they do not catch a server regression; the real
+API suites (`*.live.mjs`, `tests/e2e/pipe-relay.live.mjs`) keep that job.
 This focused check is separate from the default Node unit suite; it does not
 replace the complete create/open/file browser scenarios listed above.
 
