@@ -48,20 +48,20 @@ function displayValue(field: CredentialField): string {
 }
 </script>
 
-<div class="grid gap-4">
+<div class="grid grid-cols-[minmax(0,1fr)] gap-4">
 	<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 		<div class="grid min-w-0 gap-1">
 			<Badge variant="secondary" class="w-fit">
 				{template.label}
 			</Badge>
-			<h2 class="break-words text-lg font-semibold leading-tight">{title}</h2>
+			<h2 class="[overflow-wrap:anywhere] text-lg font-semibold leading-tight">{title}</h2>
 		</div>
 	</div>
 
 	<div class="grid gap-2">
 		{#each credential.fields as field (field.id)}
 			<div class="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-muted/20 p-3 sm:flex-row sm:items-center">
-				<div class="min-w-0 text-sm font-medium text-muted-foreground sm:w-28 sm:shrink-0">
+				<div class="min-w-0 [overflow-wrap:anywhere] text-sm font-medium text-muted-foreground sm:w-28 sm:shrink-0">
 					{field.label}
 				</div>
 				<div class="min-w-0 flex-1 break-all text-base sm:text-sm" title={field.secret ? undefined : field.value}>
@@ -112,7 +112,7 @@ function displayValue(field: CredentialField): string {
 	{#if hasNotes}
 		<div class="grid gap-1 rounded-md border border-border bg-muted/30 p-3">
 			<p class="text-sm font-medium text-muted-foreground">Notes</p>
-			<p class="whitespace-pre-wrap break-words text-sm">{credential.notes}</p>
+			<p class="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm">{credential.notes}</p>
 		</div>
 	{/if}
 </div>
