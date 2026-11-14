@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { Encrypter, generateHybridIdentity, identityToRecipient } from 'age-encryption';
 import { chromium } from 'playwright';
+import { routeCassette } from '../../../../scripts/dev/mock-api.mjs';
 
 // access_proof is the PBKDF2 vector shared with the Go client; the age block
 // made by this module is a real text file to the web identity, plus that
@@ -207,6 +208,30 @@ async function routeModelB(page, kind, body, headers = {}) {
 		})
 	);
 }
+
+// 실제 API 응답을 녹화한 카세트(scripts/dev/mock-api.mjs)로 한 번 열기 화면 흐름을 재생한다.
+// 서버의 한 번 열기 규칙 자체는 실제 API 에 붙는 *.live.mjs 가 검증한다.
+test('recorded Model B cassette decrypts once, then the link reads as gone', async () => {
+	const context = await browser.newContext();
+	try {
+		const { linkPath } = await routeCassette(
+			context,
+			new URL('../../../../tests/fixtures/cassettes/model-b-text-open-once.json', import.meta.url)
+		);
+		const first = await context.newPage();
+		await first.goto(`${baseUrl}${linkPath}`);
+		await first.getByRole('button', { name: 'Open', exact: true }).click();
+		assert.equal(
+			await first.getByRole('textbox', { name: 'Decrypted secret' }).inputValue(),
+			'synthetic cassette text'
+		);
+		const second = await context.newPage();
+		await second.goto(`${baseUrl}${linkPath}`);
+		await second.getByRole('link', { name: 'Create a new secret instead' }).waitFor();
+	} finally {
+		await context.close();
+	}
+});
 
 // 보낸 사람이 정하는 로그인 정보의 제목·라벨·값·메모가 공백 없이 길어도 페이지가 가로로 넘치지 않는다.
 for (const width of [360, 1280]) {
