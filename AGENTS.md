@@ -113,10 +113,12 @@ contract, open decision log, or multi-step verification record.
   wide or wider. Wrap long unbroken text with `[overflow-wrap:anywhere]` or
   `break-all`; Tailwind `break-words` (`overflow-wrap: break-word`) does not
   shrink a grid or flex item's minimum width, so a 200-character word still
-  widens the page. Truncate single-line names with `truncate` on a `min-w-0`
-  flex item and put the full value in `title` — see
-  `web/src/lib/components/UrlField.svelte`. Grids that hold user text set
-  `grid-cols-[minmax(0,1fr)]` — see `web/src/lib/components/DeliveryFrame.svelte`.
+  widens the page. Truncate single-line values with `w-full truncate` and put
+  the full value in `title` — see the `<input>` in
+  `web/src/lib/components/UrlField.svelte`; a truncated flex child also needs
+  `min-w-0`. Page-level grids set `grid-cols-[minmax(0,1fr)]` so one wide child
+  cannot widen the page — see `web/src/lib/components/DeliveryFrame.svelte` and
+  `web/src/lib/components/OpenSecretPage.svelte`.
   A component that renders user text gets a browser check that fills it with a
   200-character unbroken value and asserts
   `document.documentElement.scrollWidth <= innerWidth` — see the

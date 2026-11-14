@@ -582,7 +582,7 @@ async function copyText(): Promise<void> {
 						<textarea
 							readonly
 							aria-label="Decrypted secret content"
-							class="min-h-36 w-full rounded-xl border border-border bg-muted/30 p-3 pr-24 font-mono text-xs text-foreground focus:outline-none"
+							class="min-h-36 w-full rounded-xl border border-border bg-muted/30 p-3 pr-28 font-mono text-xs text-foreground focus:outline-none"
 							value={receivedText}
 						></textarea>
 						<Button
