@@ -118,7 +118,9 @@ Browser tests should prove:
 The focused recipient-page browser regression is `web/src/lib/components/OpenSecretPage.browser.mjs`.
 It uses Playwright Chromium with mocked metadata/open responses and the shared
 crypto vectors to exercise loading, retry after network/503/429 failures, both
-access models, and terminal 404/410 responses. Run it locally:
+access models, and terminal 404/410 responses. It also opens a credential
+with 200-character unbroken title, label, value, and notes at 360px and 1280px
+and checks that the page does not scroll sideways. Run it locally:
 
 ```sh
 pnpm --dir web exec playwright install chromium

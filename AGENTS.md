@@ -107,3 +107,20 @@ contract, open decision log, or multi-step verification record.
   shows visible text has its name from that text; do not add a redundant
   `aria-label` that duplicates it. Decorative icons paired with visible text get
   `aria-hidden="true"` so they are not announced twice.
+- Text a user controls (file names, decrypted text, credential title, label,
+  value, and notes in `web/src/lib/components/CredentialView.svelte`, typed
+  input values) never widens the page or pushes a control off-screen, at 360px
+  wide or wider. Wrap long unbroken text with `[overflow-wrap:anywhere]` or
+  `break-all`; Tailwind `break-words` (`overflow-wrap: break-word`) does not
+  shrink a grid or flex item's minimum width, so a 200-character word still
+  widens the page. Truncate single-line values with `w-full truncate` and put
+  the full value in `title` — see the `<input>` in
+  `web/src/lib/components/UrlField.svelte`; a truncated flex child also needs
+  `min-w-0`. Page-level grids set `grid-cols-[minmax(0,1fr)]` so one wide child
+  cannot widen the page — see `web/src/lib/components/DeliveryFrame.svelte` and
+  `web/src/lib/components/OpenSecretPage.svelte`.
+  A component that renders user text gets a browser check that fills it with a
+  200-character unbroken value and asserts
+  `document.documentElement.scrollWidth <= innerWidth` — see the
+  "long unbroken credential text" test in
+  `web/src/lib/components/OpenSecretPage.browser.mjs`.

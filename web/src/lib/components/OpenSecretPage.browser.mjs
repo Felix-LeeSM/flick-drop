@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
+import { Encrypter, generateHybridIdentity, identityToRecipient } from 'age-encryption';
 import { chromium } from 'playwright';
 
 // access_proof is the PBKDF2 vector shared with the Go client; the age block
@@ -205,6 +206,39 @@ async function routeModelB(page, kind, body, headers = {}) {
 			body
 		})
 	);
+}
+
+// 보낸 사람이 정하는 로그인 정보의 제목·라벨·값·메모가 공백 없이 길어도 페이지가 가로로 넘치지 않는다.
+for (const width of [360, 1280]) {
+	test(`long unbroken credential text stays inside a ${width}px page`, async () => {
+		const long = (tag) => `${tag}-${'x'.repeat(200)}`;
+		const credential = `FLCR1:${JSON.stringify({
+			v: 1,
+			type: 'login',
+			title: long('title'),
+			notes: long('notes'),
+			fields: [{ id: 'username', label: long('label'), value: long('value'), secret: false }]
+		})}`;
+		const identity = await generateHybridIdentity();
+		const encrypter = new Encrypter();
+		encrypter.addRecipient(await identityToRecipient(identity));
+		const body = Buffer.from(await encrypter.encrypt(credential));
+		const page = await browser.newPage({ viewport: { width, height: 900 } });
+		try {
+			await routeModelB(page, 'text', body);
+			await page.goto(`${baseUrl}/s/metadata-retry#key=${identity}`);
+			await page.getByRole('button', { name: 'Open', exact: true }).click();
+			await page.getByText(long('notes'), { exact: true }).waitFor();
+			assert.equal(
+				await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+			const copy = await page.getByRole('button', { name: `Copy ${long('label')}` }).boundingBox();
+			assert.ok(copy.x + copy.width <= width, `copy button ends at ${copy.x + copy.width}px`);
+		} finally {
+			await page.close();
+		}
+	});
 }
 
 test('Model B file opens to its filename and a download of the original bytes', async () => {
