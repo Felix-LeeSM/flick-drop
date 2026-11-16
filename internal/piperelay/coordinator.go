@@ -141,8 +141,8 @@ type CoordinatorOptions struct {
 }
 
 // connection is one receiver that entered the right code. decided closes once
-// the sender (or first-connector-wins) settles it; result is nil for the chosen
-// connection and the reason otherwise.
+// the sender settles it; result is nil for the chosen connection and the reason
+// otherwise.
 //
 // A waiting connection counts as present only while it polls Status: polls is
 // the number of open Status calls and lastSeen the last time one started or

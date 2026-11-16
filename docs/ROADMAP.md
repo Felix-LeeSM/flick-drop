@@ -237,8 +237,8 @@ API memory with nothing written to SQLite or object storage.
   crypto and streaming), and
   [#320](https://github.com/Felix-LeeSM/flick-drop/issues/320) (UI and browser
   tests).
-- The sender gets a 6-digit code valid for 3 minutes. With confirmation on, the
-  sender picks the receiver by a 3-digit number the receiver reads out.
+- The sender gets a 6-digit code valid for 3 minutes and confirms the
+  receiver by a 3-digit verification number the receiver reads out.
 - Since #399 the receiving browser generates a fresh age key for each attempt
   and the sender encrypts to it, so the relay server cannot decrypt the stream.
 - Durable design: "Live Relay (Send with Code)" in

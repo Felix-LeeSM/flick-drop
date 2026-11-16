@@ -304,7 +304,7 @@ describe('client API hooks', () => {
 			]
 		});
 
-		// Given: 확인 없는 모드에서 수신자가 붙으면 ready 응답에 그 수신자의 recipient가 실린다
+		// Given: 수신자를 선택하면 ready 응답에 선택된 수신자의 recipient가 실린다
 		const ready = await waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 4, () =>
 			Promise.resolve(
 				jsonResponse({ status: 'ready', version: 5, recipient: 'age1pq1first', connections: [] })
