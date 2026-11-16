@@ -1199,6 +1199,27 @@ test('Received live credential copies formatted text at 360px and receiving canc
 					(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
 					'Peer override secret'
 				);
+				// File drops behind PipeReceivedSecretView must be ignored (neither prevented nor attached).
+				const dropBlocked = await receiver.evaluate(() => {
+					const transfer = new DataTransfer();
+					transfer.items.add(
+						new File(['ignored'], 'dropped-while-received.txt', { type: 'text/plain' })
+					);
+					const dragHandled = !document.body.dispatchEvent(
+						new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer })
+					);
+					const dropHandled = !document.body.dispatchEvent(
+						new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+					);
+					return !dragHandled && !dropHandled;
+				});
+				assert.equal(dropBlocked, true);
+				assert.equal(
+					(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+					'Peer override secret'
+				);
+				await receiver.getByRole('button', { name: 'Done', exact: true }).click();
+				assert.equal(await receiver.getByText('dropped-while-received.txt').count(), 0);
 			} finally {
 				await senderContext.close();
 			}

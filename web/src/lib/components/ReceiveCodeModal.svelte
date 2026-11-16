@@ -105,6 +105,14 @@ let copiedText = $state(false);
 
 let abortController = $state<AbortController | null>(null);
 
+function clearPayloadState(): void {
+	receivedText = '';
+	receivedFileName = '';
+	receivedFileSize = 0;
+	receivedFileBlob = null;
+	copiedText = false;
+}
+
 function reset(): void {
 	abortController?.abort();
 	abortController = null;
@@ -114,11 +122,7 @@ function reset(): void {
 	decrypted = false;
 	errorMessage = '';
 	statusMessage = '';
-	receivedText = '';
-	receivedFileName = '';
-	receivedFileSize = 0;
-	receivedFileBlob = null;
-	copiedText = false;
+	clearPayloadState();
 	verifyCode = '';
 }
 
@@ -128,6 +132,7 @@ $effect(() => {
 		previousOpen = false;
 		abortController?.abort();
 		abortController = null;
+		clearPayloadState();
 		return;
 	}
 	if (!previousOpen) {
@@ -254,6 +259,7 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	}
 	if (onCodeReceived) {
 		const payload = outcome.payload;
+		clearPayloadState();
 		open = false;
 		onCodeReceived(payload);
 		return;
