@@ -31,7 +31,12 @@ Local development:
 | --- | --- |
 | `FLICK_API_ADDR` | API listen address. |
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` on both the API and the worker's dedicated metrics listener. Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = both fail closed (401). |
-| `FLICK_API_DB_PATH` | SQLite file owned by API. |
+| `FLICK_API_DB_PATH` | Transitional SQLite file owned by API. Removed once the M15 PostgreSQL cutover completes (PR 3); superseded by `FLICK_DATABASE_URL`. |
+| `FLICK_DATABASE_URL` | PostgreSQL DSN for the API-owned `flick_api` logical database, connected as the least-privilege `flick_api` role (`pgx/v5/stdlib`, `CGO_ENABLED=0`). Required after the M15 cutover; local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql`. |
+| `FLICK_VALKEY_ADDR` | Valkey `host:port` for the shared rate limiter and live-transfer rendezvous (`internal/httpapi/ratelimit.go`, `internal/piperelay/`). Empty disables Valkey use: the rate limiter falls back to per-process memory and `/api/pipe/*` answers `503`. |
+| `FLICK_RATELIMIT_KEY_SALT` | Deployment-secret salt mixed (HMAC-SHA-256) into Valkey rate-limit keys, so Valkey never stores a raw client network. Required when `FLICK_VALKEY_ADDR` is set; rotating it resets in-flight rate-limit buckets only. |
+| `FLICK_INTERNAL_HTTP_PORT` | Port of the API's pod-to-pod live-transfer stream listener (`/internal/pipe/stream/{codeHash}`) inside the cluster. Set by the Deployment in `deploy/base/api.yaml`; unused outside Kubernetes. |
+| `FLICK_POD_IP` | This pod's IP injected by the Kubernetes Downward API (`status.podIP`). The pod registers it in Valkey so the peer pod can dial the stream listener directly. Empty outside Kubernetes. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored as SQLite BLOB. Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
@@ -57,11 +62,39 @@ Local development:
 | `FLICK_NATS_STREAM` | JetStream stream name. |
 | `FLICK_NATS_JOB_SUBJECT` | Job publish subject. |
 
+## PostgreSQL
+
+The M15 architecture runs one PostgreSQL 17 instance (`postgres:17-alpine`) and
+splits two logical databases with separate least-privilege roles, so the API and
+worker keep their ownership boundary (`docs/architecture/database-schema.md`):
+
+```text
+flick_api database    owner role flick_api    <- FLICK_DATABASE_URL
+flick_worker database owner role flick_worker <- FLICK_WORKER_DATABASE_URL
+```
+
+Local development mirrors this with `compose.yaml` and
+`scripts/dev/postgres-init.sql`. CI (`scripts/ci/go.sh` integration tests) reads
+`FLICK_TEST_POSTGRES_URL` instead: a test URL whose schemas the test helpers
+create and drop per run.
+
+## Valkey
+
+Valkey (`valkey/valkey:8.1-alpine`) is the non-persistent shared state tier,
+always run with `--save "" --appendonly no` so nothing reaches disk. It holds
+only rate-limit buckets (HMAC-SHA-256 hashed keys, TTL ≤ 10 minutes) and
+live-transfer rendezvous metadata (room state, Pub/Sub signals, poll leases);
+ciphertext never enters Valkey (`security-model.md`). A Valkey outage never
+fails `/readyz` (which checks Postgres and NATS only): the rate limiter falls
+back to per-process memory and only `/api/pipe/*` answers `503`. CI reads
+`FLICK_TEST_VALKEY_ADDR` (`host:port`) for integration tests.
+
 ## Worker
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_WORKER_DB_PATH` | SQLite file owned by worker. |
+| `FLICK_WORKER_DB_PATH` | Transitional SQLite file owned by worker. Removed once the M15 PostgreSQL cutover completes (PR 2); superseded by `FLICK_WORKER_DATABASE_URL`. |
+| `FLICK_WORKER_DATABASE_URL` | PostgreSQL DSN for the worker-owned `flick_worker` logical database, connected as the least-privilege `flick_worker` role. Required after PR 2; local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql`. |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
 | `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address (`internal/config/config.go`). Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |
 

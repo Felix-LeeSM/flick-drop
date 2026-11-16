@@ -18,6 +18,10 @@ PR checks
   container image builds
   NATS compose smoke
 
+PR service containers (Repo checks job)
+  postgres:17-alpine  -> FLICK_TEST_POSTGRES_URL
+  valkey 8            -> FLICK_TEST_VALKEY_ADDR
+
 scheduled/manual checks
   k3d deploy smoke (weekly schedule or manual dispatch)
 
@@ -47,6 +51,16 @@ integration, web, and local container image checks. The TTL drift check
 build arguments in `web/Dockerfile` and `.github/workflows/publish-images.yml`
 or from the `ttl_seconds` bounds in `contracts/openapi.yaml`. The MinIO and image checks skip only when Docker is not available
 locally; CI treats a missing Docker daemon as a failure.
+
+Since M15 PR 1 (issue #420), the `Repo checks` job runs `postgres:17-alpine`
+and `valkey/valkey:8.1-alpine` service containers and exports
+`FLICK_TEST_POSTGRES_URL` (Postgres DSN) and `FLICK_TEST_VALKEY_ADDR`
+(`host:port`). Go integration tests read these when set and skip gracefully
+when unset, so a plain local `scripts/ci/go.sh` without the compose services
+still passes. Locally, `docker compose up -d postgres valkey` provides the
+same pair. The release-cli workflow deliberately tests only the DB-free CLI
+packages (`./cmd/flick/... ./internal/flickcli/...
+./internal/clientcrypto/...`) so its runner needs no Postgres service.
 
 ## GitHub Repository Policy
 
@@ -94,8 +108,10 @@ Expected coverage:
 - `internal/events`: NATS payload validation and outbox publish behavior.
 - `internal/worker`: idempotent job execution and retry decisions.
 
-Integration tests should use temporary SQLite files and a real NATS instance
-when testing worker delivery paths.
+Integration tests should use isolated databases and a real NATS instance
+when testing worker delivery paths. After the M15 cutover (issues #421,
+#422) the database-backed tests create and drop an isolated Postgres schema
+from `FLICK_TEST_POSTGRES_URL`; before it they use temporary SQLite files.
 
 ## Web Tests
 
@@ -384,7 +400,10 @@ release asset is something users download and execute:
   already exists rather than a branch
 - the tagged commit must already be reachable from the repository default
   branch, so binaries are only ever built from code that passed `review-gate`
-- `scripts/ci/go.sh` runs before anything is built
+- scoped Go checks run before anything is built: `go vet` and `go test` over
+  the DB-free CLI packages only (`./cmd/flick/... ./internal/flickcli/...
+  ./internal/clientcrypto/...`), so the release runner needs no Postgres
+  service
 
 A `cli/v*` tag is not a Go module version, so `go install ...@cli/v0.1.0` does
 not resolve. Go users install with `@latest` or pin to the release commit SHA.

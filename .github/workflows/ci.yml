@@ -22,6 +22,30 @@ jobs:
     name: Repo checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Postgres/Valkey service containers back the Go integration tests
+    # (FLICK_TEST_POSTGRES_URL / FLICK_TEST_VALKEY_ADDR). Tests read them when
+    # set; until the M15 cutover lands they are simply unused.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: flick
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:8.1-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +62,9 @@ jobs:
 
       - name: Run repo checks
         run: scripts/ci/all.sh
+        env:
+          FLICK_TEST_POSTGRES_URL: postgres://postgres:flick@127.0.0.1:5432/postgres?sslmode=disable
+          FLICK_TEST_VALKEY_ADDR: 127.0.0.1:6379
 
   nats-smoke:
     name: NATS smoke

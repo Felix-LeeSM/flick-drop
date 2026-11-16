@@ -246,3 +246,38 @@ API memory with nothing written to SQLite or object storage.
   [service topology](architecture/service-topology.md).
 - Exclude WebRTC peer-to-peer transfer, device address books, and any stored
   copy of the payload.
+
+### M15: Multi-Replica PostgreSQL & Valkey
+
+Goal: run `flick-api` and `flick-web` at `replicas: 2` with zero-downtime
+rolling updates, on one PostgreSQL 17 dialect with non-persistent Valkey for
+shared ephemeral state.
+
+- [#420](https://github.com/Felix-LeeSM/flick-drop/issues/420): fix the
+  contracts first — architecture docs, `.env.example`
+  (`FLICK_DATABASE_URL`, `FLICK_WORKER_DATABASE_URL`, `FLICK_VALKEY_ADDR`,
+  `FLICK_RATELIMIT_KEY_SALT`, `FLICK_INTERNAL_HTTP_PORT`, `FLICK_POD_IP`),
+  `compose.yaml` postgres/valkey services, CI service containers, and a
+  DB-free CLI test scope in the release workflow.
+- [#421](https://github.com/Felix-LeeSM/flick-drop/issues/421): move
+  `flick-worker` to Postgres (`pgx/v5/stdlib`, `pg_advisory_lock`
+  migrations, `RETURNING id`, `AckWait: 45s`).
+- [#422](https://github.com/Felix-LeeSM/flick-drop/issues/422): move the API
+  database to Postgres, fix the concurrency races the port exposes
+  (`FOR UPDATE SKIP LOCKED`, atomic failed-access counting, revoke-race 404s),
+  and remove `modernc.org/sqlite` entirely.
+- [#423](https://github.com/Felix-LeeSM/flick-drop/issues/423): Valkey-backed
+  distributed rate limiter with hashed keys and an in-memory fallback,
+  scrape-time DB metric collectors, and multi-replica monitoring.
+- [#424](https://github.com/Felix-LeeSM/flick-drop/issues/424): Live
+  Transfer rendezvous in Valkey with pod-to-pod encrypted streaming and a
+  60-second rolling-restart grace.
+- [#425](https://github.com/Felix-LeeSM/flick-drop/issues/425): k8s manifests
+  for postgres/valkey, the 3A Osaka two-node placement (`loki` to
+  `flick-core`, two API/web replicas split across Osaka, Korea nodes
+  excluded), the SQLite→Postgres cutover tool and runbook, and a
+  multi-replica k3d smoke.
+- Spec: `docs/work/active/2026-11-16-multi-replica-postgres-valkey.md`.
+- Exclude multi-node HA (Patroni, Valkey Sentinel/Cluster, NATS clustering),
+  WebRTC peer-to-peer transfer, breaking the `age` format or public HTTP
+  contracts, and any Korea-region workload placement.

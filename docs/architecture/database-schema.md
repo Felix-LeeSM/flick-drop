@@ -1,19 +1,28 @@
 # Database Schema
 
-Flick uses separate SQLite files for service ownership.
+Flick splits ownership across two PostgreSQL logical databases on one
+PostgreSQL 17 instance, each owned by a least-privilege role.
 
 ## Ownership
 
 ```text
-api.db
-  owner: flick-api
+flick_api database
+  owner role: flick_api
+  owner service: flick-api
 
-worker.db
-  owner: flick-worker
+flick_worker database
+  owner role: flick_worker
+  owner service: flick-worker
 ```
 
-The worker must not mutate `api.db` directly. It calls internal API endpoints for
-API-owned mutations.
+The worker must not mutate the `flick_api` database directly. It calls internal
+API endpoints for API-owned mutations.
+
+M15 transition (decided 2026-11-16): `flick_worker` moves to Postgres in PR 2
+(issue #421), `flick_api` and the `modernc.org/sqlite` removal in PR 3 (issue
+#422). Until those merge, the services still run the same tables on local
+SQLite files. The table shapes below carry over unchanged except for the
+dialect notes in "PostgreSQL dialect".
 
 ## `api.db`
 
@@ -316,18 +325,34 @@ by earlier workers, without a schema migration. A dead-lettered
 text names the job ID, reason, and backend instead of the key.
 See [event contract](event-contract.md) for recovery and acknowledgement rules.
 
-## SQLite Settings
+## PostgreSQL Dialect
 
-Expected runtime settings:
+The M15 port (issues #421, #422) fixes these rules for every store:
 
-```sql
-pragma journal_mode = wal;
-pragma foreign_keys = on;
-pragma busy_timeout = 5000;
-```
+- `MigrateAPI` and `MigrateWorker` take a session-level `pg_advisory_lock`
+  before running DDL, so concurrent replica boot cannot race `pg_type`
+  catalog updates.
+- Insert identity uses `INSERT ... RETURNING id`; `LastInsertId` is never
+  used (`internal/worker/store.go:ReceiptStore.Start`).
+- Worker job-lease acquisition and renewal use
+  `INSERT ... ON CONFLICT (job_id) DO UPDATE` plus `FOR UPDATE` reads.
+- Multi-replica claims use `FOR UPDATE SKIP LOCKED`: the outbox publisher
+  (`internal/events/outbox.go:ListDue`), the secret reaper
+  (`internal/secrets/reaper.go:claimReclaimableSQL`), and the request purge
+  (`internal/requests/cleanup.go:PurgeExpiredTx`).
+- Timestamps compare natively as `timestamptz`; the SQLite fixed-width text
+  RFC3339 comparisons and `julianday` arithmetic do not survive the port.
+- Boolean arithmetic like `((a is not null) + (b is not null))` becomes
+  `CASE WHEN ... THEN 1 ELSE 0 END` (`internal/db/storage_usage.go:StorageObjectBytes`).
+- Failed-access counting uses
+  `UPDATE ... SET failed_access_count = failed_access_count + 1 ... RETURNING`
+  so concurrent attempts cannot double-lockout or double-count
+  (`internal/secrets/store.go:recordFailedAccessTx`).
+- Connection pools set explicit `MaxOpenConns`/`MaxIdleConns`/`ConnMaxLifetime`
+  per role; the SQLite `SetMaxOpenConns(1)` single-writer limit is gone.
 
-Vacuum/checkpoint policy belongs in the operations runbook because it affects
-disk usage and residual ciphertext retention.
+Vacuum and connection-policy tuning belong in the operations runbook because
+they affect disk usage and residual ciphertext retention.
 
 ## M8 Management Metadata
 
