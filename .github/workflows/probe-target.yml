@@ -1,0 +1,17 @@
+name: Probe Target
+
+on:
+  pull_request_target:
+    types:
+      - opened
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo
+        run: echo "pull_request_target runs"
