@@ -241,7 +241,7 @@ API memory with nothing written to SQLite or object storage.
   receiver by a 3-digit verification number the receiver reads out.
 - Since #399 the receiving browser generates a fresh age key for each attempt
   and the sender encrypts to it, so the relay server cannot decrypt the stream.
-- Durable design: "Live Relay (Send with Code)" in
+- Durable design: "Live Relay (Live Transfer)" in
   [security model](architecture/security-model.md) and the live relay part of
   [service topology](architecture/service-topology.md).
 - Exclude WebRTC peer-to-peer transfer, device address books, and any stored
