@@ -50,16 +50,19 @@ func TestRequestSchemaMigrationConstraintsAndCascade(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from request_payloads`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("request delete did not cascade")
 	}
-	worker, err := OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Close()
+	worker := openTestWorkerDatabase(t)
 	if err := MigrateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.QueryRow(`select count(*) from sqlite_master where name in ('requests','request_payloads')`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("request schema entered worker DB")
+	var searchSchema string
+	if err := worker.QueryRowContext(ctx, `select current_schema()`).Scan(&searchSchema); err != nil {
+		t.Fatal(err)
+	}
+	var workerTables int
+	if err := worker.QueryRowContext(ctx, `select count(*) from information_schema.tables
+		where table_schema = $1 and table_name in ('requests', 'request_payloads')`,
+		searchSchema).Scan(&workerTables); err != nil || workerTables != 0 {
+		t.Fatalf("request schema entered worker DB: tables = %d, err = %v", workerTables, err)
 	}
 }
 
@@ -246,62 +249,6 @@ func TestMigrateAPICreatesOutboxEvents(t *testing.T) {
 	}
 }
 
-func TestMigrateWorkerCreatesJobReceipts(t *testing.T) {
-	ctx := context.Background()
-	conn, err := OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-
-	if err := MigrateWorker(ctx, conn); err != nil {
-		t.Fatalf("migrate worker: %v", err)
-	}
-
-	_, err = conn.ExecContext(ctx, `insert into job_receipts (
-		job_id, kind, state, attempts, first_seen_at, updated_at
-	) values (?, ?, ?, 0, ?, ?)`,
-		"job_1",
-		"delete_secret",
-		"processing",
-		"2026-06-17T00:00:00Z",
-		"2026-06-17T00:00:00Z",
-	)
-	if err != nil {
-		t.Fatalf("insert job receipt: %v", err)
-	}
-
-	_, err = conn.ExecContext(ctx, `insert into job_attempts (
-		job_id, attempt, started_at, result
-	) values (?, 1, ?, ?)`,
-		"job_1",
-		"2026-06-17T00:00:00Z",
-		"running",
-	)
-	if err != nil {
-		t.Fatalf("insert job attempt: %v", err)
-	}
-
-	_, err = conn.ExecContext(ctx, `insert into dead_letters (
-		job_id, kind, payload_json, error, created_at
-	) values (?, ?, ?, ?, ?)`,
-		"job_1",
-		"delete_secret",
-		`{"job_id":"job_1","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T00:00:00Z"}`,
-		"failed permanently",
-		"2026-06-17T00:00:00Z",
-	)
-	if err != nil {
-		t.Fatalf("insert dead letter: %v", err)
-	}
-}
-
-// TestMigrateAPIDropsAESGCMSecrets pins the format cut-over: a secrets table
-// that still has the AES-GCM nonce column is dropped with its payloads, the
-// senders' pending management rows read as unavailable, and the age table takes
-// its place. A second migration leaves the age table and its rows alone.
 func TestMigrateAPIDropsAESGCMSecrets(t *testing.T) {
 	ctx := context.Background()
 	conn, err := OpenSQLite(ctx, ":memory:")

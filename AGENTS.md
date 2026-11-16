@@ -8,8 +8,10 @@ will change.
 Flick is a small self-hosted service with four runtime parts:
 
 - `flick-web`: SvelteKit UI.
-- `flick-api`: HTTP API and owner of `api.db`.
-- `flick-worker`: NATS JetStream consumer and owner of `worker.db`.
+- `flick-api`: HTTP API and owner of `api.db` (SQLite until the M15 PR 3
+  cutover to the `flick_api` PostgreSQL database).
+- `flick-worker`: NATS JetStream consumer and owner of the `flick_worker`
+  PostgreSQL database (`FLICK_WORKER_DATABASE_URL`).
 - `nats`: broker for async job delivery.
 
 Go packages under `internal/` are not services. They are library boundaries used
@@ -52,7 +54,7 @@ by the commands in `cmd/`.
   `docs/architecture/event-contract.md`.
 - Kubernetes, image, resource budget, or OCI deployment change:
   `docs/architecture/deployment-target.md`.
-- Frontend adapter, Go router, SQLite driver, object storage SDK, container
+- Frontend adapter, Go router, database driver, object storage SDK, container
   base, or ID format change: `docs/architecture/implementation-choices.md`.
 - Service, broker, or internal communication change:
   `docs/architecture/service-topology.md`.

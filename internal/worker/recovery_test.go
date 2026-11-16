@@ -3,11 +3,9 @@ package worker
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 )
 
@@ -19,8 +17,8 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			path := filepath.Join(t.TempDir(), "worker.db")
-			store := openRecoveryStore(t, path)
+			database := openTestWorkerDatabase(t)
+			store := openRecoveryStore(t, database)
 			now := time.Now().UTC()
 			store.SetNowForTest(func() time.Time { return now })
 			event := events.JobEvent{JobID: "job_reopen", Kind: events.KindDeleteOCIObject,
@@ -47,7 +45,7 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			store = openRecoveryStore(t, path)
+			store = openRecoveryStore(t, database)
 			store.SetNowForTest(func() time.Time { return now.Add(ProcessingLease) })
 			processor := newTestProcessor(t, store, handler, 3)
 			for range 2 { // The second delivery must not repeat a completed job.
@@ -72,8 +70,8 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 
 func TestProcessorActiveDuplicateAcrossConnectionsRetries(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "worker.db")
-	first, second := openRecoveryStore(t, path), openRecoveryStore(t, path)
+	database := openTestWorkerDatabase(t)
+	first, second := openRecoveryStore(t, database), openRecoveryStore(t, database)
 	started, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
 	handler := JobHandlerFunc(func(ctx context.Context, _ events.JobEvent) error {
@@ -168,8 +166,8 @@ func TestProcessorRecoversPersistedFailureLimit(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			path := filepath.Join(t.TempDir(), "worker.db")
-			store := openRecoveryStore(t, path)
+			database := openTestWorkerDatabase(t)
+			store := openRecoveryStore(t, database)
 			now := time.Now().UTC()
 			store.SetNowForTest(func() time.Time { return now })
 			payload := string(testJobPayload(t, "job_final_failure"))
@@ -192,7 +190,7 @@ func TestProcessorRecoversPersistedFailureLimit(t *testing.T) {
 			if err := store.db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store = openRecoveryStore(t, path)
+			store = openRecoveryStore(t, database)
 			store.SetNowForTest(func() time.Time { return now })
 			handler := &fakeJobHandler{}
 			processor := newTestProcessor(t, store, handler, DefaultMaxAttempts)
@@ -232,8 +230,8 @@ func TestProcessorRecoversPersistedFailureLimit(t *testing.T) {
 
 func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "worker.db")
-	store, duplicate := openRecoveryStore(t, path), openRecoveryStore(t, path)
+	database := openTestWorkerDatabase(t)
+	store, duplicate := openRecoveryStore(t, database), openRecoveryStore(t, database)
 	payload := string(testJobPayload(t, "job_atomic"))
 	var started StartResult
 	for failure := 0; failure < DefaultMaxAttempts; failure++ {
@@ -248,8 +246,19 @@ func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 			}
 		}
 	}
+	// Postgres analogue of the old SQLite abort trigger: a BEFORE INSERT
+	// trigger that raises, so the dead-letter write fails inside the same
+	// transaction and the terminal receipt must roll back with it.
+	if _, err := store.db.ExecContext(ctx, `create function reject_dead_letter() returns trigger
+		language plpgsql as $fn$
+		begin
+			raise exception 'injected dead-letter write failure';
+		end;
+		$fn$`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.ExecContext(ctx, `create trigger reject_dead_letter before insert on dead_letters
-		begin select raise(abort, 'injected dead-letter write failure'); end`); err != nil {
+		for each row execute function reject_dead_letter()`); err != nil {
 		t.Fatal(err)
 	}
 	if dead, err := store.MarkFailed(ctx, started.Attempt.ID, errors.New("final failure"), payload, DefaultMaxAttempts); err == nil || dead {
@@ -262,7 +271,10 @@ func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 	if _, err := duplicate.Start(ctx, "job_atomic", events.KindDeleteSecret, payload, DefaultMaxAttempts); !errors.Is(err, ErrJobProcessing) {
 		t.Fatalf("rolled-back failure allowed another attempt: %v", err)
 	}
-	if _, err := store.db.ExecContext(ctx, `drop trigger reject_dead_letter`); err != nil {
+	if _, err := store.db.ExecContext(ctx, `drop trigger reject_dead_letter on dead_letters`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `drop function reject_dead_letter`); err != nil {
 		t.Fatal(err)
 	}
 	// Another connection must see either the active lease or the committed dead
@@ -290,8 +302,8 @@ func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 
 func TestStaleFinalFailureCannotTerminateNewerAttempt(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "worker.db")
-	old, current := openRecoveryStore(t, path), openRecoveryStore(t, path)
+	database := openTestWorkerDatabase(t)
+	old, current := openRecoveryStore(t, database), openRecoveryStore(t, database)
 	now := time.Now().UTC()
 	old.SetNowForTest(func() time.Time { return now })
 	current.SetNowForTest(func() time.Time { return now.Add(ProcessingLease) })
@@ -316,21 +328,4 @@ func TestStaleFinalFailureCannotTerminateNewerAttempt(t *testing.T) {
 	if err := current.MarkSucceeded(ctx, second.Attempt.ID); err != nil {
 		t.Fatalf("newer attempt could not finish: %v", err)
 	}
-}
-
-func openRecoveryStore(t *testing.T, path string) *ReceiptStore {
-	t.Helper()
-	conn, err := db.OpenSQLite(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	if err := db.MigrateWorker(context.Background(), conn); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewReceiptStore(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store
 }

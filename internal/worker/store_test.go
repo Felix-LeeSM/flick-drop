@@ -3,11 +3,68 @@ package worker
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
+
+// 동일한 만료 리스를 여러 Start가 동시에 손에 봤을 때 정확히 하나만 이기는지
+// 검증한다. 조건부 upsert가 클레임을 원자화하지 않으면 READ COMMITTED의
+// 오래된 스냅샷으로 둘 이상이 통과한다.
+func TestReceiptStoreStartClaimsExpiredLeaseExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newTestReceiptStore(t, ctx)
+	now := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+	store.SetNowForTest(func() time.Time { return now })
+	payload := string(testJobPayload(t, "job_race"))
+
+	first, err := store.Start(ctx, "job_race", "delete_secret", payload, DefaultMaxAttempts)
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+
+	// 모든 경쟁자가 같은 만료 시점을 본다. 승자는 updated_at을 자기 now로
+	// 쓰므로, 뒤따르는 클레임은 같은 시계값에서 리스가 신선하다고 판정된다.
+	store.SetNowForTest(func() time.Time { return now.Add(2 * ProcessingLease) })
+
+	const racers = 4
+	var wg sync.WaitGroup
+	results := make(chan error, racers)
+	var claimed sync.Mutex
+	claimedCount := 0
+	for range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			started, err := store.Start(ctx, "job_race", "delete_secret", payload, DefaultMaxAttempts)
+			if err == nil {
+				claimed.Lock()
+				claimedCount++
+				claimed.Unlock()
+				if started.Attempt.Attempt < 2 {
+					t.Errorf("winner attempt number = %d, want >= 2", started.Attempt.Attempt)
+				}
+			}
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	for err := range results {
+		if err != nil && !errors.Is(err, ErrJobProcessing) {
+			t.Fatalf("racer error = %v, want nil or ErrJobProcessing", err)
+		}
+	}
+	if claimedCount != 1 {
+		t.Fatalf("expired-lease claim won %d times, want exactly 1", claimedCount)
+	}
+
+	// 원래 클레이머의 시도는 새 클레임이 리스를 빼앗았으므로 더 이상 끝낼 수 없다.
+	if err := store.MarkSucceeded(ctx, first.Attempt.ID); !errors.Is(err, ErrStaleAttempt) {
+		t.Fatalf("original attempt finish = %v, want ErrStaleAttempt", err)
+	}
+}
 
 func TestReceiptStoreStartSucceedAndDuplicate(t *testing.T) {
 	ctx := context.Background()
@@ -147,43 +204,37 @@ func TestReceiptStoreRejectsStaleAttemptFinish(t *testing.T) {
 
 	_, err := store.db.ExecContext(ctx, `insert into job_receipts (
 		job_id, kind, state, attempts, first_seen_at, updated_at
-	) values (?, ?, ?, 2, ?, ?)`,
+	) values ($1, $2, $3, 2, $4, $5)`,
 		"job_stale",
 		"delete_secret",
 		StateProcessing,
-		formatTime(now),
-		formatTime(now),
+		now,
+		now,
 	)
 	if err != nil {
 		t.Fatalf("insert receipt: %v", err)
 	}
-	result, err := store.db.ExecContext(ctx, `insert into job_attempts (
+	var staleAttemptID int64
+	if err := store.db.QueryRowContext(ctx, `insert into job_attempts (
 		job_id, attempt, started_at, result
-	) values (?, 1, ?, ?)`,
+	) values ($1, 1, $2, $3)
+	returning id`,
 		"job_stale",
-		formatTime(now),
+		now,
 		AttemptRunning,
-	)
-	if err != nil {
+	).Scan(&staleAttemptID); err != nil {
 		t.Fatalf("insert stale attempt: %v", err)
 	}
-	staleAttemptID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read stale attempt id: %v", err)
-	}
-	result, err = store.db.ExecContext(ctx, `insert into job_attempts (
+	var currentAttemptID int64
+	if err := store.db.QueryRowContext(ctx, `insert into job_attempts (
 		job_id, attempt, started_at, result
-	) values (?, 2, ?, ?)`,
+	) values ($1, 2, $2, $3)
+	returning id`,
 		"job_stale",
-		formatTime(now.Add(time.Minute)),
+		now.Add(time.Minute),
 		AttemptRunning,
-	)
-	if err != nil {
+	).Scan(&currentAttemptID); err != nil {
 		t.Fatalf("insert current attempt: %v", err)
-	}
-	currentAttemptID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read current attempt id: %v", err)
 	}
 
 	store.SetNowForTest(func() time.Time { return now.Add(2 * time.Minute) })
@@ -287,20 +338,5 @@ func TestReceiptStoreDeadLetterDoesNotOverwriteSucceededJob(t *testing.T) {
 func newTestReceiptStore(t *testing.T, ctx context.Context) *ReceiptStore {
 	t.Helper()
 
-	conn, err := db.OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-	if err := db.MigrateWorker(ctx, conn); err != nil {
-		t.Fatalf("migrate worker: %v", err)
-	}
-
-	store, err := NewReceiptStore(conn)
-	if err != nil {
-		t.Fatalf("new receipt store: %v", err)
-	}
-	return store
+	return openRecoveryStore(t, openTestWorkerDatabase(t))
 }
