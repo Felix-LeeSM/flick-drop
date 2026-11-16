@@ -122,11 +122,13 @@ function typePanelId(type: typeof mode): string {
 function textContent(): string {
 	return mode === 'text' ? message : serializeCredential(credential);
 }
-function clear(): void {
+function clear(keepMemo = false): void {
 	clearInput();
 	pending = null;
 	publicKey = null;
-	memoKey = '';
+	if (!keepMemo) {
+		memoKey = '';
+	}
 	requesterNote = '';
 	retryReady = false;
 	reservation = null;
@@ -217,6 +219,17 @@ async function decryptNote(
 	}
 }
 
+async function unlockInstructions(data: RequestInstructions, signal: AbortSignal): Promise<void> {
+	const decryptedNote = await decryptNote(data.encrypted_note, signal);
+	if (decryptedNote === null) {
+		return;
+	}
+	await pinKey(data, signal);
+	if (current(signal) && phase === 'ready') {
+		requesterNote = decryptedNote;
+	}
+}
+
 async function load(): Promise<void> {
 	if (busy || !token || terminal || pending) {
 		return;
@@ -243,14 +256,7 @@ async function load(): Promise<void> {
 			phase = 'unavailable';
 			return;
 		}
-		const decryptedNote = await decryptNote(data.encrypted_note, request.signal);
-		if (decryptedNote === null) {
-			return;
-		}
-		await pinKey(data, request.signal);
-		if (current(request.signal) && phase === 'ready') {
-			requesterNote = decryptedNote;
-		}
+		await unlockInstructions(data, request.signal);
 	} catch (cause) {
 		if (current(request.signal)) {
 			reportLoad(cause);
@@ -402,10 +408,10 @@ async function applyOutcome(outcome: AttemptOutcome, signal: AbortSignal): Promi
 		return;
 	}
 	if (outcome.state === 'renewed') {
-		clear();
+		clear(true);
 		instructions = outcome.instructions;
 		notice = 'The previous upload attempt ended. Choose a file to start a new attempt.';
-		await pinKey(outcome.instructions, signal);
+		await unlockInstructions(outcome.instructions, signal);
 		return;
 	}
 	if (outcome.state === 'unavailable') {

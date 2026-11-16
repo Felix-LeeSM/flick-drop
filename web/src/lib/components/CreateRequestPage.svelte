@@ -103,6 +103,7 @@ async function create(): Promise<void> {
 				sealedMemo?.memoKey
 			)
 		});
+		note = '';
 		await goto(receive);
 	} catch {
 		if (alive) {

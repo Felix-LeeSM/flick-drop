@@ -273,7 +273,11 @@ func (s *Store) Instructions(ctx context.Context, id, token string) (Instruction
 	if err != nil {
 		return Instructions{}, err
 	}
-	return Instructions{r.publicKey, r.fingerprint, r.expires, r.generation, r.state == "waiting", r.encryptedNote}, nil
+	var encryptedNote string
+	if r.state == "waiting" {
+		encryptedNote = r.encryptedNote
+	}
+	return Instructions{r.publicKey, r.fingerprint, r.expires, r.generation, r.state == "waiting", encryptedNote}, nil
 }
 
 func (s *Store) Owner(ctx context.Context, id, token string) (OwnerStatus, error) {

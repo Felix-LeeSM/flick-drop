@@ -749,4 +749,80 @@ func TestMigrateWidensRequestsBackends(t *testing.T) {
 	if err := conn.QueryRow(`select encrypted_note from requests where id = 'r'`).Scan(&note); err != nil || note != nil {
 		t.Fatalf("migrated encrypted_note scan failed: note=%v err=%v", note, err)
 	}
+	if _, err := conn.Exec(`update requests set encrypted_note = 'sealed-note' where id = 'r'`); err != nil {
+		t.Fatalf("write encrypted_note on widened table: %v", err)
+	}
+	if err := conn.QueryRow(`select encrypted_note from requests where id = 'r'`).Scan(&note); err != nil || note == nil || *note != "sealed-note" {
+		t.Fatalf("read back migrated encrypted_note = %v, err=%v", note, err)
+	}
+	if _, err := conn.Exec(`update requests set encrypted_note = null where id = 'r'`); err != nil {
+		t.Fatalf("clear encrypted_note on widened table: %v", err)
+	}
+	if err := conn.QueryRow(`select encrypted_note from requests where id = 'r'`).Scan(&note); err != nil || note != nil {
+		t.Fatalf("cleared migrated encrypted_note = %v, err=%v", note, err)
+	}
+}
+
+func TestMigrateAddsEncryptedNoteViaAlterOnPostR2Table(t *testing.T) {
+	ctx := context.Background()
+	conn, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop table request_payloads; drop table requests`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Legacy post-r2_object table (includes r2_object check constraint, missing encrypted_note column).
+	_, err = conn.Exec(`create table requests (
+		id text primary key,
+		public_key text not null,
+		fingerprint text not null,
+		submission_token_hash blob not null unique,
+		retrieval_token_hash blob not null unique,
+		state text not null check (state in ('waiting','uploading','submitted','consumed','cancelled','unavailable')),
+		generation integer not null check (generation between 1 and 16),
+		attempt_token_hash blob,
+		attempt_body_hash blob,
+		kind text check (kind in ('text','file')),
+		size_bytes integer,
+		envelope_json text,
+		storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob','s3_object','r2_object')),
+		upload_key text,
+		final_key text,
+		ciphertext_sha256 blob,
+		reservation_expires_at text,
+		expires_at text not null,
+		consumed_at text
+	);
+	create table request_payloads (
+		request_id text primary key,
+		ciphertext blob not null,
+		foreign key (request_id) references requests(id) on delete cascade
+	);
+	insert into requests (id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,generation,expires_at)
+	values ('legacy-post-r2','age1pq1','fp',x'0101010101010101010101010101010101010101010101010101010101010101',x'0202020202020202020202020202020202020202020202020202020202020202','waiting',1,'2099-01-01');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatalf("alter migration: %v", err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatalf("idempotent alter re-run: %v", err)
+	}
+	var note *string
+	if err := conn.QueryRow(`select encrypted_note from requests where id = 'legacy-post-r2'`).Scan(&note); err != nil || note != nil {
+		t.Fatalf("alter migrated encrypted_note scan failed: note=%v err=%v", note, err)
+	}
+	if _, err := conn.Exec(`update requests set encrypted_note = 'altered-note' where id = 'legacy-post-r2'`); err != nil {
+		t.Fatalf("write encrypted_note after alter: %v", err)
+	}
+	if err := conn.QueryRow(`select encrypted_note from requests where id = 'legacy-post-r2'`).Scan(&note); err != nil || note == nil || *note != "altered-note" {
+		t.Fatalf("read altered encrypted_note = %v err=%v", note, err)
+	}
 }

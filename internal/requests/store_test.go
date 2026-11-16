@@ -720,18 +720,22 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 	ctx := context.Background()
 	wantNote := ageEncoded(64, 9)
 
-	// 1. Consumed request clears encrypted_note alongside payload and envelope.
+	// 1. Consumed inline request omits encrypted_note once submitted and clears it on open.
 	f := newFixture(t)
 	created, err := f.store.Create(ctx, publicKey(t), nil, &wantNote)
 	if err != nil {
 		t.Fatalf("create with note: %v", err)
 	}
 	inst, err := f.store.Instructions(ctx, created.ID, created.SubmissionToken)
-	if err != nil || inst.EncryptedNote != wantNote {
-		t.Fatalf("instructions note = %q, want %q (err=%v)", inst.EncryptedNote, wantNote, err)
+	if err != nil || inst.EncryptedNote != wantNote || !inst.CanSubmit {
+		t.Fatalf("instructions waiting = %+v (err=%v)", inst, err)
 	}
 	if _, err := f.store.Submit(ctx, created.ID, created.SubmissionToken, submission("text")); err != nil {
 		t.Fatal(err)
+	}
+	submittedInst, err := f.store.Instructions(ctx, created.ID, created.SubmissionToken)
+	if err != nil || submittedInst.CanSubmit || submittedInst.EncryptedNote != "" {
+		t.Fatalf("instructions in submitted state leaked note: %+v (err=%v)", submittedInst, err)
 	}
 	if _, err := f.store.Open(ctx, created.ID, created.RetrievalToken); err != nil {
 		t.Fatal(err)
@@ -741,15 +745,101 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		t.Fatalf("encrypted_note retained after open: %+v err=%v", dbNote, err)
 	}
 
-	// 2. Revoked waiting request clears encrypted_note.
-	revoked, err := f.store.Create(ctx, publicKey(t), nil, &wantNote)
+	// 2. Large upload lifecycle: uploading hides note, abandon keeps it for renewal, consumeObject clears it,
+	//    and generation-16 exhaustion clears it.
+	lf, obj := largeFixture(t)
+	lc, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.Revoke(ctx, revoked.ID, revoked.RetrievalToken); err != nil {
+	lin, data := largeInput()
+	_, finalKey, _ := reserve(t, lf, obj, lc, lin, data)
+	uploadingInst, err := lf.store.Instructions(ctx, lc.ID, lc.SubmissionToken)
+	if err != nil || uploadingInst.CanSubmit || uploadingInst.EncryptedNote != "" {
+		t.Fatalf("instructions in uploading state leaked note: %+v (err=%v)", uploadingInst, err)
+	}
+	abandoned, err := lf.store.Abandon(ctx, lc.ID, lc.SubmissionToken, attemptInput(lin))
+	if err != nil || abandoned.State != "waiting" || abandoned.Generation != 2 {
+		t.Fatalf("abandon result = %+v (err=%v)", abandoned, err)
+	}
+	renewedInst, err := lf.store.Instructions(ctx, lc.ID, lc.SubmissionToken)
+	if err != nil || !renewedInst.CanSubmit || renewedInst.EncryptedNote != wantNote {
+		t.Fatalf("abandon did not preserve waiting note: %+v (err=%v)", renewedInst, err)
+	}
+	lin2, data2 := largeInput()
+	lin2.Generation = 2
+	lin2.AttemptToken = attempt(11)
+	upload2, final2, _ := reserve(t, lf, obj, lc, lin2, data2)
+	obj.write(upload2, data2)
+	if _, err := lf.store.Finalize(ctx, lc.ID, lc.SubmissionToken, attemptInput(lin2)); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.QueryRow(`select encrypted_note from requests where id = ?`, revoked.ID).Scan(&dbNote); err != nil || dbNote.Valid {
-		t.Fatalf("encrypted_note retained after revoke: %+v err=%v", dbNote, err)
+	openedObj, err := lf.store.Open(ctx, lc.ID, lc.RetrievalToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openedObj.Body != nil {
+		openedObj.Body.Close()
+	}
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, lc.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+		t.Fatalf("encrypted_note survived object consume (final %s / %s): %+v err=%v", finalKey, final2, dbNote, err)
+	}
+
+	// Exhausting generation 16 leaves state='unavailable' and clears encrypted_note.
+	exhausted, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exIn, exData := largeInput()
+	reserve(t, lf, obj, exhausted, exIn, exData)
+	if _, err := lf.db.Exec(`update requests set generation = ? where id = ?`, MaxGeneration, exhausted.ID); err != nil {
+		t.Fatal(err)
+	}
+	exIn.Generation = MaxGeneration
+	_, err = lf.store.Abandon(ctx, exhausted.ID, exhausted.SubmissionToken, attemptInput(exIn))
+	requireError(t, err, ErrUnavailable)
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, exhausted.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+		t.Fatalf("encrypted_note survived generation exhaustion: %+v err=%v", dbNote, err)
+	}
+
+	// 3. Revoked waiting, uploading, and submitted requests clear encrypted_note, and expiry purge removes it.
+	for _, stage := range []string{"waiting", "uploading", "submitted"} {
+		revoked, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stage == "uploading" {
+			rin, rdata := largeInput()
+			reserve(t, lf, obj, revoked, rin, rdata)
+		} else if stage == "submitted" {
+			if _, err := lf.store.Submit(ctx, revoked.ID, revoked.SubmissionToken, submission("text")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := lf.store.Revoke(ctx, revoked.ID, revoked.RetrievalToken); err != nil {
+			t.Fatal(err)
+		}
+		if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, revoked.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+			t.Fatalf("encrypted_note survived revoke from %s: %+v err=%v", stage, dbNote, err)
+		}
+	}
+
+	exp, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := exp.ExpiresAt.Add(time.Minute)
+	tx, err := lf.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PurgeExpiredTx(ctx, tx, later, 10, lf.store.opts.Outbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, exp.ID).Scan(&dbNote); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired request row retained: note=%+v err=%v", dbNote, err)
 	}
 }
