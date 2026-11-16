@@ -502,6 +502,33 @@ for (const width of [320, 360]) {
 	});
 }
 
+test('320px request button wraps its longest label inside itself at 150% text', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 740 } });
+	try {
+		const { started } = await fixture(page);
+		await openForm(page, forms[1]);
+		// fixture가 요청 생성을 거절하면 결과를 모르는 상태가 되어 버튼이 가장 긴 이름으로 바뀐다.
+		await page.locator('form button[type="submit"]').click();
+		await started;
+		const submit = page.getByRole('button', { name: 'Create a new request', exact: true });
+		await submit.waitFor();
+		await page.evaluate(() => {
+			document.documentElement.style.fontSize = '150%';
+		});
+		const fit = await submit.evaluate(async (button) => {
+			// 글자 크기 변경에 따른 전환(transition-all)이 끝난 뒤 잰다.
+			await Promise.allSettled(button.getAnimations().map((animation) => animation.finished));
+			return {
+				label: button.scrollWidth <= button.clientWidth,
+				page: document.documentElement.scrollWidth <= innerWidth
+			};
+		});
+		assert.deepEqual(fit, { label: true, page: true });
+	} finally {
+		await page.close();
+	}
+});
+
 for (const width of [375, 1280]) {
 	const phone = width < 768;
 	test(`${width}px type tabs stay stationary on hover and focus in one row`, async () => {
