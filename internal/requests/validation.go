@@ -32,6 +32,7 @@ const (
 	recipientPrefix     = "age1pq1"
 	maxRecipientChars   = 2400
 	maxEncryptedNameLen = 4096
+	maxEncryptedNoteLen = 4096
 	// AgeMagic starts every age file; bodies and filenames must carry it.
 	AgeMagic = "age-encryption.org/v1\n"
 )
@@ -151,4 +152,12 @@ func validateEnvelope(raw json.RawMessage, kind string) ([]byte, error) {
 
 func isAgeFile(b []byte) bool {
 	return bytes.HasPrefix(b, []byte(AgeMagic))
+}
+
+func validateEncryptedNote(s string) (string, error) {
+	note, err := canonicalBase64(s, len(AgeMagic), maxEncryptedNoteLen)
+	if err != nil || !isAgeFile(note) {
+		return "", ErrInvalid
+	}
+	return s, nil
 }

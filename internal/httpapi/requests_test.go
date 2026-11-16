@@ -288,3 +288,47 @@ func TestRequestTelemetryExcludesCapabilitiesKeysAndBodies(t *testing.T) {
 		t.Fatal("request material entered outbox")
 	}
 }
+
+func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
+	router, _, conn := requestFixture(t, 100)
+	_ = createHTTPRequest(t, router)
+	noteCiphertext := base64.StdEncoding.EncodeToString(requestAgeBody(80, 7))
+
+	// Invalid encrypted notes are rejected before persistence.
+	for _, bad := range []any{"", base64.StdEncoding.EncodeToString([]byte("not-age")), nil} {
+		resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+			"public_key":     requestTestKey,
+			"encrypted_note": bad,
+		})
+		assertRequestStatus(t, resp, 400, "invalid_request")
+	}
+
+	resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+		"public_key":     requestTestKey,
+		"encrypted_note": noteCiphertext,
+	})
+	assertRequestStatus(t, resp, http.StatusCreated, "")
+	var created requests.Created
+	decodeBody(t, resp, &created)
+
+	// Submission instructions include encrypted_note; owner status omits it.
+	instResp := performJSON(t, router, http.MethodGet, "/api/requests/"+created.ID, nil, auth(created.SubmissionToken))
+	assertRequestStatus(t, instResp, http.StatusOK, "")
+	var inst requests.Instructions
+	decodeBody(t, instResp, &inst)
+	if inst.EncryptedNote != noteCiphertext {
+		t.Fatalf("instructions encrypted_note = %q, want %q", inst.EncryptedNote, noteCiphertext)
+	}
+	ownerResp := performJSON(t, router, http.MethodGet, "/api/requests/"+created.ID+"/owner", nil, auth(created.RetrievalToken))
+	assertRequestStatus(t, ownerResp, http.StatusOK, "")
+	if strings.Contains(ownerResp.Body.String(), "encrypted_note") {
+		t.Fatalf("owner status exposed encrypted_note: %s", ownerResp.Body.String())
+	}
+
+	// Revoking clears encrypted_note from SQLite.
+	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+created.ID+"/revoke", nil, auth(created.RetrievalToken)), 200, "")
+	var stored sql.NullString
+	if err := conn.QueryRow(`select encrypted_note from requests where id = ?`, created.ID).Scan(&stored); err != nil || stored.Valid {
+		t.Fatalf("encrypted_note survived revoke: %+v err=%v", stored, err)
+	}
+}

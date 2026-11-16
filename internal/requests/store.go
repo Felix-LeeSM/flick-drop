@@ -97,11 +97,12 @@ type Created struct {
 }
 
 type Instructions struct {
-	PublicKey   string    `json:"public_key"`
-	Fingerprint string    `json:"fingerprint"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	Generation  int       `json:"generation"`
-	CanSubmit   bool      `json:"can_submit"`
+	PublicKey     string    `json:"public_key"`
+	Fingerprint   string    `json:"fingerprint"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Generation    int       `json:"generation"`
+	CanSubmit     bool      `json:"can_submit"`
+	EncryptedNote string    `json:"encrypted_note,omitempty"`
 }
 
 type OwnerStatus struct {
@@ -143,10 +144,18 @@ type Opened struct {
 	ObjectKey string
 }
 
-func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created, error) {
+func (s *Store) Create(ctx context.Context, publicKey string, ttl *int, encryptedNote *string) (Created, error) {
 	fingerprint, err := publicKeyFingerprint(publicKey)
 	if err != nil {
 		return Created{}, err
+	}
+	var note sql.NullString
+	if encryptedNote != nil {
+		validated, err := validateEncryptedNote(*encryptedNote)
+		if err != nil {
+			return Created{}, err
+		}
+		note = sql.NullString{String: validated, Valid: true}
 	}
 	seconds := s.opts.DefaultTTLSeconds
 	if ttl != nil {
@@ -172,8 +181,8 @@ func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created
 	}
 	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `insert into requests
-		(id, public_key, fingerprint, submission_token_hash, retrieval_token_hash, expires_at)
-		values (?, ?, ?, ?, ?, ?)`, id, publicKey, fingerprint, submitHash, retrieveHash, expires.Format(timeFormat))
+		(id, public_key, fingerprint, encrypted_note, submission_token_hash, retrieval_token_hash, expires_at)
+		values (?, ?, ?, ?, ?, ?, ?)`, id, publicKey, fingerprint, note, submitHash, retrieveHash, expires.Format(timeFormat))
 	if err != nil {
 		return Created{}, err
 	}
@@ -188,10 +197,10 @@ func (s *Store) Create(ctx context.Context, publicKey string, ttl *int) (Created
 }
 
 type record struct {
-	publicKey, fingerprint, state string
-	expires                       time.Time
-	generation                    int
-	reservationExpires            time.Time
+	publicKey, fingerprint, encryptedNote, state string
+	expires                                      time.Time
+	generation                                   int
+	reservationExpires                           time.Time
 }
 
 // Both DB and transactions expose QueryRowContext; the helper keeps read and
@@ -208,9 +217,12 @@ func (s *Store) authorized(ctx context.Context, db rowReader, id string, hash []
 	var row record
 	var storedHash []byte
 	var expiry string
-	var reservationExpiry sql.NullString
-	err := db.QueryRowContext(ctx, `select public_key, fingerprint, expires_at, state, generation, reservation_expires_at, `+column+` from requests where id = ?`, id).
-		Scan(&row.publicKey, &row.fingerprint, &expiry, &row.state, &row.generation, &reservationExpiry, &storedHash)
+	var encryptedNote, reservationExpiry sql.NullString
+	err := db.QueryRowContext(ctx, `select public_key, fingerprint, encrypted_note, expires_at, state, generation, reservation_expires_at, `+column+` from requests where id = ?`, id).
+		Scan(&row.publicKey, &row.fingerprint, &encryptedNote, &expiry, &row.state, &row.generation, &reservationExpiry, &storedHash)
+	if encryptedNote.Valid {
+		row.encryptedNote = encryptedNote.String
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return record{}, ErrUnavailable
 	}
@@ -261,7 +273,7 @@ func (s *Store) Instructions(ctx context.Context, id, token string) (Instruction
 	if err != nil {
 		return Instructions{}, err
 	}
-	return Instructions{r.publicKey, r.fingerprint, r.expires, r.generation, r.state == "waiting"}, nil
+	return Instructions{r.publicKey, r.fingerprint, r.expires, r.generation, r.state == "waiting", r.encryptedNote}, nil
 }
 
 func (s *Store) Owner(ctx context.Context, id, token string) (OwnerStatus, error) {
@@ -547,7 +559,7 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 	}
 	// final_key stays set: it protects the object while the body streams, and
 	// FinishOpen or the stream grace releases it.
-	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = ?, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = ? and state = 'submitted' and final_key = ?`, s.now().UTC().Format(timeFormat), id, key.String)
+	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = ?, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = ? and state = 'submitted' and final_key = ?`, s.now().UTC().Format(timeFormat), id, key.String)
 	if err != nil {
 		return err
 	}
@@ -622,7 +634,7 @@ func (s *Store) clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousStat
 	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = ?`, id); err != nil {
 		return err
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null, consumed_at = case when ? = 'consumed' then ? else consumed_at end where id = ? and state = ?`, state, state, s.now().UTC().Format(timeFormat), id, previousState)
+	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null, consumed_at = case when ? = 'consumed' then ? else consumed_at end where id = ? and state = ?`, state, state, s.now().UTC().Format(timeFormat), id, previousState)
 	if err != nil {
 		return err
 	}

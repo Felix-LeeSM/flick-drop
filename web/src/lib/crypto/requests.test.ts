@@ -9,8 +9,11 @@ import {
 	importRequestIdentity,
 	importRequestPublicKey,
 	type OpenedRequestBody,
+	openRequestNote,
+	REQUEST_NOTE_MAX_BYTES,
 	requestFingerprint,
-	type SealedRequest
+	type SealedRequest,
+	sealRequestNote
 } from './requests';
 
 const limits = { maxTextBytes: 1024, maxFileBytes: 200_000 };
@@ -196,5 +199,21 @@ describe('request payloads', () => {
 		for (const bad of ['', 'AQID=', 'AQI', '****', bytesToBase64(new Uint8Array(4097))]) {
 			expect(() => encryptedFilenameFromHeader(bad)).toThrow();
 		}
+	});
+});
+
+describe('request encrypted notes', () => {
+	it('seals an optional requester note to its own keypair and rejects wrong keys or malformed payloads', async () => {
+		const note = 'Please share the Wi-Fi password\nfor building B.';
+		const sealed = await sealRequestNote(note);
+		expect(sealed.memoKey).toMatch(/^AGE-SECRET-KEY-PQ-1/);
+		expect(await openRequestNote(sealed.memoKey, sealed.encryptedNote)).toBe(note);
+
+		const other = await sealRequestNote('Another note');
+		await expect(openRequestNote(other.memoKey, sealed.encryptedNote)).rejects.toThrow();
+		await expect(sealRequestNote('   \n  ')).rejects.toThrow();
+		await expect(sealRequestNote('x'.repeat(REQUEST_NOTE_MAX_BYTES + 1))).rejects.toThrow();
+		await expect(openRequestNote('invalid', sealed.encryptedNote)).rejects.toThrow();
+		await expect(openRequestNote(sealed.memoKey, `${sealed.encryptedNote}=`)).rejects.toThrow();
 	});
 });

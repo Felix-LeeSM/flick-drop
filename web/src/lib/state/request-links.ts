@@ -2,11 +2,20 @@ import { isManagementToken } from '#lib/api/management.js';
 
 export function submissionFromFragment(
 	fragment: string
-): { token: string; fingerprint: string } | null {
-	const match = /^#submit=([A-Za-z0-9_-]{43})&fp=([A-Za-z0-9_-]{43})$/.exec(fragment);
-	return match && isManagementToken(match[1]) && isManagementToken(match[2])
-		? { token: match[1], fingerprint: match[2] }
-		: null;
+): { token: string; fingerprint: string; memoKey?: string } | null {
+	if (fragment.length > 256) {
+		return null;
+	}
+	const match =
+		/^#submit=([A-Za-z0-9_-]{43})&fp=([A-Za-z0-9_-]{43})(?:&mk=([A-Za-z0-9-]{1,128}))?$/.exec(
+			fragment
+		);
+	if (!match || !isManagementToken(match[1]) || !isManagementToken(match[2])) {
+		return null;
+	}
+	return match[3]
+		? { token: match[1], fingerprint: match[2], memoKey: match[3] }
+		: { token: match[1], fingerprint: match[2] };
 }
 
 export function retrievalFromFragment(
@@ -28,10 +37,13 @@ export function submissionUrl(
 	origin: string,
 	id: string,
 	token: string,
-	fingerprint: string
+	fingerprint: string,
+	memoKey?: string
 ): string {
 	const url = new URL(`/r/${encodeURIComponent(id)}`, origin);
-	url.hash = `submit=${token}&fp=${fingerprint}`;
+	url.hash = memoKey
+		? `submit=${token}&fp=${fingerprint}&mk=${memoKey}`
+		: `submit=${token}&fp=${fingerprint}`;
 	if (!submissionFromFragment(url.hash)) {
 		throw new Error('Invalid submission link.');
 	}

@@ -64,7 +64,7 @@ func newFixture(t *testing.T) fixture {
 
 func (f fixture) create(t *testing.T) Created {
 	t.Helper()
-	created, err := f.store.Create(context.Background(), publicKey(t), nil)
+	created, err := f.store.Create(context.Background(), publicKey(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,13 +626,24 @@ func TestValidationRejectsMalformedCryptoAndBounds(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	for _, ttl := range []int{-1, 0, 299, 3601} {
-		_, err := f.store.Create(ctx, publicKey(t), &ttl)
+		_, err := f.store.Create(ctx, publicKey(t), &ttl, nil)
 		requireError(t, err, ErrInvalid)
 	}
 	classic, _ := age.GenerateX25519Identity()
 	badKeys := []string{"", "not a key", publicKey(t) + "\n", publicKey(t) + "=", " " + publicKey(t), strings.ToUpper(publicKey(t)), publicKey(t)[:len(publicKey(t))-1], classic.Recipient().String(), publicKey(t) + strings.Repeat("q", maxRecipientChars)}
 	for _, key := range badKeys {
-		_, err := f.store.Create(ctx, key, nil)
+		_, err := f.store.Create(ctx, key, nil, nil)
+		requireError(t, err, ErrInvalid)
+	}
+	for _, badNote := range []string{
+		"",
+		encoded(40, 4),
+		base64.StdEncoding.EncodeToString([]byte(AgeMagic[:len(AgeMagic)-1])),
+		ageEncoded(40, 4) + "=",
+		ageEncoded(maxEncryptedNoteLen+1, 4),
+	} {
+		note := badNote
+		_, err := f.store.Create(ctx, publicKey(t), nil, &note)
 		requireError(t, err, ErrInvalid)
 	}
 	c := f.create(t)
@@ -702,5 +713,43 @@ func TestInlineExactLimits(t *testing.T) {
 				t.Fatalf("inline boundary round trip: %v", err)
 			}
 		})
+	}
+}
+
+func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *testing.T) {
+	ctx := context.Background()
+	wantNote := ageEncoded(64, 9)
+
+	// 1. Consumed request clears encrypted_note alongside payload and envelope.
+	f := newFixture(t)
+	created, err := f.store.Create(ctx, publicKey(t), nil, &wantNote)
+	if err != nil {
+		t.Fatalf("create with note: %v", err)
+	}
+	inst, err := f.store.Instructions(ctx, created.ID, created.SubmissionToken)
+	if err != nil || inst.EncryptedNote != wantNote {
+		t.Fatalf("instructions note = %q, want %q (err=%v)", inst.EncryptedNote, wantNote, err)
+	}
+	if _, err := f.store.Submit(ctx, created.ID, created.SubmissionToken, submission("text")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Open(ctx, created.ID, created.RetrievalToken); err != nil {
+		t.Fatal(err)
+	}
+	var dbNote sql.NullString
+	if err := f.db.QueryRow(`select encrypted_note from requests where id = ?`, created.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+		t.Fatalf("encrypted_note retained after open: %+v err=%v", dbNote, err)
+	}
+
+	// 2. Revoked waiting request clears encrypted_note.
+	revoked, err := f.store.Create(ctx, publicKey(t), nil, &wantNote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Revoke(ctx, revoked.ID, revoked.RetrievalToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`select encrypted_note from requests where id = ?`, revoked.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+		t.Fatalf("encrypted_note retained after revoke: %+v err=%v", dbNote, err)
 	}
 }

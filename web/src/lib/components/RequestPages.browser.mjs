@@ -25,6 +25,7 @@ function fixture(options = {}) {
 	const calls = [];
 	const bodies = [];
 	let publicKey = vectors.public_key;
+	let encryptedNote;
 	let fingerprint = vectors.fingerprint;
 	let state = options.state ?? 'waiting';
 	let payload = options.payload ?? vectors.text.payload;
@@ -89,7 +90,9 @@ function fixture(options = {}) {
 							json: options.config ?? { payload_inline_max_bytes: 1024, max_file_bytes: 512 }
 						}),
 					requests: () => {
-						publicKey = request.postDataJSON().public_key;
+						const body = request.postDataJSON();
+						publicKey = body.public_key;
+						encryptedNote = body.encrypted_note;
 						fingerprint = createHash('sha256').update(publicKey).digest('base64url');
 						return route.fulfill({
 							json: {
@@ -128,7 +131,12 @@ function fixture(options = {}) {
 				return handle
 					? handle()
 					: route.fulfill({
-							json: { ...metadata(), generation: 1, can_submit: state === 'waiting' }
+							json: {
+								...metadata(),
+								generation: 1,
+								can_submit: state === 'waiting',
+								...(state === 'waiting' && encryptedNote ? { encrypted_note: encryptedNote } : {})
+							}
 						});
 			}
 		);
@@ -581,5 +589,59 @@ test('private requester status card keeps the refresh button clear of status tex
 		assert.equal(overlaps, false);
 	} finally {
 		await context.close();
+	}
+});
+
+test('encrypted request note stays out of API and retrieval links, wraps at 360px/1280px, and fails closed without #mk=', async () => {
+	const unbrokenNote = `Memo:${'Z'.repeat(200)}`;
+	for (const width of [360, 1280]) {
+		const ownerContext = await browser.newContext({ viewport: { width, height: 800 } });
+		const senderContext = await browser.newContext({ viewport: { width, height: 800 } });
+		try {
+			const mock = fixture();
+			await mock.attach(ownerContext);
+			await mock.attach(senderContext);
+			const owner = await ownerContext.newPage();
+			const sender = await senderContext.newPage();
+
+			await owner.goto(`${baseUrl}/request`);
+			await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
+			await owner.getByLabel('Note', { exact: true }).fill(unbrokenNote);
+			await owner.getByRole('button', { name: 'Create request', exact: true }).click();
+			await owner.waitForURL('**/receive#receive=*');
+			await readyOwner(owner);
+
+			const submitLink = await owner.getByLabel('Submission link', { exact: true }).inputValue();
+			const receiveLink = await owner
+				.getByLabel('Private retrieval link', { exact: true })
+				.inputValue();
+			const hashParams = new URLSearchParams(new URL(submitLink).hash.slice(1));
+			const memoKey = hashParams.get('mk');
+			assert.ok(memoKey?.startsWith('AGE-SECRET-KEY-PQ-1'));
+			assert.equal(receiveLink.includes('mk='), false);
+			assert.equal(receiveLink.includes(memoKey), false);
+			assert.equal(JSON.stringify(mock.calls).includes(unbrokenNote), false);
+			assert.equal(JSON.stringify(mock.calls).includes(memoKey), false);
+
+			await sender.goto(submitLink);
+			const noteRegion = sender.getByRole('region', { name: 'Note from requester', exact: true });
+			await noteRegion.waitFor({ state: 'visible' });
+			assert.equal((await noteRegion.textContent())?.includes(unbrokenNote), true);
+			assert.equal(
+				await sender.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+
+			// Stripping #mk= rejects before allowing submission.
+			const noMemoPage = await senderContext.newPage();
+			const stripped = new URL(submitLink);
+			stripped.hash = `submit=${hashParams.get('submit')}&fp=${hashParams.get('fp')}`;
+			await noMemoPage.goto(stripped.toString());
+			await noMemoPage.getByText('Ask the requester for the complete submission link.').waitFor();
+			assert.equal(await noMemoPage.getByRole('button', { name: 'Encrypt and submit' }).count(), 0);
+		} finally {
+			await ownerContext.close();
+			await senderContext.close();
+		}
 	}
 });

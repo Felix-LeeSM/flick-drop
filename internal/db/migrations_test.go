@@ -743,4 +743,10 @@ func TestMigrateWidensRequestsBackends(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from object_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
 		t.Fatalf("v2 object cursor backends seeded: %d %v", seeded, err)
 	}
+	// An existing requests row created before encrypted_note gets the nullable
+	// column without data loss and stores/clears notes afterward.
+	var note *string
+	if err := conn.QueryRow(`select encrypted_note from requests where id = 'r'`).Scan(&note); err != nil || note != nil {
+		t.Fatalf("migrated encrypted_note scan failed: note=%v err=%v", note, err)
+	}
 }

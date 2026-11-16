@@ -13,6 +13,10 @@ const RECIPIENT_MAX_CHARS = 2400;
 const FILENAME_MAX_BYTES = 4096;
 // The plaintext filename, in UTF-8 bytes, on both sides.
 const NAME_MAX_BYTES = 1024;
+// The requester's optional memo plaintext limit in UTF-8 bytes (fits inside
+// the server's 4,096-byte age encrypted_note cap alongside the PQ header).
+export const REQUEST_NOTE_MAX_BYTES = 1024;
+const ENCRYPTED_NOTE_MAX_BYTES = 4096;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', {
 	fatal: true,
@@ -256,4 +260,58 @@ export function encryptedFilenameFromHeader(value: string): Uint8Array {
 		// Falls through to the same rejection as a wrong length.
 	}
 	invalid();
+}
+
+export function utf8ByteLength(text: string): number {
+	return encoder.encode(text).length;
+}
+
+// Seals an optional requester note to its own single-purpose hybrid age
+// keypair; the encrypted age file lives on the request row until open/revoke/
+// expiry while `memoKey` stays strictly in the submission URL fragment (#mk=).
+export async function sealRequestNote(
+	note: string
+): Promise<{ encryptedNote: string; memoKey: string }> {
+	if (!note.trim()) {
+		invalid();
+	}
+	const bytes = encoder.encode(note);
+	if (bytes.length > REQUEST_NOTE_MAX_BYTES || decoder.decode(bytes) !== note) {
+		invalid();
+	}
+	const memoKey = await generateSecretIdentity();
+	const recipient = await recipientOf(memoKey);
+	const sealed = await encryptToRecipient(recipient, bytes);
+	if (sealed.length > ENCRYPTED_NOTE_MAX_BYTES) {
+		invalid();
+	}
+	return { encryptedNote: bytesToBase64(sealed), memoKey };
+}
+
+export async function openRequestNote(
+	memoKeyFragment: string,
+	encryptedNote: string
+): Promise<string> {
+	const memoKey = decodeKeyFragment(`key=${memoKeyFragment}`);
+	if (!memoKey) {
+		invalid();
+	}
+	let bytes: Uint8Array;
+	try {
+		bytes = base64ToBytes(encryptedNote);
+	} catch {
+		invalid();
+	}
+	if (
+		bytes.length === 0 ||
+		bytes.length > ENCRYPTED_NOTE_MAX_BYTES ||
+		bytesToBase64(bytes) !== encryptedNote
+	) {
+		invalid();
+	}
+	const decrypted = await decryptWith(memoKey, bytes);
+	if (decrypted.length === 0 || decrypted.length > REQUEST_NOTE_MAX_BYTES) {
+		invalid();
+	}
+	return decoder.decode(decrypted);
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { ShieldCheckIcon } from '@lucide/svelte';
+import { MessageSquareTextIcon, ShieldCheckIcon } from '@lucide/svelte';
 import { onMount, tick as render } from 'svelte';
 import { defaultLimits, getVerifiedConfig } from '#lib/api/config.js';
 import {
@@ -30,7 +30,11 @@ import {
 	isCredentialType,
 	serializeCredential
 } from '#lib/credentials/index.js';
-import { encryptRequestPayload, importRequestPublicKey } from '#lib/crypto/requests.js';
+import {
+	encryptRequestPayload,
+	importRequestPublicKey,
+	openRequestNote
+} from '#lib/crypto/requests.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { submissionFromFragment } from '#lib/state/request-links.js';
 import {
@@ -74,6 +78,8 @@ let now = $state(Date.now());
 let heading = $state<HTMLHeadingElement | null>(null);
 let token = '';
 let fingerprint = '';
+let memoKey = '';
+let requesterNote = $state('');
 let publicKey: string | null = null;
 let pending = $state<Submission | null>(null);
 let controller: AbortController | null = null;
@@ -120,6 +126,8 @@ function clear(): void {
 	clearInput();
 	pending = null;
 	publicKey = null;
+	memoKey = '';
+	requesterNote = '';
 	retryReady = false;
 	reservation = null;
 	reservationExpired = false;
@@ -183,6 +191,32 @@ function reportLoad(cause: unknown): void {
 	error =
 		cause instanceof RequestApiError ? cause.message : 'Could not load the request. Try again.';
 }
+async function decryptNote(
+	encryptedNote: string | undefined,
+	signal: AbortSignal
+): Promise<string | null> {
+	if ((encryptedNote !== undefined) !== (memoKey !== '')) {
+		phase = 'invalid';
+		error =
+			'The request note does not match this link. Ask the requester for the complete submission link.';
+		return null;
+	}
+	if (!encryptedNote || !memoKey) {
+		return '';
+	}
+	try {
+		const decrypted = await openRequestNote(memoKey, encryptedNote);
+		return current(signal) ? decrypted : null;
+	} catch {
+		if (current(signal)) {
+			phase = 'invalid';
+			error =
+				'Could not decrypt the requester note. Ask the requester for the complete submission link.';
+		}
+		return null;
+	}
+}
+
 async function load(): Promise<void> {
 	if (busy || !token || terminal || pending) {
 		return;
@@ -209,7 +243,14 @@ async function load(): Promise<void> {
 			phase = 'unavailable';
 			return;
 		}
+		const decryptedNote = await decryptNote(data.encrypted_note, request.signal);
+		if (decryptedNote === null) {
+			return;
+		}
 		await pinKey(data, request.signal);
+		if (current(request.signal) && phase === 'ready') {
+			requesterNote = decryptedNote;
+		}
 	} catch (cause) {
 		if (current(request.signal)) {
 			reportLoad(cause);
@@ -501,6 +542,7 @@ onMount(() => {
 	if (link) {
 		token = link.token;
 		fingerprint = link.fingerprint;
+		memoKey = link.memoKey ?? '';
 		void load();
 	} else {
 		phase = 'invalid';
@@ -560,6 +602,20 @@ onMount(() => {
 			{#if retryReady}<p role="status">The server has not accepted this attempt. You can retry the same submission.</p><Button disabled={busy} onclick={() => { void retry(); }}>Retry same submission</Button>{/if}
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
+		{#if requesterNote.length > 0}
+			<section
+				class="grid min-w-0 gap-1 rounded-xl border border-border bg-muted/30 px-4 py-3 text-left"
+				aria-label="Note from requester"
+			>
+				<p class="micro flex items-center gap-1.5 text-muted-foreground">
+					<MessageSquareTextIcon class="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+					Note from requester
+				</p>
+				<p class="text-sm whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground">
+					{requesterNote}
+				</p>
+			</section>
+		{/if}
 		<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
 			<SecretTypeSelector value={mode} disabled={busy} panelId={typePanelId} onSelect={switchMode} />
 			{#if mode === 'text'}

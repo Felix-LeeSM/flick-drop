@@ -36,6 +36,17 @@ describe('request link custody', () => {
 		expect(submit.href).not.toContain(vectors.identity);
 		expect(submit.href).not.toContain('receive=');
 		expect(receive.href).not.toContain('submit=');
+		expect(receive.href).not.toContain('mk=');
+
+		const withMemo = new URL(
+			submissionUrl(origin, 'fixture', token, vectors.fingerprint, vectors.identity)
+		);
+		expect(submissionFromFragment(withMemo.hash)).toEqual({
+			token,
+			fingerprint: vectors.fingerprint,
+			memoKey: vectors.identity
+		});
+		expect(withMemo.search).toBe('');
 	});
 	it.each([
 		'',

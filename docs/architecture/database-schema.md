@@ -157,6 +157,7 @@ create table requests (
   id text primary key,
   public_key text not null,
   fingerprint text not null,
+  encrypted_note text,
   submission_token_hash blob not null check (length(submission_token_hash) = 32),
   retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
   state text not null default 'waiting' check (state in ('waiting', 'uploading', 'submitted', 'consumed', 'cancelled', 'unavailable')),
@@ -203,7 +204,10 @@ expired/abandoned reservation atomically advances generation; ending generation
 16 stores internal state `unavailable`, exposed as HTTP 404 for both capabilities.
 A cancelled pending reservation clears its attempt hashes; only accepted receipts
 survive open/revoke. Reservation deadlines use the same fixed-width UTC format.
-Open/revoke clear payloads, envelope, kind, and size in the same transaction.
+Open/revoke clear payloads, envelope, encrypted_note, kind, and size in the
+same transaction. `encrypted_note` holds optional canonical base64 of an
+age-encrypted requester memo whose decryption identity stays solely in the
+submission URL fragment.
 An opened object-store request keeps `final_key` and records `consumed_at`
 while its body streams; the API clears the key when the stream ends, and the
 purge and reconciliation leave the row and object alone for 35 minutes after

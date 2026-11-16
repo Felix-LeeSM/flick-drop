@@ -5,13 +5,20 @@ import { createRequestApiClient } from '#lib/api/requests.js';
 import DeliveryFrame from '#lib/components/DeliveryFrame.svelte';
 import LifetimePicker from '#lib/components/LifetimePicker.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
+import { Label } from '#lib/components/ui/label/index.js';
+import { Textarea } from '#lib/components/ui/textarea/index.js';
 import {
 	DEFAULT_TTL_SECONDS,
 	formatTtlRange,
 	MAX_TTL_SECONDS,
 	MIN_TTL_SECONDS
 } from '#lib/config/ttl.js';
-import { generateRequestKeys } from '#lib/crypto/requests.js';
+import {
+	generateRequestKeys,
+	REQUEST_NOTE_MAX_BYTES,
+	sealRequestNote,
+	utf8ByteLength
+} from '#lib/crypto/requests.js';
 import {
 	clearRequestHandoff,
 	handOffRequest,
@@ -26,6 +33,9 @@ let ttl = $state(DEFAULT_TTL_SECONDS);
 const validTtl = $derived(
 	Number.isInteger(ttl) && ttl >= MIN_TTL_SECONDS && ttl <= MAX_TTL_SECONDS
 );
+let note = $state('');
+const noteBytes = $derived(utf8ByteLength(note));
+const noteTooLong = $derived(noteBytes > REQUEST_NOTE_MAX_BYTES);
 let busy = $state(false);
 let error = $state('');
 let unknown = $state(false);
@@ -44,7 +54,7 @@ onMount(() => {
 });
 
 async function create(): Promise<void> {
-	if (busy) {
+	if (busy || noteTooLong) {
 		return;
 	}
 	const seconds = ttl;
@@ -59,12 +69,20 @@ async function create(): Promise<void> {
 	const request = new AbortController();
 	controller = request;
 	try {
-		const keys = await generateRequestKeys();
+		const [keys, sealedMemo] = await Promise.all([
+			generateRequestKeys(),
+			note.trim().length > 0 ? sealRequestNote(note) : Promise.resolve(null)
+		]);
 		if (!alive) {
 			return;
 		}
 		sent = true;
-		const created = await api.create(keys.public_key, seconds, request.signal);
+		const created = await api.create(
+			keys.public_key,
+			seconds,
+			request.signal,
+			sealedMemo?.encryptedNote
+		);
 		if (!alive) {
 			return;
 		}
@@ -81,7 +99,8 @@ async function create(): Promise<void> {
 				location.origin,
 				created.id,
 				created.submission_token,
-				keys.fingerprint
+				keys.fingerprint,
+				sealedMemo?.memoKey
 			)
 		});
 		await goto(receive);
@@ -108,14 +127,38 @@ async function create(): Promise<void> {
 			end-to-end encrypted · one-time request
 		</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>Request a secret</h1>
-		<p class="text-sm text-muted-foreground">Get a link for someone to send you text, a file, or credentials, once.</p>
+		<p class="text-sm text-muted-foreground">Get a link for someone to send you a note, a file, or credentials, once.</p>
 	</div>
 	<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void create(); }}>
+		<div class="grid gap-2">
+			<div class="flex items-center justify-between gap-2">
+				<Label for="request-note" class="text-sm font-medium">Note</Label>
+				<span class="text-xs text-muted-foreground">Optional</span>
+			</div>
+			<Textarea
+				id="request-note"
+				rows={3}
+				class="min-h-24 resize-y"
+				placeholder="Tell your sender what to share (e.g. Wi-Fi password, SSH key)"
+				bind:value={note}
+				disabled={busy}
+				autocomplete="off"
+			/>
+			{#if noteTooLong}
+				<p role="alert" class="text-xs text-destructive">
+					Note must be at most {REQUEST_NOTE_MAX_BYTES.toLocaleString()} bytes ({noteBytes.toLocaleString()} used).
+				</p>
+			{:else}
+				<p class="text-xs text-muted-foreground">
+					End-to-end encrypted; shown only to the person opening your request link.
+				</p>
+			{/if}
+		</div>
 		<div class="grid gap-2.5">
 			<LifetimePicker bind:seconds={ttl} disabled={busy} groupLabel="Request lifetime" />
 			<p class="text-sm text-muted-foreground">Starts when you create the link. Submitting does not extend it.</p>
 		</div>
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
-		<Button type="submit" size="cta" disabled={busy || !validTtl}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
+		<Button type="submit" size="cta" disabled={busy || !validTtl || noteTooLong}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
 	</form>
 </DeliveryFrame>
