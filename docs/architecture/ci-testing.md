@@ -193,7 +193,7 @@ server. The current suites are:
 | Suite | Covers |
 | --- | --- |
 | `CreateForms.browser.mjs` | Create forms: lifetime presets and custom bounds, pending state, type and delivery tabs, layout at narrow widths, picked file names and the request button at 150% text size, passphrase switch and generator. |
-| `LiveRelay.browser.mjs` | "Live transfer" live relay UI with mocked pipe API: Receive dialog (including its fit on phone screens at 150% text size), `#code=` deep link, error and room-full states, sender waiting list and code card, Deny and Send, and full-page received Secret view. |
+| `LiveRelay.browser.mjs` | "Live transfer" live relay UI with mocked pipe API: Receive dialog (including its fit on phone screens at 150% text size and its Connect button above an assumed 290px keypad at 100% text size), `#code=` deep link, error and room-full states, sender waiting list and code card, Deny and Send, and full-page received Secret view. |
 | `ManageSecretPage.browser.mjs` | Sender management page (described below). |
 | `NativeShareButton.browser.mjs` | Web Share and copy/QR fallbacks (described above). |
 | `OpenSecretPage.browser.mjs` | Recipient open page (described above). |

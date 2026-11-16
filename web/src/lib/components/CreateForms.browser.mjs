@@ -517,7 +517,14 @@ test('320px request button wraps its longest label inside itself at 150% text', 
 		});
 		const fit = await submit.evaluate(async (button) => {
 			// 글자 크기 변경에 따른 전환(transition-all)이 끝난 뒤 잰다.
-			await Promise.allSettled(button.getAnimations().map((animation) => animation.finished));
+			await Promise.allSettled(
+				button
+					.getAnimations()
+					.filter(
+						(animation) => animation.effect.getComputedTiming().endTime !== Number.POSITIVE_INFINITY
+					)
+					.map((animation) => animation.finished)
+			);
 			return {
 				label: button.scrollWidth <= button.clientWidth,
 				page: document.documentElement.scrollWidth <= innerWidth

@@ -38,7 +38,7 @@ export const buttonVariants = tv({
 			'icon-lg': 'size-10',
 			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
 			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs',
-			// 글자를 키운 좁은 화면에서 긴 이름은 버튼 폭을 넘지 않고 줄을 바꾼다.
+			// With enlarged text on a narrow screen, a long label wraps inside the button instead of overflowing it.
 			cta: 'min-h-12 w-full gap-2 whitespace-normal rounded-[10px] px-4 py-2 text-center text-[0.9375rem] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.14),0_10px_22px_-12px_color-mix(in_srgb,var(--primary)_75%,transparent)] disabled:shadow-none'
 		}
 	},

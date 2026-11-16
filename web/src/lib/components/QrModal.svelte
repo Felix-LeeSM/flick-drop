@@ -29,13 +29,13 @@ let { open = $bindable(false), url }: Props = $props();
 				>
 					<XIcon class="size-4" aria-hidden="true" />
 				</Dialog.Close>
-				<!-- 양옆 여백은 글자를 키워도 제목이 오른쪽 위 닫기 버튼에 닿지 않게 한다. -->
+				<!-- Side padding keeps an enlarged title clear of the close button in the top-right corner. -->
 				<Dialog.Title class="mt-0.5 px-6 font-serif text-2xl">Scan or copy</Dialog.Title>
 			</div>
 			<Dialog.Description class="text-sm text-muted-foreground">
 				Point a camera at the code, or copy the link below.
 			</Dialog.Description>
-			<!-- 글자를 키우면 13rem QR이 좁은 화면의 대화상자보다 넓어지므로 대화상자 폭까지 줄어든다. -->
+			<!-- With enlarged text the 13rem QR outgrows a phone-width dialog, so it shrinks to the dialog width. -->
 			<QrCode value={url} class="mx-auto aspect-square w-52 max-w-full rounded-lg bg-white p-2.5 shadow-xs" />
 			<UrlField value={url} class="h-12" />
 			<Dialog.Close class={cn(buttonVariants({ variant: 'outline' }), 'h-12 w-full')}>

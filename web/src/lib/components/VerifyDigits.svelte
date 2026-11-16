@@ -24,7 +24,7 @@ let { code, label, size = 'lg' }: Props = $props();
 		<span
 			class={cn(
 				'grid place-items-center border-2 border-primary/40 bg-primary/8 font-mono font-extrabold text-primary shadow-xs',
-				// 큰 숫자는 글자를 키운 좁은 대화상자에서 정사각형을 유지한 채 폭에 맞춰 줄어든다.
+				// With enlarged text in a phone-width dialog, the large caps stay square and shrink to fit.
 				size === 'lg' ? 'aspect-square w-16 min-w-0 rounded-xl text-4xl' : 'size-8 rounded-lg text-base'
 			)}
 			aria-hidden="true"

@@ -200,13 +200,14 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 });
 
 // 휴대폰 숫자 키패드가 덮는 화면 아래쪽 높이의 추정값이다. Playwright는 가상 키보드를 흉내 내지 못하므로
-// 코드 입력 단계의 Connect 버튼이 이 높이보다 위에 남는지로 잰다.
+// 코드 입력 단계의 Connect 버튼이 이 높이보다 위에 남는지로 잰다. 글자 150%에서는 대화상자가 길어져
+// 키패드가 Connect를 덮으므로(6자리를 치면 자동으로 연결된다) 화면 안에 들어오는지만 잰다.
 const phoneKeypadHeight = 290;
 for (const viewport of [
 	{ width: 320, height: 568 },
 	{ width: 360, height: 740 }
 ]) {
-	test(`Receive dialog sits above the keypad and fits ${viewport.width}x${viewport.height} at 150% text`, async () => {
+	test(`Receive dialog keeps Connect above the keypad at 100% text and fits ${viewport.width}x${viewport.height} at 150% text`, async () => {
 		const page = await browser.newPage({ viewport });
 		try {
 			await routeApi(page, (path, route) => {
