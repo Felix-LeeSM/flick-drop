@@ -148,7 +148,11 @@ Review has two parts:
 The gate is implemented by `.github/workflows/review-gate.yml` and
 `scripts/ci/review-gate.sh`.
 
-The workflow uses `pull_request_target` but only checks GitHub metadata:
+The workflow triggers on `pull_request` (since 2026-11-16: this repository's
+`pull_request_target` pipeline began failing at startup after a GitHub
+incident, while `pull_request` runs kept working; the workflow checks out only
+the base commit, so PR head code is still never executed) and only checks
+GitHub metadata:
 
 - PR title/body
 - milestone

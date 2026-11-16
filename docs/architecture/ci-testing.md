@@ -92,8 +92,11 @@ runs it on the weekly schedule or on a manual dispatch with `run_k3d=true`. The 
 smoke entrypoint uses the dedicated `deploy/k3d/` overlay so the generic public
 base does not try to pull placeholder images.
 
-`Review gate` is a metadata-only `pull_request_target` workflow. It must not
-execute PR head code. It publishes the required `Review gate` commit status to
+`Review gate` is a metadata-only workflow. It triggers on `pull_request`
+events (2026-11-16: switched from `pull_request_target` after that pipeline
+began failing at startup for this repository following a GitHub incident; the
+workflow still checks out only the base commit) and never executes PR head
+code. It publishes the required `Review gate` commit status to
 the PR head SHA. It enforces linked issue, milestone, label families, PR
 template completion, PR size, sensitive-path labels, exact-head subagent review
 comments, and label-after-review ordering.
