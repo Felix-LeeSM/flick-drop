@@ -23,7 +23,7 @@ const presets = [
 	['24 hours', 86_400],
 	['7 days', 604_800]
 ];
-const typeNames = ['Text', 'File', 'Login', 'Card', 'Identity', 'Custom'];
+const typeNames = ['Note', 'File', 'Login', 'Card', 'Identity', 'Custom'];
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -343,7 +343,7 @@ async function assertTypePanelWiring(page, name) {
 
 async function editorVisible(page, name) {
 	const editors = {
-		Text: page.getByLabel('Message', { exact: true }),
+		Note: page.getByLabel('Message', { exact: true }),
 		File: page.getByLabel('Add files to upload', { exact: true }),
 		Login: page.getByLabel('Username', { exact: true }),
 		Card: page.getByLabel('Card number', { exact: true }),
@@ -351,7 +351,7 @@ async function editorVisible(page, name) {
 		Custom: page.getByRole('button', { name: 'Add field', exact: true })
 	};
 	await editors[name].waitFor({ state: 'visible' });
-	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
+	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Note'));
 	await assertTypePanelWiring(page, name);
 }
 
@@ -361,7 +361,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			await typeRow(page, 'Text');
+			await typeRow(page, 'Note');
 			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
 				// No wait between clicks: the final choice must win.
@@ -474,7 +474,7 @@ for (const width of [375, 1280]) {
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			await typeRow(page, 'Text');
+			await typeRow(page, 'Note');
 			const initial = await tabBoxes(page);
 			const file = await typeTab(page, 'File').boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
@@ -632,14 +632,19 @@ for (const width of [320, 375]) {
 					return {
 						brand: box(root.querySelector('a')),
 						link: box(root.querySelector('nav a')),
+						code: box(root.querySelector('button:not([aria-label$=" theme"])')),
 						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
-				// Only the request page keeps a text link; the home header is brand + theme only
-				// (the request and code entries live in the adaptive heading, prototype R1).
-				// Each text-sized action either fits beside the wordmark or wraps below it, and
-				// none crosses the viewport edge.
-				for (const action of [header.link, header.toggle].filter(Boolean)) {
+				if (form.name === 'sender') {
+					assert.ok(header.code, form.path);
+				} else {
+					assert.ok(header.link, form.path);
+				}
+				// The home header shows brand, "Enter Code", and theme toggle; the request page
+				// shows brand, "Send a secret", and theme toggle. Each text-sized action either
+				// fits beside the wordmark or wraps below it, and none crosses the viewport edge.
+				for (const action of [header.link, header.code, header.toggle].filter(Boolean)) {
 					assert.ok(action.right <= width, form.path);
 					assert.ok(
 						action.left >= header.brand.right || action.top >= header.brand.bottom,
@@ -665,23 +670,34 @@ test('320px shared header stays one row beside the theme toggle without overflow
 				return {
 					brand: box(root.querySelector('a')),
 					link: box(root.querySelector('nav a')),
+					code: box(root.querySelector('button:not([aria-label$=" theme"])')),
 					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
 			});
 			assert.equal(header.overflow, false);
+			if (form.name === 'sender') {
+				assert.ok(header.code, form.path);
+			} else {
+				assert.ok(header.link, form.path);
+			}
 			// One row at the narrowest supported width: brand and toggle share the
-			// wordmark's vertical center, and the request page's text link sits between them.
-			const first = header.link ?? header.toggle;
+			// wordmark's vertical center, and the navigation action sits between them.
+			const navAction = header.link ?? header.code;
+			const first = navAction ?? header.toggle;
 			assert.ok(header.brand.right < first.left, form.path);
 			assert.equal(
-				first.top + first.height / 2,
-				header.brand.top + header.brand.height / 2,
+				Math.round(first.top + first.height / 2),
+				Math.round(header.brand.top + header.brand.height / 2),
 				form.path
 			);
-			if (header.link) {
-				assert.ok(header.link.right <= header.toggle.left);
-				assert.equal(header.link.top, header.toggle.top);
+			if (navAction) {
+				assert.ok(navAction.right <= header.toggle.left, form.path);
+				assert.equal(
+					Math.round(navAction.top + navAction.height / 2),
+					Math.round(header.toggle.top + header.toggle.height / 2),
+					form.path
+				);
 			}
 		}
 	} finally {
@@ -808,7 +824,7 @@ test('passphrase row explains itself through the info popover', async () => {
 		// Switching to the code tab has no confirmation toggle because confirmation is always on.
 		await page
 			.getByRole('group', { name: 'Delivery method' })
-			.getByRole('button', { name: 'Send with code' })
+			.getByRole('button', { name: 'Live transfer' })
 			.click();
 		assert.equal(await page.locator('#confirmation-procedure').count(), 0);
 	} finally {
@@ -825,7 +841,7 @@ test('delivery tabs swap the heading and slide their underline', async () => {
 		assert.equal((await heading.textContent()).trim(), 'Create a secret');
 		const tabs = page.getByRole('group', { name: 'Delivery method' });
 		const linkTab = tabs.getByRole('button', { name: 'Create link' });
-		const codeTab = tabs.getByRole('button', { name: 'Send with code' });
+		const codeTab = tabs.getByRole('button', { name: 'Live transfer' });
 		assert.equal(await linkTab.getAttribute('aria-pressed'), 'true');
 		await codeTab.click();
 		assert.equal(await codeTab.getAttribute('aria-pressed'), 'true');

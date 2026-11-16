@@ -1,4 +1,4 @@
-// Cross-device live relay ("Send with code") E2E against a running dev stack.
+// Cross-device live relay ("Live transfer") E2E against a running dev stack.
 // Start the stack first: scripts/dev/up.sh (NATS + MinIO + api :8080 + web :5173).
 // Each browser context simulates a separate device.
 import assert from 'node:assert/strict';
@@ -34,12 +34,12 @@ async function openHome(page) {
 	]);
 }
 
-// Opens the receive modal from the code tab's "Enter it here" sublink (the
-// header has no code trigger anymore) and types the code; the modal
+// Opens the receive modal from the Live transfer tab's "Enter it here" sublink
+// (header also exposes "Enter Code") and types the code; the modal
 // auto-connects on the 6th digit. A code transfer takes no passphrase: the
 // stream is encrypted to the receiving browser's own age recipient.
 async function receiveManually(receiverPage, code) {
-	await receiverPage.getByRole('button', { name: 'Send with code' }).click();
+	await receiverPage.getByRole('button', { name: 'Live transfer' }).click();
 	await receiverPage.getByRole('button', { name: 'Enter it here' }).click();
 	await receiverPage.getByText('Connect to sender').waitFor();
 	await receiverPage.getByLabel('6-digit transfer code').fill(code);
@@ -65,9 +65,9 @@ test('waiting room: two devices wait, sender denies one and sends to the number 
 	// receivers below enter none and the chosen one still decrypts.
 	await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 	await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
-	await sender.getByRole('button', { name: 'Send with code' }).click();
+	await sender.getByRole('button', { name: 'Live transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
-	await sender.getByText('Enter this code on receiving device').waitFor();
+	await sender.getByText('Live transfer code', { exact: true }).waitFor();
 	const code = await readSenderCode(sender);
 
 	// Second device: enter the code by hand through the code tab's sublink.
@@ -94,16 +94,16 @@ test('waiting room: two devices wait, sender denies one and sends to the number 
 	await sender.getByText('2 of 10 devices waiting').waitFor();
 	// Rows list in join order: connection 1 is the receiver, connection 2 the other device.
 	await sender.getByRole('button', { name: 'Deny connection 2' }).click();
-	await other.getByText('The sender declined this device').waitFor();
+	await other.getByText('The sender declined this connection').waitFor();
 	await sender.getByText('1 of 10 devices waiting').waitFor();
 
 	await sender
 		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
 		.click();
-	await receiver.getByText('Secret decrypted directly in memory').waitFor();
-	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
+	await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
+	const received = (await receiver.getByLabel('Decrypted secret content').textContent())?.trim();
 	assert.equal(received, message);
-	await sender.getByText('Transfer complete!').waitFor();
+	await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
 
 	await senderContext.close();
 	await receiverContext.close();
@@ -118,9 +118,9 @@ test('#code deep link auto-joins into waiting-room confirmation without a passph
 	sender.setDefaultTimeout(20_000);
 	await openHome(sender);
 	await sender.getByLabel('Message').fill(message);
-	await sender.getByRole('button', { name: 'Send with code' }).click();
+	await sender.getByRole('button', { name: 'Live transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
-	await sender.getByText('Enter this code on receiving device').waitFor();
+	await sender.getByText('Live transfer code', { exact: true }).waitFor();
 	const code = await readSenderCode(sender);
 
 	// Second device: the #code= deep link prefills the modal, auto-joins, and waits for confirmation.
@@ -136,10 +136,10 @@ test('#code deep link auto-joins into waiting-room confirmation without a passph
 	await sender
 		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
 		.click();
-	await receiver.getByText('Secret decrypted directly in memory').waitFor();
-	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
+	await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
+	const received = (await receiver.getByLabel('Decrypted secret content').textContent())?.trim();
 	assert.equal(received, message);
-	await sender.getByText('Transfer complete!').waitFor();
+	await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
 
 	await senderContext.close();
 	await receiverContext.close();

@@ -2,8 +2,8 @@
 import { cn } from '#lib/utils.js';
 
 // The first control of the create page: which delivery the rest of the form
-// shows. Text-only on purpose — the tab labels ("Create link" / "Send with
-// code") already say what each flow is. The underline indicator slides to the
+// shows. Text-only on purpose — the tab labels ("Create link" / "Live
+// transfer") already say what each flow is. The underline indicator slides to the
 // active tab, matching the secret type row's idiom (prototype round 30, H1).
 // The page owns `delivery` so the heading can adapt to it.
 //
@@ -23,7 +23,7 @@ let {
 
 const tabs = [
 	{ value: 'link', label: 'Create link' },
-	{ value: 'code', label: 'Send with code' }
+	{ value: 'code', label: 'Live transfer' }
 ] as const;
 </script>
 

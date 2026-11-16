@@ -137,7 +137,7 @@ so the browser's object storage `PUT` also goes through the mock, reaches the
 real bucket, and replays later without MinIO. `routeCassette` answers those
 `/__storage/` requests too.
 
-Send with code (`/api/pipe/*`): the receiving browser makes a new age key on
+Live transfer (`/api/pipe/*`): the receiving browser makes a new age key on
 every attempt, so recorded ciphertext cannot be opened on replay. While
 recording, write the synthetic plaintext you sent into the cassette's `pipe`
 field — `{"text": "…"}`, plus `"filename"` when you sent a file. On replay the

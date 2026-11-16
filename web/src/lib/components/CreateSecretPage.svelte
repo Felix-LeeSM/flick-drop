@@ -31,9 +31,11 @@ import DeliveryTabs from '#lib/components/DeliveryTabs.svelte';
 import LifetimePicker from '#lib/components/LifetimePicker.svelte';
 import LockStageCard from '#lib/components/LockStageCard.svelte';
 import NativeShareButton from '#lib/components/NativeShareButton.svelte';
+import PipeReceivedSecretView, {
+	type ReceivedPipePayload
+} from '#lib/components/PipeReceivedSecretView.svelte';
 import PipeWaitingPanel from '#lib/components/PipeWaitingPanel.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
-import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import SecretTypeSelector from '#lib/components/SecretTypeSelector.svelte';
 import SuccessCheck from '#lib/components/SuccessCheck.svelte';
 import SwitchRow from '#lib/components/SwitchRow.svelte';
@@ -120,11 +122,12 @@ let uploadProgress = $state<FileUploadProgress | null>(null);
 // manage-page handoff takes over.
 let stageCardDone = $state(false);
 
-// Live pipe relay (Send with code): session state and runtime live in
+// Live pipe relay (Live transfer): session state and runtime live in
 // #lib/state/pipe-relay.svelte.ts. The page feeds the payload at send time.
 // The link tab's passphrase never reaches a code transfer, which is encrypted
 // to the receiver's age recipient.
 const relay = createPipeRelay({ getPayload: buildPipePayload });
+let receivedPipeSecret = $state<ReceivedPipePayload | null>(null);
 
 let qrOpen = $state(false);
 let successHeading = $state<HTMLHeadingElement | null>(null);
@@ -497,7 +500,7 @@ function onDrop(event: DragEvent): void {
 // open — the same behavior as a manual tab click. Gating on 'Files' keeps
 // native text drops into the textarea working.
 function canAcceptFileDrop(): boolean {
-	return relay.activeCode === null && !hasResult && !isCreating;
+	return receivedPipeSecret === null && relay.activeCode === null && !hasResult && !isCreating;
 }
 
 function onWindowDragOver(event: DragEvent): void {
@@ -598,7 +601,7 @@ function isCredentialMode(value: CreateMode): value is CredentialType {
 
 function modeLabel(value: CreateMode): string {
 	if (value === 'text') {
-		return 'Text';
+		return 'Note';
 	}
 	if (value === 'file') {
 		return 'File';
@@ -619,27 +622,45 @@ function typePanelId(type: CreateMode): string {
 
 <svelte:window ondragover={onWindowDragOver} ondrop={onWindowDrop} />
 
-<!-- The request entry point lives in the adaptive heading below (prototype round R1),
-     so `link` stays unpassed. The header Code button stays on every tab: a receiver
-     lands on the link tab, and the sender's waiting panel points them at the header.
-     SiteHeader owns that button's modal and the #code= deep-link modal. -->
-<DeliveryFrame showEnterCode>
-	{#if relay.activeCode !== null}
-		<section class="grid gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm">
-			<PipeWaitingPanel
-				code={relay.activeCode}
-				expiresInSeconds={relay.expiresInSeconds}
-				statusText={relay.statusText}
-				progressPercent={relay.progressPercent}
-				completed={relay.completed}
-				failed={relay.failed}
-				pending={relay.pending}
-				onSend={relay.sendTo}
-				onDeny={relay.deny}
-				onCancel={relay.cancel}
-				onReset={resetPipeAndForm}
+<!-- The request entry point lives in the adaptive heading below, so `link`
+     stays unpassed. DeliveryFrame owns the single ReceiveCodeModal shared by
+     the header "Enter Code" button, the code tab sublink, and /#code=. -->
+<DeliveryFrame
+	showEnterCode
+	bind:receiveModalOpen={receiveModalOpen}
+	onCodeReceived={(secret) => {
+		if (relay.activeCode !== null) {
+			relay.cancel();
+		}
+		receivedPipeSecret = secret;
+	}}
+	onHomeClick={() => {
+		receivedPipeSecret = null;
+	}}
+>
+	{#if receivedPipeSecret !== null}
+		{#key receivedPipeSecret}
+			<PipeReceivedSecretView
+				payload={receivedPipeSecret}
+				onDone={() => {
+					receivedPipeSecret = null;
+				}}
 			/>
-		</section>
+		{/key}
+	{:else if relay.activeCode !== null}
+		<PipeWaitingPanel
+			code={relay.activeCode}
+			expiresInSeconds={relay.expiresInSeconds}
+			statusText={relay.statusText}
+			progressPercent={relay.progressPercent}
+			completed={relay.completed}
+			failed={relay.failed}
+			pending={relay.pending}
+			onSend={relay.sendTo}
+			onDeny={relay.deny}
+			onCancel={relay.cancel}
+			onReset={resetPipeAndForm}
+		/>
 	{:else if hasResult}
 		<section class="grid gap-7">
 			<div class="grid place-items-center gap-4 text-center">
@@ -1027,7 +1048,7 @@ function typePanelId(type: CreateMode): string {
 						disabled: !canPipe,
 						onclick: startPipeSend,
 						icon: TimerIcon,
-						caption: 'fixed 3-minute in-memory relay · 0B storage'
+						caption: 'never stored on the server'
 					})}
 				{/if}
 			{/if}
@@ -1049,37 +1070,31 @@ function typePanelId(type: CreateMode): string {
 		</section>
 	{/if}
 
-	<!-- Y1: guides open in a new tab so the in-progress form survives. -->
-	<nav
-		aria-label="Sharing guides"
-		class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
-	>
-		<a
-			target="_blank"
-			rel="noopener noreferrer"
-			href={resolve('guides/password-sharing/')}
-			class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
-		>How password sharing works
-			<ArrowUpRightIcon class="size-3" aria-hidden="true" />
-		</a>
+	{#if receivedPipeSecret === null}
+		<!-- Y1: guides open in a new tab so the in-progress form survives. -->
+		<nav
+			aria-label="Sharing guides"
+			class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
+		>
+			<a
+				target="_blank"
+				rel="noopener noreferrer"
+				href={resolve('guides/password-sharing/')}
+				class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
+			>How password sharing works
+				<ArrowUpRightIcon class="size-3" aria-hidden="true" />
+			</a>
 
-		<a
-			target="_blank"
-			rel="noopener noreferrer"
-			href={resolve('guides/temporary-file-sharing/')}
-			class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
-		>How temporary file sharing works
-			<ArrowUpRightIcon class="size-3" aria-hidden="true" />
-		</a>
-	</nav>
+			<a
+				target="_blank"
+				rel="noopener noreferrer"
+				href={resolve('guides/temporary-file-sharing/')}
+				class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
+			>How temporary file sharing works
+				<ArrowUpRightIcon class="size-3" aria-hidden="true" />
+			</a>
+		</nav>
+	{/if}
 </DeliveryFrame>
 
 <QrModal bind:open={qrOpen} url={shareUrl} />
-
-<!-- Opened from the code tab's "Enter it here" sublink. SiteHeader keeps its own
-     instance for the #code= deep link; at most one is open at a time. -->
-<ReceiveCodeModal
-	bind:open={receiveModalOpen}
-	initialCode=""
-	apiBaseUrl={DEFAULT_API_BASE_URL}
-/>

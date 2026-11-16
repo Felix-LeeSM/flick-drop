@@ -198,7 +198,7 @@ original expiry at acceptance, and object read failures never consume.
 Generation exhaustion returns unavailable. Recurring request-prefix cleanup
 handles late writes even after capability metadata is gone.
 
-## Live Relay (Send with Code)
+## Live Relay (Live Transfer)
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
 one browser to another through API memory; it writes nothing to SQLite or

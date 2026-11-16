@@ -30,7 +30,7 @@ send-secret routes and worker ownership are unchanged.
 
 The API also publishes async jobs through an outbox table and NATS JetStream.
 
-`internal/piperelay` implements the live relay ("Send with code") behind
+`internal/piperelay` implements the live relay ("Live transfer") behind
 `/api/pipe/*` (`internal/httpapi/piperelay.go`). Its sessions live only in the
 memory of one API process: nothing reaches `api.db`, NATS, the worker, or
 object storage, and a restart drops every open session. Because the sender's
@@ -64,7 +64,7 @@ unlocks and why rejected receivers never burn a session.
 
 `FLICK_PIPE_RELAY_ENABLED=false` (`internal/config/config.go` `Load`) starts the
 API without a coordinator (`cmd/flick-api/main.go`), and every `/api/pipe/*`
-call answers `503 service_unavailable`. The web UI still shows "Send with code";
+call answers `503 service_unavailable`. The web UI still shows "Live transfer";
 a send or receive attempt then reads "Live transfer is currently disabled on
 this server." (`web/src/lib/crypto/pipe.ts`).
 

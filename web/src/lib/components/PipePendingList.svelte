@@ -56,7 +56,7 @@ function ago(joinedAt: number): string {
 </script>
 
 <section class="grid gap-3 text-left" aria-labelledby="pipe-pending-heading">
-	<div class="grid gap-1 text-center">
+	<div class="grid gap-1.5 px-1 py-0.5 text-center">
 		<span
 			class="inline-flex items-center justify-center gap-1.5 justify-self-center rounded-full bg-primary/15 px-2.5 py-0.5 text-[11px] font-bold text-primary"
 		>
@@ -64,31 +64,29 @@ function ago(joinedAt: number): string {
 			<!-- Announced politely as devices join or leave. -->
 			<span aria-live="polite" aria-atomic="true">{pending.length} of {capacity} devices waiting</span>
 		</span>
-		<h3
+		<h2
 			id="pipe-pending-heading"
 			bind:this={heading}
 			tabindex="-1"
 			class="text-base font-semibold text-foreground outline-none"
 		>
 			Which number does your receiver see?
-		</h3>
-		<p class="text-xs text-muted-foreground">
-			{pending.length === 0
-				? 'Each device that enters the code appears here with its own 3-digit number.'
-				: 'Ask your receiver to read their number, then send to that row. The other devices get nothing.'}
-		</p>
+		</h2>
+		{#if pending.length === 0}
+			<p class="text-xs text-muted-foreground">Waiting for receiver to enter the code…</p>
+		{/if}
 	</div>
 
 	{#if pending.length > 0}
 		<ul id="pipe-pending-rows" bind:this={rows} class="grid gap-2" aria-label="Waiting devices">
 			{#each shown as receiver (receiver.connectionId)}
-				<li class="flex items-center gap-2.5 rounded-xl border border-border bg-background p-2.5 shadow-xs">
+				<li class="pipe-pending-row flex items-center gap-2.5 rounded-xl border border-border bg-background px-3 py-2.5 shadow-xs sm:gap-3 sm:px-3.5 sm:py-3">
 					<VerifyDigits
 						code={receiver.verifyCode}
 						size="sm"
 						label="Number {receiver.verifyCode.split('').join(' ')}"
 					/>
-					<div class="grid min-w-0 flex-1">
+					<div class="pipe-pending-meta grid min-w-0 flex-1">
 						<p class="truncate text-sm font-semibold text-foreground">Connection {receiver.index}</p>
 						<!-- The device label truncates on its own so the time never gets cut off. -->
 						<p class="flex min-w-0 gap-1 text-[11px] text-muted-foreground">
@@ -97,25 +95,28 @@ function ago(joinedAt: number): string {
 							<span class="shrink-0 tabular-nums">{ago(receiver.joinedAt)}</span>
 						</p>
 					</div>
-					<Button
-						type="button"
-						variant="outline"
-						size="icon-lg"
-						class="size-11 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-						aria-label="Deny connection {receiver.index}"
-						onclick={() => deny(receiver.connectionId)}
-					>
-						<XIcon class="size-4" aria-hidden="true" />
-					</Button>
-					<Button
-						type="button"
-						class="h-11 shrink-0 px-4 font-bold"
-						data-send-for={receiver.connectionId}
-						aria-label="Send to connection {receiver.index}, number {receiver.verifyCode}"
-						onclick={() => onSend(receiver.connectionId)}
-					>
-						Send
-					</Button>
+					<div class="pipe-pending-actions flex shrink-0 items-center gap-1.5 sm:gap-2">
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							class="pipe-action-hit shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+							aria-label="Deny connection {receiver.index}"
+							onclick={() => deny(receiver.connectionId)}
+						>
+							<XIcon class="size-4" aria-hidden="true" />
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							class="pipe-action-hit shrink-0 px-3 text-[0.8125rem] font-semibold"
+							data-send-for={receiver.connectionId}
+							aria-label="Send to connection {receiver.index}, number {receiver.verifyCode}"
+							onclick={() => onSend(receiver.connectionId)}
+						>
+							Send
+						</Button>
+					</div>
 				</li>
 			{/each}
 		</ul>
@@ -125,7 +126,7 @@ function ago(joinedAt: number): string {
 				type="button"
 				variant="ghost"
 				size="sm"
-				class="h-11 justify-self-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+				class="h-9 justify-self-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
 				aria-expanded={expanded}
 				aria-controls="pipe-pending-rows"
 				onclick={() => {
@@ -141,3 +142,27 @@ function ago(joinedAt: number): string {
 		{/if}
 	{/if}
 </section>
+
+<style>
+	:global(.pipe-action-hit) {
+		position: relative;
+	}
+	:global(.pipe-action-hit)::after {
+		content: '';
+		position: absolute;
+		inset: -6px -3px;
+	}
+	@media (max-width: 479px) {
+		.pipe-pending-row {
+			flex-wrap: wrap;
+			row-gap: 0.625rem;
+		}
+		.pipe-pending-meta {
+			order: -1;
+			flex: 1 0 100%;
+		}
+		.pipe-pending-actions {
+			margin-left: auto;
+		}
+	}
+</style>
