@@ -632,14 +632,14 @@ for (const width of [320, 375]) {
 					return {
 						brand: box(root.querySelector('a')),
 						link: box(root.querySelector('nav a')),
+						code: box(root.querySelector('nav button[aria-haspopup]')),
 						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
-				// Only the request page keeps a text link; the home header is brand + theme only
-				// (the request and code entries live in the adaptive heading, prototype R1).
-				// Each text-sized action either fits beside the wordmark or wraps below it, and
-				// none crosses the viewport edge.
-				for (const action of [header.link, header.toggle].filter(Boolean)) {
+				// The home header shows brand, "Enter Code", and theme toggle; the request page
+				// shows brand, "Send a secret", and theme toggle. Each text-sized action either
+				// fits beside the wordmark or wraps below it, and none crosses the viewport edge.
+				for (const action of [header.link, header.code, header.toggle].filter(Boolean)) {
 					assert.ok(action.right <= width, form.path);
 					assert.ok(
 						action.left >= header.brand.right || action.top >= header.brand.bottom,
@@ -665,23 +665,29 @@ test('320px shared header stays one row beside the theme toggle without overflow
 				return {
 					brand: box(root.querySelector('a')),
 					link: box(root.querySelector('nav a')),
+					code: box(root.querySelector('nav button[aria-haspopup]')),
 					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
 			});
 			assert.equal(header.overflow, false);
 			// One row at the narrowest supported width: brand and toggle share the
-			// wordmark's vertical center, and the request page's text link sits between them.
-			const first = header.link ?? header.toggle;
+			// wordmark's vertical center, and the navigation action sits between them.
+			const navAction = header.link ?? header.code;
+			const first = navAction ?? header.toggle;
 			assert.ok(header.brand.right < first.left, form.path);
 			assert.equal(
 				first.top + first.height / 2,
 				header.brand.top + header.brand.height / 2,
 				form.path
 			);
-			if (header.link) {
-				assert.ok(header.link.right <= header.toggle.left);
-				assert.equal(header.link.top, header.toggle.top);
+			if (navAction) {
+				assert.ok(navAction.right <= header.toggle.left, form.path);
+				assert.equal(
+					Math.round(navAction.top + navAction.height / 2),
+					Math.round(header.toggle.top + header.toggle.height / 2),
+					form.path
+				);
 			}
 		}
 	} finally {

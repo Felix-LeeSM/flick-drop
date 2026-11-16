@@ -217,10 +217,10 @@ let directReceiveUrl = $derived(
 				<p class="text-sm text-muted-foreground">
 					Recipient clicks <strong class="font-medium text-foreground">Enter Code</strong> in the header and enters:
 				</p>
-				<div class="flex items-center justify-center gap-2" aria-label="Transfer code {formattedCode}">
+				<div class="flex min-w-0 items-center justify-center gap-2" aria-label="Transfer code {formattedCode}">
 					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
 						{#each firstHalf as digit, idx (`a-${idx}`)}
-							<span class="grid h-12 w-10 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+							<span class="grid h-12 w-9 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
 								{digit}
 							</span>
 						{/each}
@@ -228,7 +228,7 @@ let directReceiveUrl = $derived(
 					<span class="font-mono text-xl text-muted-foreground" aria-hidden="true">-</span>
 					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
 						{#each secondHalf as digit, idx (`b-${idx}`)}
-							<span class="grid h-12 w-10 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+							<span class="grid h-12 w-9 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
 								{digit}
 							</span>
 						{/each}

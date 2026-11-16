@@ -19,6 +19,7 @@ let { payload, onDone }: { payload: ReceivedPipePayload; onDone: () => void } = 
 const credential = $derived(payload.kind === 'text' ? parseCredential(payload.text) : null);
 
 let heading: HTMLHeadingElement | undefined = $state();
+let credentialView: CredentialView | undefined = $state();
 let copied = $state(false);
 let downloaded = $state(false);
 let copyTimer: number | undefined;
@@ -51,8 +52,12 @@ async function copySecret(): Promise<void> {
 	if (payload.kind !== 'text') {
 		return;
 	}
+	const copyText = credential ? credentialView?.copyText() : payload.text;
+	if (!copyText || copyText.length === 0) {
+		return;
+	}
 	try {
-		await navigator.clipboard.writeText(payload.text);
+		await navigator.clipboard.writeText(copyText);
 		copied = true;
 		if (copyTimer !== undefined) {
 			window.clearTimeout(copyTimer);
@@ -80,7 +85,7 @@ async function copySecret(): Promise<void> {
 
 	{#if payload.kind === 'text' && credential}
 		<div class="grid gap-4">
-			<CredentialView {credential} />
+			<CredentialView bind:this={credentialView} {credential} />
 			<div class="grid gap-2.5 sm:grid-cols-2">
 				<Button type="button" size="cta" class="w-full gap-2" onclick={copySecret}>
 					{#if copied}

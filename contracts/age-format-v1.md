@@ -169,13 +169,13 @@ API as for secrets: `size_bytes` is the exact age file length, the filename is
 `envelope.encrypted_filename` on submit, and open returns the raw body with
 `Flick-Kind` and `Flick-Encrypted-Filename` headers.
 
-## Live Relay (Send with Code)
+## Live Relay (Live Transfer)
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams one age file from
 a sending browser to a receiving browser through API memory. Nothing is stored
 in SQLite or object storage, and the 6-digit code only routes requests; it is
 not key material. The full threat model is in
-`docs/architecture/security-model.md`, section "Live Relay (Send with Code)".
+`docs/architecture/security-model.md`, section "Live Relay (Live Transfer)".
 
 - **Receiver identity.** For each receive attempt the receiving browser
   generates a fresh hybrid identity (`AGE-SECRET-KEY-PQ-1...`, the same type as

@@ -122,10 +122,19 @@ function reset(): void {
 	verifyCode = '';
 }
 
+let previousOpen = false;
 $effect(() => {
 	if (!open) {
+		previousOpen = false;
+		abortController?.abort();
+		abortController = null;
+		return;
+	}
+	if (!previousOpen) {
+		previousOpen = true;
 		reset();
-	} else if (initialCode && rawCode === '') {
+	}
+	if (initialCode && rawCode === '') {
 		const digits = initialCode.replace(/\D/g, '').slice(0, 6);
 		rawCode = digits;
 		if (digits.length === 6) {
@@ -537,7 +546,6 @@ async function copyText(): Promise<void> {
 						class="h-11 justify-self-center text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
 						onclick={() => {
 							open = false;
-							reset();
 						}}
 					>
 						Not my transfer — disconnect
@@ -568,7 +576,6 @@ async function copyText(): Promise<void> {
 						class="h-11 w-full rounded-[10px] font-medium"
 						onclick={() => {
 							open = false;
-							reset();
 						}}
 					>
 						Close

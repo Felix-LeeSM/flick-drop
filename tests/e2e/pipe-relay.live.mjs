@@ -1,4 +1,4 @@
-// Cross-device live relay ("Send with code") E2E against a running dev stack.
+// Cross-device live relay ("Live transfer") E2E against a running dev stack.
 // Start the stack first: scripts/dev/up.sh (NATS + MinIO + api :8080 + web :5173).
 // Each browser context simulates a separate device.
 import assert from 'node:assert/strict';
@@ -34,8 +34,8 @@ async function openHome(page) {
 	]);
 }
 
-// Opens the receive modal from the code tab's "Enter it here" sublink (the
-// header has no code trigger anymore) and types the code; the modal
+// Opens the receive modal from the Live transfer tab's "Enter it here" sublink
+// (header also exposes "Enter Code") and types the code; the modal
 // auto-connects on the 6th digit. A code transfer takes no passphrase: the
 // stream is encrypted to the receiving browser's own age recipient.
 async function receiveManually(receiverPage, code) {

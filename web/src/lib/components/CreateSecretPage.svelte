@@ -500,7 +500,7 @@ function onDrop(event: DragEvent): void {
 // open — the same behavior as a manual tab click. Gating on 'Files' keeps
 // native text drops into the textarea working.
 function canAcceptFileDrop(): boolean {
-	return relay.activeCode === null && !hasResult && !isCreating;
+	return receivedPipeSecret === null && relay.activeCode === null && !hasResult && !isCreating;
 }
 
 function onWindowDragOver(event: DragEvent): void {
@@ -629,6 +629,9 @@ function typePanelId(type: CreateMode): string {
 	showEnterCode
 	bind:receiveModalOpen={receiveModalOpen}
 	onCodeReceived={(secret) => {
+		if (relay.activeCode !== null) {
+			relay.cancel();
+		}
 		receivedPipeSecret = secret;
 	}}
 	onHomeClick={() => {
@@ -636,12 +639,14 @@ function typePanelId(type: CreateMode): string {
 	}}
 >
 	{#if receivedPipeSecret !== null}
-		<PipeReceivedSecretView
-			payload={receivedPipeSecret}
-			onDone={() => {
-				receivedPipeSecret = null;
-			}}
-		/>
+		{#key receivedPipeSecret}
+			<PipeReceivedSecretView
+				payload={receivedPipeSecret}
+				onDone={() => {
+					receivedPipeSecret = null;
+				}}
+			/>
+		{/key}
 	{:else if relay.activeCode !== null}
 		<PipeWaitingPanel
 			code={relay.activeCode}

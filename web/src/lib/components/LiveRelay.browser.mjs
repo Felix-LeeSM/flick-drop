@@ -22,8 +22,7 @@ const corsHeaders = {
 	'Access-Control-Expose-Headers': 'Flick-Kind, Flick-Encrypted-Filename'
 };
 
-// The header carries no Enter code action (prototype round R1): the receive
-// dialog opens from the code tab's "Enter it here" link.
+// Opens the receive dialog from the Live transfer tab's "Enter it here" link.
 async function openReceiveDialog(page) {
 	await page
 		.getByRole('group', { name: 'Delivery method' })
@@ -422,6 +421,7 @@ function createRelayMock() {
 	let version = 1;
 	let changed = Promise.withResolvers();
 	const sent = Promise.withResolvers();
+	let cancelCalls = 0;
 	const joinCalls = new Map();
 	const hold = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -511,14 +511,17 @@ function createRelayMock() {
 				json: errorJson('awaiting_decision')
 			});
 		}
-		const body = await sent.promise;
+		const payload = await sent.promise;
 		return route.fulfill({
 			headers: {
 				...corsHeaders,
 				'Content-Type': 'application/octet-stream',
-				'Flick-Kind': 'text'
+				'Flick-Kind': payload.kind,
+				...(payload.encryptedFilename
+					? { 'Flick-Encrypted-Filename': payload.encryptedFilename }
+					: {})
 			},
-			body
+			body: payload.body
 		});
 	}
 
@@ -538,8 +541,13 @@ function createRelayMock() {
 	}
 
 	function send(route) {
+		const headers = route.request().headers();
 		const body = route.request().postDataBuffer();
-		sent.resolve(body);
+		sent.resolve({
+			body,
+			kind: headers['flick-kind'] ?? 'text',
+			encryptedFilename: headers['flick-encrypted-filename']
+		});
 		return route.fulfill({
 			headers: corsHeaders,
 			json: { status: 'completed', bytes_transferred: body.length }
@@ -578,13 +586,20 @@ function createRelayMock() {
 			case '/api/pipe/send':
 				return send(route);
 			case '/api/pipe/cancel':
+				cancelCalls += 1;
 				return route.fulfill({ headers: corsHeaders, json: { status: 'cancelled' } });
 			default:
 				return route.continue();
 		}
 	}
 
-	return { handle, joinCalls, joinBodies, leakedIdentities };
+	return {
+		handle,
+		joinCalls,
+		joinBodies,
+		leakedIdentities,
+		getCancelCalls: () => cancelCalls
+	};
 }
 
 async function readOwnNumber(page) {
@@ -954,12 +969,21 @@ test('Receiver: a connection dropped while waiting says so and lets the same cod
 	}
 });
 
-test('Received live secret wraps a 200-character unbroken value cleanly inside 360px', async () => {
+async function withMockLiveTransfer(options, verify) {
+	const {
+		senderViewport = { width: 1280, height: 800 },
+		receiverViewport = { width: 360, height: 740 },
+		prepareSender,
+		installReceiverInit
+	} = options;
 	const relay = createRelayMock();
 	const contexts = [];
-	const openPage = async (viewport) => {
+	const openPage = async (viewport, init) => {
 		const context = await browser.newContext({ viewport });
 		contexts.push(context);
+		if (init) {
+			await context.addInitScript(init);
+		}
 		const page = await context.newPage();
 		await routeApi(page, (path, route) => relay.handle(page, path, route));
 		await page.goto(`${baseUrl}/`);
@@ -967,10 +991,9 @@ test('Received live secret wraps a 200-character unbroken value cleanly inside 3
 		return page;
 	};
 	try {
-		const unbroken = 'W'.repeat(200);
-		const sender = await openPage({ width: 1280, height: 800 });
-		const receiver = await openPage({ width: 360, height: 740 });
-		await sender.getByLabel('Message', { exact: true }).fill(unbroken);
+		const sender = await openPage(senderViewport);
+		const receiver = await openPage(receiverViewport, installReceiverInit);
+		await prepareSender(sender);
 		await sender
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Live transfer' })
@@ -982,20 +1005,203 @@ test('Received live secret wraps a 200-character unbroken value cleanly inside 3
 		await receiver.locator('#pipe-code-input').fill('741928');
 		await receiver.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
 		const number = await readOwnNumber(receiver);
-		await sender.getByRole('button', { name: `Send to connection 1, number ${number}` }).click();
+		const sendButton = sender.getByRole('button', {
+			name: `Send to connection 1, number ${number}`
+		});
+		await sendButton.waitFor();
+		const senderOverflow = await sender.evaluate(
+			() => document.documentElement.scrollWidth > innerWidth
+		);
 
+		await sendButton.click();
 		await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
-		assert.equal(
-			(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
-			unbroken
-		);
-		assert.equal(
-			await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-			true
-		);
+		await verify({ sender, receiver, relay, senderOverflow });
 	} finally {
 		for (const context of contexts) {
 			await context.close();
 		}
 	}
+}
+
+test('Received live secret wraps a 200-character unbroken value cleanly inside 360px', async () => {
+	const unbroken = 'W'.repeat(200);
+	await withMockLiveTransfer(
+		{
+			prepareSender: async (sender) => {
+				await sender.getByLabel('Message', { exact: true }).fill(unbroken);
+			}
+		},
+		async ({ receiver }) => {
+			assert.equal(
+				(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+				unbroken
+			);
+			assert.equal(
+				await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+		}
+	);
+});
+
+test('Received live file wraps a 200-character filename at 320px/360px and downloads exact bytes', async () => {
+	const longFileName = `${'F'.repeat(200)}.bin`;
+	const expectedBytes = Buffer.from('live-transfer-file-payload-123');
+	await withMockLiveTransfer(
+		{
+			senderViewport: { width: 320, height: 740 },
+			receiverViewport: { width: 360, height: 740 },
+			prepareSender: async (sender) => {
+				await sender.getByRole('tab', { name: 'File', exact: true }).click();
+				await sender.locator('#secret-file').setInputFiles({
+					name: longFileName,
+					mimeType: 'application/octet-stream',
+					buffer: expectedBytes
+				});
+			}
+		},
+		async ({ receiver, senderOverflow }) => {
+			assert.equal(senderOverflow, false, 'sender waiting panel overflowed narrow viewport');
+			await receiver.getByText(longFileName, { exact: true }).waitFor();
+			assert.equal(
+				await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+			const [download] = await Promise.all([
+				receiver.waitForEvent('download'),
+				receiver.getByRole('link', { name: `Save ${longFileName}` }).click()
+			]);
+			assert.equal(download.suggestedFilename(), longFileName);
+			const chunks = [];
+			for await (const chunk of await download.createReadStream()) {
+				chunks.push(chunk);
+			}
+			assert.deepEqual(Buffer.concat(chunks), expectedBytes);
+		}
+	);
+});
+
+async function routeActiveWaitCancellation(page, fallbackRelay) {
+	let localCancels = 0;
+	const localCancelled = Promise.withResolvers();
+	await page.unrouteAll();
+	await routeApi(page, async (path, route) => {
+		const token = route.request().headers()['x-flick-pipe-sender'];
+		if (path === '/api/pipe/init') {
+			return route.fulfill({
+				status: 201,
+				headers: corsHeaders,
+				json: { code: '111222', expires_in: 180, sender_token: 'local-tok' }
+			});
+		}
+		if (path === '/api/pipe/wait' && token === 'local-tok') {
+			const since = Number(new URL(route.request().url()).searchParams.get('since') ?? '0');
+			if (since >= 1) {
+				await new Promise((resolve) => setTimeout(resolve, 1500));
+			}
+			return route.fulfill({
+				headers: corsHeaders,
+				json: { status: 'waiting', version: 1, connections: [] }
+			});
+		}
+		if (path === '/api/pipe/cancel' && token === 'local-tok') {
+			localCancels += 1;
+			localCancelled.resolve();
+			return route.fulfill({ headers: corsHeaders, json: { status: 'cancelled' } });
+		}
+		return fallbackRelay.handle(page, path, route);
+	});
+	return {
+		waitForCancel: () => localCancelled.promise,
+		getCancels: () => localCancels
+	};
+}
+
+test('Received live credential copies formatted text at 360px and receiving cancels an active wait', async () => {
+	const unbrokenSecret = 'S'.repeat(200);
+	await withMockLiveTransfer(
+		{
+			prepareSender: async (page) => {
+				await page.getByRole('tab', { name: 'Login', exact: true }).click();
+				await page.getByLabel('Username', { exact: true }).fill('live-user');
+				await page.getByLabel('Password', { exact: true }).fill(unbrokenSecret);
+			},
+			installReceiverInit: () => {
+				window.copies = [];
+				Object.defineProperty(navigator, 'clipboard', {
+					configurable: true,
+					value: {
+						writeText: (value) => {
+							window.copies.push(value);
+							return Promise.resolve();
+						}
+					}
+				});
+			}
+		},
+		async ({ receiver }) => {
+			await receiver.getByText('live-user', { exact: true }).waitFor();
+			await receiver.getByRole('button', { name: 'Show Password', exact: true }).click();
+			await receiver.getByText(unbrokenSecret, { exact: true }).waitFor();
+			assert.equal(
+				await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+			await receiver.getByRole('button', { name: 'Copy all', exact: true }).click();
+			await receiver.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+			const copied = await receiver.evaluate(() => window.copies[0]);
+			assert.equal(copied.startsWith('FLCR1:'), false);
+			assert.ok(copied.includes('Username: live-user'));
+			assert.ok(copied.includes(unbrokenSecret));
+
+			// Start waiting as a sender, then receive via header Enter Code: cancels the active wait
+			// and keeps file drops disabled while the received view is shown.
+			const secondRelay = createRelayMock();
+			const senderContext = await browser.newContext();
+			try {
+				const peerSender = await senderContext.newPage();
+				await routeApi(peerSender, (path, route) => secondRelay.handle(peerSender, path, route));
+				await peerSender.goto(`${baseUrl}/`);
+				await peerSender.locator('#svelte-announcer').waitFor({ state: 'attached' });
+
+				const localWait = await routeActiveWaitCancellation(receiver, secondRelay);
+
+				await receiver.getByRole('button', { name: 'Done', exact: true }).click();
+				await receiver.getByLabel('Message', { exact: true }).fill('Waiting secret');
+				await receiver
+					.getByRole('group', { name: 'Delivery method' })
+					.getByRole('button', { name: 'Live transfer' })
+					.click();
+				await receiver.getByRole('button', { name: 'Start live transfer' }).click();
+				await receiver.getByLabel('Transfer code 111-222').waitFor();
+
+				await peerSender.getByLabel('Message', { exact: true }).fill('Peer override secret');
+				await peerSender
+					.getByRole('group', { name: 'Delivery method' })
+					.getByRole('button', { name: 'Live transfer' })
+					.click();
+				await peerSender.getByRole('button', { name: 'Start live transfer' }).click();
+				await peerSender.getByLabel('Transfer code 741-928').waitFor();
+
+				await receiver.locator('header').getByRole('button', { name: 'Enter Code' }).click();
+				await receiver.locator('#pipe-code-input').fill('741928');
+				await receiver.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
+				const secondNumber = await readOwnNumber(receiver);
+				await peerSender
+					.getByRole('button', { name: `Send to connection 1, number ${secondNumber}` })
+					.click();
+				await Promise.all([
+					receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor(),
+					localWait.waitForCancel()
+				]);
+				assert.equal(localWait.getCancels(), 1);
+				assert.equal(
+					(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+					'Peer override secret'
+				);
+			} finally {
+				await senderContext.close();
+			}
+		}
+	);
 });
