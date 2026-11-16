@@ -463,6 +463,45 @@ test('a file dropped outside the zone switches to the File tab and attaches', as
 	}
 });
 
+for (const width of [320, 360]) {
+	test(`${width}px picked file names truncate inside the page at 100% and 150% text`, async () => {
+		const page = await browser.newPage({ viewport: { width, height: 740 } });
+		// 파일 목록 줄은 42자 이름만으로도 360px 페이지를 넓혔고, 200자 이름은 지우기 버튼을 화면 밖으로 밀었다.
+		const names = ['2026-Q3-financial-statements-final-v2.xlsx', `${'F'.repeat(200)}.bin`];
+		try {
+			await fixture(page);
+			await openForm(page, forms[0]);
+			await typeTab(page, 'File').click();
+			await editorVisible(page, 'File');
+			await page
+				.locator('#secret-file')
+				.setInputFiles(
+					names.map((name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from('file') }))
+				);
+			for (const scale of ['100%', '150%']) {
+				await page.evaluate((size) => {
+					document.documentElement.style.fontSize = size;
+				}, scale);
+				for (const name of names) {
+					const remove = await page
+						.getByRole('button', { name: `Remove ${name}`, exact: true })
+						.boundingBox();
+					assert.ok(remove.x + remove.width <= width, `${scale} ${name.length}-character name`);
+					// 잘린 이름 전체는 title로 남는다.
+					assert.equal(await page.getByText(name, { exact: true }).getAttribute('title'), name);
+				}
+				assert.equal(
+					await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+					true,
+					scale
+				);
+			}
+		} finally {
+			await page.close();
+		}
+	});
+}
+
 for (const width of [375, 1280]) {
 	const phone = width < 768;
 	test(`${width}px type tabs stay stationary on hover and focus in one row`, async () => {
