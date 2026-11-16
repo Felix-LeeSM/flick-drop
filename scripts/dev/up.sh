@@ -15,6 +15,10 @@ export FLICK_NATS_STREAM="${FLICK_NATS_STREAM:-FLICK_JOBS}"
 export FLICK_NATS_JOB_SUBJECT="${FLICK_NATS_JOB_SUBJECT:-flick.jobs}"
 export FLICK_API_DB_PATH="${FLICK_API_DB_PATH:-./var/api.db}"
 export FLICK_WORKER_DB_PATH="${FLICK_WORKER_DB_PATH:-./var/worker.db}"
+# M15: the worker owns the flick_worker PostgreSQL database. compose.yaml +
+# scripts/dev/postgres-init.sql create the local role and database; the API
+# still runs on SQLite until the M15 API cutover.
+export FLICK_WORKER_DATABASE_URL="${FLICK_WORKER_DATABASE_URL:-postgres://flick_worker:flick_worker@127.0.0.1:5432/flick_worker?sslmode=disable}"
 export FLICK_PAYLOAD_INLINE_MAX_BYTES="${FLICK_PAYLOAD_INLINE_MAX_BYTES:-1048576}"
 export FLICK_MAX_FILE_BYTES="${FLICK_MAX_FILE_BYTES:-268435456}"
 export FLICK_DEFAULT_TTL_SECONDS="${FLICK_DEFAULT_TTL_SECONDS:-3600}"
@@ -89,6 +93,39 @@ wait_for_http() {
 	done
 
 	echo "dev: $name did not become ready at $url" >&2
+	return 1
+}
+
+ensure_postgres() {
+	if [ "${FLICK_DEV_SKIP_POSTGRES:-}" = "1" ]; then
+		echo "dev: skipping Postgres startup because FLICK_DEV_SKIP_POSTGRES=1"
+		return
+	fi
+
+	if nc -z 127.0.0.1 5432 >/dev/null 2>&1; then
+		echo "dev: using existing Postgres at 127.0.0.1:5432"
+		return
+	fi
+
+	if ! command -v docker >/dev/null 2>&1; then
+		echo "dev: docker is required to start local Postgres" >&2
+		exit 1
+	fi
+	if ! docker info >/dev/null 2>&1; then
+		echo "dev: docker daemon is not available" >&2
+		exit 1
+	fi
+
+	echo "dev: starting Postgres"
+	docker compose -p "$compose_project" up -d postgres
+	for _ in $(seq 1 60); do
+		if docker compose -p "$compose_project" exec -T postgres pg_isready -U postgres >/dev/null 2>&1; then
+			echo "dev: postgres ready at 127.0.0.1:5432"
+			return 0
+		fi
+		sleep 1
+	done
+	echo "dev: postgres did not become ready at 127.0.0.1:5432" >&2
 	return 1
 }
 
@@ -191,6 +228,7 @@ monitor_processes() {
 	done
 }
 
+ensure_postgres
 ensure_nats
 ensure_minio
 install_web_deps

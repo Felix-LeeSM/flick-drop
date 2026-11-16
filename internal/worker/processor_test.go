@@ -167,7 +167,7 @@ func TestProcessorFailedJobLogsErrorWithStack(t *testing.T) {
 	}
 }
 
-// 열람된 객체의 삭제가 실패해도 worker.db(시도·영수증·데드레터)와 로그에 객체 키나
+// 열람된 객체의 삭제가 실패해도 worker DB(시도·영수증·데드레터)와 로그에 객체 키나
 // 시크릿 ID가 남지 않는다. 버킷 SDK 오류 문자열이 키를 품어도 가려진다.
 func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 	// Given: 오류 문구에 키를 담는 버킷과 열람 뒤 삭제 작업
@@ -206,15 +206,15 @@ func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 	// Then: 저장된 행 어디에도, 로그에도 ID가 없고 데드레터는 남아 있다
 	var stored string
 	if err := store.db.QueryRowContext(ctx, `select
-		(select group_concat(coalesce(last_error, '') || state) from job_receipts) ||
-		(select group_concat(coalesce(error, '')) from job_attempts) ||
-		(select group_concat(payload_json || error) from dead_letters)`).Scan(&stored); err != nil {
+		(select coalesce(string_agg(coalesce(last_error, '') || state, ''), '') from job_receipts) ||
+		(select coalesce(string_agg(coalesce(error, ''), ''), '') from job_attempts) ||
+		(select coalesce(string_agg(payload_json || error, ''), '') from dead_letters)`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stored, StateDead) || !strings.Contains(stored, "job_opened_delete") {
 		t.Fatalf("job did not dead-letter: %s", stored)
 	}
-	for name, text := range map[string]string{"worker.db": stored, "log": buf.String()} {
+	for name, text := range map[string]string{"worker db": stored, "log": buf.String()} {
 		if strings.Contains(text, secretID) {
 			t.Fatalf("%s keeps the opened secret ID: %s", name, text)
 		}

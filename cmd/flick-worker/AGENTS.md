@@ -9,7 +9,7 @@ Directory structure:
 - `AGENTS.md`: local process rules.
 - Do not add subdirectories here.
 
-Keep job execution, idempotency, retry policy, NATS contracts, worker SQLite
+Keep job execution, idempotency, retry policy, NATS contracts, worker database
 state, internal API calls, and telemetry implementation in named `internal/*`
 packages. (Structured logging, Prometheus metrics, and OpenTelemetry tracing
 are implemented in `internal/telemetry`; `cmd/flick-worker/main.go` calls
@@ -19,10 +19,12 @@ set.)
 Startup wiring should stay easy to read:
 
 1. load config
-2. open worker-owned SQLite
+2. open the worker-owned `flick_worker` PostgreSQL database with
+   `FLICK_WORKER_DATABASE_URL` (`db.OpenPostgres`, fail fast when empty)
 3. connect to NATS JetStream
 4. wire job handlers and internal API client
 5. start consumers and graceful shutdown
 
-The worker process is the only writer for `worker.db`. It must not mutate
-`api.db` directly.
+The worker process is the only writer for the `flick_worker` database
+(`internal/db/migrations_worker.go:MigrateWorker`). It must not mutate the
+`flick_api` database directly.

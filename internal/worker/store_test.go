@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
 func TestReceiptStoreStartSucceedAndDuplicate(t *testing.T) {
@@ -147,43 +145,37 @@ func TestReceiptStoreRejectsStaleAttemptFinish(t *testing.T) {
 
 	_, err := store.db.ExecContext(ctx, `insert into job_receipts (
 		job_id, kind, state, attempts, first_seen_at, updated_at
-	) values (?, ?, ?, 2, ?, ?)`,
+	) values ($1, $2, $3, 2, $4, $5)`,
 		"job_stale",
 		"delete_secret",
 		StateProcessing,
-		formatTime(now),
-		formatTime(now),
+		now,
+		now,
 	)
 	if err != nil {
 		t.Fatalf("insert receipt: %v", err)
 	}
-	result, err := store.db.ExecContext(ctx, `insert into job_attempts (
+	var staleAttemptID int64
+	if err := store.db.QueryRowContext(ctx, `insert into job_attempts (
 		job_id, attempt, started_at, result
-	) values (?, 1, ?, ?)`,
+	) values ($1, 1, $2, $3)
+	returning id`,
 		"job_stale",
-		formatTime(now),
+		now,
 		AttemptRunning,
-	)
-	if err != nil {
+	).Scan(&staleAttemptID); err != nil {
 		t.Fatalf("insert stale attempt: %v", err)
 	}
-	staleAttemptID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read stale attempt id: %v", err)
-	}
-	result, err = store.db.ExecContext(ctx, `insert into job_attempts (
+	var currentAttemptID int64
+	if err := store.db.QueryRowContext(ctx, `insert into job_attempts (
 		job_id, attempt, started_at, result
-	) values (?, 2, ?, ?)`,
+	) values ($1, 2, $2, $3)
+	returning id`,
 		"job_stale",
-		formatTime(now.Add(time.Minute)),
+		now.Add(time.Minute),
 		AttemptRunning,
-	)
-	if err != nil {
+	).Scan(&currentAttemptID); err != nil {
 		t.Fatalf("insert current attempt: %v", err)
-	}
-	currentAttemptID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read current attempt id: %v", err)
 	}
 
 	store.SetNowForTest(func() time.Time { return now.Add(2 * time.Minute) })
@@ -287,20 +279,5 @@ func TestReceiptStoreDeadLetterDoesNotOverwriteSucceededJob(t *testing.T) {
 func newTestReceiptStore(t *testing.T, ctx context.Context) *ReceiptStore {
 	t.Helper()
 
-	conn, err := db.OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-	if err := db.MigrateWorker(ctx, conn); err != nil {
-		t.Fatalf("migrate worker: %v", err)
-	}
-
-	store, err := NewReceiptStore(conn)
-	if err != nil {
-		t.Fatalf("new receipt store: %v", err)
-	}
-	return store
+	return openRecoveryStore(t, openTestWorkerDatabase(t))
 }

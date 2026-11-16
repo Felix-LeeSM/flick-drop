@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +23,8 @@ func TestTerminalObjectAcknowledgementRecoversAfterRestart(t *testing.T) {
 	for _, dead := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "dead"}[dead], func(t *testing.T) {
 			ctx := context.Background()
-			path := filepath.Join(t.TempDir(), "worker.db")
-			store := openRecoveryStore(t, path)
+			database := openTestWorkerDatabase(t)
+			store := openRecoveryStore(t, database)
 			handler := &fakeJobHandler{}
 			if dead {
 				handler.err = errors.New("delete failed")
@@ -70,7 +69,7 @@ func TestTerminalObjectAcknowledgementRecoversAfterRestart(t *testing.T) {
 			if err := store.db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store = openRecoveryStore(t, path)
+			store = openRecoveryStore(t, database)
 			proc, err = NewProcessor(store, handler, ProcessorOptions{MaxAttempts: 1, Acknowledger: ack})
 			if err != nil {
 				t.Fatal(err)
@@ -136,7 +135,7 @@ func TestRequestObjectTerminalAcknowledgementRetainsNATSOnFailure(t *testing.T) 
 	for _, dead := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "dead"}[dead], func(t *testing.T) {
 			ctx := context.Background()
-			store := openRecoveryStore(t, filepath.Join(t.TempDir(), "worker.db"))
+			store := openRecoveryStore(t, openTestWorkerDatabase(t))
 			handler := &fakeJobHandler{}
 			if dead {
 				handler.err = errors.New("delete failed")

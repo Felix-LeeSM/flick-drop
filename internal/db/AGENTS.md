@@ -1,7 +1,11 @@
 # `internal/db/` Guide
 
-This package owns SQLite setup, migrations, transactions, and low-level database
-helpers.
+This package owns database connection setup, migrations, transactions, and
+low-level database helpers. The API still runs on SQLite
+(`sqlite.go:OpenSQLite`, `migrations.go:MigrateAPI`) during the M15
+transition; the worker's Postgres database lives in `postgres.go:OpenPostgres`
+and `migrations_worker.go:MigrateWorker` (session-level `pg_advisory_lock`
+serializes it across replicas). PR 3 removes the SQLite side entirely.
 
 Directory structure:
 
@@ -16,7 +20,8 @@ Rules:
 
 - Enable WAL, foreign keys, and busy timeout consistently for every SQLite
   connection.
-- Preserve API-owned and worker-owned database separation.
+- Preserve API-owned (`flick_api`) and worker-owned (`flick_worker`) database
+  separation: each service connects with its own least-privilege role.
 - Do not store plaintext secret content, passphrases, derived keys, real
   credentials, or production identifiers in migrations or fixtures.
 

@@ -103,12 +103,12 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 		}
 		if _, err := tx.ExecContext(ctx, `insert into job_receipts (
 			job_id, kind, state, attempts, first_seen_at, updated_at
-		) values (?, ?, ?, 0, ?, ?)`,
+		) values ($1, $2, $3, 0, $4, $5)`,
 			receipt.JobID,
 			receipt.Kind,
 			receipt.State,
-			formatTime(receipt.FirstSeenAt),
-			formatTime(receipt.UpdatedAt),
+			receipt.FirstSeenAt,
+			receipt.UpdatedAt,
 		); err != nil {
 			return StartResult{}, fmt.Errorf("insert job receipt: %w", err)
 		}
@@ -137,9 +137,9 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 		// as interrupted (failed with no error), then replay the idempotent job.
 		// Interruptions do not spend the handler's failure budget.
 		if _, err := tx.ExecContext(ctx, `update job_attempts
-			set result = ?, finished_at = ?, error = null
-			where job_id = ? and result = ?`,
-			AttemptFailed, formatTime(now), jobID, AttemptRunning); err != nil {
+			set result = $1, finished_at = $2, error = null
+			where job_id = $3 and result = $4`,
+			AttemptFailed, now, jobID, AttemptRunning); err != nil {
 			return StartResult{}, fmt.Errorf("recover interrupted attempt: %w", err)
 		}
 	}
@@ -154,7 +154,7 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 			// Finish that transition without claiming another handler attempt.
 			var lastError string
 			if err := tx.QueryRowContext(ctx, `select error from job_attempts
-				where job_id = ? and result = ? and error is not null
+				where job_id = $1 and result = $2 and error is not null
 				order by attempt desc limit 1`, jobID, AttemptFailed).Scan(&lastError); err != nil {
 				return StartResult{}, fmt.Errorf("load final job failure: %w", err)
 			}
@@ -170,11 +170,11 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 
 	attemptNumber := receipt.Attempts + 1
 	result, err := tx.ExecContext(ctx, `update job_receipts
-		set state = ?, attempts = ?, updated_at = ?, last_error = null
-		where job_id = ?`,
+		set state = $1, attempts = $2, updated_at = $3, last_error = null
+		where job_id = $4`,
 		StateProcessing,
 		attemptNumber,
-		formatTime(now),
+		now,
 		jobID,
 	)
 	if err != nil {
@@ -184,20 +184,19 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 		return StartResult{}, err
 	}
 
-	result, err = tx.ExecContext(ctx, `insert into job_attempts (
+	var attemptID int64
+	// RETURNING id replaces the SQLite LastInsertId: Postgres returns the
+	// identity value inside the same insert statement.
+	if err := tx.QueryRowContext(ctx, `insert into job_attempts (
 		job_id, attempt, started_at, result
-	) values (?, ?, ?, ?)`,
+	) values ($1, $2, $3, $4)
+	returning id`,
 		jobID,
 		attemptNumber,
-		formatTime(now),
+		now,
 		AttemptRunning,
-	)
-	if err != nil {
+	).Scan(&attemptID); err != nil {
 		return StartResult{}, fmt.Errorf("insert job attempt: %w", err)
-	}
-	attemptID, err := result.LastInsertId()
-	if err != nil {
-		return StartResult{}, fmt.Errorf("read attempt id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return StartResult{}, fmt.Errorf("commit start job: %w", err)
@@ -234,15 +233,15 @@ func (s *ReceiptStore) MarkFailed(ctx context.Context, attemptID int64, jobErr e
 func failureCount(ctx context.Context, q receiptQueryer, jobID string) (int, error) {
 	var count int
 	err := q.QueryRowContext(ctx, `select count(*) from job_attempts
-		where job_id = ? and result = ? and error is not null`, jobID, AttemptFailed).Scan(&count)
+		where job_id = $1 and result = $2 and error is not null`, jobID, AttemptFailed).Scan(&count)
 	return count, err
 }
 
 func deadLetter(ctx context.Context, tx *sql.Tx, receipt Receipt, payloadJSON, jobError string, now time.Time) error {
 	result, err := tx.ExecContext(ctx, `update job_receipts
-		set state = ?, last_error = ?, updated_at = ?, completed_at = ?
-		where job_id = ? and state = ? and attempts = ?`,
-		StateDead, jobError, formatTime(now), formatTime(now),
+		set state = $1, last_error = $2, updated_at = $3, completed_at = $4
+		where job_id = $5 and state = $6 and attempts = $7`,
+		StateDead, jobError, now, now,
 		receipt.JobID, receipt.State, receipt.Attempts)
 	if err != nil {
 		return fmt.Errorf("update dead job receipt: %w", err)
@@ -253,7 +252,7 @@ func deadLetter(ctx context.Context, tx *sql.Tx, receipt Receipt, payloadJSON, j
 
 	_, err = tx.ExecContext(ctx, `insert into dead_letters (
 		job_id, kind, payload_json, error, created_at
-	) values (?, ?, ?, ?, ?)
+	) values ($1, $2, $3, $4, $5)
 	on conflict(job_id) do update set
 		kind = excluded.kind,
 		payload_json = excluded.payload_json,
@@ -263,7 +262,7 @@ func deadLetter(ctx context.Context, tx *sql.Tx, receipt Receipt, payloadJSON, j
 		receipt.Kind,
 		payloadJSON,
 		jobError,
-		formatTime(now),
+		now,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert dead letter: %w", err)
@@ -280,7 +279,7 @@ func (s *ReceiptStore) Attempts(ctx context.Context, jobID string) ([]Attempt, e
 	rows, err := s.db.QueryContext(ctx, `select
 			id, job_id, attempt, started_at, finished_at, result, error
 		from job_attempts
-		where job_id = ?
+		where job_id = $1
 		order by attempt`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("list job attempts: %w", err)
@@ -303,25 +302,21 @@ func (s *ReceiptStore) Attempts(ctx context.Context, jobID string) ([]Attempt, e
 
 func (s *ReceiptStore) DeadLetterRecord(ctx context.Context, jobID string) (DeadLetter, error) {
 	var record DeadLetter
-	var createdRaw string
+	var createdAt time.Time
 	err := s.db.QueryRowContext(ctx, `select job_id, kind, payload_json, error, created_at
 		from dead_letters
-		where job_id = ?`, jobID).Scan(
+		where job_id = $1`, jobID).Scan(
 		&record.JobID,
 		&record.Kind,
 		&record.PayloadJSON,
 		&record.Error,
-		&createdRaw,
+		&createdAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DeadLetter{}, ErrNotFound
 	}
 	if err != nil {
 		return DeadLetter{}, fmt.Errorf("load dead letter: %w", err)
-	}
-	createdAt, err := parseTime(createdRaw)
-	if err != nil {
-		return DeadLetter{}, fmt.Errorf("parse dead letter created_at: %w", err)
 	}
 	record.CreatedAt = createdAt
 	return record, nil
@@ -356,10 +351,10 @@ func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, resul
 		errText = &text
 	}
 	updateResult, err := tx.ExecContext(ctx, `update job_attempts
-		set result = ?, finished_at = ?, error = ?
-		where id = ? and result = ?`,
+		set result = $1, finished_at = $2, error = $3
+		where id = $4 and result = $5`,
 		result,
-		formatTime(now),
+		now,
 		errText,
 		attemptID,
 		AttemptRunning,
@@ -372,20 +367,20 @@ func (s *ReceiptStore) finishAttempt(ctx context.Context, attemptID int64, resul
 	}
 
 	receiptState := StateSucceeded
-	var completedAt *string
+	var completedAt *time.Time
 	if result == AttemptFailed {
 		receiptState = StateFailed
 	} else {
-		completed := formatTime(now)
+		completed := now
 		completedAt = &completed
 	}
 
 	updateResult, err = tx.ExecContext(ctx, `update job_receipts
-		set state = ?, last_error = ?, updated_at = ?, completed_at = coalesce(?, completed_at)
-		where job_id = ? and state = ? and attempts = ?`,
+		set state = $1, last_error = $2, updated_at = $3, completed_at = coalesce($4, completed_at)
+		where job_id = $5 and state = $6 and attempts = $7`,
 		receiptState,
 		errText,
-		formatTime(now),
+		now,
 		completedAt,
 		attempt.JobID,
 		StateProcessing,
@@ -430,21 +425,19 @@ type receiptQueryer interface {
 func loadReceipt(ctx context.Context, q receiptQueryer, jobID string) (Receipt, error) {
 	var receipt Receipt
 	var lastError sql.NullString
-	var firstSeenRaw string
-	var updatedRaw string
-	var completedRaw sql.NullString
+	var completedAt sql.NullTime
 	err := q.QueryRowContext(ctx, `select
 			job_id, kind, state, attempts, last_error, first_seen_at, updated_at, completed_at
 		from job_receipts
-		where job_id = ?`, jobID).Scan(
+		where job_id = $1`, jobID).Scan(
 		&receipt.JobID,
 		&receipt.Kind,
 		&receipt.State,
 		&receipt.Attempts,
 		&lastError,
-		&firstSeenRaw,
-		&updatedRaw,
-		&completedRaw,
+		&receipt.FirstSeenAt,
+		&receipt.UpdatedAt,
+		&completedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, ErrNotFound
@@ -455,22 +448,9 @@ func loadReceipt(ctx context.Context, q receiptQueryer, jobID string) (Receipt, 
 	if lastError.Valid {
 		receipt.LastError = &lastError.String
 	}
-	firstSeenAt, err := parseTime(firstSeenRaw)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("parse first_seen_at: %w", err)
-	}
-	updatedAt, err := parseTime(updatedRaw)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("parse updated_at: %w", err)
-	}
-	receipt.FirstSeenAt = firstSeenAt
-	receipt.UpdatedAt = updatedAt
-	if completedRaw.Valid {
-		completedAt, err := parseTime(completedRaw.String)
-		if err != nil {
-			return Receipt{}, fmt.Errorf("parse completed_at: %w", err)
-		}
-		receipt.CompletedAt = &completedAt
+	if completedAt.Valid {
+		completed := completedAt.Time
+		receipt.CompletedAt = &completed
 	}
 	return receipt, nil
 }
@@ -483,7 +463,7 @@ func loadAttempt(ctx context.Context, q attemptQueryer, id int64) (Attempt, erro
 	row := q.QueryRowContext(ctx, `select
 		id, job_id, attempt, started_at, finished_at, result, error
 		from job_attempts
-		where id = ?`, id)
+		where id = $1`, id)
 	return scanAttempt(row)
 }
 
@@ -493,15 +473,14 @@ type attemptScanner interface {
 
 func scanAttempt(scanner attemptScanner) (Attempt, error) {
 	var attempt Attempt
-	var startedRaw string
-	var finishedRaw sql.NullString
+	var finishedAt sql.NullTime
 	var errText sql.NullString
 	err := scanner.Scan(
 		&attempt.ID,
 		&attempt.JobID,
 		&attempt.Attempt,
-		&startedRaw,
-		&finishedRaw,
+		&attempt.StartedAt,
+		&finishedAt,
 		&attempt.Result,
 		&errText,
 	)
@@ -511,17 +490,9 @@ func scanAttempt(scanner attemptScanner) (Attempt, error) {
 	if err != nil {
 		return Attempt{}, fmt.Errorf("scan job attempt: %w", err)
 	}
-	startedAt, err := parseTime(startedRaw)
-	if err != nil {
-		return Attempt{}, fmt.Errorf("parse started_at: %w", err)
-	}
-	attempt.StartedAt = startedAt
-	if finishedRaw.Valid {
-		finishedAt, err := parseTime(finishedRaw.String)
-		if err != nil {
-			return Attempt{}, fmt.Errorf("parse finished_at: %w", err)
-		}
-		attempt.FinishedAt = &finishedAt
+	if finishedAt.Valid {
+		finished := finishedAt.Time
+		attempt.FinishedAt = &finished
 	}
 	if errText.Valid {
 		attempt.Error = &errText.String
@@ -542,16 +513,4 @@ func requireAffected(result sql.Result) error {
 
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
-}
-
-func formatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func parseTime(raw string) (time.Time, error) {
-	value, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return value.UTC(), nil
 }

@@ -15,6 +15,10 @@ const (
 	// The worker owns the failure budget and durable dead letters. Broker
 	// deliveries include crashes and active duplicates, which are not failures.
 	DefaultMaxDeliver = -1
+	// AckWait must outlast JobTimeout (30s): the handler's own retry budget
+	// owns failure handling, so a broker redelivery that lands mid-job would
+	// collide with the live lease on the same receipt.
+	DefaultAckWait    = 45 * time.Second
 	DefaultFetchWait  = 2 * time.Second
 	DefaultRetryDelay = 5 * time.Second
 )
@@ -85,6 +89,7 @@ func (c *NATSJetStreamConsumer) EnsureConsumer(ctx context.Context, stream, subj
 		DeliverPolicy: nats.DeliverAllPolicy,
 		FilterSubject: subject,
 		MaxDeliver:    maxDeliver,
+		AckWait:       DefaultAckWait,
 		ReplayPolicy:  nats.ReplayInstantPolicy,
 	}
 
@@ -222,6 +227,7 @@ func consumerConfigMatches(existing, wanted nats.ConsumerConfig) bool {
 		existing.DeliverPolicy == wanted.DeliverPolicy &&
 		existing.FilterSubject == wanted.FilterSubject &&
 		existing.MaxDeliver == wanted.MaxDeliver &&
+		existing.AckWait == wanted.AckWait &&
 		existing.ReplayPolicy == wanted.ReplayPolicy
 }
 

@@ -62,7 +62,11 @@ func main() {
 		}()
 	}
 
-	conn, err := db.OpenSQLite(ctx, cfg.WorkerDBPath)
+	if cfg.WorkerDatabaseURL == "" {
+		log.Fatalf("FLICK_WORKER_DATABASE_URL is required: the worker owns the flick_worker PostgreSQL database")
+	}
+
+	conn, err := db.OpenPostgres(ctx, cfg.WorkerDatabaseURL)
 	if err != nil {
 		log.Fatalf("open worker database: %v", err)
 	}

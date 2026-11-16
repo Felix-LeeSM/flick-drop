@@ -93,8 +93,8 @@ back to per-process memory and only `/api/pipe/*` answers `503`. CI reads
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_WORKER_DB_PATH` | Transitional SQLite file owned by worker. Removed once the M15 PostgreSQL cutover completes (PR 2); superseded by `FLICK_WORKER_DATABASE_URL`. |
-| `FLICK_WORKER_DATABASE_URL` | PostgreSQL DSN for the worker-owned `flick_worker` logical database, connected as the least-privilege `flick_worker` role. Required after PR 2; local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql`. |
+| `FLICK_WORKER_DB_PATH` | Retired since the M15 worker cutover (PR 2): the worker no longer reads it; PR 3 deletes the last uses. Superseded by `FLICK_WORKER_DATABASE_URL`. |
+| `FLICK_WORKER_DATABASE_URL` | PostgreSQL DSN for the worker-owned `flick_worker` logical database, connected as the least-privilege `flick_worker` role. Required since PR 2; the worker fails fast without it. Local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql` (`scripts/dev/up.sh` exports them). |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
 | `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address (`internal/config/config.go`). Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |
 
