@@ -5,16 +5,16 @@ Flick stores only ciphertext and metadata on the server side.
 ## Databases
 
 ```text
-api.db
-  owner: flick-api
-  contains: secrets, secret_payloads (small ciphertext BLOBs),
+flick_api database (PostgreSQL)
+  owner: flick-api (flick_api role)
+  contains: secrets, secret_payloads (small ciphertext blobs),
             secret_management, secret_open_grace, requests, request_payloads,
             per-backend reconciliation cursors and pending claims,
             usage_counters, outbox_events
             (internal/db/migrations.go:MigrateAPI, internal/db/requests.go)
 
-worker.db
-  owner: flick-worker
+flick_worker database (PostgreSQL)
+  owner: flick-worker (flick_worker role)
   contains: job receipts, attempts, dead-letter metadata, worker-local state
 
 NATS JetStream filestore
@@ -22,7 +22,13 @@ NATS JetStream filestore
   contains: durable job messages with IDs and small metadata
 ```
 
-The API and worker do not directly share SQLite write ownership.
+The API and worker do not directly share write ownership: each speaks to
+Postgres with its own least-privilege role against its own logical database
+(`database-schema.md`). M15 transition: the worker database moves in PR 2
+(issue #421), the API database and the `modernc.org/sqlite` removal in PR 3
+(issue #422); until both merge these tables live in local SQLite files, and
+the cutover runbook (`docs/runbook/postgres-cutover.md`, PR 6 / issue #425)
+carries the one-time migration.
 
 ## Payload Storage
 
@@ -164,9 +170,11 @@ deliveries keep their documented retention.
 `internal/db/migrations.go:forgetOpenedSecrets` removes rows that earlier
 releases kept after opens.
 
-SQLite BLOB deletion may leave bytes in WAL/freelist pages until checkpoint or
-vacuum. Backups may also retain old ciphertext. Runbooks must document this
-residual risk.
+Deleted ciphertext bytes can linger on disk until the storage engine reclaims
+them: SQLite BLOB deletion leaves bytes in WAL/freelist pages until checkpoint
+or vacuum, and Postgres dead tuples hold old row versions until autovacuum.
+Backups may also retain old ciphertext. Runbooks must document this residual
+risk.
 
 Cleanup jobs are idempotent:
 

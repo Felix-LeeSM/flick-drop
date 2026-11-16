@@ -1,4 +1,37 @@
 services:
+  # Single PostgreSQL 17 instance owning both Flick logical databases. The
+  # init script creates the flick_api and flick_worker roles and databases so
+  # the ownership boundary from docs/architecture/database-schema.md holds
+  # locally too.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: flick
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/dev/postgres-init.sql:/docker-entrypoint-initdb.d/10-flick-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Non-persistent by contract: rate-limit keys and live-transfer rendezvous
+  # state only, never ciphertext. --save "" --appendonly no enforces the
+  # zero-disk privacy boundary from docs/architecture/security-model.md.
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   nats:
     image: nats:2.14.2-alpine
     command:
@@ -42,3 +75,4 @@ services:
 volumes:
   nats-data:
   minio-data:
+  postgres-data:

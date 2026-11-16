@@ -10,7 +10,7 @@ The server should never know the plaintext secret, passphrase, or derived key.
 
 The browser generates a fresh age identity per secret and encrypts payloads to
 it before upload; Model A wraps that identity with a key derived from a
-user-entered passphrase, and Model B carries it in the link fragment. The API, worker, NATS, SQLite, S3-compatible object storage, logs, and
+user-entered passphrase, and Model B carries it in the link fragment. The API, worker, PostgreSQL, NATS, Valkey, S3-compatible object storage, logs, and
 metrics handle ciphertext and safe metadata only.
 
 For Model A, the browser also derives a separate access proof from the same
@@ -40,16 +40,25 @@ flick-web
 
 flick-api
   stores ciphertext, metadata, and access proof hashes
-  owns api.db
+  owns the flick_api database
   publishes outbox-backed jobs
 
 flick-worker
   consumes jobs
-  owns worker.db
+  owns the flick_worker database
   calls internal API endpoints
+
+PostgreSQL
+  stores the ciphertext and safe metadata rows of both logical databases
+  under separate least-privilege roles (flick_api, flick_worker)
 
 NATS JetStream
   stores job IDs and small metadata only
+
+Valkey
+  non-persistent; stores hashed rate-limit keys and live-transfer
+  rendezvous metadata (room state, public age recipients, poll leases),
+  never ciphertext
 
 S3-compatible object storage
   stores larger ciphertext only
@@ -72,6 +81,12 @@ S3-compatible object storage
   stored ciphertext payload.
 - NATS messages must never contain plaintext, passphrases, derived keys, or
   ciphertext bodies.
+- Valkey stores hashed rate-limit keys (HMAC-SHA-256 with
+  `FLICK_RATELIMIT_KEY_SALT`, TTL ≤ 10 minutes) and live-transfer rendezvous
+  metadata only. Ciphertext, plaintext, passphrases, derived keys, and raw
+  client networks never enter Valkey, and it always runs non-persistent
+  (`--save "" --appendonly no`), so nothing it holds survives a restart or
+  reaches disk.
 - Logs, metrics, and trace spans must not include plaintext, passphrases,
   derived keys, or full ciphertext bodies. Span attributes carry only safe
   metadata (route, content kind, storage backend, status), never secret content.
@@ -207,8 +222,8 @@ server never sees the note plaintext or memo identity.
 ## Live Relay (Live Transfer)
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
-one browser to another through API memory; it writes nothing to SQLite or
-object storage. The stream is end-to-end encrypted against a passive server:
+one browser to another through API memory; it writes nothing to the databases
+or object storage. The stream is end-to-end encrypted against a passive server:
 
 - The receiving browser generates a fresh hybrid ML-KEM-768 + X25519 age
   identity for each receive attempt (`web/src/lib/crypto/pipe.ts`
@@ -239,6 +254,13 @@ and the 6-digit code only routes requests. A curious or passive server, its
 logs, or a dump of its memory therefore hold recipients and ciphertext but
 nothing that decrypts the stream. A code transfer takes no passphrase on either
 side; the link tab's "additional passphrase" never reaches it.
+
+M15 transition (issue #424): the rendezvous moves from one API process's
+memory to non-persistent Valkey so two API replicas can serve a transfer.
+Valkey then holds the room metadata described above — states, hashed tokens,
+public age recipients, poll leases — under short TTLs; the encrypted bytes
+keep flowing pod-to-pod through API memory (`service-topology.md`) and never
+touch Valkey.
 
 Known limit: the key exchange is not authenticated against the server. An
 actively malicious server can swap in a recipient of its own on `/wait`, decrypt
@@ -390,8 +412,9 @@ component knows the passphrase or derived key.
 
 Residual risks remain:
 
-- SQLite may retain deleted ciphertext in WAL or freelist pages until checkpoint
-  or vacuum.
+- The database engine may retain deleted ciphertext on disk after deletion:
+  SQLite in WAL or freelist pages until checkpoint or vacuum, and Postgres in
+  dead tuples until autovacuum.
 - Backups may retain old ciphertext.
 - Clipboard managers, screenshots, or chat history may retain the passphrase if
   users share it insecurely.
@@ -572,7 +595,8 @@ the original expiry. Residual traces remain outside that guarantee:
 - the edge proxy (traefik) writes request paths, which include the secret ID,
   to its container log on the node until kubelet rotates it; Loki only ever
   receives the masked line (see Logs);
-- SQLite WAL pages and backups may hold deleted rows.
+- Database pages and backups may hold deleted rows: SQLite WAL pages until a
+  checkpoint, Postgres dead tuples until autovacuum.
 
 Raw management tokens belong only in the private browser fragment,
 the creation response, and the management Authorization header; exclude them

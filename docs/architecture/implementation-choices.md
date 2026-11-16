@@ -45,22 +45,51 @@ Rationale:
 - `chi` adds lightweight path parameters and middleware without a large
   framework surface.
 
-## SQLite
+## PostgreSQL
 
 ```text
-Driver: modernc.org/sqlite
-CGO: disabled by default
+Driver: github.com/jackc/pgx/v5/stdlib (database/sql interface)
+Dialect: PostgreSQL 17, single dialect
+CGO: disabled
 ```
 
-Rationale:
+Rationale (decided 2026-11-16, milestone M15):
 
-- CGO-free builds simplify local development, CI, cross-compilation, and small
-  container images.
-- Flick's SQLite usage is straightforward enough to start with the pure-Go
-  driver.
+- One database dialect instead of a `?`/`$N` rebinding dual dialect: the
+  SQLite-specific SQL (`julianday`, `datetime`, `pragma`, boolean addition)
+  has no portable translation, and per-dialect code paths cost more than they
+  save at Flick's scale.
+- `pgx/v5/stdlib` keeps the `database/sql` interface and pure-Go builds
+  (`CGO_ENABLED=0`), so local development, CI, cross-compilation, and small
+  images keep working with no C toolchain.
+- Multi-replica correctness rides Postgres features SQLite lacks:
+  session-level `pg_advisory_lock` around migrations, `RETURNING id` instead
+  of `LastInsertId`, and `FOR UPDATE SKIP LOCKED` claims for the outbox,
+  reaper, and request cleanup. See `database-schema.md`.
 
-If real workload testing exposes compatibility or performance issues, reassess
-`mattn/go-sqlite3` with CGO enabled.
+M15 transition: `cmd/flick-worker` and its store move to Postgres first
+(issue #421), then the API-owned database and the `modernc.org/sqlite`
+removal (issue #422). Until both land, the services still run on SQLite files
+(`FLICK_API_DB_PATH` / `FLICK_WORKER_DB_PATH`).
+
+## Valkey
+
+```text
+Client: pure-Go Valkey/Redis client (go-redis/v9 or valkey-go)
+Persistence: none (`--save "" --appendonly no`)
+```
+
+Rationale (decided 2026-11-16, milestone M15):
+
+- `replicas >= 2` needs state that outlives one API process only for the rate
+  limiter and live-transfer rendezvous; both are ephemeral by design, so a
+  non-persistent Valkey carries them without a new durability surface.
+- Valkey stores hashed keys and small metadata only — never ciphertext
+  (`security-model.md`, "Valkey") — and a Valkey outage degrades the rate
+  limiter to per-process memory plus a `503` on `/api/pipe/*` rather than
+  failing `/readyz`.
+- In-memory live-transfer sessions stay process-local between API replicas
+  only until M15 PR 5 (issue #424) moves the rendezvous to Valkey.
 
 ## Object Storage
 

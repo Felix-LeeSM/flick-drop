@@ -79,8 +79,17 @@ jobs:
         with:
           go-version: "1.25.11"
 
-      - name: Run Go checks
-        run: scripts/ci/go.sh
+      # The CLI never touches a database (cmd/flick, internal/flickcli, and
+      # internal/clientcrypto import no database/sql driver), so the release
+      # runner needs no Postgres service. The server-side checks with their
+      # Postgres/Valkey services stay in the Repo checks workflow; testing the
+      # whole module here would fail once server packages require
+      # FLICK_TEST_POSTGRES_URL.
+      - name: Run CLI Go checks
+        run: |
+          set -euo pipefail
+          go vet ./cmd/flick/... ./internal/flickcli/... ./internal/clientcrypto/...
+          go test ./cmd/flick/... ./internal/flickcli/... ./internal/clientcrypto/...
 
       - name: Build binaries
         shell: bash
