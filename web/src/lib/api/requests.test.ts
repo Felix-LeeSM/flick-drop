@@ -45,6 +45,34 @@ describe('request API capability and retry boundary', () => {
 		});
 		expect(fetcher.mock.calls[0][1]?.headers).toEqual({ 'Content-Type': 'application/json' });
 	});
+	it('sends optional encrypted_note on create and decodes it from instructions', async () => {
+		const created = {
+			id: 'fixture',
+			expires_at: metadata.expires_at,
+			submission_token: submitToken,
+			retrieval_token: receiveToken
+		};
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(Response.json(created))
+			.mockResolvedValueOnce(
+				Response.json({ ...metadata, generation: 1, can_submit: true, encrypted_note: ciphertext })
+			)
+			.mockResolvedValueOnce(
+				Response.json({ ...metadata, generation: 1, can_submit: true, encrypted_note: '' })
+			);
+		const api = createRequestApiClient({ baseUrl: '/', fetcher });
+		await api.create(metadata.public_key, 3600, undefined, ciphertext);
+		expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({
+			public_key: metadata.public_key,
+			ttl_seconds: 3600,
+			encrypted_note: ciphertext
+		});
+		expect((await api.instructions('fixture', submitToken)).encrypted_note).toBe(ciphertext);
+		await expect(api.instructions('fixture', submitToken)).rejects.toThrow(
+			'Could not verify the server response.'
+		);
+	});
 	it('status uses only the selected role bearer and never consumes a payload', async () => {
 		const fetcher = vi
 			.fn<typeof fetch>()

@@ -51,20 +51,21 @@ func readRequestBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byt
 }
 
 func (s Server) createRequest(w http.ResponseWriter, r *http.Request) {
-	body, err := readRequestBody(w, r, 4096)
+	body, err := readRequestBody(w, r, 16384)
 	if err != nil {
 		writeRequestError(w, err)
 		return
 	}
 	var in struct {
-		PublicKey  string `json:"public_key"`
-		TTLSeconds *int   `json:"ttl_seconds"`
+		PublicKey     string  `json:"public_key"`
+		TTLSeconds    *int    `json:"ttl_seconds"`
+		EncryptedNote *string `json:"encrypted_note"`
 	}
-	if err := requests.DecodeObject(body, &in, []string{"public_key"}, []string{"ttl_seconds"}); err != nil {
+	if err := requests.DecodeObject(body, &in, []string{"public_key"}, []string{"ttl_seconds", "encrypted_note"}); err != nil {
 		writeRequestError(w, err)
 		return
 	}
-	created, err := s.requests.Create(r.Context(), in.PublicKey, in.TTLSeconds)
+	created, err := s.requests.Create(r.Context(), in.PublicKey, in.TTLSeconds, in.EncryptedNote)
 	if err != nil {
 		writeRequestError(w, err)
 		return

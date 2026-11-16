@@ -25,8 +25,10 @@ function fixture(options = {}) {
 	const calls = [];
 	const bodies = [];
 	let publicKey = vectors.public_key;
+	let encryptedNote;
 	let fingerprint = vectors.fingerprint;
 	let state = options.state ?? 'waiting';
+	let generation = 1;
 	let payload = options.payload ?? vectors.text.payload;
 	let lostSubmit = options.lostSubmit;
 	let statusError = options.statusError;
@@ -34,8 +36,12 @@ function fixture(options = {}) {
 	const metadata = () => ({ public_key: publicKey, fingerprint, expires_at: expires });
 	function handleSubmission(route) {
 		bodies.push(route.request().postData());
-		const { generation, attempt_token, ...encrypted } = route.request().postDataJSON();
-		assert.equal(generation, 1);
+		const {
+			generation: submittedGen,
+			attempt_token,
+			...encrypted
+		} = route.request().postDataJSON();
+		assert.equal(submittedGen, generation);
 		assert.equal(Buffer.from(attempt_token, 'base64url').length, 32);
 		if (lostSubmit) {
 			if (lostSubmit === 'accepted') {
@@ -47,7 +53,7 @@ function fixture(options = {}) {
 		}
 		payload = encrypted;
 		state = 'submitted';
-		return route.fulfill({ json: { generation: 1, state: 'submitted' } });
+		return route.fulfill({ json: { generation, state: 'submitted' } });
 	}
 	const attach = async (context) => {
 		await context.addInitScript(() => {
@@ -89,7 +95,9 @@ function fixture(options = {}) {
 							json: options.config ?? { payload_inline_max_bytes: 1024, max_file_bytes: 512 }
 						}),
 					requests: () => {
-						publicKey = request.postDataJSON().public_key;
+						const body = request.postDataJSON();
+						publicKey = body.public_key;
+						encryptedNote = body.encrypted_note;
 						fingerprint = createHash('sha256').update(publicKey).digest('base64url');
 						return route.fulfill({
 							json: {
@@ -111,8 +119,38 @@ function fixture(options = {}) {
 					submit: () => handleSubmission(route),
 					attempt: () =>
 						route.fulfill({
-							json: { generation: 1, state: state === 'submitted' ? 'accepted' : 'waiting' }
+							json: {
+								generation,
+								state:
+									state === 'submitted'
+										? 'accepted'
+										: state === 'uploading'
+											? 'uploading'
+											: 'waiting'
+							}
 						}),
+					upload: () => {
+						const body = request.postDataJSON();
+						state = 'uploading';
+						return route.fulfill({
+							json: {
+								generation,
+								state,
+								reservation_expires_at: expires,
+								upload: {
+									url: `${baseUrl}/synthetic-upload`,
+									method: 'PUT',
+									expires_at: expires,
+									headers: { 'Content-Length': String(body.size_bytes) }
+								}
+							}
+						});
+					},
+					abandon: () => {
+						generation += 1;
+						state = 'waiting';
+						return route.fulfill({ json: { generation, state: 'waiting' } });
+					},
 					open: () => {
 						assert.equal(request.postData(), null);
 						state = 'consumed';
@@ -128,7 +166,12 @@ function fixture(options = {}) {
 				return handle
 					? handle()
 					: route.fulfill({
-							json: { ...metadata(), generation: 1, can_submit: state === 'waiting' }
+							json: {
+								...metadata(),
+								generation,
+								can_submit: state === 'waiting',
+								...(state === 'waiting' && encryptedNote ? { encrypted_note: encryptedNote } : {})
+							}
 						});
 			}
 		);
@@ -581,5 +624,147 @@ test('private requester status card keeps the refresh button clear of status tex
 		assert.equal(overlaps, false);
 	} finally {
 		await context.close();
+	}
+});
+
+test('encrypted request note stays out of API and retrieval links, wraps at 360px/1280px, and fails closed without #mk=', async () => {
+	const unbrokenNote = `Memo:${'Z'.repeat(200)}`;
+	for (const width of [360, 1280]) {
+		const ownerContext = await browser.newContext({ viewport: { width, height: 800 } });
+		const senderContext = await browser.newContext({ viewport: { width, height: 800 } });
+		ownerContext.setDefaultTimeout(5000);
+		senderContext.setDefaultTimeout(5000);
+		try {
+			const mock = fixture({
+				config: { payload_inline_max_bytes: 32, max_file_bytes: 512 }
+			});
+			await mock.attach(ownerContext);
+			await mock.attach(senderContext);
+			await senderContext.route('**/synthetic-upload', (route) => route.abort('failed'));
+			const owner = await ownerContext.newPage();
+			const sender = await senderContext.newPage();
+
+			await owner.goto(`${baseUrl}/request`);
+			await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
+
+			// Multi-byte UTF-8 notes above 1024 bytes show an alert and disable creation before any POST.
+			await owner.getByLabel('Note', { exact: true }).fill('가'.repeat(342));
+			await owner.getByText('Note must be at most', { exact: false }).waitFor();
+			assert.equal(
+				await owner.getByRole('button', { name: 'Create request', exact: true }).isDisabled(),
+				true
+			);
+			assert.equal(mock.calls.filter((call) => call.path === '/api/requests').length, 0);
+
+			await owner.getByLabel('Note', { exact: true }).fill(unbrokenNote);
+			assert.equal(
+				await owner.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+			await owner.getByRole('button', { name: 'Create request', exact: true }).click();
+			await owner.waitForURL('**/receive#receive=*');
+			await readyOwner(owner);
+
+			const submitLink = await owner.getByLabel('Submission link', { exact: true }).inputValue();
+			const receiveLink = await owner
+				.getByLabel('Private retrieval link', { exact: true })
+				.inputValue();
+			const hashParams = new URLSearchParams(new URL(submitLink).hash.slice(1));
+			const memoKey = hashParams.get('mk');
+			assert.ok(memoKey?.startsWith('AGE-SECRET-KEY-PQ-1'));
+			assert.equal(receiveLink.includes('mk='), false);
+			assert.equal(receiveLink.includes(memoKey), false);
+			assert.equal(JSON.stringify(mock.calls).includes(unbrokenNote), false);
+			assert.equal(JSON.stringify(mock.calls).includes(memoKey), false);
+
+			await sender.goto(submitLink);
+			const noteRegion = sender.getByRole('region', { name: 'Note from requester', exact: true });
+			await noteRegion.waitFor({ state: 'visible' });
+			assert.equal((await noteRegion.textContent())?.includes(unbrokenNote), true);
+			assert.equal(
+				await sender.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true
+			);
+
+			// Failed large upload abandoned into renewed generation 2 preserves and re-verifies note.
+			if (width === 360) {
+				await sender.getByRole('tab', { name: 'File', exact: true }).click();
+				await sender.locator('#request-file').setInputFiles({
+					name: 'large-note-renew.bin',
+					mimeType: 'application/octet-stream',
+					buffer: Buffer.alloc(64, 3)
+				});
+				await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+				await sender.getByText('Submission outcome unknown.', { exact: true }).waitFor();
+				await sender.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+				await noteRegion.waitFor({ state: 'visible' });
+				assert.equal((await noteRegion.textContent())?.includes(unbrokenNote), true);
+				await sender.getByRole('tab', { name: 'Note', exact: true }).click();
+			}
+
+			// Stripping #mk= rejects before allowing submission.
+			const noMemoPage = await senderContext.newPage();
+			const stripped = new URL(submitLink);
+			stripped.hash = `submit=${hashParams.get('submit')}&fp=${hashParams.get('fp')}`;
+			await noMemoPage.goto(stripped.toString());
+			await noMemoPage.getByText('Ask the requester for the complete submission link.').waitFor();
+			assert.equal(await noMemoPage.getByRole('button', { name: 'Encrypt and submit' }).count(), 0);
+
+			// Wrong/corrupted #mk= fails closed before allowing submission.
+			const corruptPage = await senderContext.newPage();
+			const corrupted = new URL(submitLink);
+			const badKey = `${memoKey.slice(0, -4)}AAAA`;
+			corrupted.hash = `submit=${hashParams.get('submit')}&fp=${hashParams.get('fp')}&mk=${badKey}`;
+			await corruptPage.goto(corrupted.toString());
+			await corruptPage
+				.getByText('Could not decrypt the requester note.', { exact: false })
+				.waitFor();
+			assert.equal(
+				await corruptPage.getByRole('button', { name: 'Encrypt and submit' }).count(),
+				0
+			);
+
+			// Submitting a response clears the requester note from the screen.
+			await sender.getByLabel('Message', { exact: true }).fill('ok');
+			await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
+			await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
+			assert.equal(await noteRegion.count(), 0);
+		} finally {
+			await ownerContext.close();
+			await senderContext.close();
+		}
+	}
+});
+
+test('whitespace-only request note omits encrypted_note/#mk= and extra #mk= without server note fails closed', async () => {
+	const ownerContext = await browser.newContext();
+	const senderContext = await browser.newContext();
+	try {
+		const mock = fixture();
+		await mock.attach(ownerContext);
+		await mock.attach(senderContext);
+		const owner = await ownerContext.newPage();
+		await owner.goto(`${baseUrl}/request`);
+		await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await owner.getByLabel('Note', { exact: true }).fill('   \n\t  ');
+		await owner.getByRole('button', { name: 'Create request', exact: true }).click();
+		await owner.waitForURL('**/receive#receive=*');
+		await readyOwner(owner);
+
+		const createCall = mock.calls.find((call) => call.path === '/api/requests');
+		assert.equal(JSON.parse(createCall.body).encrypted_note, undefined);
+		const submitLink = await owner.getByLabel('Submission link', { exact: true }).inputValue();
+		assert.equal(submitLink.includes('mk='), false);
+
+		// Extra #mk= on a link without server encrypted_note fails closed.
+		const sender = await senderContext.newPage();
+		const extra = new URL(submitLink);
+		extra.hash += `&mk=${vectors.identity}`;
+		await sender.goto(extra.toString());
+		await sender.getByText('Ask the requester for the complete submission link.').waitFor();
+		assert.equal(await sender.getByRole('button', { name: 'Encrypt and submit' }).count(), 0);
+	} finally {
+		await ownerContext.close();
+		await senderContext.close();
 	}
 });

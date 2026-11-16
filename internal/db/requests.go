@@ -10,6 +10,7 @@ const requestsTableSchema = `create table if not exists requests (
 			id text primary key,
 			public_key text not null,
 			fingerprint text not null,
+			encrypted_note text,
 			submission_token_hash blob not null check (length(submission_token_hash) = 32),
 			retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
 			state text not null default 'waiting' check (state in ('waiting', 'uploading', 'submitted', 'consumed', 'cancelled', 'unavailable')),
@@ -68,6 +69,15 @@ func tableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
 func normalizeRequestsSchema(ctx context.Context, db *sql.DB) (err error) {
 	if err := widenRequestsBackends(ctx, db); err != nil {
 		return err
+	}
+	hasEncryptedNote, err := columnExists(ctx, db, "requests", "encrypted_note")
+	if err != nil {
+		return fmt.Errorf("check encrypted_note column: %w", err)
+	}
+	if !hasEncryptedNote {
+		if _, err := db.ExecContext(ctx, `alter table requests add column encrypted_note text`); err != nil {
+			return fmt.Errorf("add encrypted_note column: %w", err)
+		}
 	}
 	conn, err := db.Conn(ctx)
 	if err != nil {

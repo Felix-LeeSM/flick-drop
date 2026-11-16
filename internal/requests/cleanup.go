@@ -62,7 +62,7 @@ func endReservationTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, id
 	if generation == MaxGeneration {
 		next, state = generation, "unavailable"
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = ?, generation = ?, storage_backend = 'sqlite_blob', attempt_token_hash = null, attempt_body_hash = null, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, ciphertext_sha256 = null, reservation_expires_at = null where id = ? and state = 'uploading' and generation = ?`, state, next, id, generation)
+	changed, err := tx.ExecContext(ctx, `update requests set state = ?, generation = ?, storage_backend = 'sqlite_blob', attempt_token_hash = null, attempt_body_hash = null, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, ciphertext_sha256 = null, reservation_expires_at = null, encrypted_note = case when ? = 'unavailable' then null else encrypted_note end where id = ? and state = 'uploading' and generation = ?`, state, next, state, id, generation)
 	if err != nil {
 		return err
 	}

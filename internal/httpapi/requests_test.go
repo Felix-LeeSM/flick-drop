@@ -262,7 +262,14 @@ func TestRequestTelemetryExcludesCapabilitiesKeysAndBodies(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(output) })
 	router, _, conn := requestFixtureWithOptions(t, 100, Options{TracerProvider: tp})
-	c := createHTTPRequest(t, router)
+	telemetryNote := base64.StdEncoding.EncodeToString(requestAgeBody(72, 11))
+	cResp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+		"public_key":     requestTestKey,
+		"encrypted_note": telemetryNote,
+	})
+	assertRequestStatus(t, cResp, http.StatusCreated, "")
+	var c requests.Created
+	decodeBody(t, cResp, &c)
 	in := requestSubmission()
 	path := "/api/requests/" + c.ID
 	assertRequestStatus(t, performJSON(t, router, http.MethodGet, path, nil, auth(c.SubmissionToken)), 200, "")
@@ -278,7 +285,7 @@ func TestRequestTelemetryExcludesCapabilitiesKeysAndBodies(t *testing.T) {
 		t.Fatal("request telemetry check did not record the expected route templates")
 	}
 	all := logs.String() + string(spans) + metrics.Body.String()
-	for _, sensitive := range []string{c.ID, c.SubmissionToken, c.RetrievalToken, requestTestKey, in.AttemptToken, in.Ciphertext, string(in.Envelope), "Bearer "} {
+	for _, sensitive := range []string{c.ID, c.SubmissionToken, c.RetrievalToken, requestTestKey, telemetryNote, in.AttemptToken, in.Ciphertext, string(in.Envelope), "Bearer "} {
 		if strings.Contains(all, sensitive) {
 			t.Fatal("request material leaked into telemetry")
 		}
@@ -287,4 +294,74 @@ func TestRequestTelemetryExcludesCapabilitiesKeysAndBodies(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from outbox_events`).Scan(&n); err != nil || n != 0 {
 		t.Fatal("request material entered outbox")
 	}
+}
+
+func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
+	router, _, conn := requestFixture(t, 100)
+	_ = createHTTPRequest(t, router)
+	noteCiphertext := base64.StdEncoding.EncodeToString(requestAgeBody(80, 7))
+
+	// Invalid encrypted notes are rejected before persistence.
+	for _, bad := range []any{"", base64.StdEncoding.EncodeToString([]byte("not-age")), nil} {
+		resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+			"public_key":     requestTestKey,
+			"encrypted_note": bad,
+		})
+		assertRequestStatus(t, resp, 400, "invalid_request")
+	}
+
+	resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+		"public_key":     requestTestKey,
+		"encrypted_note": noteCiphertext,
+	})
+	assertRequestStatus(t, resp, http.StatusCreated, "")
+	var created requests.Created
+	decodeBody(t, resp, &created)
+
+	// Submission instructions include encrypted_note; owner status omits it.
+	instResp := performJSON(t, router, http.MethodGet, "/api/requests/"+created.ID, nil, auth(created.SubmissionToken))
+	assertRequestStatus(t, instResp, http.StatusOK, "")
+	var inst requests.Instructions
+	decodeBody(t, instResp, &inst)
+	if inst.EncryptedNote != noteCiphertext {
+		t.Fatalf("instructions encrypted_note = %q, want %q", inst.EncryptedNote, noteCiphertext)
+	}
+	ownerResp := performJSON(t, router, http.MethodGet, "/api/requests/"+created.ID+"/owner", nil, auth(created.RetrievalToken))
+	assertRequestStatus(t, ownerResp, http.StatusOK, "")
+	if strings.Contains(ownerResp.Body.String(), "encrypted_note") {
+		t.Fatalf("owner status exposed encrypted_note: %s", ownerResp.Body.String())
+	}
+
+	// Revoking clears encrypted_note from SQLite.
+	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+created.ID+"/revoke", nil, auth(created.RetrievalToken)), 200, "")
+	var stored sql.NullString
+	if err := conn.QueryRow(`select encrypted_note from requests where id = ?`, created.ID).Scan(&stored); err != nil || stored.Valid {
+		t.Fatalf("encrypted_note survived revoke: %+v err=%v", stored, err)
+	}
+
+	// Submitted GET hides encrypted_note; HTTP open clears encrypted_note in SQLite.
+	openResp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+		"public_key":     requestTestKey,
+		"encrypted_note": noteCiphertext,
+	})
+	assertRequestStatus(t, openResp, http.StatusCreated, "")
+	var openCreated requests.Created
+	decodeBody(t, openResp, &openCreated)
+	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+openCreated.ID+"/submit", requestSubmission(), auth(openCreated.SubmissionToken)), 200, "")
+	submittedInstResp := performJSON(t, router, http.MethodGet, "/api/requests/"+openCreated.ID, nil, auth(openCreated.SubmissionToken))
+	assertRequestStatus(t, submittedInstResp, http.StatusOK, "")
+	if strings.Contains(submittedInstResp.Body.String(), "encrypted_note") {
+		t.Fatalf("submitted GET exposed encrypted_note: %s", submittedInstResp.Body.String())
+	}
+	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+openCreated.ID+"/open", nil, auth(openCreated.RetrievalToken)), 200, "")
+	if err := conn.QueryRow(`select encrypted_note from requests where id = ?`, openCreated.ID).Scan(&stored); err != nil || stored.Valid {
+		t.Fatalf("encrypted_note survived HTTP open: %+v err=%v", stored, err)
+	}
+
+	// Bodies above 16 KiB cap on POST /api/requests return 413 payload_too_large.
+	hugeResp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
+		"public_key":     requestTestKey,
+		"encrypted_note": strings.Repeat("A", 16385),
+	})
+	assertRequestStatus(t, hugeResp, http.StatusRequestEntityTooLarge, "payload_too_large")
 }

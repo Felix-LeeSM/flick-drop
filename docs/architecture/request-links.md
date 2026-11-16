@@ -28,7 +28,7 @@ and the request ID.
 | age identity alone | No | No | No | No | Only with ciphertext |
 | Private retrieval link (token and identity) | No | No | Yes | Once | Yes |
 
-Submission URL: `/r/{id}#submit=<token>&fp=<fingerprint>`.
+Submission URL: `/r/{id}#submit=<token>&fp=<fingerprint>` (with optional `&mk=<memo-identity>` when an encrypted requester note is attached).
 Private retrieval URL: `/r/{id}/receive#receive=<token>&key=<identity>`.
 Fragments never enter HTTP requests. The appropriate token travels only in
 `Authorization: Bearer <token>`, never in a query or path. Cross-role tokens
@@ -244,8 +244,8 @@ returns `503 storage_full` (`internal/requests/large.go`,
 
 | Method and path | Authorization | Request / response |
 | --- | --- | --- |
-| POST `/` | None; create rate limit | public_key, ttl_seconds → id, expires_at, submission_token, retrieval_token |
-| GET `/{id}` | Submission token | public_key, fingerprint, expires_at, generation, can_submit; no ciphertext |
+| POST `/` | None; create rate limit | public_key, ttl_seconds, optional encrypted_note → id, expires_at, submission_token, retrieval_token |
+| GET `/{id}` | Submission token | public_key, fingerprint, expires_at, generation, can_submit, optional encrypted_note; no ciphertext |
 | POST `/{id}/submit` | Submission token | generation, attempt_token, kind, size_bytes, envelope, ciphertext → submitted receipt |
 | POST `/{id}/attempt` | Submission token | generation, attempt_token → waiting/uploading/accepted/unavailable; no owner details |
 | GET `/{id}/owner` | Retrieval token | public_key, fingerprint, expires_at, state; no ciphertext |

@@ -31,6 +31,7 @@ export type RequestOwner = {
 export type RequestInstructions = Omit<RequestOwner, 'state'> & {
 	generation: number;
 	can_submit: boolean;
+	encrypted_note?: string;
 };
 export type Submission = Readonly<{
 	generation: number;
@@ -289,14 +290,19 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 		async create(
 			publicKey: string,
 			ttlSeconds: number,
-			signal?: AbortSignal
+			signal?: AbortSignal,
+			encryptedNote?: string
 		): Promise<RequestCreated> {
 			const data = record(
 				await request(
 					'',
 					'POST',
 					undefined,
-					JSON.stringify({ public_key: publicKey, ttl_seconds: ttlSeconds }),
+					JSON.stringify({
+						public_key: publicKey,
+						ttl_seconds: ttlSeconds,
+						...(encryptedNote ? { encrypted_note: encryptedNote } : {})
+					}),
 					signal
 				)
 			);
@@ -328,13 +334,18 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			signal?: AbortSignal
 		): Promise<RequestInstructions> {
 			const data = record(await request(path(id), 'GET', token, undefined, signal));
-			if (typeof data.can_submit !== 'boolean') {
+			if (
+				typeof data.can_submit !== 'boolean' ||
+				(data.encrypted_note !== undefined &&
+					(typeof data.encrypted_note !== 'string' || data.encrypted_note.length === 0))
+			) {
 				invalidResponse();
 			}
 			return {
 				...metadata(data),
 				generation: generation(data.generation),
-				can_submit: data.can_submit
+				can_submit: data.can_submit,
+				...(typeof data.encrypted_note === 'string' ? { encrypted_note: data.encrypted_note } : {})
 			};
 		},
 		async owner(id: string, token: string, signal?: AbortSignal): Promise<RequestOwner> {

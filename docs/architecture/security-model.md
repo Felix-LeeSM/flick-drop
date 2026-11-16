@@ -198,6 +198,12 @@ original expiry at acceptance, and object read failures never consume.
 Generation exhaustion returns unavailable. Recurring request-prefix cleanup
 handles late writes even after capability metadata is gone.
 
+If an optional requester note is attached, the requester browser encrypts it to a
+separate fresh hybrid age identity before `POST /api/requests` (`encrypted_note`,
+verified only by age header magic and deleted on open, revoke, or expiry) and
+places that memo identity in `#mk=` inside the submission fragment only. The
+server never sees the note plaintext or memo identity.
+
 ## Live Relay (Live Transfer)
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
