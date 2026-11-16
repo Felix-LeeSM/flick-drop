@@ -1,11 +1,11 @@
 <script lang="ts">
 import {
 	CreditCardIcon,
+	FileTextIcon,
 	FileUpIcon,
 	IdCardIcon,
 	KeyRoundIcon,
-	ListPlusIcon,
-	TypeIcon
+	ListPlusIcon
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { CREDENTIAL_TEMPLATES, type CredentialType } from '#lib/credentials/index.js';
@@ -32,8 +32,8 @@ const icons = {
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
-const options: Array<{ type: SecretType; label: string; icon: typeof TypeIcon }> = [
-	{ type: 'text', label: 'Text', icon: TypeIcon },
+const options: Array<{ type: SecretType; label: string; icon: typeof FileTextIcon }> = [
+	{ type: 'text', label: 'Note', icon: FileTextIcon },
 	{ type: 'file', label: 'File', icon: FileUpIcon },
 	...CREDENTIAL_TEMPLATES.map((template) => ({
 		type: template.type,

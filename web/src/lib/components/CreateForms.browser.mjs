@@ -23,7 +23,7 @@ const presets = [
 	['24 hours', 86_400],
 	['7 days', 604_800]
 ];
-const typeNames = ['Text', 'File', 'Login', 'Card', 'Identity', 'Custom'];
+const typeNames = ['Note', 'File', 'Login', 'Card', 'Identity', 'Custom'];
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -343,7 +343,7 @@ async function assertTypePanelWiring(page, name) {
 
 async function editorVisible(page, name) {
 	const editors = {
-		Text: page.getByLabel('Message', { exact: true }),
+		Note: page.getByLabel('Message', { exact: true }),
 		File: page.getByLabel('Add files to upload', { exact: true }),
 		Login: page.getByLabel('Username', { exact: true }),
 		Card: page.getByLabel('Card number', { exact: true }),
@@ -351,7 +351,7 @@ async function editorVisible(page, name) {
 		Custom: page.getByRole('button', { name: 'Add field', exact: true })
 	};
 	await editors[name].waitFor({ state: 'visible' });
-	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Text'));
+	assert.equal(await page.getByLabel('Message', { exact: true }).count(), Number(name === 'Note'));
 	await assertTypePanelWiring(page, name);
 }
 
@@ -361,7 +361,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			await typeRow(page, 'Text');
+			await typeRow(page, 'Note');
 			for (const width of [320, 375, 544, 1280]) {
 				await page.setViewportSize({ width, height: 1000 });
 				// No wait between clicks: the final choice must win.
@@ -474,7 +474,7 @@ for (const width of [375, 1280]) {
 		try {
 			await fixture(page);
 			await openForm(page, forms[0]);
-			await typeRow(page, 'Text');
+			await typeRow(page, 'Note');
 			const initial = await tabBoxes(page);
 			const file = await typeTab(page, 'File').boundingBox();
 			const point = { x: file.x + file.width / 2, y: file.y + file.height / 2 };
@@ -808,7 +808,7 @@ test('passphrase row explains itself through the info popover', async () => {
 		// Switching to the code tab has no confirmation toggle because confirmation is always on.
 		await page
 			.getByRole('group', { name: 'Delivery method' })
-			.getByRole('button', { name: 'Send with code' })
+			.getByRole('button', { name: 'Live transfer' })
 			.click();
 		assert.equal(await page.locator('#confirmation-procedure').count(), 0);
 	} finally {
@@ -825,7 +825,7 @@ test('delivery tabs swap the heading and slide their underline', async () => {
 		assert.equal((await heading.textContent()).trim(), 'Create a secret');
 		const tabs = page.getByRole('group', { name: 'Delivery method' });
 		const linkTab = tabs.getByRole('button', { name: 'Create link' });
-		const codeTab = tabs.getByRole('button', { name: 'Send with code' });
+		const codeTab = tabs.getByRole('button', { name: 'Live transfer' });
 		assert.equal(await linkTab.getAttribute('aria-pressed'), 'true');
 		await codeTab.click();
 		assert.equal(await codeTab.getAttribute('aria-pressed'), 'true');

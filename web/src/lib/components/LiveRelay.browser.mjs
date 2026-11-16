@@ -27,7 +27,7 @@ const corsHeaders = {
 async function openReceiveDialog(page) {
 	await page
 		.getByRole('group', { name: 'Delivery method' })
-		.getByRole('button', { name: 'Send with code' })
+		.getByRole('button', { name: 'Live transfer' })
 		.click();
 	await page.getByRole('button', { name: 'Enter it here' }).click();
 }
@@ -218,7 +218,7 @@ test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF
 		});
 		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'unchecked');
 
-		await tabs.getByRole('button', { name: 'Send with code' }).click();
+		await tabs.getByRole('button', { name: 'Live transfer' }).click();
 		const startPipe = page.getByRole('button', { name: 'Start live transfer' });
 		assert.equal(
 			await page.getByRole('switch', { name: 'Require confirmation before transfer' }).count(),
@@ -369,7 +369,7 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 		await page.getByLabel('Message', { exact: true }).fill('payload');
 		await page
 			.getByRole('group', { name: 'Delivery method' })
-			.getByRole('button', { name: 'Send with code' })
+			.getByRole('button', { name: 'Live transfer' })
 			.click();
 		await page.getByRole('button', { name: 'Start live transfer' }).click();
 
@@ -614,7 +614,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 		const deliveryMethod = sender.getByRole('group', { name: 'Delivery method' });
 		// An empty link-tab passphrase doesn't block the code send either.
-		await deliveryMethod.getByRole('button', { name: 'Send with code' }).click();
+		await deliveryMethod.getByRole('button', { name: 'Live transfer' }).click();
 		assert.equal(
 			await sender.getByRole('button', { name: 'Start live transfer' }).isEnabled(),
 			true
@@ -623,7 +623,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
 		await sender
 			.getByRole('group', { name: 'Delivery method' })
-			.getByRole('button', { name: 'Send with code' })
+			.getByRole('button', { name: 'Live transfer' })
 			.click();
 		await sender.getByRole('button', { name: 'Start live transfer' }).click();
 		await sender.getByLabel('Transfer code 741-928').waitFor();
@@ -645,18 +645,21 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 
 		// Deny one row: only that device ends, the code stays live.
 		await sender.getByRole('button', { name: 'Deny connection 1' }).click();
-		const impostorDialog = impostor.getByRole('dialog', { name: 'Receive secret with code' });
+		const impostorDialog = impostor.getByRole('dialog');
 		await impostorDialog
-			.getByRole('heading', { name: 'The sender declined this device' })
+			.getByRole('heading', { name: 'The sender declined this connection' })
 			.waitFor();
+		assert.equal(await impostorDialog.getByRole('button', { name: 'Enter a new code' }).count(), 0);
 		await sender.getByText('2 of 10 devices waiting').waitFor();
 
-		// The declined browser remembers the decline: re-entering the code asks nothing.
+		// The declined browser remembers the decline: closing and re-entering the code asks nothing.
 		const joinsBefore = relay.joinCalls.get(impostor);
-		await impostorDialog.getByRole('button', { name: 'Enter a new code' }).click();
+		await impostorDialog.locator('button:has-text("Close")').click();
+		await impostorDialog.waitFor({ state: 'hidden' });
+		await openReceiveDialog(impostor);
 		await impostor.locator('#pipe-code-input').fill('741928');
 		await impostorDialog
-			.getByRole('heading', { name: 'The sender declined this device' })
+			.getByRole('heading', { name: 'The sender declined this connection' })
 			.waitFor();
 		assert.equal(relay.joinCalls.get(impostor), joinsBefore);
 
@@ -665,20 +668,23 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			.getByRole('button', { name: `Send to connection 2, number ${intendedNumber}` })
 			.click();
 
-		await intended.getByText('Secret decrypted directly in memory').waitFor();
+		// Receiving hands off from the modal to the full-page Secret view.
+		await intended.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
+		assert.equal(await intended.getByRole('dialog').count(), 0);
+		await intended.getByText('Live transfer · Code 741-928').waitFor();
 		assert.equal(
-			await intended
-				.getByRole('dialog', { name: 'Receive secret with code' })
-				.locator('textarea')
-				.inputValue(),
+			(await intended.getByLabel('Decrypted secret content').textContent())?.trim(),
 			message
 		);
+		await intended.getByRole('button', { name: 'Done', exact: true }).click();
+		await intended.getByLabel('Message', { exact: true }).waitFor();
+
 		await bystander
 			.getByRole('dialog', { name: 'Receive secret with code' })
 			.getByRole('heading', { name: 'The sender chose another device' })
 			.waitFor();
-		await sender.getByRole('heading', { name: 'Transfer complete!' }).waitFor();
-		await sender.getByText('live pipe burned').waitFor();
+		await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
+		await sender.getByText('transfer complete', { exact: true }).waitFor();
 		// Each device sent only its own fresh recipient on /join, and no request
 		// from any page carried an age identity.
 		assert.equal(relay.joinBodies.length, 3);
@@ -730,7 +736,7 @@ async function startConfirmedSender(page) {
 	await page.getByLabel('Message', { exact: true }).fill('payload');
 	await page
 		.getByRole('group', { name: 'Delivery method' })
-		.getByRole('button', { name: 'Send with code' })
+		.getByRole('button', { name: 'Live transfer' })
 		.click();
 	await page.getByRole('button', { name: 'Start live transfer' }).click();
 }
@@ -945,5 +951,51 @@ test('Receiver: a connection dropped while waiting says so and lets the same cod
 		assert.equal(joins, 2);
 	} finally {
 		await page.close();
+	}
+});
+
+test('Received live secret wraps a 200-character unbroken value cleanly inside 360px', async () => {
+	const relay = createRelayMock();
+	const contexts = [];
+	const openPage = async (viewport) => {
+		const context = await browser.newContext({ viewport });
+		contexts.push(context);
+		const page = await context.newPage();
+		await routeApi(page, (path, route) => relay.handle(page, path, route));
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		return page;
+	};
+	try {
+		const unbroken = 'W'.repeat(200);
+		const sender = await openPage({ width: 1280, height: 800 });
+		const receiver = await openPage({ width: 360, height: 740 });
+		await sender.getByLabel('Message', { exact: true }).fill(unbroken);
+		await sender
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Live transfer' })
+			.click();
+		await sender.getByRole('button', { name: 'Start live transfer' }).click();
+		await sender.getByLabel('Transfer code 741-928').waitFor();
+
+		await receiver.locator('header').getByRole('button', { name: 'Enter Code' }).click();
+		await receiver.locator('#pipe-code-input').fill('741928');
+		await receiver.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
+		const number = await readOwnNumber(receiver);
+		await sender.getByRole('button', { name: `Send to connection 1, number ${number}` }).click();
+
+		await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
+		assert.equal(
+			(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+			unbroken
+		);
+		assert.equal(
+			await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+			true
+		);
+	} finally {
+		for (const context of contexts) {
+			await context.close();
+		}
 	}
 });

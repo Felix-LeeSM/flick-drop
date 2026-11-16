@@ -235,6 +235,14 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		await streamPayload(code, chosen.recipient, signal);
 	}
 
+	function restoreDenied(denied: PendingReceiver | undefined, connectionId: string): void {
+		settled.delete(connectionId);
+		if (denied && !pending.some((receiver) => receiver.connectionId === connectionId)) {
+			pending = [...pending, denied].sort((a, b) => a.index - b.index);
+		}
+		statusText = 'Could not deny that device. Try again.';
+	}
+
 	/** Turns one waiting receiver away; its slot reopens and the code stays live. */
 	async function deny(connectionId: string): Promise<void> {
 		const code = activeCode;
@@ -247,19 +255,16 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		pending = pending.filter((receiver) => receiver.connectionId !== connectionId);
 		try {
 			await declinePipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
+			if (session === settled && !sending) {
+				statusText = 'Waiting for receiver to enter code...';
+			}
 		} catch (err) {
 			// not_pending: the device already left or was settled, so the row stays gone.
 			const alreadyGone = err instanceof PipeRelayError && err.reason === 'not_pending';
 			// A new session (or cancel) replaced `settled` meanwhile; this row is not ours to restore.
-			if (alreadyGone || session !== settled) {
-				return;
+			if (!alreadyGone && session === settled) {
+				restoreDenied(denied, connectionId);
 			}
-			// The server did not decline it: the device is still waiting, so show it again.
-			settled.delete(connectionId);
-			if (denied && !pending.some((receiver) => receiver.connectionId === connectionId)) {
-				pending = [...pending, denied].sort((a, b) => a.index - b.index);
-			}
-			statusText = 'Could not deny that device. Try again.';
 		}
 	}
 

@@ -1,18 +1,9 @@
 <script lang="ts">
-import {
-	ActivityIcon,
-	ClockIcon,
-	CopyIcon,
-	FlameIcon,
-	QrCodeIcon,
-	RadioIcon,
-	ZapIcon
-} from '@lucide/svelte';
+import { CheckIcon, CopyIcon, QrCodeIcon } from '@lucide/svelte';
 import { onDestroy, onMount } from 'svelte';
 import LockStageCard from '#lib/components/LockStageCard.svelte';
 import PipePendingList from '#lib/components/PipePendingList.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
-import StageSteps from '#lib/components/StageSteps.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
 import {
@@ -23,14 +14,6 @@ import {
 	sleep
 } from '#lib/stage-timing.js';
 import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
-
-// The relay's three stages. The burned step never renders as an active row —
-// reaching it swaps the whole panel to the completed view.
-const RELAY_STAGE_STEPS = [
-	{ icon: RadioIcon, label: 'Waiting for receiver' },
-	{ icon: ActivityIcon, label: 'Streaming encrypted chunks' },
-	{ icon: FlameIcon, label: 'Burned from memory' }
-];
 
 type Props = {
 	code: string;
@@ -147,6 +130,18 @@ const formattedCode = $derived(formatPipeCode(code));
 const firstHalf = $derived(formattedCode.slice(0, 3));
 const secondHalf = $derived(formattedCode.slice(4));
 
+const NORMAL_STATUS_MESSAGES = new Set([
+	'',
+	'Waiting for receiver...',
+	'Waiting for receiver to enter code...',
+	'Initializing live transfer session...',
+	'Sending to the chosen device...',
+	'Encrypting stream on-the-fly (age format)...',
+	'Streaming encrypted bytes directly to receiver...',
+	'Transfer complete!'
+]);
+const waitingNotice = $derived(NORMAL_STATUS_MESSAGES.has(statusText) ? '' : statusText);
+
 // Direct receive URL that can be encoded in QR code
 let directReceiveUrl = $derived(
 	typeof window === 'undefined'
@@ -155,7 +150,7 @@ let directReceiveUrl = $derived(
 );
 </script>
 
-<div class="grid gap-6 text-center">
+<div class="grid gap-4">
 	{#if showStage}
 		<LockStageCard
 			mode="lock"
@@ -163,7 +158,7 @@ let directReceiveUrl = $derived(
 			label="Sending your secret"
 			caption="sending to receiver"
 			status={stagePhase === 'finishing'
-				? 'Burned from memory'
+				? 'Cleared from memory'
 				: stagePhase === 'failing'
 					? statusText
 					: progressPercent >= 50
@@ -175,155 +170,126 @@ let directReceiveUrl = $derived(
 		/>
 	{:else if completed}
 		<!-- The ring already played the lock beat, so the completed view skips a second check. -->
-		<div class="grid place-items-center gap-4">
-			<div class="grid gap-2">
-				<p class="micro flex items-center justify-center gap-1.5 text-burn">
-					<FlameIcon class="size-3.5" aria-hidden="true" />
-					live pipe burned
+		<section class="grid gap-6">
+			<div class="grid gap-1.5">
+				<p class="micro flex items-center gap-1.5 text-success">
+					<CheckIcon class="size-3.5 shrink-0" aria-hidden="true" />
+					transfer complete
 				</p>
-				<h2 class="font-serif text-3xl font-normal tracking-tight text-foreground">
-					Transfer complete!
-				</h2>
+				<h1 class="page-title">Transfer complete</h1>
 				<p class="text-sm text-muted-foreground">
-					Streamed directly through memory and wiped. 0B persisted on server.
+					Delivered directly from this tab with zero server storage.
 				</p>
 			</div>
 
-			<Button type="button" size="cta" class="w-full mt-2" onclick={onReset}>
+			<Button type="button" size="cta" class="w-full" onclick={onReset}>
 				Send another secret
 			</Button>
-		</div>
+		</section>
 	{:else if failed && (stageSettled || !streaming)}
 		<!-- A broken stream or an ended session (expired, server error) leaves a dead
 		     code; the code view would offer a code that no longer works. -->
-		<div class="grid place-items-center gap-4" role="alert">
-			<div class="grid gap-2">
-				<h2 class="font-serif text-2xl font-normal text-foreground">Transfer failed</h2>
+		<section class="grid gap-6" role="alert">
+			<div class="grid gap-1.5">
+				<p class="micro text-destructive">session ended</p>
+				<h1 class="page-title">Transfer failed</h1>
 				<p class="text-sm text-muted-foreground">{statusText}</p>
 				<p class="text-xs text-muted-foreground">The code no longer works. Nothing more will be sent.</p>
 			</div>
-			<Button type="button" size="cta" variant="outline" class="w-full mt-2" onclick={onReset}>
+			<Button type="button" size="cta" variant="outline" class="w-full" onclick={onReset}>
 				Start new secret
 			</Button>
-		</div>
+		</section>
 	{:else}
-		<!-- Active Waiting / Streaming Stage -->
-		<div class="grid place-items-center gap-3">
-			<div
-				class="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary"
-			>
-				<span class="size-2 rounded-full bg-primary animate-pulse" aria-hidden="true"></span>
-				<span>{statusText}</span>
-			</div>
-
-			<h2 class="font-serif text-2xl font-normal text-foreground">
-				Enter this code on receiving device
-			</h2>
-			<p class="text-xs text-muted-foreground max-w-sm">
-				Open Flick on the receiver device and click <strong class="text-foreground">Code</strong> in the header:
-			</p>
-
-			<!-- 6-digit display boxes -->
-			<div class="flex items-center justify-center gap-2 pt-2" aria-label="Transfer code {formattedCode}">
-				<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-3xl">
-					{#each firstHalf as digit}
-						<span class="grid size-12 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs">
-							{digit}
-						</span>
-					{/each}
+		<section class="grid gap-5 rounded-xl border border-border bg-card p-5 shadow-sm" aria-labelledby="pipe-waiting-heading">
+			<h1 id="pipe-waiting-heading" class="sr-only">Live transfer</h1>
+			<div class="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3.5">
+				<div class="flex items-center gap-2">
+					<span class="size-2 rounded-full bg-primary animate-pulse motion-reduce:animate-none" aria-hidden="true"></span>
+					<span class="micro text-foreground">Live transfer code</span>
 				</div>
-				<span class="font-mono text-xl text-muted-foreground px-1">-</span>
-				<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-3xl">
-					{#each secondHalf as digit}
-						<span class="grid size-12 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs">
-							{digit}
-						</span>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Expiration countdown -->
-			<div class="flex items-center gap-2 font-mono text-xs text-muted-foreground pt-1">
-				<ClockIcon class="size-3.5" aria-hidden="true" />
-				<span>EXPIRES IN</span>
-				<span class="tabular-nums font-bold text-foreground text-sm">
-					{formatTime(remainingSeconds)}
+				<span class="font-mono text-xs tabular-nums text-muted-foreground">
+					Expires in <strong class="font-bold text-foreground">{formatTime(remainingSeconds)}</strong>
 				</span>
 			</div>
-		</div>
 
-		<!-- Below the 6-digit code, which stays the most prominent element. -->
-		<div class="rounded-2xl border border-border bg-muted/20 p-3">
-			<PipePendingList {pending} capacity={PIPE_ROOM_CAPACITY} {now} {onSend} {onDeny} />
-		</div>
-
-		<!-- P2 stage stepper: where the transfer stands; the thin bar moves
-		     only while bytes stream (the sender's driver reports 25/50/100). -->
-		<div class="grid gap-2.5 rounded-xl border border-border bg-muted/30 p-3 text-left">
-			<StageSteps steps={RELAY_STAGE_STEPS} activeIndex={progressPercent > 0 ? 1 : 0} />
-			{#if progressPercent > 0 && progressPercent < 100}
-				<div class="grid gap-1">
-					<div
-						class="h-1 w-full overflow-hidden rounded-full bg-muted"
-						role="progressbar"
-						aria-label="Live transfer progress"
-						aria-valuemin={0}
-						aria-valuemax={100}
-						aria-valuenow={progressPercent}
-					>
-						<div
-							class="h-full rounded-full bg-primary transition-[width] duration-200 ease-linear motion-reduce:transition-none"
-							style="width: {progressPercent}%"
-						></div>
-					</div>
-					<p class="font-mono text-xs tabular-nums text-muted-foreground">{progressPercent}%</p>
-				</div>
-			{/if}
-		</div>
-
-		<!-- Action buttons -->
-		<div class="grid gap-2.5 pt-2">
-			<Button
-				type="button"
-				variant="outline"
-				class="h-11 w-full gap-2"
-				onclick={copyCode}
-			>
-				<CopyIcon class="size-4" aria-hidden="true" />
-				{copied ? 'Copied code!' : 'Copy 6-digit code'}
-			</Button>
-
-			<Button
-				type="button"
-				variant="outline"
-				class="h-11 w-full gap-2"
-				onclick={() => {
-					qrOpen = true;
-				}}
-			>
-				<QrCodeIcon class="size-4" aria-hidden="true" />
-				Show QR (Optional)
-			</Button>
-
-			<Button
-				type="button"
-				variant="ghost"
-				class="h-9 w-full text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-				onclick={onCancel}
-			>
-				Cancel code drop
-			</Button>
-		</div>
-
-		<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
-			<ZapIcon class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-			<div class="grid gap-1 text-xs">
-				<strong class="font-medium text-foreground">Direct in-memory transfer</strong>
-				<p class="text-muted-foreground">
-					No files or messages are saved to disk or Object Storage. The session automatically burns on completion or timeout.
+			<div class="grid gap-3 py-1 text-center">
+				<p class="text-sm text-muted-foreground">
+					Recipient clicks <strong class="font-medium text-foreground">Enter Code</strong> in the header and enters:
 				</p>
+				<div class="flex items-center justify-center gap-2" aria-label="Transfer code {formattedCode}">
+					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
+						{#each firstHalf as digit, idx (`a-${idx}`)}
+							<span class="grid h-12 w-10 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+								{digit}
+							</span>
+						{/each}
+					</div>
+					<span class="font-mono text-xl text-muted-foreground" aria-hidden="true">-</span>
+					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
+						{#each secondHalf as digit, idx (`b-${idx}`)}
+							<span class="grid h-12 w-10 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+								{digit}
+							</span>
+						{/each}
+					</div>
+				</div>
 			</div>
-		</aside>
+
+			<div class="rounded-xl border border-border bg-muted/20 p-3.5 sm:p-4">
+				<PipePendingList {pending} capacity={PIPE_ROOM_CAPACITY} {now} {onSend} {onDeny} />
+			</div>
+
+			{#if waitingNotice}
+				<p
+					role="status"
+					aria-live="polite"
+					class="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-center text-xs font-medium text-destructive"
+				>
+					{waitingNotice}
+				</p>
+			{/if}
+
+			<div class="grid gap-2">
+				<div class="grid grid-cols-2 gap-2.5">
+					<Button type="button" variant="outline" class="h-11 gap-2" onclick={copyCode}>
+						{#if copied}
+							<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
+							Copied!
+						{:else}
+							<CopyIcon class="size-4 shrink-0" aria-hidden="true" />
+							Copy code
+						{/if}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						class="h-11 gap-2"
+						onclick={() => {
+							qrOpen = true;
+						}}
+					>
+						<QrCodeIcon class="size-4 shrink-0" aria-hidden="true" />
+						Show QR
+					</Button>
+				</div>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					class="h-10 justify-self-center text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+					onclick={onCancel}
+				>
+					Cancel live transfer
+				</Button>
+			</div>
+
+			<aside class="rounded-lg bg-muted/40 px-3.5 py-2.5 text-left text-xs text-muted-foreground">
+				<p class="leading-relaxed">
+					<strong class="font-medium text-foreground">Keep this tab open.</strong> Nothing is saved on the server — your browser sends the secret live when the recipient connects.
+				</p>
+			</aside>
+		</section>
 	{/if}
 </div>
 

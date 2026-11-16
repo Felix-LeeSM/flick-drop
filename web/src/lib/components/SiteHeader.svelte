@@ -7,6 +7,7 @@ import { LockKeyholeIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import type { ReceivedPipePayload } from '#lib/components/PipeReceivedSecretView.svelte';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 
@@ -16,8 +17,19 @@ import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 // large text-size setting must not push the toggle past the viewport edge either.
 // The code action and the link read as plain text, but each keeps the toggle's 36px row height
 // as its tap target.
-let { link, showEnterCode = false }: { link?: HeaderLink; showEnterCode?: boolean } = $props();
-let receiveModalOpen = $state(false);
+let {
+	link,
+	showEnterCode = false,
+	receiveModalOpen = $bindable(false),
+	onCodeReceived,
+	onHomeClick
+}: {
+	link?: HeaderLink;
+	showEnterCode?: boolean;
+	receiveModalOpen?: boolean;
+	onCodeReceived?: (payload: ReceivedPipePayload) => void;
+	onHomeClick?: () => void;
+} = $props();
 let initialReceiveCode = $state('');
 
 $effect(() => {
@@ -49,7 +61,13 @@ onMount(() => {
 </script>
 
 <header class="flex min-w-0 min-h-10 flex-wrap items-center justify-between gap-3">
-	<a class="flex items-center gap-2.5 rounded-sm focus-visible:outline-2" href={resolve('/')}>
+	<a
+		class="flex items-center gap-2.5 rounded-sm focus-visible:outline-2"
+		href={resolve('/')}
+		onclick={() => {
+			onHomeClick?.();
+		}}
+	>
 		<span class="grid size-8 place-items-center rounded-[9px] bg-primary text-primary-foreground">
 			<LockKeyholeIcon class="size-[1.0625rem]" aria-hidden="true" />
 		</span>
@@ -59,12 +77,12 @@ onMount(() => {
 		{#if showEnterCode}
 			<button
 				type="button"
-				class="inline-flex h-9 items-center rounded-sm text-xs font-medium text-foreground underline decoration-primary decoration-2 underline-offset-[6px] focus-visible:outline-2"
+				class="inline-flex h-9 items-center rounded-sm text-xs font-medium whitespace-nowrap text-foreground underline decoration-primary decoration-2 underline-offset-[6px] focus-visible:outline-2"
 				onclick={() => {
 					receiveModalOpen = true;
 				}}
 			>
-				<span class="sr-only">Enter </span>Code
+				Enter Code
 			</button>
 		{/if}
 		{#if link}
@@ -79,4 +97,9 @@ onMount(() => {
 	</div>
 </header>
 
-<ReceiveCodeModal bind:open={receiveModalOpen} initialCode={initialReceiveCode} apiBaseUrl={DEFAULT_API_BASE_URL} />
+<ReceiveCodeModal
+	bind:open={receiveModalOpen}
+	initialCode={initialReceiveCode}
+	apiBaseUrl={DEFAULT_API_BASE_URL}
+	{onCodeReceived}
+/>

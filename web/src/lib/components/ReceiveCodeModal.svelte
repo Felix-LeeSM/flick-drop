@@ -12,6 +12,7 @@ import {
 } from '@lucide/svelte';
 import { Dialog } from 'bits-ui';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import type { ReceivedPipePayload } from '#lib/components/PipeReceivedSecretView.svelte';
 import ProgressRingLock from '#lib/components/ProgressRingLock.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Label } from '#lib/components/ui/label/index.js';
@@ -47,12 +48,14 @@ type Props = {
 	open?: boolean;
 	apiBaseUrl?: string;
 	initialCode?: string;
+	onCodeReceived?: (payload: ReceivedPipePayload) => void;
 };
 
 let {
 	open = $bindable(false),
 	apiBaseUrl = DEFAULT_API_BASE_URL,
-	initialCode = ''
+	initialCode = '',
+	onCodeReceived
 }: Props = $props();
 
 // verify: this device shows its own number while the sender picks.
@@ -236,10 +239,17 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 
 	const decryptedStream = await decryptWith(identity, result.stream);
 
-	const doneState = await storeReceived(result, decryptedStream, identity, signal);
-	if (doneState && (await settleRing(attempt.stageStartedAt, 'finishing', signal))) {
-		currentState = doneState;
+	const outcome = await storeReceived(result, decryptedStream, identity, normalized, signal);
+	if (!outcome || !(await settleRing(attempt.stageStartedAt, 'finishing', signal))) {
+		return;
 	}
+	if (onCodeReceived) {
+		const payload = outcome.payload;
+		open = false;
+		onCodeReceived(payload);
+		return;
+	}
+	currentState = outcome.doneState;
 }
 
 async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> {
@@ -258,18 +268,22 @@ async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> 
 }
 
 // Keeps the decrypted content and marks it received; null when the receive was
-// cancelled meanwhile. A file is saved right away so closing the dialog during
-// the ring beat cannot lose it.
+// cancelled meanwhile. When handing off to the page view, the file Blob transfers
+// to PipeReceivedSecretView without triggering an unsolicited modal download.
 async function storeReceived(
 	result: Awaited<ReturnType<typeof receivePipeStream>>,
 	decryptedStream: ReadableStream<Uint8Array>,
 	identity: string,
+	code: string,
 	signal: AbortSignal
-): Promise<'done-file' | 'done-text' | null> {
+): Promise<{ doneState: 'done-file' | 'done-text'; payload: ReceivedPipePayload } | null> {
 	if (result.kind !== 'file') {
 		receivedText = await streamToText(decryptedStream);
 		decrypted = true;
-		return 'done-text';
+		return {
+			doneState: 'done-text',
+			payload: { kind: 'text', code, text: receivedText }
+		};
 	}
 	const bytes = await streamToBytes(decryptedStream);
 	receivedFileSize = bytes.length;
@@ -277,10 +291,22 @@ async function storeReceived(
 	if (signal.aborted) {
 		return null;
 	}
-	receivedFileBlob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+	const blob = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+	receivedFileBlob = blob;
 	decrypted = true;
-	downloadFile();
-	return 'done-file';
+	if (!onCodeReceived) {
+		downloadFile();
+	}
+	return {
+		doneState: 'done-file',
+		payload: {
+			kind: 'file',
+			code,
+			fileBlob: blob,
+			fileName: receivedFileName,
+			fileSize: bytes.length
+		}
+	};
 }
 
 // The sender encrypts the filename separately; a missing or unreadable one falls
@@ -353,39 +379,54 @@ async function copyText(): Promise<void> {
 		<Dialog.Content
 			class="fixed left-1/2 top-1/2 z-50 grid w-[23rem] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
-			<!-- The dialog keeps one name in every step; the visible heading names the step. -->
-			<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
-			<Dialog.Description class="sr-only">
-				Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
-			</Dialog.Description>
+			{#if currentState === 'declined'}
+				<div class="relative z-10 -mb-8 flex items-center justify-end">
+					<Dialog.Close
+						class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						aria-label="Close"
+					>
+						<XIcon class="size-4" aria-hidden="true" />
+					</Dialog.Close>
+				</div>
+				<Dialog.Title class="sr-only">Connection declined</Dialog.Title>
+				<Dialog.Description class="sr-only">
+					Nothing was sent to this device, and this code cannot be used again. Ask the sender for a new one.
+				</Dialog.Description>
+			{:else}
+				<!-- The dialog keeps one name in every other step; the visible heading names the step. -->
+				<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
+				<Dialog.Description class="sr-only">
+					Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
+				</Dialog.Description>
 
-			<div class="flex items-start justify-between gap-3">
-				{#if step}
-					<div class="grid gap-1">
-						<div class="flex items-center gap-1.5">
-							<span class="rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
-								STEP {step} OF 2
-							</span>
-							<span class="micro text-muted-foreground">0B disk relay</span>
+				<div class="flex items-start justify-between gap-3">
+					{#if step}
+						<div class="grid gap-1">
+							<div class="flex items-center gap-1.5">
+								<span class="rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
+									STEP {step} OF 2
+								</span>
+								<span class="micro text-muted-foreground">0B disk relay</span>
+							</div>
+							<h3 class="font-serif text-2xl leading-tight">
+								{step === 1
+									? 'Connect to sender'
+									: currentState === 'verify'
+										? 'Read this to the sender'
+										: currentState === 'streaming'
+											? 'Receiving'
+											: 'Connecting'}
+							</h3>
 						</div>
-						<h3 class="font-serif text-2xl leading-tight">
-							{step === 1
-								? 'Connect to sender'
-								: currentState === 'verify'
-									? 'Read this to the sender'
-									: currentState === 'streaming'
-										? 'Receiving'
-										: 'Connecting'}
-						</h3>
-					</div>
-				{/if}
-				<Dialog.Close
-					class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-					aria-label="Close"
-				>
-					<XIcon class="size-4" aria-hidden="true" />
-				</Dialog.Close>
-			</div>
+					{/if}
+					<Dialog.Close
+						class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						aria-label="Close"
+					>
+						<XIcon class="size-4" aria-hidden="true" />
+					</Dialog.Close>
+				</div>
+			{/if}
 
 			{#if currentState === 'input'}
 				<div class="grid gap-5 text-center">
@@ -494,27 +535,55 @@ async function copyText(): Promise<void> {
 						variant="ghost"
 						size="sm"
 						class="h-11 justify-self-center text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onclick={() => reset()}
+						onclick={() => {
+							open = false;
+							reset();
+						}}
 					>
 						Not my transfer — disconnect
 					</Button>
 				</div>
-			{:else if currentState === 'declined' || currentState === 'not-chosen'}
-				<!-- Ends plainly without calling it an attack: the sender picked or turned away a device. -->
+			{:else if currentState === 'declined'}
+				<div class="grid justify-items-center gap-5 py-1 text-center" role="status">
+					<div
+						class="grid size-12 place-items-center rounded-full border border-destructive/30 bg-destructive/10 text-destructive"
+						aria-hidden="true"
+					>
+						<XIcon class="size-5" />
+					</div>
+					<div class="grid justify-items-center gap-2">
+						<p class="micro text-muted-foreground">
+							Code {formatPipeCode(rawCode)} · Declined
+						</p>
+						<h3 class="font-serif text-[1.625rem] leading-[1.15] font-normal tracking-[-0.01em] text-balance text-foreground">
+							The sender declined this connection
+						</h3>
+						<p class="max-w-xs text-[0.8125rem] leading-relaxed text-muted-foreground">
+							Nothing was sent to this device, and this code can't be used again. Ask the sender for a new one.
+						</p>
+					</div>
+					<Button
+						type="button"
+						variant="outline"
+						class="h-11 w-full rounded-[10px] font-medium"
+						onclick={() => {
+							open = false;
+							reset();
+						}}
+					>
+						Close
+					</Button>
+				</div>
+			{:else if currentState === 'not-chosen'}
+				<!-- Ends plainly without calling it an attack: the sender picked another device. -->
 				<div class="grid place-items-center gap-3 py-2 text-center" role="status">
 					<div class="grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
 						<LogOutIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-serif text-lg text-foreground">
-							{currentState === 'declined'
-								? 'The sender declined this device'
-								: 'The sender chose another device'}
-						</h4>
+						<h4 class="font-serif text-lg text-foreground">The sender chose another device</h4>
 						<p class="text-xs text-muted-foreground">
-							{currentState === 'declined'
-								? "This device received nothing and can't rejoin this code. If you were expecting a secret, ask the sender for a new code."
-								: 'This device was disconnected and received nothing. If you were expecting a secret, ask the sender for a new code.'}
+							This device was disconnected and received nothing. If you were expecting a secret, ask the sender for a new code.
 						</p>
 					</div>
 					<Button type="button" variant="outline" class="mt-1 w-full" onclick={() => reset()}>
