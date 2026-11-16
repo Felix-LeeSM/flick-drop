@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { assertDialogFits } from './dialog-fit.mjs';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://localhost:5173';
 let browser;
@@ -197,6 +198,63 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 		await page.close();
 	}
 });
+
+// 휴대폰 숫자 키패드가 덮는 화면 아래쪽 높이의 추정값이다. Playwright는 가상 키보드를 흉내 내지 못하므로
+// 코드 입력 단계의 Connect 버튼이 이 높이보다 위에 남는지로 잰다.
+const phoneKeypadHeight = 290;
+for (const viewport of [
+	{ width: 320, height: 568 },
+	{ width: 360, height: 740 }
+]) {
+	test(`Receive dialog sits above the keypad and fits ${viewport.width}x${viewport.height} at 150% text`, async () => {
+		const page = await browser.newPage({ viewport });
+		try {
+			await routeApi(page, (path, route) => {
+				if (path === '/api/pipe/join') {
+					return route.fulfill({
+						status: 201,
+						headers: corsHeaders,
+						json: {
+							connection_id: 'conn-1',
+							verify_code: '042',
+							device: 'Chrome on Linux',
+							expires_in: 170
+						}
+					});
+				}
+				// 응답하지 않아 대화상자가 번호 확인 단계에 머문다.
+				if (path === '/api/pipe/status' || path === '/api/pipe/receive') {
+					return;
+				}
+				return route.continue();
+			});
+			await page.goto(`${baseUrl}/`);
+			await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+			await openReceiveDialog(page);
+			const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+			await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
+			await assertDialogFits(page, '100% code entry');
+			const connect = await dialog
+				.getByRole('button', { name: 'Connect', exact: true })
+				.boundingBox();
+			assert.ok(
+				connect.y + connect.height <= viewport.height - phoneKeypadHeight,
+				`Connect ends at ${connect.y + connect.height}px, under the keypad`
+			);
+
+			await page.evaluate(() => {
+				document.documentElement.style.fontSize = '150%';
+			});
+			await assertDialogFits(page, '150% code entry');
+			await page.locator('#pipe-code-input').fill('741928');
+			await dialog.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
+			// 번호 확인 단계의 4rem 숫자 3개와 줄을 바꾸지 않는 끊기 버튼이 대화상자를 넓혔다.
+			await assertDialogFits(page, '150% number check');
+		} finally {
+			await page.close();
+		}
+	});
+}
 
 test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF', async () => {
 	const page = await browser.newPage();
@@ -803,6 +861,68 @@ test('Sender: a failed Send keeps exactly one /wait loop running', async () => {
 		await page.close();
 	}
 });
+
+for (const width of [320, 360]) {
+	test(`Sender: the waiting card keeps the code and its buttons inside ${width}px at 150% text`, async () => {
+		const page = await browser.newPage({ viewport: { width, height: 740 } });
+		try {
+			await routeApi(page, (path, route) => {
+				if (path === '/api/pipe/init') {
+					return fulfillConfirmedInit(route);
+				}
+				if (path === '/api/pipe/wait') {
+					return; // 대기열 응답을 붙잡아 빈 대기 화면을 유지한다.
+				}
+				return route.continue();
+			});
+			await startConfirmedSender(page);
+			const code = page.getByLabel('Transfer code 741-928');
+			await code.waitFor();
+			await page.evaluate(() => {
+				document.documentElement.style.fontSize = '150%';
+			});
+			const fit = await code.evaluate(async (row) => {
+				const card = row.closest('section');
+				// 글자 크기 변경에 따른 버튼 전환(transition-all)이 끝난 뒤 잰다.
+				await Promise.allSettled(
+					card
+						.getAnimations({ subtree: true })
+						.filter(
+							(animation) =>
+								animation.effect.getComputedTiming().endTime !== Number.POSITIVE_INFINITY
+						)
+						.map((animation) => animation.finished)
+				);
+				const box = card.getBoundingClientRect();
+				// 가운데 정렬된 코드 줄은 양쪽으로 넘치므로 왼쪽 끝도 잰다.
+				const caps = [...row.querySelectorAll('span')].filter((cap) =>
+					/^\d$/.test(cap.textContent.trim())
+				);
+				return {
+					caps: caps.length,
+					capsInside: caps.every((cap) => {
+						const edge = cap.getBoundingClientRect();
+						return edge.left >= box.left && edge.right <= box.right;
+					}),
+					contentInside: card.scrollWidth <= card.clientWidth,
+					spilledLabels: [...card.querySelectorAll('button')]
+						.filter((button) => button.clientWidth > 0 && button.scrollWidth > button.clientWidth)
+						.map((button) => button.textContent.trim()),
+					page: document.documentElement.scrollWidth <= innerWidth
+				};
+			});
+			assert.deepEqual(fit, {
+				caps: 6,
+				capsInside: true,
+				contentInside: true,
+				spilledLabels: [],
+				page: true
+			});
+		} finally {
+			await page.close();
+		}
+	});
+}
 
 test('Sender: a /wait answer that was in flight during Deny does not bring the row back', async () => {
 	const page = await browser.newPage();
