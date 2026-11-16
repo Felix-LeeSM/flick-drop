@@ -47,12 +47,14 @@ async function receiveManually(receiverPage, code) {
 
 // Reads the receiver's own 3-digit number (aria-label "Your number 2 7 1").
 async function readOwnNumber(receiverPage) {
-	const label = await receiverPage.getByRole('img', { name: /^Your number/ }).getAttribute('aria-label');
+	const label = await receiverPage
+		.getByRole('img', { name: /^Your number/ })
+		.getAttribute('aria-label');
 	return label.replace('Your number ', '').replaceAll(' ', '');
 }
 
-test('confirmation ON: two devices wait, sender denies one and sends to the number read aloud', async () => {
-	const message = 'pipe e2e on-approval payload';
+test('waiting room: two devices wait, sender denies one and sends to the number read aloud', async () => {
+	const message = 'pipe e2e waiting-room payload';
 
 	const senderContext = await browser.newContext();
 	const sender = await senderContext.newPage();
@@ -64,7 +66,6 @@ test('confirmation ON: two devices wait, sender denies one and sends to the numb
 	await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
 	await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
 	await sender.getByRole('button', { name: 'Send with code' }).click();
-	await sender.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
 	await sender.getByText('Enter this code on receiving device').waitFor();
 	const code = await readSenderCode(sender);
@@ -96,7 +97,9 @@ test('confirmation ON: two devices wait, sender denies one and sends to the numb
 	await other.getByText('The sender declined this device').waitFor();
 	await sender.getByText('1 of 10 devices waiting').waitFor();
 
-	await sender.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` }).click();
+	await sender
+		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
+		.click();
 	await receiver.getByText('Secret decrypted directly in memory').waitFor();
 	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
 	assert.equal(received, message);
@@ -107,23 +110,20 @@ test('confirmation ON: two devices wait, sender denies one and sends to the numb
 	await otherContext.close();
 });
 
-test('confirmation OFF: #code deep link auto-receives without approval or passphrase', async () => {
-	const message = 'pipe e2e no-approval payload';
+test('#code deep link auto-joins into waiting-room confirmation without a passphrase', async () => {
+	const message = 'pipe e2e deep-link payload';
 
 	const senderContext = await browser.newContext();
 	const sender = await senderContext.newPage();
 	sender.setDefaultTimeout(20_000);
 	await openHome(sender);
 	await sender.getByLabel('Message').fill(message);
-	// Both toggles ship OFF now — nothing to untoggle.
 	await sender.getByRole('button', { name: 'Send with code' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
 	await sender.getByText('Enter this code on receiving device').waitFor();
-	const statusText = await sender.locator('span', { hasText: /Waiting for receiver/ }).first().textContent();
-	assert.ok(!statusText?.includes('confirmation required'), 'status should not advertise confirmation');
 	const code = await readSenderCode(sender);
 
-	// Second device: the #code= deep link prefills the modal and auto-connects.
+	// Second device: the #code= deep link prefills the modal, auto-joins, and waits for confirmation.
 	const receiverContext = await browser.newContext();
 	const receiver = await receiverContext.newPage();
 	receiver.setDefaultTimeout(20_000);
@@ -131,6 +131,11 @@ test('confirmation OFF: #code deep link auto-receives without approval or passph
 		receiver.waitForResponse((response) => new URL(response.url()).pathname === '/api/config'),
 		receiver.goto(`${baseUrl}/#code=${code}`)
 	]);
+	await receiver.getByText('Read this to the sender').waitFor();
+	const receiverNumber = await readOwnNumber(receiver);
+	await sender
+		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
+		.click();
 	await receiver.getByText('Secret decrypted directly in memory').waitFor();
 	const received = await receiver.getByLabel('Decrypted secret content').inputValue();
 	assert.equal(received, message);

@@ -63,23 +63,19 @@ type pipeJoinRequest struct {
 	Recipient string `json:"recipient"`
 }
 
-type pipeInitRequest struct {
-	RequireConfirmation bool `json:"require_confirmation"`
-}
+type pipeInitRequest struct{}
 
 type pipeInitResponse struct {
-	Code                string `json:"code"`
-	ExpiresIn           int    `json:"expires_in"`
-	SenderToken         string `json:"sender_token"`
-	RequireConfirmation bool   `json:"require_confirmation"`
+	Code        string `json:"code"`
+	ExpiresIn   int    `json:"expires_in"`
+	SenderToken string `json:"sender_token"`
 }
 
 type pipeJoinResponse struct {
-	ConnectionID        string `json:"connection_id"`
-	RequireConfirmation bool   `json:"require_confirmation"`
-	VerifyCode          string `json:"verify_code,omitempty"`
-	Device              string `json:"device,omitempty"`
-	ExpiresIn           int    `json:"expires_in"`
+	ConnectionID string `json:"connection_id"`
+	VerifyCode   string `json:"verify_code"`
+	Device       string `json:"device"`
+	ExpiresIn    int    `json:"expires_in"`
 }
 
 type pipePendingConnection struct {
@@ -92,8 +88,7 @@ type pipePendingConnection struct {
 }
 
 // pipeWaitResponse goes to the sender only. Recipient is the attached
-// receiver's age recipient once Status is "ready"; with confirmation off it is
-// how the sender learns whom to encrypt to.
+// receiver's age recipient once Status is "ready".
 type pipeWaitResponse struct {
 	Status      string                  `json:"status"`
 	Version     uint64                  `json:"version"`
@@ -153,8 +148,6 @@ func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusConflict, "awaiting_decision", "the sender has not picked this device yet")
 	case errors.Is(err, piperelay.ErrNotPending):
 		writeError(w, http.StatusConflict, "not_pending", "connection is no longer waiting")
-	case errors.Is(err, piperelay.ErrConfirmationDisabled):
-		writeError(w, http.StatusConflict, "confirmation_disabled", "session does not require confirmation")
 	case errors.Is(err, piperelay.ErrStreaming):
 		writeError(w, http.StatusConflict, "streaming", "transfer is already streaming")
 	case errors.Is(err, piperelay.ErrNotSelected):
@@ -178,7 +171,7 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The body is optional: an empty body means confirmation off.
+	// The body is optional (empty or {}); unknown fields are still rejected.
 	var body pipeInitRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, pipeInitBodyMax))
 	decoder.DisallowUnknownFields()
@@ -187,9 +180,7 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.pipeCoordinator.Init(r.Context(), piperelay.InitOptions{
-		RequireConfirmation: body.RequireConfirmation,
-	})
+	result, err := s.pipeCoordinator.Init(r.Context())
 	if err != nil {
 		if errors.Is(err, piperelay.ErrCapacityExceeded) {
 			w.Header().Set("Retry-After", "30")
@@ -201,10 +192,9 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, pipeInitResponse{
-		Code:                result.Code,
-		ExpiresIn:           result.ExpiresIn,
-		SenderToken:         result.SenderToken,
-		RequireConfirmation: result.RequireConfirmation,
+		Code:        result.Code,
+		ExpiresIn:   result.ExpiresIn,
+		SenderToken: result.SenderToken,
 	})
 }
 
@@ -262,15 +252,14 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, pipeJoinResponse{
-		ConnectionID:        result.ConnectionID,
-		RequireConfirmation: result.RequireConfirmation,
-		VerifyCode:          result.VerifyCode,
-		Device:              result.Device,
-		ExpiresIn:           result.ExpiresIn,
+		ConnectionID: result.ConnectionID,
+		VerifyCode:   result.VerifyCode,
+		Device:       result.Device,
+		ExpiresIn:    result.ExpiresIn,
 	})
 }
 
-// statusPipe is a waiting receiver's long-poll (confirmation on). It answers
+// statusPipe is a waiting receiver's long-poll. It answers
 // {"status":"selected"} once the sender picked this connection, and the
 // receiver then opens /receive; {"status":"waiting"} after at most
 // pipeWaitMaxHold; or the connection's end as an error (declined,

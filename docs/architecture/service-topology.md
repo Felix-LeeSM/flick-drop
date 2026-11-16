@@ -44,23 +44,18 @@ cut of a proxy such as Cloudflare. The flow:
 
 1. Sender `POST /api/pipe/init` gets the 6-digit code and sender token.
 2. Each receiver `POST /api/pipe/join` with the code and its browser-generated
-   age recipient gets a connection ID (and, with confirmation on, its own
-   3-digit number).
-3. With confirmation on, each receiver long-polls `GET /api/pipe/status` (up to
-   25 seconds per poll) until it is selected, declined, not selected, or the
-   session ends. A receiver with no open `/status` call for 35 seconds
-   (`internal/piperelay/coordinator.go` `defaultPresenceTimeout`) drops out of
-   the room. With confirmation off, the receiver opens `GET /api/pipe/receive`
-   right after `/join`.
+   age recipient gets a connection ID and its own random 3-digit confirmation
+   number.
+3. Each receiver long-polls `GET /api/pipe/status` (up to 25 seconds per poll)
+   until it is selected, declined, not selected, or the session ends. A receiver
+   with no open `/status` call for 35 seconds (`internal/piperelay/coordinator.go`
+   `defaultPresenceTimeout`) drops out of the room.
 4. Sender long-polls `GET /api/pipe/wait?since=N` (up to 25 seconds per poll)
-   for the waiting list (each row carries that receiver's age recipient) or,
-   with confirmation off, for the first receiver (the `ready` answer carries
-   its recipient).
-5. With confirmation on the sender calls `POST /api/pipe/select` or
-   `POST /api/pipe/decline` per connection; `POST /api/pipe/cancel` burns the
-   session before streaming. Only the selected receiver then opens
-   `GET /api/pipe/receive`; it must do so within 35 seconds or the session
-   ends.
+   for the waiting list (each row carries that receiver's age recipient).
+5. Sender calls `POST /api/pipe/select` or `POST /api/pipe/decline` per
+   connection; `POST /api/pipe/cancel` burns the session before streaming. Only
+   the selected receiver then opens `GET /api/pipe/receive`; it must do so
+   within 35 seconds or the session ends.
 6. Sender `POST /api/pipe/send` streams an age file encrypted to the chosen
    receiver's recipient into that receiver's `/receive`.
 

@@ -110,7 +110,7 @@ describe('client API hooks', () => {
 	const errorResponse = (status: number, code: string) =>
 		jsonResponse({ error: { code, message: 'server text' } }, status);
 
-	it('initPipeRendezvous sends the confirmation choice and maps the sender token', async () => {
+	it('initPipeRendezvous opens a session and maps the sender token', async () => {
 		let sentBody = '';
 		const mockFetchSuccess: typeof fetch = (_url, init) => {
 			sentBody = String(init?.body ?? '');
@@ -119,30 +119,28 @@ describe('client API hooks', () => {
 					{
 						code: '123456',
 						expires_in: 180,
-						sender_token: 'tok',
-						require_confirmation: true
+						sender_token: 'tok'
 					},
 					201
 				)
 			);
 		};
 
-		const res = await initPipeRendezvous('http://localhost:8080/', true, mockFetchSuccess);
-		expect(JSON.parse(sentBody)).toEqual({ require_confirmation: true });
+		const res = await initPipeRendezvous('http://localhost:8080/', mockFetchSuccess);
+		expect(JSON.parse(sentBody)).toEqual({});
 		expect(res).toEqual({
 			code: '123456',
 			expiresIn: 180,
-			senderToken: 'tok',
-			requireConfirmation: true
+			senderToken: 'tok'
 		});
 
 		const mockFetch429: typeof fetch = async () => errorResponse(429, 'capacity_exceeded');
-		await expect(initPipeRendezvous('http://localhost:8080', false, mockFetch429)).rejects.toThrow(
+		await expect(initPipeRendezvous('http://localhost:8080', mockFetch429)).rejects.toThrow(
 			'maximum capacity'
 		);
 
 		const mockFetch503: typeof fetch = async () => new Response('Disabled', { status: 503 });
-		await expect(initPipeRendezvous('http://localhost:8080', false, mockFetch503)).rejects.toThrow(
+		await expect(initPipeRendezvous('http://localhost:8080', mockFetch503)).rejects.toThrow(
 			'currently disabled'
 		);
 	});
@@ -157,7 +155,6 @@ describe('client API hooks', () => {
 				jsonResponse(
 					{
 						connection_id: 'conn-1',
-						require_confirmation: true,
 						verify_code: '042',
 						device: 'Safari on iPhone',
 						expires_in: 170
@@ -176,7 +173,6 @@ describe('client API hooks', () => {
 		expect(JSON.parse(observedBody)).toEqual({ recipient: 'age1pq1recipient' });
 		expect(joined).toEqual({
 			connectionId: 'conn-1',
-			requireConfirmation: true,
 			verifyCode: '042',
 			device: 'Safari on iPhone',
 			expiresIn: 170
@@ -308,7 +304,7 @@ describe('client API hooks', () => {
 			]
 		});
 
-		// Given: 확인 없는 모드에서 수신자가 붙으면 ready 응답에 그 수신자의 recipient가 실린다
+		// Given: 수신자를 선택하면 ready 응답에 선택된 수신자의 recipient가 실린다
 		const ready = await waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 4, () =>
 			Promise.resolve(
 				jsonResponse({ status: 'ready', version: 5, recipient: 'age1pq1first', connections: [] })

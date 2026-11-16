@@ -154,7 +154,6 @@ export type PipeInitResult = {
 	code: string;
 	expiresIn: number;
 	senderToken: string;
-	requireConfirmation: boolean;
 };
 
 /**
@@ -163,13 +162,12 @@ export type PipeInitResult = {
  */
 export async function initPipeRendezvous(
 	baseUrl: string,
-	requireConfirmation: boolean,
 	fetcher: typeof fetch = fetch
 ): Promise<PipeInitResult> {
 	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/init`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ require_confirmation: requireConfirmation })
+		body: '{}'
 	});
 	if (!response.ok) {
 		throw await pipeError(response, 'Failed to initialize transfer session');
@@ -179,30 +177,25 @@ export async function initPipeRendezvous(
 		code: string;
 		expires_in: number;
 		sender_token: string;
-		require_confirmation: boolean;
 	};
 	return {
 		code: data.code,
 		expiresIn: data.expires_in,
-		senderToken: data.sender_token,
-		requireConfirmation: data.require_confirmation
+		senderToken: data.sender_token
 	};
 }
 
 export type PipeJoinResult = {
 	connectionId: string;
-	requireConfirmation: boolean;
-	/** Present only when the sender requires confirmation. */
-	verifyCode?: string;
-	device?: string;
+	verifyCode: string;
+	device: string;
 	expiresIn: number;
 };
 
 /**
  * Calls POST /api/pipe/join with the 6-digit code and this device's age
  * recipient (`createPipeReceiverKey`), which the API hands to the sender only.
- * With confirmation on, the server returns this device's own random 3-digit
- * number to read to the sender.
+ * Returns this device's own random 3-digit number to read to the sender.
  */
 export async function joinPipe(
 	baseUrl: string,
@@ -222,14 +215,12 @@ export async function joinPipe(
 	}
 	const data = (await response.json()) as {
 		connection_id: string;
-		require_confirmation: boolean;
-		verify_code?: string;
-		device?: string;
+		verify_code: string;
+		device: string;
 		expires_in: number;
 	};
 	return {
 		connectionId: data.connection_id,
-		requireConfirmation: data.require_confirmation,
 		verifyCode: data.verify_code,
 		device: data.device,
 		expiresIn: data.expires_in
@@ -237,12 +228,11 @@ export async function joinPipe(
 }
 
 /**
- * Long-polls GET /api/pipe/status until the sender picks this connection
- * (confirmation on). Each poll holds at most 25 seconds, so a proxy never sees
- * a silent response, and the open poll is what keeps this device in the
- * sender's list. Resolves once selected (open /receive next); rejects with a
- * PipeRelayError when the device was declined, not chosen, or the session
- * ended.
+ * Long-polls GET /api/pipe/status until the sender picks this connection. Each
+ * poll holds at most 25 seconds, so a proxy never sees a silent response, and
+ * the open poll is what keeps this device in the sender's list. Resolves once
+ * selected (open /receive next); rejects with a PipeRelayError when the device
+ * was declined, not chosen, or the session ended.
  */
 export async function waitForPipeSelection(
 	baseUrl: string,
@@ -494,11 +484,9 @@ export type ReceivePipeResult = {
 };
 
 /**
- * Calls GET /api/pipe/receive on a joined connection. With confirmation on,
- * call it only after `waitForPipeSelection` resolved. Resolves with the live
- * stream once the sender starts (with confirmation off: once this device
- * connected first and the sender started); rejects with a PipeRelayError
- * otherwise.
+ * Calls GET /api/pipe/receive on a joined connection after `waitForPipeSelection`
+ * resolved. Resolves with the live stream once the sender starts; rejects with
+ * a PipeRelayError otherwise.
  */
 export async function receivePipeStream(
 	baseUrl: string,

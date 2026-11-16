@@ -188,8 +188,8 @@ web at `http://localhost:5173` by default (`FLICK_WEB_URL` overrides it) because
 the API echoes CORS for exactly one origin, `FLICK_PUBLIC_BASE_URL`
 (`cmd/flick-api/main.go`, `internal/httpapi/router.go`), which `scripts/dev/up.sh` sets to
 `http://localhost:5173`. It covers
-sender confirmation with one denied device and the `#code=` deep link without
-confirmation.
+sender confirmation with one denied device and the `#code=` deep link joining
+into waiting-room confirmation.
 
 `ManageSecretPage.browser.mjs` extends the mocked browser suite with both access
 models, memory-only recipient handoff, separate copy/share/QR actions, reload,

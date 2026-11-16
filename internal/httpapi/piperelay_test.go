@@ -121,13 +121,9 @@ func (f pipeFixture) status(code, connectionID string) <-chan *httptest.Response
 	return out
 }
 
-func (f pipeFixture) init(requireConfirmation bool) pipeInitResponse {
+func (f pipeFixture) init() pipeInitResponse {
 	f.t.Helper()
-	body := strings.NewReader("")
-	if requireConfirmation {
-		body = strings.NewReader(`{"require_confirmation":true}`)
-	}
-	rec := pipeDo(f.router, http.MethodPost, "/api/pipe/init", map[string]string{"Content-Type": "application/json"}, body)
+	rec := pipeDo(f.router, http.MethodPost, "/api/pipe/init", map[string]string{"Content-Type": "application/json"}, nil)
 	if rec.Code != http.StatusCreated {
 		f.t.Fatalf("init: status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -259,7 +255,7 @@ func TestPipeRelay_Disabled(t *testing.T) {
 	}
 }
 
-func TestPipeRelay_ConfirmationOffFullFlow(t *testing.T) {
+func TestPipeRelay_FullFlowWithFileHeaders(t *testing.T) {
 	f := newPipeFixture(t)
 
 	resp := performJSON(t, f.router, http.MethodGet, "/api/config", nil)
@@ -269,23 +265,26 @@ func TestPipeRelay_ConfirmationOffFullFlow(t *testing.T) {
 		t.Fatalf("pipe_relay_enabled = false, want true")
 	}
 
-	init := f.init(false)
-	if len(init.Code) != 6 || init.SenderToken == "" || init.RequireConfirmation {
+	init := f.init()
+	if len(init.Code) != 6 || init.SenderToken == "" {
 		t.Fatalf("init = %+v", init)
 	}
 
 	join := f.mustJoin(init.Code, uaChromeWindows)
-	if join.VerifyCode != "" || join.Device != "" || join.RequireConfirmation {
-		t.Fatalf("confirmation-off join leaked verification fields: %+v", join)
+	if len(join.VerifyCode) != 3 || join.Device != "Chrome on Windows" {
+		t.Fatalf("join missing verification fields: %+v", join)
 	}
-	if w := f.waitFor(init, func(pipeWaitResponse) bool { return true }); w.Status != "waiting" || w.Recipient != "" {
-		t.Fatalf("wait before any receiver attached = %+v, want no recipient", w)
+	wait := f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
+	if wait.Status != "waiting" || wait.Recipient != "" {
+		t.Fatalf("wait before selection = %+v, want waiting with no recipient", wait)
+	}
+	if rec := f.senderCall("/api/pipe/select", init, join.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("select: %d %s", rec.Code, rec.Body.String())
 	}
 	received := f.receive(init.Code, join.ConnectionID)
-	// 확인 없는 모드에서 송신자는 ready 응답의 recipient로 누구에게 암호화할지 안다.
 	ready := f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
 	if ready.Recipient != pipeTestRecipient(uaChromeWindows) {
-		t.Fatalf("ready recipient = %q, want the attached receiver's", ready.Recipient)
+		t.Fatalf("ready recipient = %q, want the selected receiver's", ready.Recipient)
 	}
 
 	payload := bytes.Repeat([]byte("Real-time live pipe streaming payload 1234567890\n"), 1024) // ~48 KiB
@@ -312,18 +311,21 @@ func TestPipeRelay_ConfirmationOffFullFlow(t *testing.T) {
 	}
 }
 
-func TestPipeRelay_ConfirmationOffLateConnectorsGet409WithoutBurning(t *testing.T) {
+func TestPipeRelay_LateConnectorsGet409WithoutBurning(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(false)
+	init := f.init()
 
 	first := f.mustJoin(init.Code, uaChromeWindows)
 	second := f.mustJoin(init.Code, uaSafariIPhone)
+	if rec := f.senderCall("/api/pipe/select", init, first.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("select: %d %s", rec.Code, rec.Body.String())
+	}
 	received := f.receive(init.Code, first.ConnectionID)
 	f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
 
-	// 첫 연결이 이긴 뒤 늦게 온 연결은 몇 번이 와도 409만 받고 세션을 태우지 않는다.
+	// 첫 연결이 선택된 뒤 미선택·늦은 연결은 몇 번이 와도 세션을 태우지 않는다.
 	lost := awaitRecorder(t, f.receive(init.Code, second.ConnectionID))
-	if lost.Code != http.StatusConflict || pipeErrorCode(t, lost) != "already_connected" {
+	if lost.Code != http.StatusGone || pipeErrorCode(t, lost) != "not_selected" {
 		t.Fatalf("losing receiver: %d %s", lost.Code, lost.Body.String())
 	}
 	for i := 0; i < 5; i++ {
@@ -333,20 +335,17 @@ func TestPipeRelay_ConfirmationOffLateConnectorsGet409WithoutBurning(t *testing.
 		}
 	}
 
-	if rec := f.send(init, []byte("first wins")); rec.Code != http.StatusOK {
+	if rec := f.send(init, []byte("chosen wins")); rec.Code != http.StatusOK {
 		t.Fatalf("send after late connectors: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := awaitRecorder(t, received); rec.Code != http.StatusOK || rec.Body.String() != "first wins" {
+	if rec := awaitRecorder(t, received); rec.Code != http.StatusOK || rec.Body.String() != "chosen wins" {
 		t.Fatalf("winner: %d %q", rec.Code, rec.Body.String())
 	}
 }
 
 func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
-	if !init.RequireConfirmation {
-		t.Fatalf("init did not record require_confirmation: %+v", init)
-	}
+	init := f.init()
 
 	agents := []string{uaChromeWindows, uaSafariIPhone, uaFirefoxLinux}
 	var joins []pipeJoinResponse
@@ -419,7 +418,7 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 
 func TestPipeRelay_SelectOfAConnectionThatLeftIs409NotPending(t *testing.T) {
 	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{TTL: 5 * time.Second, PresenceTimeout: 50 * time.Millisecond}, 100)
-	init := f.init(true)
+	init := f.init()
 	left := f.mustJoin(init.Code, uaChromeWindows)
 
 	// /status를 한 번도 열지 않은 연결은 presence 시간이 지나면 목록에서 빠진다.
@@ -440,7 +439,7 @@ func TestPipeRelay_SelectOfAConnectionThatLeftIs409NotPending(t *testing.T) {
 
 func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 
 	// 같은 /64 안의 서로 다른 주소 세 개, User-Agent도 서로 다르다.
 	agents := []string{uaChromeWindows, uaSafariIPhone, uaFirefoxLinux}
@@ -474,7 +473,7 @@ func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testin
 
 func TestPipeRelay_StatusCapsConcurrentPollsAndRateLimitsPerNetwork(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 	join := f.mustJoin(init.Code, uaChromeWindows)
 
 	// 한 연결 ID의 동시 롱폴은 piperelay.MaxStatusPollsPerConnection(2)개까지다.
@@ -546,7 +545,7 @@ func TestPipeRelay_JoinRateLimitSharesOneBucketPerIPv6Slash64AndAcrossPrefixes(t
 
 func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 
 	denied := f.mustJoin(init.Code, uaChromeWindows)
 	deniedStatus := f.status(init.Code, denied.ConnectionID)
@@ -577,7 +576,7 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 
 func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 
 	for i := 0; i < piperelay.MaxPendingConnections; i++ {
 		if rec := f.joinFrom("/api/pipe/join", init.Code, uaChromeWindows, joinAddr(i)); rec.Code != http.StatusCreated {
@@ -596,7 +595,7 @@ func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 
 func TestPipeRelay_SenderCallsNeedTheSenderToken(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 	join := f.mustJoin(init.Code, uaChromeWindows)
 
 	forged := pipeInitResponse{Code: init.Code, SenderToken: "forged"}
@@ -650,7 +649,7 @@ func TestPipeRelay_InvalidAndMissingCodes(t *testing.T) {
 	if rec := f.join("999999", uaChromeWindows); rec.Code != http.StatusNotFound {
 		t.Fatalf("non-existent code: status = %d, want 404", rec.Code)
 	}
-	init := f.init(true)
+	init := f.init()
 	if rec := awaitRecorder(t, f.receive(init.Code, "guessed-connection-id")); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown connection id: status = %d, want 404", rec.Code)
 	}
@@ -658,11 +657,19 @@ func TestPipeRelay_InvalidAndMissingCodes(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("init with unknown field: status = %d, want 400", bad.Code)
 	}
+	legacy := pipeDo(f.router, http.MethodPost, "/api/pipe/init", nil, strings.NewReader(`{"require_confirmation":false}`))
+	if legacy.Code != http.StatusBadRequest {
+		t.Fatalf("init with removed require_confirmation field: status = %d, want 400", legacy.Code)
+	}
+	emptyJSON := pipeDo(f.router, http.MethodPost, "/api/pipe/init", map[string]string{"Content-Type": "application/json"}, strings.NewReader(`{}`))
+	if emptyJSON.Code != http.StatusCreated {
+		t.Fatalf("init with empty JSON object: status = %d, want 201", emptyJSON.Code)
+	}
 }
 
 func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 	f := newPipeFixture(t)
-	init := f.init(true)
+	init := f.init()
 
 	valid := pipeTestRecipient("")
 	bodies := map[string]string{

@@ -793,7 +793,7 @@ test('Generate fills a revealed passphrase that never reaches the API', async ()
 	}
 });
 
-test('protection rows explain themselves through the info popovers', async () => {
+test('passphrase row explains itself through the info popover', async () => {
 	const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
 	try {
 		await fixture(page);
@@ -805,26 +805,12 @@ test('protection rows explain themselves through the info popovers', async () =>
 			() => getComputedStyle(document.querySelector('#passphrase-privacy')).visibility === 'visible'
 		);
 
-		// Switching to the code tab swaps in the confirmation procedure.
+		// Switching to the code tab has no confirmation toggle because confirmation is always on.
 		await page
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Send with code' })
 			.click();
-		const confirmPopover = page.locator('#confirmation-procedure');
-		assert.equal(
-			await confirmPopover.evaluate((node) => getComputedStyle(node).visibility),
-			'hidden'
-		);
-		// Hovering the info button shows it; the popover lives outside the label, so
-		// clicking its text cannot toggle the switch.
-		await page.getByRole('button', { name: 'How confirmation works' }).hover();
-		await confirmPopover.getByText('Your receiver reads their number to you.').click();
-		assert.equal(
-			await page
-				.getByRole('switch', { name: 'Require confirmation before transfer' })
-				.getAttribute('data-state'),
-			'unchecked'
-		);
+		assert.equal(await page.locator('#confirmation-procedure').count(), 0);
 	} finally {
 		await page.close();
 	}

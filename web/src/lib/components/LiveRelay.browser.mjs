@@ -105,7 +105,6 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 					headers: corsHeaders,
 					json: {
 						connection_id: 'conn-1',
-						require_confirmation: true,
 						verify_code: '042',
 						device: 'Chrome on Linux',
 						expires_in: 170
@@ -200,7 +199,7 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 	}
 });
 
-test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OFF', async () => {
+test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF', async () => {
 	const page = await browser.newPage();
 	try {
 		await routeApi(page, (_path, route) => route.continue());
@@ -214,7 +213,6 @@ test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OF
 		// The link tab's CTA stays disabled until there is something to send.
 		assert.equal(await createSubmit.isDisabled(), true);
 
-		// Both protection switches ship OFF — each tab owns one.
 		const passphraseSwitch = page.getByRole('switch', {
 			name: 'Protect with an additional passphrase'
 		});
@@ -222,22 +220,17 @@ test('CreateSecretPage: tab CTAs gate on payload and protection switches ship OF
 
 		await tabs.getByRole('button', { name: 'Send with code' }).click();
 		const startPipe = page.getByRole('button', { name: 'Start live transfer' });
-		const confirmSwitch = page.getByRole('switch', {
-			name: 'Require confirmation before transfer'
-		});
-		assert.equal(await confirmSwitch.getAttribute('data-state'), 'unchecked');
+		assert.equal(
+			await page.getByRole('switch', { name: 'Require confirmation before transfer' }).count(),
+			0
+		);
 		assert.equal(await startPipe.isDisabled(), true);
 
 		// Typing a message enables the tab's CTA.
 		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
 		assert.equal(await startPipe.isDisabled(), false);
 
-		// The confirmation switch alone does not block the CTA.
-		await confirmSwitch.click();
-		assert.equal(await confirmSwitch.getAttribute('data-state'), 'checked');
-		assert.equal(await startPipe.isDisabled(), false);
-
-		// Back on the link tab, the passphrase switch does block the CTA until a
+		// On the link tab, the passphrase switch blocks the CTA until a
 		// passphrase exists.
 		await tabs.getByRole('button', { name: 'Create link' }).click();
 		assert.equal(await createSubmit.isDisabled(), false);
@@ -343,8 +336,7 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 					json: {
 						code: '741928',
 						expires_in: 180,
-						sender_token: 'tok',
-						require_confirmation: true
+						sender_token: 'tok'
 					}
 				});
 			}
@@ -379,7 +371,6 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Send with code' })
 			.click();
-		await page.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 		await page.getByRole('button', { name: 'Start live transfer' }).click();
 
 		// The 6-digit code stays on screen above the list.
@@ -467,7 +458,6 @@ function createRelayMock() {
 			headers: corsHeaders,
 			json: {
 				connection_id: id,
-				require_confirmation: true,
 				verify_code: connection.number,
 				device: connection.device,
 				expires_in: 170
@@ -571,8 +561,7 @@ function createRelayMock() {
 					json: {
 						code: '741928',
 						expires_in: 180,
-						sender_token: 'tok',
-						require_confirmation: true
+						sender_token: 'tok'
 					}
 				});
 			case '/api/pipe/join':
@@ -636,7 +625,6 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Send with code' })
 			.click();
-		await sender.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 		await sender.getByRole('button', { name: 'Start live transfer' }).click();
 		await sender.getByLabel('Transfer code 741-928').waitFor();
 
@@ -731,8 +719,7 @@ function fulfillConfirmedInit(route) {
 		json: {
 			code: '741928',
 			expires_in: 180,
-			sender_token: 'tok',
-			require_confirmation: true
+			sender_token: 'tok'
 		}
 	});
 }
@@ -745,7 +732,6 @@ async function startConfirmedSender(page) {
 		.getByRole('group', { name: 'Delivery method' })
 		.getByRole('button', { name: 'Send with code' })
 		.click();
-	await page.getByRole('switch', { name: 'Require confirmation before transfer' }).click();
 	await page.getByRole('button', { name: 'Start live transfer' }).click();
 }
 
@@ -928,7 +914,6 @@ test('Receiver: a connection dropped while waiting says so and lets the same cod
 					headers: corsHeaders,
 					json: {
 						connection_id: `conn-${joins}`,
-						require_confirmation: true,
 						verify_code: '042',
 						device: 'Chrome on Linux',
 						expires_in: 170

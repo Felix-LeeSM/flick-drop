@@ -41,8 +41,6 @@ type Props = {
 	progressPercent?: number;
 	completed?: boolean;
 	failed?: boolean;
-	/** Confirmation on: receivers wait in a list until the sender picks one. */
-	requireConfirmation?: boolean;
 	pending?: PendingReceiver[];
 	onSend?: (connectionId: string) => void;
 	onDeny?: (connectionId: string) => void;
@@ -60,7 +58,6 @@ let {
 	progressPercent = 0,
 	completed = false,
 	failed = false,
-	requireConfirmation = false,
 	pending = [],
 	onSend = () => undefined,
 	onDeny = () => undefined
@@ -255,12 +252,10 @@ let directReceiveUrl = $derived(
 			</div>
 		</div>
 
-		{#if requireConfirmation}
-			<!-- Below the 6-digit code, which stays the most prominent element. -->
-			<div class="rounded-2xl border border-border bg-muted/20 p-3">
-				<PipePendingList {pending} capacity={PIPE_ROOM_CAPACITY} {now} {onSend} {onDeny} />
-			</div>
-		{/if}
+		<!-- Below the 6-digit code, which stays the most prominent element. -->
+		<div class="rounded-2xl border border-border bg-muted/20 p-3">
+			<PipePendingList {pending} capacity={PIPE_ROOM_CAPACITY} {now} {onSend} {onDeny} />
+		</div>
 
 		<!-- P2 stage stepper: where the transfer stands; the thin bar moves
 		     only while bytes stream (the sender's driver reports 25/50/100). -->
