@@ -334,8 +334,13 @@ The M15 port (issues #421, #422) fixes these rules for every store:
   catalog updates.
 - Insert identity uses `INSERT ... RETURNING id`; `LastInsertId` is never
   used (`internal/worker/store.go:ReceiptStore.Start`).
-- Worker job-lease acquisition and renewal use
-  `INSERT ... ON CONFLICT (job_id) DO UPDATE` plus `FOR UPDATE` reads.
+- Worker job-lease acquisition is one conditional upsert
+  (`internal/worker/store.go:Start`): `INSERT ... ON CONFLICT (job_id) DO
+  UPDATE ... WHERE` that matches kind, excludes terminal states, requires an
+  expired lease, and counts the failure budget — refused claims re-read the
+  row to classify (`succeeded`/`dead`/live-lease/over-budget). Under
+  `READ COMMITTED` Postgres re-evaluates the `WHERE` after row-lock waits, so
+  concurrent starts can never both pass a stale snapshot check.
 - Multi-replica claims use `FOR UPDATE SKIP LOCKED`: the outbox publisher
   (`internal/events/outbox.go:ListDue`), the secret reaper
   (`internal/secrets/reaper.go:claimReclaimableSQL`), and the request purge

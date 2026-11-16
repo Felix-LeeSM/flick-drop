@@ -77,6 +77,12 @@ func (s *ReceiptStore) SetNowForTest(now func() time.Time) {
 	s.now = now
 }
 
+// leaseInterval renders ProcessingLease as a Postgres interval literal so the
+// claim SQL and the Go constant cannot drift apart.
+func leaseInterval() string {
+	return fmt.Sprintf("%d seconds", int(ProcessingLease/time.Second))
+}
+
 func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON string, maxFailures int) (StartResult, error) {
 	if jobID == "" || kind == "" || payloadJSON == "" || maxFailures < 1 {
 		return StartResult{}, ErrInvalidJob
@@ -88,70 +94,87 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 	}
 	defer rollback(tx)
 
-	created := false
-	receipt, err := loadReceipt(ctx, tx, jobID)
-	if errors.Is(err, ErrNotFound) {
-		created = true
-		now := s.now().UTC()
-		receipt = Receipt{
-			JobID:       jobID,
-			Kind:        kind,
-			State:       StateProcessing,
-			Attempts:    0,
-			FirstSeenAt: now,
-			UpdatedAt:   now,
-		}
-		if _, err := tx.ExecContext(ctx, `insert into job_receipts (
-			job_id, kind, state, attempts, first_seen_at, updated_at
-		) values ($1, $2, $3, 0, $4, $5)`,
-			receipt.JobID,
-			receipt.Kind,
-			receipt.State,
-			receipt.FirstSeenAt,
-			receipt.UpdatedAt,
-		); err != nil {
-			return StartResult{}, fmt.Errorf("insert job receipt: %w", err)
-		}
-	} else if err != nil {
-		return StartResult{}, err
-	}
-
-	if receipt.Kind != kind {
-		return StartResult{}, ErrInvalidJob
-	}
-	if receipt.State == StateSucceeded {
-		if err := tx.Commit(); err != nil {
-			return StartResult{}, fmt.Errorf("commit duplicate succeeded job: %w", err)
-		}
-		return StartResult{AlreadySucceeded: true}, nil
-	}
-	if receipt.State == StateDead {
-		return StartResult{}, ErrJobDead
-	}
 	now := s.now().UTC()
-	if !created && receipt.State == StateProcessing {
-		if now.Before(receipt.UpdatedAt.Add(ProcessingLease)) {
+	// Atomic lease claim: one conditional upsert either inserts a fresh
+	// receipt (attempt 1) or takes the lease from an eligible one — kind
+	// matches, not terminal, lease expired, failure budget left. Under
+	// READ COMMITTED, Postgres re-evaluates the WHERE after any row-lock
+	// wait against the refreshed row (EvalPlanQual), so a concurrent start
+	// either wins the claim or is refused: two starts can never both pass
+	// a stale snapshot check the way read-then-write would allow.
+	var attempts int
+	err = tx.QueryRowContext(ctx, `insert into job_receipts (
+		job_id, kind, state, attempts, first_seen_at, updated_at
+	) values ($1, $2, $3, 1, $4, $4)
+	on conflict (job_id) do update set
+		state = $3,
+		attempts = job_receipts.attempts + 1,
+		updated_at = $4,
+		last_error = null
+	where job_receipts.kind = $2
+		and job_receipts.state <> $5
+		and job_receipts.state <> $6
+		and (job_receipts.state <> $3 or job_receipts.updated_at + $7::interval <= $4)
+		and (
+			select count(*) from job_attempts prior
+			where prior.job_id = job_receipts.job_id
+				and prior.result = $8
+				and prior.error is not null
+		) < $9
+	returning attempts`,
+		jobID,
+		kind,
+		StateProcessing,
+		now,
+		StateSucceeded,
+		StateDead,
+		leaseInterval(),
+		AttemptFailed,
+		maxFailures,
+	).Scan(&attempts)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		// Claim refused: classify exactly like the pre-claim checks did —
+		// kind, terminal states, live lease, then the over-budget transition.
+		receipt, loadErr := loadReceipt(ctx, tx, jobID)
+		if loadErr != nil {
+			return StartResult{}, loadErr
+		}
+		if receipt.Kind != kind {
+			return StartResult{}, ErrInvalidJob
+		}
+		if receipt.State == StateSucceeded {
+			if err := tx.Commit(); err != nil {
+				return StartResult{}, fmt.Errorf("commit duplicate succeeded job: %w", err)
+			}
+			return StartResult{AlreadySucceeded: true}, nil
+		}
+		if receipt.State == StateDead {
+			return StartResult{}, ErrJobDead
+		}
+		if receipt.State == StateProcessing && now.Before(receipt.UpdatedAt.Add(ProcessingLease)) {
+			// A live lease holds the job; wait for its expiry like before.
 			return StartResult{}, ErrJobProcessing
 		}
-		// A lease expiry says nothing about the side effect. Retain the attempt
-		// as interrupted (failed with no error), then replay the idempotent job.
-		// Interruptions do not spend the handler's failure budget.
+		// Reaching here means the refusal was over-budget (a failed receipt,
+		// or an expired processing lease whose budget ran out) — finish the
+		// dead-letter transition without claiming another attempt. The
+		// interrupted-attempt marking rides along exactly like the pre-claim
+		// code did; it is a no-op for a failed receipt with nothing running.
 		if _, err := tx.ExecContext(ctx, `update job_attempts
 			set result = $1, finished_at = $2, error = null
 			where job_id = $3 and result = $4`,
 			AttemptFailed, now, jobID, AttemptRunning); err != nil {
 			return StartResult{}, fmt.Errorf("recover interrupted attempt: %w", err)
 		}
-	}
-
-	if !created {
-		failures, err := failureCount(ctx, tx, jobID)
-		if err != nil {
-			return StartResult{}, err
+		failures, countErr := failureCount(ctx, tx, jobID)
+		if countErr != nil {
+			return StartResult{}, countErr
 		}
 		if failures >= maxFailures {
-			// Older workers could commit the final failure before its dead letter.
-			// Finish that transition without claiming another handler attempt.
+			// Older workers could commit the final failure before its dead
+			// letter. Finish that transition without claiming another
+			// handler attempt.
 			var lastError string
 			if err := tx.QueryRowContext(ctx, `select error from job_attempts
 				where job_id = $1 and result = $2 and error is not null
@@ -166,24 +189,25 @@ func (s *ReceiptStore) Start(ctx context.Context, jobID, kind, payloadJSON strin
 			}
 			return StartResult{}, ErrJobDead
 		}
+		return StartResult{}, ErrJobProcessing
 	}
-
-	attemptNumber := receipt.Attempts + 1
-	result, err := tx.ExecContext(ctx, `update job_receipts
-		set state = $1, attempts = $2, updated_at = $3, last_error = null
-		where job_id = $4`,
-		StateProcessing,
-		attemptNumber,
-		now,
-		jobID,
-	)
 	if err != nil {
-		return StartResult{}, fmt.Errorf("update job receipt for attempt: %w", err)
-	}
-	if err := requireAffected(result); err != nil {
-		return StartResult{}, err
+		return StartResult{}, fmt.Errorf("claim job lease: %w", err)
 	}
 
+	// A lease expiry says nothing about the side effect. Retain any running
+	// attempt as interrupted (failed with no error), then replay the
+	// idempotent job. Interruptions do not spend the handler's failure
+	// budget; the update is a no-op when the claimed receipt had no running
+	// attempt (fresh insert or a previously failed receipt).
+	if _, err := tx.ExecContext(ctx, `update job_attempts
+		set result = $1, finished_at = $2, error = null
+		where job_id = $3 and result = $4`,
+		AttemptFailed, now, jobID, AttemptRunning); err != nil {
+		return StartResult{}, fmt.Errorf("recover interrupted attempt: %w", err)
+	}
+
+	attemptNumber := attempts
 	var attemptID int64
 	// RETURNING id replaces the SQLite LastInsertId: Postgres returns the
 	// identity value inside the same insert statement.
