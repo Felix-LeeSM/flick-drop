@@ -1,5 +1,11 @@
 name: Review Gate
 
+# 2026-11-16: every pull_request_target run began failing with startup_failure
+# before any job started, while pull_request (CI) events kept passing and this
+# file was unchanged on main — the "stuck workflow file" state reported in
+# GitHub community discussion 211346. A content-only change forces Actions to
+# re-index the file, which restored normal runs. Keep the comment when editing;
+# it explains a diff that is otherwise a no-op.
 on:
   pull_request_target:
     types:
