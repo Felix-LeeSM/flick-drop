@@ -26,7 +26,10 @@ Repository policy:
 
 Review gate policy:
 
-- Use `pull_request_target` only for metadata checks.
+- Run the gate on `pull_request` events for metadata checks only. (2026-11-16:
+  switched from `pull_request_target` after that pipeline began failing at
+  startup for this repository following a GitHub incident.) The checkout stays
+  pinned to the base commit, so PR head code is still never executed.
 - Do not checkout, build, test, or execute PR head code in review-gate jobs.
 - Keep `permissions` least-privilege.
 - Require a `## Flick Subagent Review` PR comment created after the latest

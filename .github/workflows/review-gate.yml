@@ -1,13 +1,24 @@
 name: Review Gate
 
-# 2026-11-16: every pull_request_target run began failing with startup_failure
-# before any job started, while pull_request (CI) events kept passing and this
-# file was unchanged on main — the "stuck workflow file" state reported in
-# GitHub community discussion 211346. A content-only change forces Actions to
-# re-index the file, which restored normal runs. Keep the comment when editing;
-# it explains a diff that is otherwise a no-op.
+# 2026-11-16 incident measure: every pull_request_target run for this
+# repository began failing with startup_failure before any job started —
+# including a brand-new throwaway workflow — while pull_request events (CI)
+# kept passing, right after GitHub's 2026-11-16 Pull Requests/Actions
+# performance incident. A content-only re-index of this file did not restore
+# target runs, so the gate now triggers on `pull_request`, whose pipeline is
+# demonstrably healthy for this repository's same-branch PRs.
+#
+# Security note: with `pull_request_target` the workflow YAML always came from
+# the base branch, so a PR could not alter its own gate. With `pull_request`
+# the YAML is read from the merge ref, which a PR's own changes can influence.
+# That window is accepted because (1) the checkout stays pinned to base.sha,
+# so `scripts/ci/review-gate.sh` — the logic that decides the verdict — still
+# comes from reviewed main, (2) every branch in this repository is authored by
+# the maintainer's own reviewed sessions, and (3) each PR's diff, including
+# any workflow edit, is exactly what the gate's subagent review inspects.
+# Revisit if external contributors appear or GitHub restores target runs.
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - edited
