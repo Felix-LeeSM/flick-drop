@@ -177,12 +177,12 @@ func decided(t *testing.T, ch <-chan error) error {
 	}
 }
 
-func TestCoordinator_LifecycleConfirmationOff(t *testing.T) {
+func TestCoordinator_Lifecycle(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{MaxConcurrent: 10})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	init, err := coord.Init(ctx, InitOptions{})
+	init, err := coord.Init(ctx)
 	if err != nil {
 		t.Fatalf("Init() failed: %v", err)
 	}
@@ -190,25 +190,24 @@ func TestCoordinator_LifecycleConfirmationOff(t *testing.T) {
 		t.Fatalf("Init() invalid output: %+v", init)
 	}
 
-	if _, err := coord.Join(init.Code, client(2)); err != nil {
-		t.Fatalf("Join of a device that never opens Receive: %v", err)
+	if snap := waitUntil(t, coord, init, func(WaitSnapshot) bool { return true }); snap.ReceiverReady || snap.Recipient != "" || len(snap.Pending) != 0 {
+		t.Fatalf("snapshot before any receiver = %+v, want empty waiting room", snap)
 	}
 	join, err := coord.Join(init.Code, JoinClient{Device: "Chrome on Windows", Recipient: recipientOf(1), Key: clientKey(1)})
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}
-	if join.VerifyCode != "" || join.Device != "" || join.RequireConfirmation {
-		t.Fatalf("confirmation-off join leaked verification fields: %+v", join)
+	if len(join.VerifyCode) != 3 || join.Device != "Chrome on Windows" {
+		t.Fatalf("unexpected join metadata: %+v", join)
 	}
-	if snap := waitUntil(t, coord, init, func(WaitSnapshot) bool { return true }); snap.ReceiverReady || snap.Recipient != "" || len(snap.Pending) != 0 {
-		t.Fatalf("snapshot before any Receive = %+v, want no recipient and no pending list", snap)
+	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		t.Fatalf("Select: %v", err)
 	}
 	received := startReceive(ctx, coord, init.Code, join.ConnectionID)
 
-	// 확인 없는 모드에서 송신자는 먼저 Receive를 연 기기의 수신자만 알게 된다.
 	ready := waitUntil(t, coord, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
 	if ready.Recipient != recipientOf(1) {
-		t.Fatalf("ready snapshot recipient = %q, want the attached receiver's %q", ready.Recipient, recipientOf(1))
+		t.Fatalf("ready snapshot recipient = %q, want the selected receiver's %q", ready.Recipient, recipientOf(1))
 	}
 
 	payload := bytes.Repeat([]byte("Flick live relay streaming data chunk! 1234567890\n"), 4096) // ~200 KiB
@@ -231,11 +230,11 @@ func TestCoordinator_CapacityLimit(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{MaxConcurrent: 2})
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
-		if _, err := coord.Init(ctx, InitOptions{}); err != nil {
+		if _, err := coord.Init(ctx); err != nil {
 			t.Fatalf("Init %d failed: %v", i+1, err)
 		}
 	}
-	if _, err := coord.Init(ctx, InitOptions{}); err != ErrCapacityExceeded {
+	if _, err := coord.Init(ctx); err != ErrCapacityExceeded {
 		t.Fatalf("Init 3 expected ErrCapacityExceeded, got: %v", err)
 	}
 }
@@ -243,7 +242,7 @@ func TestCoordinator_CapacityLimit(t *testing.T) {
 func TestCoordinator_TTL_Expiry(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{TTL: 50 * time.Millisecond, CleanInterval: 20 * time.Millisecond})
 	ctx := context.Background()
-	init, err := coord.Init(ctx, InitOptions{})
+	init, err := coord.Init(ctx)
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
@@ -259,7 +258,7 @@ func TestCoordinator_TTL_Expiry(t *testing.T) {
 func TestCoordinator_JoinAndSelectAfterExpiryAreRejected(t *testing.T) {
 	// 청소기가 돌기 전(만료 직후)에도 창이 닫힌 세션에는 들어가거나 고를 수 없다.
 	coord := newTestCoordinator(t, CoordinatorOptions{TTL: 50 * time.Millisecond, CleanInterval: time.Hour})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 	join, err := coord.Join(init.Code, client(1))
 	if err != nil {
 		t.Fatalf("Join before expiry: %v", err)
@@ -277,7 +276,7 @@ func TestCoordinator_JoinAndSelectAfterExpiryAreRejected(t *testing.T) {
 func TestCoordinator_SenderTokenRequired(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx := context.Background()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(init.Code, client(1))
 
 	// 6자리 코드만 아는 사람은 송신자 행동을 할 수 없고, 응답은 없는 코드와 같다.
@@ -300,7 +299,7 @@ func TestCoordinator_SenderTokenRequired(t *testing.T) {
 
 func TestCoordinator_VerifyCodesArePerConnectionAndDistinct(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 
 	seen := map[string]bool{}
 	for i := 0; i < MaxPendingConnections; i++ {
@@ -315,7 +314,7 @@ func TestCoordinator_VerifyCodesArePerConnectionAndDistinct(t *testing.T) {
 			t.Fatalf("verify code %q repeated within one session", join.VerifyCode)
 		}
 		seen[join.VerifyCode] = true
-		if join.Device != "Safari on iPhone" || !join.RequireConfirmation {
+		if join.Device != "Safari on iPhone" {
 			t.Fatalf("join result = %+v", join)
 		}
 	}
@@ -335,7 +334,7 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 
 	var joins []JoinResult
 	var polls []<-chan error
@@ -383,7 +382,7 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 func TestCoordinator_ReceiveBeforeSelectionIsRejected(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx := context.Background()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(init.Code, client(1))
 
 	// 대기 중인 연결은 /receive를 붙잡아 둘 수 없다: 선택될 때까지 Status로 기다린다.
@@ -401,7 +400,7 @@ func TestCoordinator_PollingReceiverOutlastsTheProxyIdleLimit(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(init.Code, client(1))
 	poll := pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 30*time.Millisecond)
 
@@ -426,7 +425,7 @@ func TestCoordinator_PollingReceiverOutlastsTheProxyIdleLimit(t *testing.T) {
 
 func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: time.Hour})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 
 	var ghosts []JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
@@ -464,7 +463,7 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 
 func TestCoordinator_ChosenConnectionThatNeverReceivesEndsTheSession(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 	join, _ := coord.Join(init.Code, client(1))
 	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
@@ -484,7 +483,7 @@ func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *
 	for _, sendFirst := range []bool{false, true} {
 		coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: time.Hour})
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+		init, _ := coord.Init(ctx)
 		join, _ := coord.Join(init.Code, client(1))
 
 		sendDone := make(chan error, 1)
@@ -529,7 +528,7 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(init.Code, client(1))
 
 	held := make(chan error, MaxStatusPollsPerConnection)
@@ -560,7 +559,7 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 
 func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 	sameNetwork := func(n byte) JoinClient {
 		return JoinClient{Device: "d", Key: clientKey(n), Network: clientNetwork(7)}
 	}
@@ -597,7 +596,7 @@ func TestCoordinator_DeclineFreesSlotWithoutBurning(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 
 	var first JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
@@ -631,7 +630,7 @@ func TestCoordinator_DeclineFreesSlotWithoutBurning(t *testing.T) {
 
 func TestCoordinator_DeclinedClientCannotRejoin(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 
 	denied, _ := coord.Join(init.Code, client(1))
 	if err := coord.Decline(init.Code, init.SenderToken, denied.ConnectionID); err != nil {
@@ -652,7 +651,7 @@ func TestCoordinator_RoomFullRejectsWithoutBurning(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 
 	var last JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
@@ -684,19 +683,22 @@ func TestCoordinator_RoomFullRejectsWithoutBurning(t *testing.T) {
 	}
 }
 
-func TestCoordinator_ConfirmationOffFirstWinsAndLateConnectorsNeverBurn(t *testing.T) {
+func TestCoordinator_SelectedLocksOutLateJoinersWithoutBurning(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{})
+	init, _ := coord.Init(ctx)
 
 	first, _ := coord.Join(init.Code, client(1))
 	second, _ := coord.Join(init.Code, client(2))
+	if err := coord.Select(init.Code, init.SenderToken, first.ConnectionID); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
 	winner := startReceive(ctx, coord, init.Code, first.ConnectionID)
 	waitUntil(t, coord, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
 
-	if got := recv(t, startReceive(ctx, coord, init.Code, second.ConnectionID)); got.err != ErrAlreadyConnected {
-		t.Fatalf("second receiver: %v, want ErrAlreadyConnected", got.err)
+	if got := recv(t, startReceive(ctx, coord, init.Code, second.ConnectionID)); got.err != ErrNotSelected {
+		t.Fatalf("second receiver: %v, want ErrNotSelected", got.err)
 	}
 	// 예전에는 늦은 연결 3번이 세션을 태웠다. 이제 몇 번이 와도 세션과 전송은 그대로다.
 	for i := 0; i < 5; i++ {
@@ -704,23 +706,20 @@ func TestCoordinator_ConfirmationOffFirstWinsAndLateConnectorsNeverBurn(t *testi
 			t.Fatalf("late join %d: %v", i, err)
 		}
 	}
-	if err := coord.Select(init.Code, init.SenderToken, second.ConnectionID); err != ErrConfirmationDisabled {
-		t.Fatalf("Select with confirmation off: %v", err)
+	if _, err := coord.Status(ctx, init.Code, second.ConnectionID, time.Millisecond); err != ErrNotSelected {
+		t.Fatalf("Status of the losing connection: %v, want ErrNotSelected", err)
 	}
-	if _, err := coord.Status(ctx, init.Code, second.ConnectionID, time.Millisecond); err != ErrAlreadyConnected {
-		t.Fatalf("Status of the losing connection: %v, want ErrAlreadyConnected", err)
-	}
-	if _, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, strings.NewReader("first wins")); err != nil {
+	if _, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, strings.NewReader("chosen wins")); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if got := recv(t, winner); string(got.body) != "first wins" {
+	if got := recv(t, winner); string(got.body) != "chosen wins" {
 		t.Fatalf("winner: %+v", got)
 	}
 }
 
 func TestCoordinator_PendingReceiverStoppingPollsFreesSlot(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
-	init, _ := coord.Init(context.Background(), InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(context.Background())
 
 	join, _ := coord.Join(init.Code, client(1))
 	pollCtx, stopPolling := context.WithCancel(context.Background())
@@ -741,7 +740,7 @@ func TestCoordinator_BurnsNeverCutAnActiveStream(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{TTL: 100 * time.Millisecond, CleanInterval: 20 * time.Millisecond})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 
 	join, _ := coord.Join(init.Code, client(1))
 	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
@@ -788,8 +787,11 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 	cancelWon, streamWon := 0, 0
 	for i := 0; i < 400; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		init, _ := coord.Init(ctx, InitOptions{})
+		init, _ := coord.Init(ctx)
 		join, _ := coord.Join(init.Code, client(1))
+		if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+			t.Fatalf("iteration %d: Select: %v", i, err)
+		}
 		received := startReceive(ctx, coord, init.Code, join.ConnectionID)
 		waitUntil(t, coord, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
 
@@ -836,7 +838,7 @@ func TestCoordinator_CancelEndsWaitingReceivers(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx, InitOptions{RequireConfirmation: true})
+	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(init.Code, client(1))
 	waiting := pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 200*time.Millisecond)
 	waitPending(t, coord, init, 1)

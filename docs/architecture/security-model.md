@@ -219,9 +219,8 @@ object storage. The stream is end-to-end encrypted against a passive server:
   `400 invalid_recipient`) and the coordinator keeps it in memory on
   that connection.
 - `GET /api/pipe/wait` hands recipients to the sender token holder only: each
-  waiting row carries its recipient (confirmation on), and once `status` is
-  `ready` the top-level `recipient` names the attached receiver's
-  (confirmation off, where the first connector wins). Neither `/join` nor
+  waiting row carries its recipient, and once `status` is `ready` the
+  top-level `recipient` names the attached receiver's. Neither `/join` nor
   `/status` nor `/receive` returns a recipient to any receiver.
 - The sender encrypts the stream and the filename to that recipient with age
   (`web/src/lib/state/pipe-relay.svelte.ts` `streamPayload`, using
@@ -274,7 +273,7 @@ limiter instance in `internal/httpapi/router.go` picks one of two scopes:
   (`requestLimiter`, so rotating request IDs buys no fresh bucket), and the
   live relay's `/init`, `/join`, and `/status` use it.
 
-**Confirmation on ("Require confirmation before transfer").** The session is a
+**Waiting room confirmation.** Every live relay session is a
 waiting room. Every device that enters the right code is held as a pending
 connection, up to `MaxPendingConnections` (10) in
 `internal/piperelay/coordinator.go`. Each connection gets its own 3-digit
@@ -338,11 +337,6 @@ ask again and the memory lapses with that session. The entry never holds the
 code itself or any key, and a 6-digit code's hash is
 brute-forceable, so it is treated as no more secret than the code the user
 already typed on that device.
-
-**Confirmation off.** The first device to open `/receive` wins and every later
-device gets `409 already_connected`. Anyone who learns the 6-digit code first
-can take the transfer, so this mode suits codes shared over a channel the
-sender trusts.
 
 **No burn on rejected receivers.** A wrong 6-digit code never reaches a session
 (the code is the lookup key), so a per-session failed-attempt counter can only

@@ -17,22 +17,21 @@ import (
 )
 
 var (
-	ErrCapacityExceeded     = errors.New("piperelay: maximum concurrent pipe sessions reached")
-	ErrNotFound             = errors.New("piperelay: rendezvous session or connection not found or expired")
-	ErrSessionClosed        = errors.New("piperelay: rendezvous session closed")
-	ErrCancelled            = errors.New("piperelay: sender cancelled the rendezvous session")
-	ErrAlreadyConnected     = errors.New("piperelay: another receiver already holds the transfer")
-	ErrRoomFull             = errors.New("piperelay: too many receivers are waiting on this session")
-	ErrDeclined             = errors.New("piperelay: sender declined this connection")
-	ErrNotSelected          = errors.New("piperelay: sender chose another connection")
-	ErrNotPending           = errors.New("piperelay: connection is no longer waiting for a decision")
-	ErrConfirmationDisabled = errors.New("piperelay: session does not require confirmation")
-	ErrStreaming            = errors.New("piperelay: transfer is already streaming")
-	ErrNetworkFull          = errors.New("piperelay: too many receivers from one client network are waiting on this session")
-	ErrAwaitingDecision     = errors.New("piperelay: connection is still waiting for the sender's pick")
-	ErrPollInProgress       = errors.New("piperelay: connection already has the maximum open status polls")
-	ErrInvalidCode          = errors.New("piperelay: code must be a 6-digit numeric string")
-	ErrExpired              = errors.New("piperelay: rendezvous session expired")
+	ErrCapacityExceeded = errors.New("piperelay: maximum concurrent pipe sessions reached")
+	ErrNotFound         = errors.New("piperelay: rendezvous session or connection not found or expired")
+	ErrSessionClosed    = errors.New("piperelay: rendezvous session closed")
+	ErrCancelled        = errors.New("piperelay: sender cancelled the rendezvous session")
+	ErrAlreadyConnected = errors.New("piperelay: another receiver already holds the transfer")
+	ErrRoomFull         = errors.New("piperelay: too many receivers are waiting on this session")
+	ErrDeclined         = errors.New("piperelay: sender declined this connection")
+	ErrNotSelected      = errors.New("piperelay: sender chose another connection")
+	ErrNotPending       = errors.New("piperelay: connection is no longer waiting for a decision")
+	ErrStreaming        = errors.New("piperelay: transfer is already streaming")
+	ErrNetworkFull      = errors.New("piperelay: too many receivers from one client network are waiting on this session")
+	ErrAwaitingDecision = errors.New("piperelay: connection is still waiting for the sender's pick")
+	ErrPollInProgress   = errors.New("piperelay: connection already has the maximum open status polls")
+	ErrInvalidCode      = errors.New("piperelay: code must be a 6-digit numeric string")
+	ErrExpired          = errors.New("piperelay: rendezvous session expired")
 )
 
 const (
@@ -76,29 +75,20 @@ type SessionMetadata struct {
 	EncryptedFilename string // base64-encoded encrypted filename (if file)
 }
 
-// InitOptions carries the sender's choices for a new session.
-type InitOptions struct {
-	// RequireConfirmation turns the session into a waiting room: receivers wait
-	// until the sender picks one. Off keeps first-connector-wins.
-	RequireConfirmation bool
-}
-
 // InitResult is what the sender gets back from Init. SenderToken is the only
 // credential for the sender-side calls (Wait, Select, Decline, Cancel, Send).
 type InitResult struct {
-	Code                string
-	SenderToken         string
-	ExpiresIn           int
-	RequireConfirmation bool
+	Code        string
+	SenderToken string
+	ExpiresIn   int
 }
 
-// JoinResult is what a receiver gets back from Join. VerifyCode and Device are
-// empty when the session does not require confirmation.
+// JoinResult is what a receiver gets back from Join. VerifyCode is its unique
+// 3-digit confirmation number to read to the sender.
 type JoinResult struct {
-	ConnectionID        string
-	VerifyCode          string
-	Device              string
-	RequireConfirmation bool
+	ConnectionID string
+	VerifyCode   string
+	Device       string
 	// ExpiresIn is the seconds left in the rendezvous window.
 	ExpiresIn int
 }
@@ -120,11 +110,10 @@ type WaitSnapshot struct {
 	Version uint64
 	// ReceiverReady is true once the chosen receiver is attached and Send can stream.
 	ReceiverReady bool
-	// Pending lists undecided receivers in join order; empty when confirmation is off.
+	// Pending lists undecided receivers in join order.
 	Pending []PendingConnection
 	// Recipient is the attached receiver's age public key once ReceiverReady
-	// is true, and empty before. With confirmation off it is the only way the
-	// sender learns whom to encrypt to.
+	// is true, and empty before.
 	Recipient string
 }
 
@@ -208,12 +197,11 @@ type JoinClient struct {
 
 // Session tracks the rendezvous lifecycle between sender and receivers.
 type Session struct {
-	codeHash            [32]byte
-	senderTokenHash     [32]byte
-	requireConfirmation bool
-	createdAt           time.Time
-	expiresAt           time.Time
-	presenceTimeout     time.Duration
+	codeHash        [32]byte
+	senderTokenHash [32]byte
+	createdAt       time.Time
+	expiresAt       time.Time
+	presenceTimeout time.Duration
 
 	mu          sync.Mutex
 	connections map[string]*connection
@@ -328,7 +316,7 @@ func randomToken(size int) (string, error) {
 
 // Init creates a new rendezvous session, generating an uncolliding 6-digit
 // code and the sender token.
-func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, error) {
+func (c *Coordinator) Init(ctx context.Context) (InitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -362,29 +350,27 @@ func (c *Coordinator) Init(ctx context.Context, opts InitOptions) (InitResult, e
 	pr, pw := io.Pipe()
 	now := time.Now().UTC()
 	s := &Session{
-		codeHash:            hash,
-		senderTokenHash:     sha256.Sum256([]byte(senderToken)),
-		requireConfirmation: opts.RequireConfirmation,
-		createdAt:           now,
-		expiresAt:           now.Add(c.ttl),
-		presenceTimeout:     c.presenceTimeout,
-		connections:         make(map[string]*connection),
-		declinedClients:     make(map[ClientKey]struct{}),
-		version:             1,
-		changed:             make(chan struct{}),
-		receiverReady:       make(chan struct{}),
-		senderReady:         make(chan struct{}),
-		done:                make(chan struct{}),
-		pipeReader:          pr,
-		pipeWriter:          pw,
+		codeHash:        hash,
+		senderTokenHash: sha256.Sum256([]byte(senderToken)),
+		createdAt:       now,
+		expiresAt:       now.Add(c.ttl),
+		presenceTimeout: c.presenceTimeout,
+		connections:     make(map[string]*connection),
+		declinedClients: make(map[ClientKey]struct{}),
+		version:         1,
+		changed:         make(chan struct{}),
+		receiverReady:   make(chan struct{}),
+		senderReady:     make(chan struct{}),
+		done:            make(chan struct{}),
+		pipeReader:      pr,
+		pipeWriter:      pw,
 	}
 
 	c.sessions[hash] = s
 	return InitResult{
-		Code:                generatedCode,
-		SenderToken:         senderToken,
-		ExpiresIn:           int(c.ttl.Seconds()),
-		RequireConfirmation: opts.RequireConfirmation,
+		Code:        generatedCode,
+		SenderToken: senderToken,
+		ExpiresIn:   int(c.ttl.Seconds()),
 	}, nil
 }
 
@@ -503,12 +489,11 @@ func (s *Session) endLocked(cause error) error {
 }
 
 // Join admits a receiver that entered the right code and returns its
-// connection. With confirmation on, each connection gets its own random
-// verification number, unique among the session's undecided connections.
-// A late joiner (transfer already claimed), an 11th waiting joiner, a 4th
-// waiting joiner from one client network, a client the sender already
-// declined, or a join after the rendezvous window closed is rejected without
-// touching the session.
+// connection with its own random 3-digit verification number, unique among the
+// session's undecided connections. A late joiner (transfer already claimed), an
+// 11th waiting joiner, a 4th waiting joiner from one client network, a client
+// the sender already declined, or a join after the rendezvous window closed is
+// rejected without touching the session.
 func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error) {
 	s, _, err := c.lookup(rawCode)
 	if err != nil {
@@ -551,15 +536,13 @@ func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error
 	}
 
 	verifyCode := ""
-	if s.requireConfirmation {
-		taken := make(map[string]bool, len(pending))
-		for _, conn := range pending {
-			taken[conn.verifyCode] = true
-		}
-		for verifyCode == "" || taken[verifyCode] {
-			if verifyCode, err = generateVerifyCode(); err != nil {
-				return JoinResult{}, err
-			}
+	taken := make(map[string]bool, len(pending))
+	for _, conn := range pending {
+		taken[conn.verifyCode] = true
+	}
+	for verifyCode == "" || taken[verifyCode] {
+		if verifyCode, err = generateVerifyCode(); err != nil {
+			return JoinResult{}, err
 		}
 	}
 
@@ -577,29 +560,23 @@ func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error
 		decided:    make(chan struct{}),
 	}
 	s.connections[connID] = conn
-	if s.requireConfirmation {
-		s.notifyLocked()
-	}
+	s.notifyLocked()
 
-	result := JoinResult{
-		ConnectionID:        connID,
-		RequireConfirmation: s.requireConfirmation,
-		ExpiresIn:           max(0, int(s.expiresAt.Sub(now).Seconds())),
-	}
-	if s.requireConfirmation {
-		result.VerifyCode = verifyCode
-		result.Device = client.Device
-	}
-	return result, nil
+	return JoinResult{
+		ConnectionID: connID,
+		VerifyCode:   verifyCode,
+		Device:       client.Device,
+		ExpiresIn:    max(0, int(s.expiresAt.Sub(now).Seconds())),
+	}, nil
 }
 
-// Status is a waiting receiver's long-poll (confirmation on only). It returns
-// selected=true once the sender picked this connection (the receiver then
-// opens Receive), an error once the connection was declined (ErrDeclined), not
-// chosen (ErrNotSelected), or the session ended, and selected=false after
-// maxWait while it is still waiting. An open Status call is what keeps a
-// waiting connection in the room: a connection with no Status call for the
-// presence timeout is dropped (Session.pruneLocked).
+// Status is a waiting receiver's long-poll. It returns selected=true once the
+// sender picked this connection (the receiver then opens Receive), an error
+// once the connection was declined (ErrDeclined), not chosen (ErrNotSelected),
+// or the session ended, and selected=false after maxWait while it is still
+// waiting. An open Status call is what keeps a waiting connection in the room:
+// a connection with no Status call for the presence timeout is dropped
+// (Session.pruneLocked).
 func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWait time.Duration) (bool, error) {
 	s, _, err := c.lookup(rawCode)
 	if err != nil {
@@ -622,10 +599,6 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 	if !ok {
 		s.mu.Unlock()
 		return false, ErrNotFound
-	}
-	if !s.requireConfirmation {
-		s.mu.Unlock()
-		return false, ErrConfirmationDisabled
 	}
 	now := time.Now()
 	if s.expiredLocked(now) {
@@ -720,17 +693,15 @@ func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
 		snapshot.Recipient = s.selected.recipient
 	default:
 	}
-	if s.requireConfirmation {
-		for _, conn := range s.pendingLocked() {
-			snapshot.Pending = append(snapshot.Pending, PendingConnection{
-				ID:         conn.id,
-				Index:      conn.index,
-				VerifyCode: conn.verifyCode,
-				Device:     conn.device,
-				Recipient:  conn.recipient,
-				JoinedAt:   conn.joinedAt,
-			})
-		}
+	for _, conn := range s.pendingLocked() {
+		snapshot.Pending = append(snapshot.Pending, PendingConnection{
+			ID:         conn.id,
+			Index:      conn.index,
+			VerifyCode: conn.verifyCode,
+			Device:     conn.device,
+			Recipient:  conn.recipient,
+			JoinedAt:   conn.joinedAt,
+		})
 	}
 	return snapshot, s.changed, nil
 }
@@ -751,9 +722,6 @@ func (c *Coordinator) Select(rawCode, senderToken, connID string) error {
 	}
 	if s.expiredLocked(now) {
 		return ErrExpired
-	}
-	if !s.requireConfirmation {
-		return ErrConfirmationDisabled
 	}
 	if s.selected != nil {
 		return ErrAlreadyConnected
@@ -783,9 +751,6 @@ func (c *Coordinator) Decline(rawCode, senderToken, connID string) error {
 	defer s.mu.Unlock()
 	if s.ended {
 		return s.endedErrLocked()
-	}
-	if !s.requireConfirmation {
-		return ErrConfirmationDisabled
 	}
 	conn, ok := s.connections[connID]
 	if !ok || conn.isDecided() {
@@ -825,11 +790,9 @@ func (c *Coordinator) Cancel(rawCode, senderToken string) error {
 }
 
 // Receive returns the pipe for the chosen connection once the sender starts.
-// With confirmation on, only the connection the sender selected may call it:
-// a still-waiting one gets ErrAwaitingDecision (it keeps polling Status), and a
-// declined or not-chosen one gets its own answer. With confirmation off the
-// first connection to call Receive wins; later ones get ErrAlreadyConnected.
-// A rejected receiver never counts against the session.
+// Only the connection the sender selected may call it: a still-waiting one gets
+// ErrAwaitingDecision (it keeps polling Status), and a declined or not-chosen
+// one gets its own answer. A rejected receiver never counts against the session.
 func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, SessionMetadata, func(), error) {
 	s, hash, err := c.lookup(rawCode)
 	if err != nil {
@@ -857,12 +820,9 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 		s.mu.Unlock()
 		return nil, SessionMetadata{}, nil, ErrAlreadyConnected
 	}
-	if s.requireConfirmation && s.selected != conn {
+	if s.selected != conn {
 		s.mu.Unlock()
 		return nil, SessionMetadata{}, nil, ErrAwaitingDecision
-	}
-	if !s.requireConfirmation && s.selected == nil {
-		s.selectLocked(conn, ErrAlreadyConnected)
 	}
 	conn.attached = true
 	s.mu.Unlock()

@@ -9,15 +9,13 @@ secret transfer between devices.
 - Manages ephemeral rendezvous sessions pairing a sending client and a receiving
   client via a single-use 6-digit numeric code.
 - `Coordinator.Join` in `internal/piperelay/coordinator.go` admits each receiver
-  that entered the code as a connection with an unguessable crypto/rand ID.
-  With `InitOptions.RequireConfirmation` on, up to `MaxPendingConnections` (10)
-  connections wait, at most `MaxPendingPerNetwork` (3) per `ClientNetwork`
-  (the HTTP layer hashes the IPv4 address or IPv6 /64; the next one gets
-  `ErrNetworkFull`), each with its own crypto/rand 3-digit verification number,
-  until the sender calls `Select` (the others end with `ErrNotSelected`) or
-  `Decline` (that connection ends with `ErrDeclined`, its client key is blocked
-  for the session, the slot reopens). With confirmation off the first
-  connection to call `Receive` wins and later ones get `ErrAlreadyConnected`.
+  that entered the code as a connection with an unguessable crypto/rand ID. Up
+  to `MaxPendingConnections` (10) connections wait, at most
+  `MaxPendingPerNetwork` (3) per `ClientNetwork` (the HTTP layer hashes the
+  IPv4 address or IPv6 /64; the next one gets `ErrNetworkFull`), each with its
+  own crypto/rand 3-digit verification number, until the sender calls `Select`
+  (the others end with `ErrNotSelected`) or `Decline` (that connection ends with
+  `ErrDeclined`, its client key is blocked for the session, the slot reopens).
 - `JoinClient.Recipient` in `internal/piperelay/coordinator.go` is the
   receiver's browser-generated age recipient (public key; the HTTP layer
   `internal/httpapi/piperelay.go` `joinPipe` validates its shape). The

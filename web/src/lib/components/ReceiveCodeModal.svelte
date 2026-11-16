@@ -55,8 +55,8 @@ let {
 	initialCode = ''
 }: Props = $props();
 
-// verify: confirmation is on and this device shows its own number while the
-// sender picks. declined / not-chosen / room-full end this code for this device.
+// verify: this device shows its own number while the sender picks.
+// declined / not-chosen / room-full end this code for this device.
 type ReceiveState =
 	| 'input'
 	| 'connecting'
@@ -216,15 +216,11 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	const { identity, recipient } = await createPipeReceiverKey();
 	const join = await joinPipe(targetBaseUrl, normalized, recipient, fetch, signal);
 	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
-	if (join.requireConfirmation && join.verifyCode) {
-		verifyCode = join.verifyCode;
-		currentState = 'verify';
-		// Short status polls keep this device in the sender's list; /receive
-		// opens only once picked, so no request sits silent behind a proxy.
-		await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
-	} else {
-		statusMessage = 'Waiting for the sender…';
-	}
+	verifyCode = join.verifyCode;
+	currentState = 'verify';
+	// Short status polls keep this device in the sender's list; /receive
+	// opens only once picked, so no request sits silent behind a proxy.
+	await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
 
 	const result = await receivePipeStream(
 		targetBaseUrl,
@@ -233,10 +229,8 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 		fetch,
 		signal
 	);
-	if (currentState === 'verify') {
-		// The ring starts when the chosen device's stream arrives.
-		attempt.stageStartedAt = performance.now();
-	}
+	// The ring starts when the chosen device's stream arrives.
+	attempt.stageStartedAt = performance.now();
 	currentState = 'streaming';
 	statusMessage = 'Decrypting in your browser…';
 
@@ -449,7 +443,7 @@ async function copyText(): Promise<void> {
 							Connect
 						</Button>
 						<p class="text-[0.6875rem] text-muted-foreground">
-							If the sender asked for confirmation, you'll read them a 3-digit number.
+							Next, you'll read a 3-digit number to the sender to confirm.
 						</p>
 					</div>
 				</div>

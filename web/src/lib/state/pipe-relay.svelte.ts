@@ -66,12 +66,11 @@ function mergePending(
 
 /**
  * One sender-side live pipe relay session: rendezvous, the receiver waiting
- * room (confirmation on) or first-connector wait (off), and the encrypted
- * stream. All state lives in browser memory only — cancel or abort wipes it.
+ * room, and the encrypted stream. All state lives in browser memory only —
+ * cancel or abort wipes it.
  */
 export function createPipeRelay(options: PipeRelayOptions) {
 	let activeCode = $state<string | null>(null);
-	let requireConfirmation = $state(false);
 	let pending = $state<PendingReceiver[]>([]);
 	let statusText = $state('Waiting for receiver to enter code...');
 	let progressPercent = $state(0);
@@ -138,33 +137,19 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	}
 
 	// A poll that lands after the sender picked a device (or cancelled) is stale.
-	async function applyUpdate(
+	function applyUpdate(
 		update: Awaited<ReturnType<typeof waitForPipeUpdate>>,
-		code: string,
 		signal: AbortSignal
-	): Promise<void> {
+	): void {
 		if (sending || signal.aborted) {
 			return;
 		}
-		if (requireConfirmation) {
-			pending = mergePending(pending, update.connections, settled, Date.now());
-			return;
-		}
-		if (update.status !== 'ready') {
-			return;
-		}
-		sending = true;
-		if (!update.recipient) {
-			fail(null, 'The receiver did not send an encryption key. Ask them to enter the code again.');
-			return;
-		}
-		await streamPayload(code, update.recipient, signal);
+		pending = mergePending(pending, update.connections, settled, Date.now());
 	}
 
-	// Long-polls the session until the sender commits to a receiver. With
-	// confirmation on it keeps the waiting list fresh; with it off it streams as
-	// soon as the first receiver is attached. `start` runs exactly one loop per
-	// session; nothing else starts one.
+	// Long-polls the session to keep the waiting list fresh until the sender
+	// commits to a receiver. `start` runs exactly one loop per session; nothing
+	// else starts one.
 	async function poll(code: string, signal: AbortSignal): Promise<void> {
 		let since = 0;
 		try {
@@ -178,7 +163,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 					signal
 				);
 				since = update.version;
-				await applyUpdate(update, code, signal);
+				applyUpdate(update, signal);
 			}
 		} catch (err) {
 			if (!signal.aborted && !sending) {
@@ -187,7 +172,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		}
 	}
 
-	async function start(confirmationRequired: boolean): Promise<void> {
+	async function start(): Promise<void> {
 		abortController?.abort();
 		const controller = new AbortController();
 		abortController = controller;
@@ -197,21 +182,18 @@ export function createPipeRelay(options: PipeRelayOptions) {
 
 		try {
 			statusText = 'Initializing live transfer session...';
-			const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, confirmationRequired, fetch);
+			const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, fetch);
 			if (controller.signal.aborted) {
 				return;
 			}
 			activeCode = session.code;
 			senderToken = session.senderToken;
-			requireConfirmation = session.requireConfirmation;
 			expiresInSeconds = session.expiresIn;
 			pending = [];
 			failed = false;
 			completed = false;
 			progressPercent = 0;
-			statusText = requireConfirmation
-				? 'Waiting for receivers... (confirmation required)'
-				: 'Waiting for receiver to enter code...';
+			statusText = 'Waiting for receiver to enter code...';
 			await poll(session.code, controller.signal);
 		} catch (err) {
 			if (!controller.signal.aborted) {
@@ -310,9 +292,6 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	return {
 		get activeCode() {
 			return activeCode;
-		},
-		get requireConfirmation() {
-			return requireConfirmation;
 		},
 		get pending() {
 			return pending;

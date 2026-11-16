@@ -93,8 +93,7 @@ let credentialEnvelope = $state<CredentialEnvelope>(buildEnvelope('login'));
 let passphrase = $state('');
 // Model A (true) derives key + access proof from a passphrase; Model B (false)
 // generates a random key carried in the URL fragment. See security-model.md.
-// Both toggles default OFF: the link key / 6-digit code already encrypts, and
-// the confirmation step is opt-in.
+// The passphrase toggle defaults OFF: the link key already encrypts.
 let usePassphrase = $state(false);
 let revealPassphrase = $state(false);
 let ttlSeconds = $state(DEFAULT_TTL_SECONDS);
@@ -122,10 +121,9 @@ let uploadProgress = $state<FileUploadProgress | null>(null);
 let stageCardDone = $state(false);
 
 // Live pipe relay (Send with code): session state and runtime live in
-// #lib/state/pipe-relay.svelte.ts. The page owns the form-side confirmation
-// toggle and feeds the payload at send time. The link tab's passphrase never
-// reaches a code transfer, which is encrypted to the receiver's age recipient.
-let pipeRequireApproval = $state(false);
+// #lib/state/pipe-relay.svelte.ts. The page feeds the payload at send time.
+// The link tab's passphrase never reaches a code transfer, which is encrypted
+// to the receiver's age recipient.
 const relay = createPipeRelay({ getPayload: buildPipePayload });
 
 let qrOpen = $state(false);
@@ -576,7 +574,7 @@ async function startPipeSend(): Promise<void> {
 	if (!canPipe) {
 		return;
 	}
-	await relay.start(pipeRequireApproval);
+	await relay.start();
 }
 
 function resetPipeAndForm(): void {
@@ -635,7 +633,6 @@ function typePanelId(type: CreateMode): string {
 				progressPercent={relay.progressPercent}
 				completed={relay.completed}
 				failed={relay.failed}
-				requireConfirmation={relay.requireConfirmation}
 				pending={relay.pending}
 				onSend={relay.sendTo}
 				onDeny={relay.deny}
@@ -1024,25 +1021,6 @@ function typePanelId(type: CreateMode): string {
 						caption: 'burns after a single open'
 					})}
 				{:else}
-					<SwitchRow
-						id="require-confirmation"
-						bind:checked={pipeRequireApproval}
-						label="Require confirmation before transfer"
-						icon={ShieldCheckIcon}
-						infoLabel="How confirmation works"
-						describedBy="confirmation-procedure"
-						disabled={isCreating}
-					>
-						{#snippet details()}
-							<p class="mb-1 text-xs font-medium text-foreground">How confirmation works</p>
-							<ol class="list-decimal space-y-1 pl-4 text-[0.8125rem] text-muted-foreground marker:text-foreground/60">
-								<li>Each device that enters the code gets its own 3-digit number.</li>
-								<li>Your receiver reads their number to you.</li>
-								<li>Tap "Send" on the row with that number.</li>
-							</ol>
-						{/snippet}
-					</SwitchRow>
-
 					{@render ctaFooter({
 						type: 'button',
 						label: 'Start live transfer',
