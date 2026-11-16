@@ -126,3 +126,21 @@ contract, open decision log, or multi-step verification record.
   `document.documentElement.scrollWidth <= innerWidth` — see the
   "long unbroken credential text" test in
   `web/src/lib/components/OpenSecretPage.browser.mjs`.
+- Layouts hold at 150% text size at 320px wide or wider. The 320px floor
+  applies to enlarged text; the rule for 200-character user-controlled text
+  keeps its own 360px floor.
+  `web/src/app.html` sets `<meta name="text-scale" content="scale">`, so rem
+  sizes follow the OS text-size setting; browser checks simulate it with
+  `document.documentElement.style.fontSize = '150%'`. A block sized in rem
+  inside a narrow row also gets `min-w-0` or `max-w-full` so it can shrink, and
+  a square block uses `aspect-square w-*` in place of `size-*` so its height
+  shrinks with its width — see `<QrCode>` in
+  `web/src/lib/components/QrModal.svelte` and the `lg` caps in
+  `web/src/lib/components/VerifyDigits.svelte`. A button whose label can
+  outgrow it uses `whitespace-normal` with a `min-h-*` in place of a fixed
+  `h-*` — see the `cta` size in `web/src/lib/components/ui/button/button.svelte`.
+  A dialog sets `grid-cols-[minmax(0,1fr)]`, `max-h-[calc(100dvh-1.5rem)]`, and
+  `overflow-y-auto` — see `web/src/lib/components/ConfirmDialog.svelte`.
+  `document.documentElement.scrollWidth` does not see a `position: fixed`
+  dialog, so dialog browser checks call `assertDialogFits` from
+  `web/src/lib/components/dialog-fit.mjs`.

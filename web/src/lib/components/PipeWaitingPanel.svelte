@@ -218,17 +218,17 @@ let directReceiveUrl = $derived(
 					Recipient clicks <strong class="font-medium text-foreground">Enter Code</strong> in the header and enters:
 				</p>
 				<div class="flex min-w-0 items-center justify-center gap-2" aria-label="Transfer code {formattedCode}">
-					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
+					<div class="flex min-w-0 gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
 						{#each firstHalf as digit, idx (`a-${idx}`)}
-							<span class="grid h-12 w-9 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+							<span class="grid h-12 w-9 min-w-0 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
 								{digit}
 							</span>
 						{/each}
 					</div>
 					<span class="font-mono text-xl text-muted-foreground" aria-hidden="true">-</span>
-					<div class="flex gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
+					<div class="flex min-w-0 gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
 						{#each secondHalf as digit, idx (`b-${idx}`)}
-							<span class="grid h-12 w-9 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
+							<span class="grid h-12 w-9 min-w-0 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
 								{digit}
 							</span>
 						{/each}
@@ -252,7 +252,7 @@ let directReceiveUrl = $derived(
 
 			<div class="grid gap-2">
 				<div class="grid grid-cols-2 gap-2.5">
-					<Button type="button" variant="outline" class="h-11 gap-2" onclick={copyCode}>
+					<Button type="button" variant="outline" class="h-auto min-h-11 gap-2 whitespace-normal py-2" onclick={copyCode}>
 						{#if copied}
 							<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
 							Copied!
@@ -264,7 +264,7 @@ let directReceiveUrl = $derived(
 					<Button
 						type="button"
 						variant="outline"
-						class="h-11 gap-2"
+						class="h-auto min-h-11 gap-2 whitespace-normal py-2"
 						onclick={() => {
 							qrOpen = true;
 						}}

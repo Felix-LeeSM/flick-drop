@@ -857,9 +857,9 @@ function typePanelId(type: CreateMode): string {
 							<ul class="grid gap-1.5">
 								{#each pickedFiles as file, index (fileKey(file))}
 									<li
-										class="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+										class="flex min-h-9 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
 									>
-										<span class="truncate text-muted-foreground">{file.name}</span>
+										<span class="truncate text-muted-foreground" title={file.name}>{file.name}</span>
 										<span class="flex shrink-0 items-center gap-2">
 												<span class="font-mono text-xs text-muted-foreground">
 													{formatBytes(file.size)}

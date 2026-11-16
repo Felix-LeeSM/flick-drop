@@ -463,6 +463,79 @@ test('a file dropped outside the zone switches to the File tab and attaches', as
 	}
 });
 
+for (const width of [320, 360]) {
+	test(`${width}px picked file names truncate inside the page at 100% and 150% text`, async () => {
+		const page = await browser.newPage({ viewport: { width, height: 740 } });
+		// 파일 목록 줄은 42자 이름만으로도 360px 페이지를 넓혔고, 200자 이름은 지우기 버튼을 화면 밖으로 밀었다.
+		const names = ['2026-Q3-financial-statements-final-v2.xlsx', `${'F'.repeat(200)}.bin`];
+		try {
+			await fixture(page);
+			await openForm(page, forms[0]);
+			await typeTab(page, 'File').click();
+			await editorVisible(page, 'File');
+			await page
+				.locator('#secret-file')
+				.setInputFiles(
+					names.map((name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from('file') }))
+				);
+			for (const scale of ['100%', '150%']) {
+				await page.evaluate((size) => {
+					document.documentElement.style.fontSize = size;
+				}, scale);
+				for (const name of names) {
+					const remove = await page
+						.getByRole('button', { name: `Remove ${name}`, exact: true })
+						.boundingBox();
+					assert.ok(remove.x + remove.width <= width, `${scale} ${name.length}-character name`);
+					// 잘린 이름 전체는 title로 남는다.
+					assert.equal(await page.getByText(name, { exact: true }).getAttribute('title'), name);
+				}
+				assert.equal(
+					await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+					true,
+					scale
+				);
+			}
+		} finally {
+			await page.close();
+		}
+	});
+}
+
+test('320px request button wraps its longest label inside itself at 150% text', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 740 } });
+	try {
+		const { started } = await fixture(page);
+		await openForm(page, forms[1]);
+		// fixture가 요청 생성을 거절하면 결과를 모르는 상태가 되어 버튼이 가장 긴 이름으로 바뀐다.
+		await page.locator('form button[type="submit"]').click();
+		await started;
+		const submit = page.getByRole('button', { name: 'Create a new request', exact: true });
+		await submit.waitFor();
+		await page.evaluate(() => {
+			document.documentElement.style.fontSize = '150%';
+		});
+		const fit = await submit.evaluate(async (button) => {
+			// 글자 크기 변경에 따른 전환(transition-all)이 끝난 뒤 잰다.
+			await Promise.allSettled(
+				button
+					.getAnimations()
+					.filter(
+						(animation) => animation.effect.getComputedTiming().endTime !== Number.POSITIVE_INFINITY
+					)
+					.map((animation) => animation.finished)
+			);
+			return {
+				label: button.scrollWidth <= button.clientWidth,
+				page: document.documentElement.scrollWidth <= innerWidth
+			};
+		});
+		assert.deepEqual(fit, { label: true, page: true });
+	} finally {
+		await page.close();
+	}
+});
+
 for (const width of [375, 1280]) {
 	const phone = width < 768;
 	test(`${width}px type tabs stay stationary on hover and focus in one row`, async () => {

@@ -392,7 +392,7 @@ async function copyText(): Promise<void> {
 			class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
 		/>
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 grid w-[23rem] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+			class="fixed left-1/2 top-3 z-50 grid max-h-[calc(100dvh-1.5rem)] w-[23rem] max-w-[calc(100vw-1.5rem)] grid-cols-[minmax(0,1fr)] -translate-x-1/2 gap-5 overflow-y-auto sm:top-1/2 sm:-translate-y-1/2 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
 			{#if currentState === 'declined'}
 				<div class="relative z-10 -mb-8 flex items-center justify-end">
@@ -417,11 +417,11 @@ async function copyText(): Promise<void> {
 				<div class="flex items-start justify-between gap-3">
 					{#if step}
 						<div class="grid gap-1">
-							<div class="flex items-center gap-1.5">
-								<span class="rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
+							<div class="flex flex-wrap items-center gap-1.5">
+								<span class="whitespace-nowrap rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
 									STEP {step} OF 2
 								</span>
-								<span class="micro text-muted-foreground">0B disk relay</span>
+								<span class="micro whitespace-nowrap text-muted-foreground">0B disk relay</span>
 							</div>
 							<h3 class="font-serif text-2xl leading-tight">
 								{step === 1
@@ -535,7 +535,7 @@ async function copyText(): Promise<void> {
 					{/if}
 				</div>
 			{:else if currentState === 'verify'}
-				<div class="grid gap-5 text-center">
+				<div class="grid grid-cols-[minmax(0,1fr)] gap-5 text-center">
 					<p class="text-xs text-muted-foreground">
 						Read this number to the sender out loud or in chat. They pick your device by this number.
 					</p>
@@ -549,7 +549,7 @@ async function copyText(): Promise<void> {
 						type="button"
 						variant="ghost"
 						size="sm"
-						class="h-11 justify-self-center text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+						class="h-auto min-h-11 justify-self-center whitespace-normal py-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
 						onclick={() => {
 							open = false;
 						}}

@@ -192,8 +192,8 @@ server. The current suites are:
 
 | Suite | Covers |
 | --- | --- |
-| `CreateForms.browser.mjs` | Create forms: lifetime presets and custom bounds, pending state, type and delivery tabs, layout at narrow widths, passphrase switch and generator. |
-| `LiveRelay.browser.mjs` | "Live transfer" live relay UI with mocked pipe API: Receive dialog, `#code=` deep link, error and room-full states, sender waiting list, Deny and Send, and full-page received Secret view. |
+| `CreateForms.browser.mjs` | Create forms: lifetime presets and custom bounds, pending state, type and delivery tabs, layout at narrow widths, picked file names and the request button at 150% text size, passphrase switch and generator. |
+| `LiveRelay.browser.mjs` | "Live transfer" live relay UI with mocked pipe API: Receive dialog (including its fit on phone screens at 150% text size and its Connect button above an assumed 290px keypad at 100% text size), `#code=` deep link, error and room-full states, sender waiting list and code card, Deny and Send, and full-page received Secret view. |
 | `ManageSecretPage.browser.mjs` | Sender management page (described below). |
 | `NativeShareButton.browser.mjs` | Web Share and copy/QR fallbacks (described above). |
 | `OpenSecretPage.browser.mjs` | Recipient open page (described above). |
@@ -212,7 +212,8 @@ into waiting-room confirmation.
 
 `ManageSecretPage.browser.mjs` extends the mocked browser suite with both access
 models, memory-only recipient handoff, separate copy/share/QR actions, reload,
-invalid links, retryable errors, lockout, known expiry, and an open/cancel race.
+invalid links, retryable errors, lockout, known expiry, an open/cancel race, and
+the QR and cancel dialogs fitting a 320px screen at 150% text size.
 `pnpm --dir web test:management` runs `ManageSecretPage.live.mjs` against a real
 API with #200 and #201 implemented. The live suite creates synthetic Model A/B
 text deliveries and verifies management followed by one-time open or cancellation.

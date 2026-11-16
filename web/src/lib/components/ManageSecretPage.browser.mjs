@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
+import { assertDialogFits } from './dialog-fit.mjs';
 
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
 const token = 'A'.repeat(43);
@@ -408,6 +409,35 @@ test('status card wraps the refresh button clear of a long title when text is en
 			boxes.title.top < boxes.refresh.bottom &&
 			boxes.refresh.top < boxes.title.bottom;
 		assert.equal(overlaps, false);
+	} finally {
+		await page.close();
+	}
+});
+
+test('QR and cancel dialogs fit a 320px phone screen when text is enlarged to 150%', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
+	try {
+		await fixture(page);
+		const configured = page.waitForResponse('**/api/config');
+		await page.goto(baseUrl);
+		await configured;
+		await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
+		await page.locator('form button[type="submit"]').click();
+		await page.waitForURL(`**${privatePath}`);
+		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
+		await page.evaluate(() => {
+			document.documentElement.style.fontSize = '150%';
+		});
+		// 13rem QR은 150%에서 320px 화면의 대화상자보다 넓고, 대화상자는 화면보다 길다.
+		await page.getByRole('button', { name: 'Show QR', exact: true }).click();
+		await page.getByRole('dialog', { name: 'Scan or copy' }).waitFor();
+		await assertDialogFits(page, 'QR');
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'detached' });
+		// 확인 대화상자의 두 버튼은 줄을 바꾸지 않던 "Cancel delivery"가 버튼 밖으로 넘쳤다.
+		await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
+		await page.getByRole('dialog').waitFor();
+		await assertDialogFits(page, 'Cancel delivery');
 	} finally {
 		await page.close();
 	}
