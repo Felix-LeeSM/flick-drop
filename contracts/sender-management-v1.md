@@ -197,7 +197,7 @@ Network errors keep an explicit unknown/stale state and a retry action.
 Authenticate first, then condition the mutation on current unexpired,
 unconsumed `active` or `pending_upload` state. Commit cancellation outcome,
 blocking of recipient access, inline payload removal, and required outbox
-records in one `api.db` transaction. Enqueue existing `delete_secret` and/or
+records in one `flick_api` database transaction. Enqueue existing `delete_secret` and/or
 `delete_oci_object` jobs only where needed, with reason `manual`. A failed enqueue
 or commit must roll everything back. An acknowledged cancellation is irreversible.
 
@@ -240,7 +240,7 @@ Extend the API expiration reaper with recurring paginated object reconciliation:
 2. Before enqueueing deletion, the API transaction checks for a matching live,
    unconsumed secret row with the same storage key. Protect active rows before
    `expires_at` and pending rows before their pending/expiry deadline. Do not
-   treat a DB error as "no live row". No worker writes to `api.db`.
+   treat a DB error as "no live row". No worker writes to the `flick_api` database.
 3. Otherwise enqueue `delete_oci_object` through the existing outbox. Keep one
    outstanding reconciliation job per key in API-owned bookkeeping. After
    persisting a terminal receipt, the worker calls a job-ID-fenced internal API acknowledgement

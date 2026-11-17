@@ -50,7 +50,7 @@ Out of scope:
 ### 2. Text Secret Flow
 
 - Browser encrypts text payload.
-- API stores ciphertext in `api.db`.
+- API stores ciphertext in the `flick_api` database.
 - API returns secret ID.
 - Web creates an ID path; Model B includes the browser-only `#key=...` fragment.
 - Recipient decrypts in the browser with the passphrase or fragment key.
@@ -103,9 +103,9 @@ Out of scope:
 ### 7. Operational Hardening
 
 - backup/restore runbook ([runbook](runbook/backup-restore.md))
-- SQLite checkpoint/vacuum runbook ([runbook](runbook/sqlite-maintenance.md))
-  — still describes the pre-M15 deployed layout; the M15 cutover (#425)
-  rewrites the operational runbooks for PostgreSQL
+- PostgreSQL maintenance runbook ([runbook](runbook/postgres-maintenance.md));
+  the one-time SQLite→Postgres cutover is
+  [its own runbook](runbook/postgres-cutover.md) (#425)
 - rate limiting — done (#71; per client network, IPv6 collapsed to /64, in
   `internal/httpapi/ratelimit.go`; shared across API replicas through Valkey
   since #423)
@@ -277,11 +277,14 @@ shared ephemeral state.
   Transfer rendezvous in Valkey with pod-to-pod encrypted streaming and a
   60-second rolling-restart grace.
 - [#425](https://github.com/Felix-LeeSM/flick-drop/issues/425): k8s manifests
-  for postgres/valkey, the 3A Osaka two-node placement (`loki` to
-  `flick-core`, two API/web replicas split across Osaka, Korea nodes
-  excluded), the SQLite→Postgres cutover tool and runbook, the PostgreSQL
-  rewrite of the operational runbooks (backup/restore, worker recovery, k3s
-  base, SQLite maintenance), and a multi-replica k3d smoke.
+  for postgres/valkey with NetworkPolicies, two API/web replicas with a
+  `maxSurge: 0` rollout and a soft per-node spread, `flick-api migrate` /
+  `flick-worker migrate`, the SQLite→Postgres cutover tool and runbook, the
+  PostgreSQL rewrite of the operational runbooks (backup/restore, worker
+  recovery, k3s base, and PostgreSQL maintenance in place of SQLite
+  maintenance), and a multi-replica k3d smoke. The
+  demo instance's 3A Osaka placement (`loki` to the larger node, Korea nodes
+  excluded) lives in its private deploy overlay, not in `deploy/base`.
 - Spec: `docs/work/active/2026-11-16-multi-replica-postgres-valkey.md`.
 - Exclude multi-node HA (Patroni, Valkey Sentinel/Cluster, NATS clustering),
   WebRTC peer-to-peer transfer, breaking the `age` format or public HTTP

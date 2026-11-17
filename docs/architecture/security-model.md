@@ -273,16 +273,20 @@ stream secret, or a raw client hash; `internal/piperelay/stream_test.go`
 checks the values for the ciphertext, the encrypted filename, the sender token,
 and the raw client hashes, and the key names for the code; the stream secret
 exists only inside `Send` and the outgoing request, so Valkey can hold no more
-than the SHA-256 that `Send` writes. A room expires one minute after its own deadline (the 3-minute window, or
-`maxTransferDuration` once streaming), and an ended room stays one minute as a
-tombstone so devices still waiting learn how it ended. Anyone who can read
-Valkey can read the connection IDs and recipients of live rooms, so a
-deployment keeps Valkey reachable from the API replicas only.
+than the SHA-256 that `Send` writes. A room expires one minute after its own
+deadline (the 3-minute window, or `maxTransferDuration` once streaming), and an
+ended room stays one minute as a tombstone so devices still waiting learn how it
+ended. Anyone who can read Valkey can read the connection IDs and recipients of
+live rooms, so a deployment keeps Valkey reachable from the API replicas only:
+`deploy/base/valkey.yaml` `NetworkPolicy/valkey` admits flick-api pods alone,
+and the pod has no volume.
 
 The encrypted bytes hop between replicas over the stream listener
 (`FLICK_INTERNAL_HTTP_PORT`, `internal/piperelay/stream.go`), which accepts a
 request only with `FLICK_INTERNAL_TOKEN` and the stream's one-time secret, and
-only while the receiver's `/receive` waits on that replica. The sender's replica
+only while the receiver's `/receive` waits on that replica. In Kubernetes,
+`deploy/base/api.yaml` `NetworkPolicy/flick-api` also admits only other
+flick-api pods to that port. The sender's replica
 dials only an IP literal from the room on the fixed internal port, without
 redirects or an HTTP proxy, so a tampered room cannot aim it at another host or
 port. The hop is plain HTTP inside the cluster network; the bytes on it are the

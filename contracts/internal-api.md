@@ -2,7 +2,7 @@
 
 Both endpoints use `X-Flick-Internal-Token: <FLICK_INTERNAL_TOKEN>`, accept JSON,
 and are implemented in `internal/httpapi/router.go`. A missing or invalid internal
-token returns `401`. The worker never writes `api.db` directly.
+token returns `401`. The worker never writes the `flick_api` database directly.
 
 ## Payload cleanup
 
@@ -34,7 +34,7 @@ be inside `managed/secrets/` or `managed/requests/` with a nonempty suffix. Othe
 rejected. Malformed/unknown JSON fields or invalid identifiers return `400`.
 Database failures return `503`, never an acknowledgement.
 
-A valid request returns `204` with no body. In `api.db`, it removes only the
+A valid request returns `204` with no body. In the `flick_api` database, it removes only the
 `object_reconciliation_pending_v2` (sender) or `request_reconciliation_pending_v2`
 (request) row matching backend, key, and job ID
 (`internal/secrets/reconciliation.go:AcknowledgeObjectCleanup`,

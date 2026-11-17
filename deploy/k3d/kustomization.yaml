@@ -24,3 +24,29 @@ patches:
       - op: replace
         path: /stringData/FLICK_INTERNAL_TOKEN
         value: k3d-smoke-internal-token
+      - op: replace
+        path: /stringData/FLICK_RATELIMIT_KEY_SALT
+        value: k3d-smoke-ratelimit-salt
+  # Disposable smoke-only passwords; URL-safe because each pod places its
+  # password in a postgres:// DSN (deploy/base/secret.yaml).
+  - target:
+      kind: Secret
+      name: flick-db-api
+    patch: |-
+      - op: replace
+        path: /stringData/password
+        value: k3dsmokeapi
+  - target:
+      kind: Secret
+      name: flick-db-worker
+    patch: |-
+      - op: replace
+        path: /stringData/password
+        value: k3dsmokeworker
+  - target:
+      kind: Secret
+      name: flick-db-admin
+    patch: |-
+      - op: replace
+        path: /stringData/POSTGRES_PASSWORD
+        value: k3dsmokeadmin

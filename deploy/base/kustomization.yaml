@@ -12,6 +12,8 @@ resources:
   - configmap.yaml
   - secret.yaml
   - pvc.yaml
+  - postgres.yaml
+  - valkey.yaml
   - nats.yaml
   - api.yaml
   - worker.yaml

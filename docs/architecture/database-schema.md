@@ -20,10 +20,11 @@ API endpoints for API-owned mutations.
 
 M15 moved both stores onto Postgres: `flick_worker` in PR 2 (issue #421) and
 `flick_api` plus the `modernc.org/sqlite` removal in PR 3 (issue #422). An
-existing self-hosted deployment will reach this schema through the SQLite
-cutover runbook (`docs/runbook/postgres-cutover.md`, landing in PR 6 / issue
-#425), which migrates a current-release database; the migration code
-intentionally carries no SQLite-era repair passes.
+existing self-hosted deployment reaches this schema through the SQLite
+cutover runbook (`docs/runbook/postgres-cutover.md`, issue #425): `flick-api
+migrate` and `flick-worker migrate` create the empty schema, then
+`scripts/ops/migrate-sqlite-to-postgres.sh` loads a current-release database.
+The migration code intentionally carries no SQLite-era repair passes.
 
 ## `flick_api` database
 

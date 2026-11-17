@@ -36,9 +36,12 @@ Private values:
 - registry credentials when the images are private
 - `FLICK_INTERNAL_TOKEN`
 - `FLICK_METRICS_TOKEN`
+- `FLICK_RATELIMIT_KEY_SALT`
+- database passwords in `Secret/flick-db-api`, `Secret/flick-db-worker`, and
+  `Secret/flick-db-admin`
 - production domains, TLS issuer names, and certificate references
 - production kustomize overlays
-- SQLite databases, PVC dumps, bucket exports, and backup archives
+- `pg_dump` archives, PVC dumps, bucket exports, and backup archives
 
 Keep private values in a private ops repository or a local untracked overlay.
 
@@ -110,7 +113,10 @@ deletion is not successful erasure. Sender reconciliation changes no private buc
 and adds no automatic bucket-setting gate to existing S3 startup.
 
 Set `FLICK_STORAGE_LARGE_BACKEND=s3` only after the bucket and Customer Secret
-Key credentials are ready. Leave it `disabled` for SQLite-only deployments.
+Key credentials are ready. Leave it `disabled` for a database-only deployment,
+where every payload stays in the `flick_api` database and the file size limit
+drops to the inline threshold (`EffectiveMaxFileBytes` in
+`internal/config/config.go`).
 
 ## Private Overlay
 
@@ -193,11 +199,18 @@ sits in front of the ingress, also list that provider's published egress ranges,
 so the API reads the real client address from the `X-Forwarded-For` hop the
 CDN added instead of bucketing every visitor under the CDN's address.
 
+The base `ConfigMap/flick-config` already carries the in-cluster addresses that
+a single-cluster deployment keeps as is: `FLICK_VALKEY_ADDR=valkey:6379`,
+`FLICK_INTERNAL_HTTP_PORT=8081` (the live-transfer stream listener flick-api
+replicas dial pod to pod), and `FLICK_NATS_URL=nats://nats:4222`. It holds no
+database DSN; see the database Secrets below.
+
 Patch `Secret/flick-secrets` for sensitive values:
 
 ```text
 FLICK_INTERNAL_TOKEN=<private-random-token>
 FLICK_METRICS_TOKEN=<private-random-token>
+FLICK_RATELIMIT_KEY_SALT=<private-random-salt>
 FLICK_S3_ENDPOINT=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
 FLICK_S3_REGION=<oci-region>
 FLICK_S3_BUCKET=<bucket-name>
@@ -210,24 +223,55 @@ The access/secret pair is an OCI Customer Secret Key issued against your OCI
 user. Do not commit Customer Secret Key values, API signing keys, config files,
 private key material, or base64-encoded versions of those values.
 
+`FLICK_RATELIMIT_KEY_SALT` must be the same on every flick-api replica;
+rotating it resets in-flight rate-limit buckets and orphans live-transfer rooms
+(`docs/architecture/env-contract.md`).
+
+Patch the three database Secrets with private random values. Use URL-safe
+passwords (for example `openssl rand -hex 24`), because each pod places its
+password in a `postgres://` URL as is (`deploy/base/api.yaml`,
+`deploy/base/worker.yaml`):
+
+```text
+Secret/flick-db-api      password=<private-random-password>
+Secret/flick-db-worker   password=<private-random-password>
+Secret/flick-db-admin    POSTGRES_PASSWORD=<private-random-password>
+```
+
+flick-api builds `FLICK_DATABASE_URL` and flick-worker builds
+`FLICK_WORKER_DATABASE_URL` from their own role password; neither reads the
+other's Secret or the superuser password. The postgres pod creates the
+`flick_api` and `flick_worker` roles from these values only on the first start
+of an empty `postgres-data` volume (`ConfigMap/postgres-init` in
+`deploy/base/postgres.yaml`), so set them before the first apply.
+
 ## PVC And Resource Budget
 
-The base starts with three `ReadWriteOnce` PVCs:
+The base declares two `ReadWriteOnce` PVCs (`deploy/base/pvc.yaml`):
 
 ```text
-flick-api-data      1Gi  /data/api.db
-flick-worker-data   1Gi  /data/worker.db
-nats-data           1Gi  /data/jetstream
+postgres-data   2Gi  PostgreSQL data directory (flick_api and flick_worker)
+nats-data       1Gi  /data/jetstream
 ```
 
-The base resource budget is intentionally small:
+flick-api, flick-worker, flick-web, and Valkey mount no persistent volume.
+flick-api mounts a `600Mi` `emptyDir` at `/tmp` for request finalize spools
+(`deploy/base/api.yaml`); that space comes from the node's ephemeral storage.
+
+The base resource budget is intentionally small (per pod):
 
 ```text
-flick-web      32Mi request, 128Mi limit, 10m request, 100m limit
-flick-api      64Mi request, 256Mi limit, 25m request, 250m limit
-flick-worker   64Mi request, 256Mi limit, 25m request, 250m limit
-nats           64Mi request, 256Mi limit, 25m request, 250m limit
+flick-web      x2  32Mi request, 128Mi limit, 10m request, 100m limit
+flick-api      x2  64Mi request, 256Mi limit, 25m request, 250m limit
+flick-worker   x1  64Mi request, 256Mi limit, 25m request, 250m limit
+postgres       x1  128Mi request, 512Mi limit, 50m request, 500m limit
+valkey         x1  16Mi request, 128Mi limit, 10m request, 250m limit
+nats           x1  64Mi request, 256Mi limit, 25m request, 250m limit
 ```
+
+Valkey also caps its own data at `--maxmemory 96mb` with
+`--maxmemory-policy noeviction` (`deploy/base/valkey.yaml`): when full it
+refuses writes instead of dropping a live waiting room.
 
 Before production, verify current OCI compute, memory, block volume, and Object
 Storage limits in the target tenancy. Free Tier policies and quotas can change.
@@ -269,8 +313,11 @@ private data.
 
 ## Apply
 
-For a fresh install, apply the private overlay. For an existing installation,
-first complete the [worker-first upgrade procedure](k3s-base.md#apply): every old
+For a fresh install, apply the private overlay. An existing installation still
+on the SQLite layout moves its data once through
+[PostgreSQL cutover](postgres-cutover.md) before applying this layout. For an
+existing installation, also first complete the
+[worker-first upgrade procedure](k3s-base.md#apply): every old
 worker, including terminating pods, must be gone before applying an API that
 enables managed-object reconciliation. Do not apply the complete overlay before
 that prerequisite is satisfied.
@@ -282,6 +329,8 @@ kubectl apply -k <private-overlay>
 Wait for readiness:
 
 ```sh
+kubectl -n flick rollout status deploy/postgres --timeout=180s
+kubectl -n flick rollout status deploy/valkey --timeout=180s
 kubectl -n flick rollout status statefulset/nats --timeout=180s
 kubectl -n flick rollout status deploy/flick-api --timeout=180s
 kubectl -n flick rollout status deploy/flick-worker --timeout=180s
@@ -321,14 +370,18 @@ Readiness and restarts:
 kubectl -n flick get pods -o wide
 kubectl -n flick get deploy,statefulset,svc,ingress,pvc
 kubectl -n flick describe pod -l app.kubernetes.io/name=flick-api
+kubectl -n flick describe pod -l app.kubernetes.io/name=postgres
 kubectl -n flick describe pod -l app.kubernetes.io/name=nats
 ```
 
-Logs:
+Logs (`deploy/flick-api` picks one replica; use the label selector to read all
+of them):
 
 ```sh
-kubectl -n flick logs deploy/flick-api --tail=200
+kubectl -n flick logs -l app.kubernetes.io/name=flick-api --tail=200 --prefix
 kubectl -n flick logs deploy/flick-worker --tail=200
+kubectl -n flick logs deploy/postgres --tail=200
+kubectl -n flick logs deploy/valkey --tail=200
 kubectl -n flick logs statefulset/nats --tail=200
 ```
 
@@ -338,21 +391,25 @@ Resource use:
 kubectl -n flick top pods
 kubectl -n flick top pod -l app.kubernetes.io/name=flick-api
 kubectl -n flick top pod -l app.kubernetes.io/name=flick-worker
+kubectl -n flick top pod -l app.kubernetes.io/name=postgres
 kubectl -n flick top pod -l app.kubernetes.io/name=nats
 ```
 
 Storage use:
 
 ```sh
-kubectl -n flick exec deploy/flick-api -- df -h /data
-kubectl -n flick exec deploy/flick-worker -- df -h /data
+kubectl -n flick exec deploy/postgres -- df -h /var/lib/postgresql/data
+kubectl -n flick exec deploy/postgres -- psql -U postgres -c \
+  "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE datname LIKE 'flick_%';"
 kubectl -n flick exec statefulset/nats -- df -h /data
 ```
 
-SQLite maintenance requires care because deleted ciphertext can remain in WAL
-or freelist pages until checkpoint or vacuum. Do not run manual maintenance
-commands without a backup and a maintenance window. See
-[SQLite maintenance](sqlite-maintenance.md) and [backup and restore](backup-restore.md).
+Deleted ciphertext can remain in PostgreSQL dead tuples until `VACUUM`
+reclaims them, and in WAL segments until they are recycled. Autovacuum handles
+routine cleanup; see [PostgreSQL maintenance](postgres-maintenance.md) for the
+checks, manual `VACUUM`, and disk-space limits, and
+[backup and restore](backup-restore.md) before running anything that rewrites
+tables.
 
 ## Edge Proxy and Cloudflare Routing
 
@@ -436,6 +493,11 @@ claims. Never restore an older worker without the acknowledgement protocol;
 select a compatible worker image explicitly instead of an unchecked worker
 `rollout undo`. See the [upgrade and rollback constraints](k3s-base.md#apply).
 
+Releases from before the PostgreSQL cutover read SQLite files from the removed
+`flick-api-data` and `flick-worker-data` volumes, so an API or worker image
+from that era cannot run on this layout; see
+[PostgreSQL cutover](postgres-cutover.md) for going back across the cutover.
+
 After checking compatibility, roll back API and web images to selected revisions:
 
 ```sh
@@ -462,8 +524,8 @@ operators still control infrastructure risk.
 Known residual risks:
 
 - OCI quotas, Free Tier eligibility, and regional capacity can change.
-- SQLite WAL, freelist pages, PVC snapshots, and backups may retain old
-  ciphertext after logical deletion.
+- PostgreSQL dead tuples and WAL segments, PVC snapshots, and `pg_dump`
+  archives may retain old ciphertext after logical deletion.
 - A compromised web image can steal plaintext before encryption or after
   decryption.
 - A compromised cluster can delete data early, deny service, or serve malicious

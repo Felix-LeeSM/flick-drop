@@ -37,6 +37,7 @@ Deployment/flick-api
 Deployment/flick-worker
 Deployment/postgres
 Deployment/valkey
+ConfigMap/postgres-init
 Service/flick-web
 Service/flick-api
 Service/flick-api-headless
@@ -53,6 +54,10 @@ ConfigMap/flick-config
 Secret/flick-secrets
 Secret/flick-db-api
 Secret/flick-db-worker
+Secret/flick-db-admin
+NetworkPolicy/flick-api
+NetworkPolicy/postgres
+NetworkPolicy/valkey
 Ingress/flick
 ```
 
@@ -62,12 +67,16 @@ Service for the worker's bearer-guarded `/metrics` listener on port `9091`.
 Service of `StatefulSet/nats`; clients connect through `Service/nats`.
 `Service/flick-api-headless` and `Service/flick-worker-metrics-headless`
 back VictoriaMetrics per-pod `dns_sd_configs` scraping (`deploy/base/monitoring/vmsingle.yaml`).
-`Secret/flick-db-api` and `Secret/flick-db-worker` split the database
-credentials so the API pod holds only `FLICK_DATABASE_URL` and the worker pod
-only `FLICK_WORKER_DATABASE_URL`; neither secretRef reaches the other role's
-DSN. M15 transition: these resources land in PR 6 (issue #425); until then
-`deploy/base` still runs the single-replica layout and does not carry the
-`FLICK_DATABASE_URL` secret yet.
+`Secret/flick-db-api` and `Secret/flick-db-worker` each hold one role
+password. `deploy/base/api.yaml` builds `FLICK_DATABASE_URL` from the
+`flick_api` password and `deploy/base/worker.yaml` builds
+`FLICK_WORKER_DATABASE_URL` from the `flick_worker` password, so neither pod
+can reach the other role's credentials. `Secret/flick-db-admin` holds the
+postgres superuser password, which no Flick process uses. `ConfigMap/postgres-init`
+creates both roles and databases on the first start of an empty
+`postgres-data` volume. The three NetworkPolicies limit PostgreSQL to the API
+and worker pods, Valkey to the API pods, and the API's live-transfer stream
+listener (`FLICK_INTERNAL_HTTP_PORT`) to other API pods.
 
 Opt-in monitoring lives in `deploy/base/monitoring/` and is applied separately
 with `kubectl apply -k deploy/base/monitoring`; `deploy/base/kustomization.yaml`
@@ -111,19 +120,23 @@ nats:
 These values are starting points, not guarantees. The deployment must be checked
 with `kubectl top`, pod restarts, and real upload/download smoke tests.
 
-M15 placement (`deploy/base`, issue #425): the two Osaka nodes carry the
-workload. `flick-core` (arm64, ~5.9 GiB) hosts postgres, valkey, nats,
-`flick-worker`, and one `flick-api` + `flick-web` replica; `osaka-micro`
-(amd64, ~952 MiB) hosts the second `flick-api` + `flick-web` replica.
-`loki` moves from `osaka-micro` to `flick-core` to free that memory.
-Node affinity pins `flick-api`, `flick-web`, and `flick-worker` to the Osaka
-node pool so the Korea nodes (`kr-micro-1`, `kr-micro-2`) never schedule them
-— cross-region RTT to the Osaka Postgres/NATS/S3 tier would tax every request.
+Rollout and spread (`deploy/base/api.yaml`, `deploy/base/web.yaml`):
 `flick-api` and `flick-web` use `RollingUpdate` with `maxSurge: 0,
-maxUnavailable: 1` so a node never runs two API replicas at once
-(`osaka-micro` has no headroom for a second 256 MiB pod), plus
-`preStop: sleep 5` and `terminationGracePeriodSeconds: 60` for live-transfer
-draining.
+maxUnavailable: 1`, so a rollout never runs more pods than the replica count
+(no surge pod needs spare memory), plus a 5-second `preStop` sleep. `flick-api` also sets
+`terminationGracePeriodSeconds: 60` for live-transfer draining
+(`cmd/flick-api/main.go` `shutdownTimeout`, 50 seconds). Both carry a soft
+`topologySpreadConstraints` on `kubernetes.io/hostname` that prefers one
+replica per node and still schedules on a single-node cluster.
+
+`deploy/base` names no node. Pinning workloads to particular nodes belongs in
+a deployment's private overlay. The public demo instance's overlay places the
+data tier (postgres, valkey, nats), `flick-worker`, and one `flick-api` +
+`flick-web` replica on its larger Osaka node (arm64, ~5.9 GiB) and the second
+`flick-api` + `flick-web` replica on the smaller Osaka node (amd64,
+~952 MiB), keeps all three off its Korea-region nodes (cross-region RTT to the
+Osaka Postgres/NATS/S3 tier would tax every request), and moves `loki` to the
+larger node to free memory on the smaller one.
 
 ## Free Tier Notes
 

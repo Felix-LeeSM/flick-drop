@@ -1,24 +1,15 @@
+# flick-api and flick-worker own no volume: both databases live in the
+# postgres pod, so either Deployment can run more than one replica.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: flick-api-data
+  name: postgres-data
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: flick-worker-data
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

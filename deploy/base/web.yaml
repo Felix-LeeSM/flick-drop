@@ -3,7 +3,14 @@ kind: Deployment
 metadata:
   name: flick-web
 spec:
-  replicas: 1
+  replicas: 2
+  # Same rollout as flick-api (deploy/base/api.yaml): one old pod stops before
+  # a new one starts, and the other replica keeps serving.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: flick-web
@@ -13,6 +20,13 @@ spec:
         app.kubernetes.io/name: flick-web
     spec:
       automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-web
       securityContext:
         fsGroup: 101
         runAsGroup: 101
@@ -40,6 +54,11 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          lifecycle:
+            # Endpoints drop this pod before nginx gets SIGTERM.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz

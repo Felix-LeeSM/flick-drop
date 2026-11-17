@@ -137,6 +137,13 @@
   - **대상**: `scripts/ops/migrate-sqlite-to-postgres.sh`(또는 SQLite CLI `sqlite3`+`psql` 검증 스크립트, `go.mod`에 SQLite 드라이버 미재도입), `docs/runbook/postgres-cutover.md`, `deploy/base/{postgres,valkey,pvc,secret,api,worker,web,ingress,kustomization}.yaml`, `deploy/base/monitoring/loki.yaml`(`flick-core` 이전), `deploy/k3d/kustomization.yaml`, `scripts/ci/{repo-structure.sh,k3d-smoke.sh}`.
   - **핵심**: RWO API/Worker PVC 제거, `api`/`worker` Secret 자격증명 분리, `Option 3A` 노드 배치(`loki`→`flick-core`, `api`×2/`web`×2→오사카 2노드, `RollingUpdate maxSurge:0 maxUnavailable:1`, `preStop: sleep 5`, `terminationGracePeriodSeconds: 60`), Postgres `PGDATA` 서브디렉터리 + `readOnlyRootFilesystem` 호환 볼륨, Valkey `--save "" --appendonly no`.
   - **Verify**: `bash scripts/ci/all.sh && bash scripts/ci/k8s-manifests.sh && bash scripts/ci/k3d-smoke.sh` (k3d 2노드 멀티 레플리카에서 `/api/secrets`, `/api/requests`, `/api/pipe/*` 전체 통과).
+  - **PR 6 (#425) 구현에서 확정·변경된 점**
+    1. 노드 고정(오사카 풀, 한국 노드 배제)과 `loki`→`flick-core` 이전은 공개 `deploy/base`에 넣지 않았다. 루트 `AGENTS.md`의 "공개 매니페스트는 일반적으로, 운영 overlay는 저장소 밖" 규칙에 따라 `flick-drop-ops`의 `deploy.sh`가 만드는 운영 overlay가 맡는다. base에는 노드 이름 없는 `topologySpreadConstraints`(hostname, `ScheduleAnyway`)만 둔다.
+    2. 컷오버에서 빈 스키마를 만들 때 reconcile이 돌지 않도록 `flick-api migrate` / `flick-worker migrate`(마이그레이션 후 종료)를 추가했다.
+    3. DSN은 Secret에 통째로 두지 않고 역할 비밀번호만 둔다(`flick-db-api`/`flick-db-worker` `password`). 각 파드가 `$(VAR)` 치환으로 DSN을 만들어 서로의 자격증명을 볼 수 없다. Postgres init 스크립트가 같은 비밀번호로 역할을 만든다.
+    4. 보안 문서의 "Valkey는 API에서만 닿는다"와 "스트림 포트는 클러스터 밖에서 닿지 않는다"를 NetworkPolicy 3개(`postgres`, `valkey`, `flick-api` 8081)로 강제했다. k3d smoke가 busybox 파드로 실제 차단을 확인한다.
+    5. `preStop`은 Kubernetes `sleep` 동작 대신 `exec sleep 5`를 쓴다(런타임 이미지가 Alpine이고, 1.30 미만 클러스터에서도 동작).
+    6. k3d smoke 첫 기동에서 API·worker가 Postgres보다 먼저 떠 4회 재시작 후 회복했다. 운영은 데이터 계층이 이미 떠 있어 영향이 없어 그대로 둔다.
 
 ---
 

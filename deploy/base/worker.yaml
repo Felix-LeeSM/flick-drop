@@ -29,6 +29,14 @@ spec:
                 name: flick-config
             - secretRef:
                 name: flick-secrets
+          env:
+            - name: FLICK_WORKER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flick-db-worker
+                  key: password
+            - name: FLICK_WORKER_DATABASE_URL
+              value: "postgres://flick_worker:$(FLICK_WORKER_DB_PASSWORD)@postgres:5432/flick_worker?sslmode=disable"
           resources:
             requests:
               cpu: 25m
@@ -46,14 +54,9 @@ spec:
             - name: metrics
               containerPort: 9091
           volumeMounts:
-            - name: worker-data
-              mountPath: /data
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: worker-data
-          persistentVolumeClaim:
-            claimName: flick-worker-data
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

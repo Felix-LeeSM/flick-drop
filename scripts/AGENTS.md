@@ -5,6 +5,11 @@ Scripts are the shared local and CI entrypoints.
 - `scripts/ci/*`: deterministic checks used by GitHub Actions and `mise run`.
 - `scripts/dev/*`: local multi-process development entrypoints.
 - `scripts/smoke/*`: scenario checks against running services.
+- `scripts/ops/*`: one-time operator tools run by hand against a live
+  deployment, never by CI or `mise run`. `scripts/ops/migrate-sqlite-to-postgres.sh`
+  loads the SQLite `api.db`/`worker.db` into PostgreSQL once, following
+  `docs/runbook/postgres-cutover.md`; `scripts/ops/test-migrate-sqlite-to-postgres.sh`
+  is its local regression check.
 
 CI and smoke scripts should be safe to run before the app is fully scaffolded.
 If a component does not exist yet, print a clear skip message and exit
