@@ -130,6 +130,16 @@ k3d image import \
   flick-local/flick-web:ci \
   -c "$cluster"
 
+# deploy/base/traefik.yaml uses the Traefik CRDs, which k3s installs through
+# its helm-install-traefik-crd job after `k3d cluster create --wait` returns.
+for crd in serverstransports.traefik.io middlewares.traefik.io; do
+  for _ in $(seq 1 60); do
+    kubectl get crd "$crd" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  kubectl wait --for=condition=established --timeout=60s "crd/$crd"
+done
+
 kubectl apply -k deploy/k3d
 kubectl -n flick rollout status deploy/postgres --timeout=180s
 kubectl -n flick rollout status deploy/valkey --timeout=120s
