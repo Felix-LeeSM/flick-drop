@@ -106,7 +106,7 @@ type pipeSendResponse struct {
 }
 
 func (s Server) pipeEnabled(w http.ResponseWriter) bool {
-	if !s.pipeRelayEnabled || s.pipeCoordinator == nil {
+	if s.pipeCoordinator == nil {
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is disabled")
 		return false
 	}
@@ -158,6 +158,11 @@ func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusGone, "expired", "pipe rendezvous expired")
 	case errors.Is(err, piperelay.ErrSessionClosed):
 		writeError(w, http.StatusGone, "closed", "pipe session closed")
+	case errors.Is(err, piperelay.ErrUnavailable):
+		if r.Context().Err() != nil {
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "live pipe relay is temporarily unavailable")
 	default:
 		if r.Context().Err() != nil {
 			return
@@ -187,6 +192,10 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusTooManyRequests, "capacity_exceeded", "server is at maximum concurrent pipe relay capacity")
 			return
 		}
+		if errors.Is(err, piperelay.ErrUnavailable) {
+			writePipeError(w, r, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to initialize pipe rendezvous")
 		return
 	}
@@ -211,7 +220,8 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 //     sender can decline again.
 //   - Network, for piperelay.MaxPendingPerNetwork, is SHA-256 of the network.
 //
-// Only the hashes are kept, in memory, for the session's lifetime.
+// Only the hashes reach the coordinator, which HMACs them again under
+// FLICK_RATELIMIT_KEY_SALT before they enter Valkey for the session's lifetime.
 func (s Server) pipeJoinClient(r *http.Request, recipient string) piperelay.JoinClient {
 	network := s.pipeJoinLimiter.clientNetwork(r)
 	return piperelay.JoinClient{
@@ -246,7 +256,7 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.pipeCoordinator.Join(headers[0], s.pipeJoinClient(r, body.Recipient))
+	result, err := s.pipeCoordinator.Join(r.Context(), headers[0], s.pipeJoinClient(r, body.Recipient))
 	if err != nil {
 		writePipeError(w, r, err)
 		return
@@ -353,7 +363,7 @@ func (s Server) selectPipe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.pipeCoordinator.Select(headers[0], headers[1], headers[2]); err != nil {
+	if err := s.pipeCoordinator.Select(r.Context(), headers[0], headers[1], headers[2]); err != nil {
 		writePipeError(w, r, err)
 		return
 	}
@@ -368,7 +378,7 @@ func (s Server) declinePipe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.pipeCoordinator.Decline(headers[0], headers[1], headers[2]); err != nil {
+	if err := s.pipeCoordinator.Decline(r.Context(), headers[0], headers[1], headers[2]); err != nil {
 		writePipeError(w, r, err)
 		return
 	}
@@ -383,7 +393,7 @@ func (s Server) cancelPipe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.pipeCoordinator.Cancel(headers[0], headers[1]); err != nil {
+	if err := s.pipeCoordinator.Cancel(r.Context(), headers[0], headers[1]); err != nil {
 		writePipeError(w, r, err)
 		return
 	}
@@ -459,7 +469,7 @@ func (s Server) sendPipe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "receiver_disconnected", "receiver disconnected during live stream")
 		case errors.Is(err, piperelay.ErrInvalidCode), errors.Is(err, piperelay.ErrNotFound),
 			errors.Is(err, piperelay.ErrExpired), errors.Is(err, piperelay.ErrSessionClosed),
-			errors.Is(err, piperelay.ErrCancelled):
+			errors.Is(err, piperelay.ErrCancelled), errors.Is(err, piperelay.ErrUnavailable):
 			writePipeError(w, r, err)
 		default:
 			if r.Context().Err() != nil {

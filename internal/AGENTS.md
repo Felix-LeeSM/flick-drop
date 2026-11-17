@@ -10,7 +10,7 @@ These packages are code boundaries, not service boundaries.
   uploads, and request object reconciliation in `internal/requests/store.go`,
   `validation.go`, `large.go`, and `cleanup.go`.
 - `storage`: S3-compatible object storage for large payloads, with a primary (`s3_object`) and optional secondary (`r2_object`) backend in `internal/storage/registry.go` (inline ciphertext rows live in `internal/secrets`).
-- `piperelay`: the in-memory live relay coordinator behind "Live transfer" (`/api/pipe/*`); nothing it relays is persisted (`internal/piperelay/coordinator.go:Coordinator`).
+- `piperelay`: the live relay coordinator behind "Live transfer" (`/api/pipe/*`): waiting rooms in non-persistent Valkey (`internal/piperelay/room.go`), ciphertext streamed replica-to-replica over HTTP and never persisted (`internal/piperelay/stream.go`, `internal/piperelay/coordinator.go:Coordinator`).
 - `events`: NATS JetStream publishing and consuming contracts.
 - `worker`: worker job execution and retry/idempotency logic.
 - `clientcrypto`: client-side encryption for non-browser clients; the Go mirror of `web/src/lib/crypto/`.

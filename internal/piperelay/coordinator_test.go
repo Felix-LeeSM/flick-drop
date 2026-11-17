@@ -3,13 +3,22 @@ package piperelay
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"runtime"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestNormalizeCode(t *testing.T) {
@@ -106,14 +115,120 @@ func client(n byte) JoinClient {
 	return JoinClient{Device: "d", Recipient: recipientOf(n), Key: clientKey(n), Network: clientNetwork(n)}
 }
 
-func newTestCoordinator(t *testing.T, opts CoordinatorOptions) *Coordinator {
+// openTestValkey는 FLICK_TEST_VALKEY_ADDR의 Valkey에 붙는다. 없으면 건너뛴다
+// (CI와 compose가 주소를 준다).
+func openTestValkey(t *testing.T) *redis.Client {
 	t.Helper()
+	addr := os.Getenv("FLICK_TEST_VALKEY_ADDR")
+	if addr == "" {
+		t.Skip("FLICK_TEST_VALKEY_ADDR is not set; the live relay coordinator runs only against Valkey")
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func randomHex(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// podNetwork는 API 레플리카 여러 개가 사는 가짜 클러스터 네트워크다. 레플리카마다
+// 192.0.2.N(문서용 주소) 하나를 광고하고, 스트림 전송은 그 주소:8081을 실제 테스트
+// 리스너로 이어 준다. 그래서 IP 리터럴 + 고정 포트 다이얼 경로를 그대로 지난다.
+type podNetwork struct {
+	t         *testing.T
+	valkey    *redis.Client
+	namespace string
+	salt      string
+	token     string
+	mu        sync.Mutex
+	pods      int
+	routes    map[string]string
+}
+
+const testInternalPort = 8081
+
+func newPodNetwork(t *testing.T) *podNetwork {
+	t.Helper()
+	return &podNetwork{
+		t:         t,
+		valkey:    openTestValkey(t),
+		namespace: "pipetest:" + randomHex(t) + ":",
+		salt:      randomHex(t),
+		token:     "internal-" + randomHex(t),
+		routes:    map[string]string{},
+	}
+}
+
+func (n *podNetwork) transport() http.RoundTripper {
+	dialer := &net.Dialer{Timeout: time.Second}
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			n.mu.Lock()
+			real, ok := n.routes[addr]
+			n.mu.Unlock()
+			if !ok {
+				return nil, fmt.Errorf("no pod listens on %s", addr)
+			}
+			return dialer.DialContext(ctx, network, real)
+		},
+	}
+}
+
+// startPod는 레플리카 하나(코디네이터 + 스트림 리스너)를 띄운다.
+func (n *podNetwork) startPod(opts CoordinatorOptions) *Coordinator {
+	n.t.Helper()
+	n.mu.Lock()
+	n.pods++
+	ip := netip.AddrFrom4([4]byte{192, 0, 2, byte(n.pods)})
+	n.mu.Unlock()
+
 	if opts.TTL == 0 {
 		opts.TTL = 5 * time.Second
 	}
-	coord := NewCoordinator(opts)
-	t.Cleanup(func() { _ = coord.Close() })
+	if opts.Valkey == nil {
+		opts.Valkey = n.valkey
+	}
+	opts.Namespace = n.namespace
+	opts.KeySalt = n.salt
+	opts.InternalToken = n.token
+	opts.AdvertiseIP = ip
+	opts.InternalPort = testInternalPort
+	opts.StreamTransport = n.transport()
+	coord, err := NewCoordinator(opts)
+	if err != nil {
+		n.t.Fatalf("NewCoordinator: %v", err)
+	}
+	listener := httptest.NewServer(coord.InternalHandler())
+	n.mu.Lock()
+	n.routes[netip.AddrPortFrom(ip, testInternalPort).String()] = listener.Listener.Addr().String()
+	n.mu.Unlock()
+	n.t.Cleanup(func() {
+		listener.Close()
+		_ = coord.Close()
+	})
 	return coord
+}
+
+func newTestCoordinator(t *testing.T, opts CoordinatorOptions) *Coordinator {
+	t.Helper()
+	return newPodNetwork(t).startPod(opts)
+}
+
+// active는 모든 레플리카를 통틀어 살아 있는 세션 수다.
+func active(t *testing.T, coord *Coordinator) int {
+	t.Helper()
+	n, err := coord.ActiveSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ActiveSessions: %v", err)
+	}
+	return n
 }
 
 // waitUntil은 송신자 Wait를 반복해 done이 참인 스냅숏을 돌려준다.
@@ -193,14 +308,14 @@ func TestCoordinator_Lifecycle(t *testing.T) {
 	if snap := waitUntil(t, coord, init, func(WaitSnapshot) bool { return true }); snap.ReceiverReady || snap.Recipient != "" || len(snap.Pending) != 0 {
 		t.Fatalf("snapshot before any receiver = %+v, want empty waiting room", snap)
 	}
-	join, err := coord.Join(init.Code, JoinClient{Device: "Chrome on Windows", Recipient: recipientOf(1), Key: clientKey(1)})
+	join, err := coord.Join(context.Background(), init.Code, JoinClient{Device: "Chrome on Windows", Recipient: recipientOf(1), Key: clientKey(1)})
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}
 	if len(join.VerifyCode) != 3 || join.Device != "Chrome on Windows" {
 		t.Fatalf("unexpected join metadata: %+v", join)
 	}
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	received := startReceive(ctx, coord, init.Code, join.ConnectionID)
@@ -221,8 +336,8 @@ func TestCoordinator_Lifecycle(t *testing.T) {
 	if got.meta.Kind != "file" || got.meta.EncryptedFilename != "dGVzdC50eHQ=" {
 		t.Fatalf("metadata mismatch: %+v", got.meta)
 	}
-	if active := coord.ActiveSessions(); active != 0 {
-		t.Fatalf("ActiveSessions() after completion = %d, want 0", active)
+	if n := active(t, coord); n != 0 {
+		t.Fatalf("ActiveSessions() after completion = %d, want 0", n)
 	}
 }
 
@@ -250,8 +365,8 @@ func TestCoordinator_TTL_Expiry(t *testing.T) {
 	if _, err := coord.Wait(ctx, init.Code, init.SenderToken, 0, time.Second); err != ErrNotFound && err != ErrExpired {
 		t.Fatalf("expected ErrNotFound or ErrExpired, got: %v", err)
 	}
-	if active := coord.ActiveSessions(); active != 0 {
-		t.Fatalf("ActiveSessions() = %d, want 0 after TTL expiry", active)
+	if n := active(t, coord); n != 0 {
+		t.Fatalf("ActiveSessions() = %d, want 0 after TTL expiry", n)
 	}
 }
 
@@ -259,16 +374,16 @@ func TestCoordinator_JoinAndSelectAfterExpiryAreRejected(t *testing.T) {
 	// 청소기가 돌기 전(만료 직후)에도 창이 닫힌 세션에는 들어가거나 고를 수 없다.
 	coord := newTestCoordinator(t, CoordinatorOptions{TTL: 50 * time.Millisecond, CleanInterval: time.Hour})
 	init, _ := coord.Init(context.Background())
-	join, err := coord.Join(init.Code, client(1))
+	join, err := coord.Join(context.Background(), init.Code, client(1))
 	if err != nil {
 		t.Fatalf("Join before expiry: %v", err)
 	}
 
 	time.Sleep(80 * time.Millisecond)
-	if _, err := coord.Join(init.Code, client(2)); err != ErrExpired {
+	if _, err := coord.Join(context.Background(), init.Code, client(2)); err != ErrExpired {
 		t.Fatalf("Join after expiry: %v, want ErrExpired", err)
 	}
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != ErrExpired {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != ErrExpired {
 		t.Fatalf("Select after expiry: %v, want ErrExpired", err)
 	}
 }
@@ -277,22 +392,22 @@ func TestCoordinator_SenderTokenRequired(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx := context.Background()
 	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 
 	// 6자리 코드만 아는 사람은 송신자 행동을 할 수 없고, 응답은 없는 코드와 같다.
 	if _, err := coord.Wait(ctx, init.Code, "forged", 0, time.Millisecond); err != ErrNotFound {
 		t.Fatalf("Wait with forged token: %v", err)
 	}
-	if err := coord.Select(init.Code, "", join.ConnectionID); err != ErrNotFound {
+	if err := coord.Select(context.Background(), init.Code, "", join.ConnectionID); err != ErrNotFound {
 		t.Fatalf("Select without token: %v", err)
 	}
-	if err := coord.Cancel(init.Code, "forged"); err != ErrNotFound {
+	if err := coord.Cancel(context.Background(), init.Code, "forged"); err != ErrNotFound {
 		t.Fatalf("Cancel with forged token: %v", err)
 	}
 	if _, err := coord.Send(ctx, init.Code, "forged", SessionMetadata{}, strings.NewReader("x")); err != ErrNotFound {
 		t.Fatalf("Send with forged token: %v", err)
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("forged sender calls must not end the session")
 	}
 }
@@ -303,7 +418,7 @@ func TestCoordinator_VerifyCodesArePerConnectionAndDistinct(t *testing.T) {
 
 	seen := map[string]bool{}
 	for i := 0; i < MaxPendingConnections; i++ {
-		join, err := coord.Join(init.Code, JoinClient{Device: "Safari on iPhone", Recipient: recipientOf(byte(i)), Key: clientKey(byte(i)), Network: clientNetwork(byte(i))})
+		join, err := coord.Join(context.Background(), init.Code, JoinClient{Device: "Safari on iPhone", Recipient: recipientOf(byte(i)), Key: clientKey(byte(i)), Network: clientNetwork(byte(i))})
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
@@ -339,7 +454,7 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 	var joins []JoinResult
 	var polls []<-chan error
 	for i := 0; i < 3; i++ {
-		join, err := coord.Join(init.Code, client(byte(i)))
+		join, err := coord.Join(context.Background(), init.Code, client(byte(i)))
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
@@ -353,7 +468,7 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 		}
 	}
 
-	if err := coord.Select(init.Code, init.SenderToken, joins[1].ConnectionID); err != nil {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, joins[1].ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	if err := decided(t, polls[1]); err != nil {
@@ -383,7 +498,7 @@ func TestCoordinator_ReceiveBeforeSelectionIsRejected(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx := context.Background()
 	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 
 	// 대기 중인 연결은 /receive를 붙잡아 둘 수 없다: 선택될 때까지 Status로 기다린다.
 	if got := recv(t, startReceive(ctx, coord, init.Code, join.ConnectionID)); got.err != ErrAwaitingDecision {
@@ -401,14 +516,14 @@ func TestCoordinator_PollingReceiverOutlastsTheProxyIdleLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 	poll := pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 30*time.Millisecond)
 
 	time.Sleep(500 * time.Millisecond)
 	if snap := waitPending(t, coord, init, 1); snap.Pending[0].ID != join.ConnectionID {
 		t.Fatalf("polling receiver dropped: %+v", snap)
 	}
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select after a long wait: %v", err)
 	}
 	if err := decided(t, poll); err != nil {
@@ -429,19 +544,19 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 
 	var ghosts []JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
-		join, err := coord.Join(init.Code, client(byte(i)))
+		join, err := coord.Join(context.Background(), init.Code, client(byte(i)))
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
 		ghosts = append(ghosts, join)
 	}
-	if _, err := coord.Join(init.Code, client(50)); err != ErrRoomFull {
+	if _, err := coord.Join(context.Background(), init.Code, client(50)); err != ErrRoomFull {
 		t.Fatalf("join into a full room: %v, want ErrRoomFull", err)
 	}
 
 	// 아무도 Status를 열지 않았으니 presence 시간이 지나면 자리가 비고, 세션은 그대로다.
 	time.Sleep(150 * time.Millisecond)
-	fresh, err := coord.Join(init.Code, client(51))
+	fresh, err := coord.Join(context.Background(), init.Code, client(51))
 	if err != nil {
 		t.Fatalf("join after the ghosts timed out: %v", err)
 	}
@@ -449,14 +564,14 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 	if snap.Pending[0].ID != fresh.ConnectionID {
 		t.Fatalf("room after pruning = %+v, want only the fresh joiner", snap.Pending)
 	}
-	if err := coord.Select(init.Code, init.SenderToken, ghosts[0].ConnectionID); err != ErrNotPending {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, ghosts[0].ConnectionID); err != ErrNotPending {
 		t.Fatalf("Select a dropped connection: %v, want ErrNotPending", err)
 	}
 	// 떨어진 연결은 거절이 아니다: 같은 기기가 다시 들어올 수 있다.
-	if _, err := coord.Join(init.Code, client(0)); err != nil {
+	if _, err := coord.Join(context.Background(), init.Code, client(0)); err != nil {
 		t.Fatalf("a dropped client rejoining: %v", err)
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("dropping idle connections burned the session")
 	}
 }
@@ -464,16 +579,16 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 func TestCoordinator_ChosenConnectionThatNeverReceivesEndsTheSession(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	init, _ := coord.Init(context.Background())
-	join, _ := coord.Join(init.Code, client(1))
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
-	for coord.ActiveSessions() != 0 && time.Now().Before(deadline) {
+	for active(t, coord) != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if coord.ActiveSessions() != 0 {
+	if active(t, coord) != 0 {
 		t.Fatal("a chosen connection that never opened Receive kept the session alive")
 	}
 }
@@ -484,7 +599,7 @@ func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *
 		coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: time.Hour})
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		init, _ := coord.Init(ctx)
-		join, _ := coord.Join(init.Code, client(1))
+		join, _ := coord.Join(context.Background(), init.Code, client(1))
 
 		sendDone := make(chan error, 1)
 		start := time.Now()
@@ -499,7 +614,7 @@ func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *
 			send()
 			time.Sleep(30 * time.Millisecond)
 		}
-		if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 			t.Fatalf("Select: %v", err)
 		}
 		if !sendFirst {
@@ -517,7 +632,7 @@ func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *
 		case <-time.After(time.Second):
 			t.Fatalf("sendFirst=%v: Send still waiting a second after the 100ms presence deadline", sendFirst)
 		}
-		if coord.ActiveSessions() != 0 {
+		if active(t, coord) != 0 {
 			t.Fatalf("sendFirst=%v: session survived its abandoned pick", sendFirst)
 		}
 		cancel()
@@ -529,7 +644,7 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 
 	held := make(chan error, MaxStatusPollsPerConnection)
 	for i := 0; i < MaxStatusPollsPerConnection; i++ {
@@ -544,7 +659,7 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	if _, err := coord.Status(ctx, init.Code, join.ConnectionID, time.Second); err != ErrPollInProgress {
 		t.Fatalf("status poll over the cap: %v, want ErrPollInProgress", err)
 	}
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	for i := 0; i < MaxStatusPollsPerConnection; i++ {
@@ -557,6 +672,48 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	}
 }
 
+// 롱폴 도중 죽은 레플리카의 poll은 연결이 다른 레플리카로 계속 폴링해도 제 수명이
+// 지나면 더는 세지 않는다. 그러지 않으면 그 연결은 롱폴을 하나만 열 수 있고, 끊긴
+// 소켓을 다시 여는 순간 409 poll_in_progress로 수신이 실패한다.
+func TestCoordinator_DeadReplicaPollStopsCounting(t *testing.T) {
+	const presence = 300 * time.Millisecond
+	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: presence})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, _ := coord.Init(ctx)
+	join, _ := coord.Join(ctx, init.Code, client(1))
+	id, _ := coord.roomIDFor(init.Code)
+
+	// Given: 다른 레플리카가 poll을 연 채로 죽었다(해제 없음). 수명은 hold 50ms + presence.
+	leaseKeys := []string{coord.leaseKey(id, join.ConnectionID), coord.pollsKey(id, join.ConnectionID)}
+	if err := acquireLeaseScript.Run(ctx, coord.valkey, leaseKeys, MaxStatusPollsPerConnection,
+		presence.Milliseconds(), "dead-replica-poll", (50*time.Millisecond + presence).Milliseconds()).Err(); err != nil {
+		t.Fatalf("acquire the dead poll: %v", err)
+	}
+
+	// When: 수신자는 그 수명보다 오래 짧은 롱폴을 이어 간다(존재 키는 계속 살아 있다).
+	until := time.Now().Add(3 * presence)
+	for time.Now().Before(until) {
+		if _, err := coord.Status(ctx, init.Code, join.ConnectionID, 50*time.Millisecond); err != nil {
+			t.Fatalf("keep-alive status: %v", err)
+		}
+	}
+
+	// Then: 두 롱폴을 동시에 열 수 있다.
+	held := make(chan error, MaxStatusPollsPerConnection)
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		go func() {
+			_, err := coord.Status(ctx, init.Code, join.ConnectionID, 200*time.Millisecond)
+			held <- err
+		}()
+	}
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		if err := decided(t, held); err != nil {
+			t.Fatalf("poll %d after the dead poll expired: %v", i, err)
+		}
+	}
+}
+
 func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	init, _ := coord.Init(context.Background())
@@ -566,7 +723,7 @@ func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 
 	var first JoinResult
 	for i := 0; i < MaxPendingPerNetwork; i++ {
-		join, err := coord.Join(init.Code, sameNetwork(byte(i)))
+		join, err := coord.Join(context.Background(), init.Code, sameNetwork(byte(i)))
 		if err != nil {
 			t.Fatalf("Join %d from one network: %v", i, err)
 		}
@@ -574,20 +731,20 @@ func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 			first = join
 		}
 	}
-	if _, err := coord.Join(init.Code, sameNetwork(10)); err != ErrNetworkFull {
+	if _, err := coord.Join(context.Background(), init.Code, sameNetwork(10)); err != ErrNetworkFull {
 		t.Fatalf("join over the per-network cap: %v, want ErrNetworkFull", err)
 	}
-	if _, err := coord.Join(init.Code, client(20)); err != nil {
+	if _, err := coord.Join(context.Background(), init.Code, client(20)); err != nil {
 		t.Fatalf("join from another network: %v", err)
 	}
 	// 같은 네트워크의 한 자리가 비면 그 네트워크가 다시 들어온다. 세션은 그대로다.
-	if err := coord.Decline(init.Code, init.SenderToken, first.ConnectionID); err != nil {
+	if err := coord.Decline(context.Background(), init.Code, init.SenderToken, first.ConnectionID); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
-	if _, err := coord.Join(init.Code, sameNetwork(11)); err != nil {
+	if _, err := coord.Join(context.Background(), init.Code, sameNetwork(11)); err != nil {
 		t.Fatalf("join after a slot on that network reopened: %v", err)
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("per-network rejections burned the session")
 	}
 }
@@ -600,7 +757,7 @@ func TestCoordinator_DeclineFreesSlotWithoutBurning(t *testing.T) {
 
 	var first JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
-		join, err := coord.Join(init.Code, client(byte(i)))
+		join, err := coord.Join(context.Background(), init.Code, client(byte(i)))
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
@@ -611,19 +768,19 @@ func TestCoordinator_DeclineFreesSlotWithoutBurning(t *testing.T) {
 	declined := pollUntilDecided(ctx, coord, init.Code, first.ConnectionID, 200*time.Millisecond)
 	waitPending(t, coord, init, MaxPendingConnections)
 
-	if err := coord.Decline(init.Code, init.SenderToken, first.ConnectionID); err != nil {
+	if err := coord.Decline(context.Background(), init.Code, init.SenderToken, first.ConnectionID); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
 	if err := decided(t, declined); err != ErrDeclined {
 		t.Fatalf("declined receiver status = %v, want ErrDeclined", err)
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("decline burned the session")
 	}
-	if _, err := coord.Join(init.Code, client(100)); err != nil {
+	if _, err := coord.Join(context.Background(), init.Code, client(100)); err != nil {
 		t.Fatalf("join into the reopened slot: %v", err)
 	}
-	if err := coord.Decline(init.Code, init.SenderToken, first.ConnectionID); err != ErrNotPending {
+	if err := coord.Decline(context.Background(), init.Code, init.SenderToken, first.ConnectionID); err != ErrNotPending {
 		t.Fatalf("second decline of the same connection: %v", err)
 	}
 }
@@ -632,17 +789,17 @@ func TestCoordinator_DeclinedClientCannotRejoin(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	init, _ := coord.Init(context.Background())
 
-	denied, _ := coord.Join(init.Code, client(1))
-	if err := coord.Decline(init.Code, init.SenderToken, denied.ConnectionID); err != nil {
+	denied, _ := coord.Join(context.Background(), init.Code, client(1))
+	if err := coord.Decline(context.Background(), init.Code, init.SenderToken, denied.ConnectionID); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
-	if _, err := coord.Join(init.Code, client(1)); err != ErrDeclined {
+	if _, err := coord.Join(context.Background(), init.Code, client(1)); err != ErrDeclined {
 		t.Fatalf("rejoin from the declined client: err = %v, want ErrDeclined", err)
 	}
-	if _, err := coord.Join(init.Code, client(2)); err != nil {
+	if _, err := coord.Join(context.Background(), init.Code, client(2)); err != nil {
 		t.Fatalf("a different client must still join: %v", err)
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("blocked rejoin burned the session")
 	}
 }
@@ -655,23 +812,23 @@ func TestCoordinator_RoomFullRejectsWithoutBurning(t *testing.T) {
 
 	var last JoinResult
 	for i := 0; i < MaxPendingConnections; i++ {
-		join, err := coord.Join(init.Code, client(byte(i)))
+		join, err := coord.Join(context.Background(), init.Code, client(byte(i)))
 		if err != nil {
 			t.Fatalf("Join %d: %v", i, err)
 		}
 		last = join
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := coord.Join(init.Code, client(byte(50+i))); err != ErrRoomFull {
+		if _, err := coord.Join(context.Background(), init.Code, client(byte(50+i))); err != ErrRoomFull {
 			t.Fatalf("extra join %d: err = %v, want ErrRoomFull", i, err)
 		}
 	}
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("room-full rejections burned the session")
 	}
 
 	// 세션은 그대로 살아 있어 전송까지 끝난다.
-	if err := coord.Select(init.Code, init.SenderToken, last.ConnectionID); err != nil {
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, last.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	received := startReceive(ctx, coord, init.Code, last.ConnectionID)
@@ -689,9 +846,9 @@ func TestCoordinator_SelectedLocksOutLateJoinersWithoutBurning(t *testing.T) {
 	defer cancel()
 	init, _ := coord.Init(ctx)
 
-	first, _ := coord.Join(init.Code, client(1))
-	second, _ := coord.Join(init.Code, client(2))
-	if err := coord.Select(init.Code, init.SenderToken, first.ConnectionID); err != nil {
+	first, _ := coord.Join(context.Background(), init.Code, client(1))
+	second, _ := coord.Join(context.Background(), init.Code, client(2))
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, first.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	winner := startReceive(ctx, coord, init.Code, first.ConnectionID)
@@ -702,7 +859,7 @@ func TestCoordinator_SelectedLocksOutLateJoinersWithoutBurning(t *testing.T) {
 	}
 	// 예전에는 늦은 연결 3번이 세션을 태웠다. 이제 몇 번이 와도 세션과 전송은 그대로다.
 	for i := 0; i < 5; i++ {
-		if _, err := coord.Join(init.Code, client(byte(10+i))); err != ErrAlreadyConnected {
+		if _, err := coord.Join(context.Background(), init.Code, client(byte(10+i))); err != ErrAlreadyConnected {
 			t.Fatalf("late join %d: %v", i, err)
 		}
 	}
@@ -721,7 +878,7 @@ func TestCoordinator_PendingReceiverStoppingPollsFreesSlot(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	init, _ := coord.Init(context.Background())
 
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 	pollCtx, stopPolling := context.WithCancel(context.Background())
 	left := pollUntilDecided(pollCtx, coord, init.Code, join.ConnectionID, 20*time.Millisecond)
 	waitPending(t, coord, init, 1)
@@ -731,7 +888,7 @@ func TestCoordinator_PendingReceiverStoppingPollsFreesSlot(t *testing.T) {
 		t.Fatalf("stopped poll returned %v", err)
 	}
 	waitPending(t, coord, init, 0)
-	if coord.ActiveSessions() != 1 {
+	if active(t, coord) != 1 {
 		t.Fatal("a pending receiver leaving burned the session")
 	}
 }
@@ -742,8 +899,8 @@ func TestCoordinator_BurnsNeverCutAnActiveStream(t *testing.T) {
 	defer cancel()
 	init, _ := coord.Init(ctx)
 
-	join, _ := coord.Join(init.Code, client(1))
-	if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
+	if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	received := startReceive(ctx, coord, init.Code, join.ConnectionID)
@@ -761,9 +918,9 @@ func TestCoordinator_BurnsNeverCutAnActiveStream(t *testing.T) {
 	// 스트리밍 도중: TTL(100ms)이 지나 청소기가 여러 번 돌고, 늦은 연결과 취소가 들어온다.
 	time.Sleep(300 * time.Millisecond)
 	for i := 0; i < 5; i++ {
-		_, _ = coord.Join(init.Code, client(byte(20+i)))
+		_, _ = coord.Join(context.Background(), init.Code, client(byte(20+i)))
 	}
-	if err := coord.Cancel(init.Code, init.SenderToken); err != ErrStreaming {
+	if err := coord.Cancel(context.Background(), init.Code, init.SenderToken); err != ErrStreaming {
 		t.Fatalf("Cancel during streaming: %v, want ErrStreaming", err)
 	}
 
@@ -788,8 +945,8 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 	for i := 0; i < 400; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		init, _ := coord.Init(ctx)
-		join, _ := coord.Join(init.Code, client(1))
-		if err := coord.Select(init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		join, _ := coord.Join(context.Background(), init.Code, client(1))
+		if err := coord.Select(context.Background(), init.Code, init.SenderToken, join.ConnectionID); err != nil {
 			t.Fatalf("iteration %d: Select: %v", i, err)
 		}
 		received := startReceive(ctx, coord, init.Code, join.ConnectionID)
@@ -800,11 +957,10 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 			_, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, bytes.NewReader(payload))
 			sendDone <- err
 		}()
-		// Cancel이 Send의 여러 지점(시작 전·스트리밍 표시 직전·복사 중)에 걸리도록 조금씩 늦춘다.
-		for j := 0; j < i%40; j++ {
-			runtime.Gosched()
-		}
-		cancelErr := coord.Cancel(init.Code, init.SenderToken)
+		// Cancel이 Send의 여러 지점(송신 점유 전·스트리밍 표시 직전·복사 중)에 걸리도록
+		// 0~3.9ms 사이로 늦춘다. Send는 Valkey 왕복이 여럿이라 늦추지 않으면 취소만 이긴다.
+		time.Sleep(time.Duration(i%40) * 100 * time.Microsecond)
+		cancelErr := coord.Cancel(context.Background(), init.Code, init.SenderToken)
 		sendErr := <-sendDone
 		got := recv(t, received)
 		cancel()
@@ -832,6 +988,9 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 		}
 	}
 	t.Logf("cancel won %d times, stream won %d times", cancelWon, streamWon)
+	if cancelWon == 0 || streamWon == 0 {
+		t.Fatalf("the race never reached one side (cancel won %d, stream won %d); widen the delays", cancelWon, streamWon)
+	}
 }
 
 func TestCoordinator_CancelEndsWaitingReceivers(t *testing.T) {
@@ -839,20 +998,20 @@ func TestCoordinator_CancelEndsWaitingReceivers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(init.Code, client(1))
+	join, _ := coord.Join(context.Background(), init.Code, client(1))
 	waiting := pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 200*time.Millisecond)
 	waitPending(t, coord, init, 1)
 	// Join은 Status보다 먼저 목록에 오르므로, Status가 열릴 시간을 준다
 	// (세션이 사라진 뒤에 열면 ErrNotFound를 받는다).
 	time.Sleep(50 * time.Millisecond)
 
-	if err := coord.Cancel(init.Code, init.SenderToken); err != nil {
+	if err := coord.Cancel(context.Background(), init.Code, init.SenderToken); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	if err := decided(t, waiting); err != ErrCancelled {
 		t.Fatalf("waiting receiver: %v, want ErrCancelled", err)
 	}
-	if coord.ActiveSessions() != 0 {
+	if active(t, coord) != 0 {
 		t.Fatal("cancel did not remove the session")
 	}
 }

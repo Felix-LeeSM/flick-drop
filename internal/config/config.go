@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -65,9 +66,17 @@ type Config struct {
 	// before they become Valkey keys (FLICK_RATELIMIT_KEY_SALT). Required when
 	// ValkeyAddr is set.
 	RateLimitKeySalt string
-	NATSURL          string
-	NATSStream       string
-	NATSJobSubject   string
+	// InternalHTTPPort is the live-transfer stream listener port, the same on
+	// every API replica (FLICK_INTERNAL_HTTP_PORT, default 8081). A sender's
+	// replica dials the receiver's replica on it.
+	InternalHTTPPort uint16
+	// PodIP is the IP this replica advertises in Valkey for the stream
+	// listener (FLICK_POD_IP from the Kubernetes Downward API). Empty means a
+	// single host outside Kubernetes and resolves to 127.0.0.1.
+	PodIP          netip.Addr
+	NATSURL        string
+	NATSStream     string
+	NATSJobSubject string
 	// PayloadInlineMaxBytes bounds one encrypted secret; MaxFileBytes bounds the
 	// file the browser may pick. MaxTotalBytes bounds the cumulative stored
 	// bytes per backend (0 = unlimited) so multi-backend deployments stay inside
@@ -204,6 +213,21 @@ func Load() (Config, error) {
 	}
 	if cfg.PipeMaxConcurrent, err = envPositiveInt("FLICK_PIPE_MAX_CONCURRENT", cfg.PipeMaxConcurrent); err != nil {
 		return Config{}, err
+	}
+	internalPort, err := envPositiveInt("FLICK_INTERNAL_HTTP_PORT", defaultInternalHTTPPort)
+	if err != nil {
+		return Config{}, err
+	}
+	if internalPort > 65535 {
+		return Config{}, fmt.Errorf("FLICK_INTERNAL_HTTP_PORT must be a TCP port (1..65535)")
+	}
+	cfg.InternalHTTPPort = uint16(internalPort)
+	cfg.PodIP = netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	if raw := os.Getenv("FLICK_POD_IP"); raw != "" {
+		// An IP literal only: the peer replica dials exactly this address.
+		if cfg.PodIP, err = netip.ParseAddr(raw); err != nil {
+			return Config{}, fmt.Errorf("FLICK_POD_IP must be an IP address: %w", err)
+		}
 	}
 	if raw := os.Getenv("FLICK_TRUSTED_PROXIES"); raw != "" {
 		cfg.TrustedProxies, err = parseTrustedProxies(raw)

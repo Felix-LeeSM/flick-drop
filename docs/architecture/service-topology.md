@@ -43,20 +43,37 @@ in-flight transfers inside `terminationGracePeriodSeconds: 60`
 (`preStop: sleep 5`, server `Shutdown` timeout 50s).
 
 `internal/piperelay` implements the live relay ("Live transfer") behind
-`/api/pipe/*` (`internal/httpapi/piperelay.go`). Room metadata, Pub/Sub
-signals, and poll leases live in Valkey (`pipe:room:{codeHash}`,
-`pipe:ev:{codeHash}`, `pipe:poll:{codeHash}:{connID}`); ciphertext bytes never
-touch Valkey. The encrypted stream itself goes pod-to-pod over direct HTTP:
-the receiving pod registers its `POD_IP` and a one-time stream secret in
-Valkey, and the sending pod dials
-`POST http://<receiver_pod_ip>:<port>/internal/pipe/stream/{codeHash}`
-(authenticated by `X-Flick-Internal-Token` plus the one-time stream secret;
-dial targets are IPv4/IPv6 literals on the fixed internal port only). Nothing
-reaches the databases, NATS, the worker, or object storage, and a rolling
-restart drops only sessions whose stream is mid-flight (bounded by the 60s
-grace). No relay request stays silent longer than 25 seconds before a decision
-(`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the 100-second idle
-cut of a proxy such as Cloudflare. The flow:
+`/api/pipe/*` (`internal/httpapi/piperelay.go`), so any API replica answers any
+call of a transfer. Each room's whole state is one Valkey hash
+(`pipe:room:{roomID}`, where `roomID` is the HMAC-SHA-256 of the 6-digit code
+under `FLICK_RATELIMIT_KEY_SALT`), written by compare-and-set Lua scripts that
+announce every change on `pipe:ev:{roomID}` (`internal/piperelay/room.go`).
+Each replica holds one Pub/Sub pattern subscription and wakes its local
+long-polls from it, re-reading the room at least every 2 seconds
+(`resyncInterval`) in case a message was lost. `pipe:poll:{roomID}:{hash of the
+connection ID}` marks a waiting receiver present and expires 35 seconds after
+its last `/status` poll started or ended. `pipe:polls:{roomID}:{hash of the
+connection ID}` holds one member per open poll, scored by its 25-second hold
+plus those 35 seconds on Valkey's clock, so a poll that a dead replica never
+released stops counting by then on its own. `pipe:rooms` (sorted by deadline) backs the concurrent-session
+cap across replicas. Ciphertext bytes never touch Valkey.
+
+The encrypted stream itself goes pod-to-pod over direct HTTP
+(`internal/piperelay/stream.go`). The receiver's `/receive` writes its
+replica's `FLICK_POD_IP` into the room and waits; the sender's replica draws a
+one-time stream secret, stores only its SHA-256 in the room, and dials
+`POST http://{receiver IP}:{FLICK_INTERNAL_HTTP_PORT}/internal/pipe/stream/{roomID}`
+with `X-Flick-Internal-Token` and the secret. The dial target is an IP literal
+from the room plus this deployment's fixed internal port, never a host name, and
+the client never follows a redirect or an `HTTP_PROXY`. The stream listener
+answers `200` only after the whole body reached the receiver's response, so the
+sender's replica tells a completed transfer from a receiver that left
+(`502 receiver_disconnected`). Nothing reaches the databases, NATS, the worker,
+or object storage. A waiting room survives the replica that created it: a
+rolling restart cuts only a stream still running when the 50-second shutdown
+timeout ends. No relay request stays silent longer than 25 seconds before a
+decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the
+100-second idle cut of a proxy such as Cloudflare. The flow:
 
 1. Sender `POST /api/pipe/init` gets the 6-digit code and sender token.
 2. Each receiver `POST /api/pipe/join` with the code and its browser-generated
@@ -65,7 +82,10 @@ cut of a proxy such as Cloudflare. The flow:
 3. Each receiver long-polls `GET /api/pipe/status` (up to 25 seconds per poll)
    until it is selected, declined, not selected, or the session ends. A receiver
    with no open `/status` call for 35 seconds (`internal/piperelay/coordinator.go`
-   `defaultPresenceTimeout`) drops out of the room.
+   `defaultPresenceTimeout`) drops out of the room. On `SIGTERM` an open poll
+   answers at once (`Coordinator.Drain`), and the browser re-polls through
+   another replica (`web/src/lib/crypto/pipe.ts` `fetchLongPoll` retries one
+   5xx or dropped socket).
 4. Sender long-polls `GET /api/pipe/wait?since=N` (up to 25 seconds per poll)
    for the waiting list (each row carries that receiver's age recipient).
 5. Sender calls `POST /api/pipe/select` or `POST /api/pipe/decline` per
@@ -80,11 +100,15 @@ cut of a proxy such as Cloudflare. The flow:
 `docs/architecture/security-model.md` (Live Relay) defines what each credential
 unlocks and why rejected receivers never burn a session.
 
-`FLICK_PIPE_RELAY_ENABLED=false` (`internal/config/config.go` `Load`) starts the
-API without a coordinator (`cmd/flick-api/main.go`), and every `/api/pipe/*`
-call answers `503 service_unavailable`. The web UI still shows "Live transfer";
-a send or receive attempt then reads "Live transfer is currently disabled on
-this server." (`web/src/lib/crypto/pipe.ts`).
+`FLICK_PIPE_RELAY_ENABLED=false` or an empty `FLICK_VALKEY_ADDR`
+(`internal/config/config.go` `Load`) starts the API without a coordinator or
+stream listener (`cmd/flick-api/main.go`): `/api/config` reports
+`pipe_relay_enabled: false` and every `/api/pipe/*` call answers
+`503 service_unavailable`. A Valkey error at runtime answers the same `503` for
+that call only. The web UI still shows "Live transfer";
+a send or receive attempt then reads "Live transfer is not available on this
+server right now." (`web/src/lib/crypto/pipe.ts`), wording that fits both
+cases.
 
 The relay is a server pipe rather than WebRTC peer-to-peer on purpose. Direct
 browser-to-browser connections fail behind many NATs and mobile carrier CGNAT

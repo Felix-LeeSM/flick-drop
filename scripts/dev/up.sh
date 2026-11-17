@@ -18,6 +18,11 @@ export FLICK_NATS_JOB_SUBJECT="${FLICK_NATS_JOB_SUBJECT:-flick.jobs}"
 # databases; both entrypoints fail fast when their DSN is empty.
 export FLICK_DATABASE_URL="${FLICK_DATABASE_URL:-postgres://flick_api:flick_api@127.0.0.1:5432/flick_api?sslmode=disable}"
 export FLICK_WORKER_DATABASE_URL="${FLICK_WORKER_DATABASE_URL:-postgres://flick_worker:flick_worker@127.0.0.1:5432/flick_worker?sslmode=disable}"
+# Live transfer (/api/pipe/*) keeps its waiting rooms in Valkey and the rate
+# limiter shares buckets there; without FLICK_VALKEY_ADDR the API answers
+# /api/pipe/* with 503. FLICK_DEV_SKIP_VALKEY=1 runs without it.
+export FLICK_VALKEY_ADDR="${FLICK_VALKEY_ADDR-127.0.0.1:6379}"
+export FLICK_RATELIMIT_KEY_SALT="${FLICK_RATELIMIT_KEY_SALT:-change-me-ratelimit-local}"
 export FLICK_PAYLOAD_INLINE_MAX_BYTES="${FLICK_PAYLOAD_INLINE_MAX_BYTES:-1048576}"
 export FLICK_MAX_FILE_BYTES="${FLICK_MAX_FILE_BYTES:-268435456}"
 export FLICK_DEFAULT_TTL_SECONDS="${FLICK_DEFAULT_TTL_SECONDS:-3600}"
@@ -128,6 +133,40 @@ ensure_postgres() {
 	return 1
 }
 
+ensure_valkey() {
+	if [ "${FLICK_DEV_SKIP_VALKEY:-}" = "1" ]; then
+		echo "dev: skipping Valkey because FLICK_DEV_SKIP_VALKEY=1 (live transfer answers 503)"
+		export FLICK_VALKEY_ADDR=""
+		return
+	fi
+
+	if nc -z 127.0.0.1 6379 >/dev/null 2>&1; then
+		echo "dev: using existing Valkey at 127.0.0.1:6379"
+		return
+	fi
+
+	if ! command -v docker >/dev/null 2>&1; then
+		echo "dev: docker is required to start local Valkey" >&2
+		exit 1
+	fi
+	if ! docker info >/dev/null 2>&1; then
+		echo "dev: docker daemon is not available" >&2
+		exit 1
+	fi
+
+	echo "dev: starting Valkey"
+	docker compose -p "$compose_project" up -d valkey
+	for _ in $(seq 1 60); do
+		if docker compose -p "$compose_project" exec -T valkey valkey-cli ping >/dev/null 2>&1; then
+			echo "dev: valkey ready at 127.0.0.1:6379"
+			return 0
+		fi
+		sleep 1
+	done
+	echo "dev: valkey did not become ready at 127.0.0.1:6379" >&2
+	return 1
+}
+
 ensure_nats() {
 	if [ "${FLICK_DEV_SKIP_NATS:-}" = "1" ]; then
 		echo "dev: skipping NATS startup because FLICK_DEV_SKIP_NATS=1"
@@ -228,6 +267,7 @@ monitor_processes() {
 }
 
 ensure_postgres
+ensure_valkey
 ensure_nats
 ensure_minio
 install_web_deps

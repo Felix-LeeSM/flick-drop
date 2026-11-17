@@ -89,8 +89,11 @@ Rationale (decided 2026-11-16, milestone M15):
   (`security-model.md`, "Valkey") — and a Valkey outage degrades the rate
   limiter to per-process memory plus a `503` on `/api/pipe/*` rather than
   failing `/readyz`.
-- In-memory live-transfer sessions stay process-local between API replicas
-  only until M15 PR 5 (issue #424) moves the rendezvous to Valkey.
+- Live-transfer rooms live in Valkey since M15 PR 5 (issue #424); the
+  ciphertext goes replica-to-replica over plain HTTP on
+  `FLICK_INTERNAL_HTTP_PORT` instead of through Valkey, because Valkey Streams
+  would buffer a whole 256 MiB transfer in a small Valkey and a reverse proxy to
+  one owning replica would tie the waiting room to that replica's lifetime.
 
 ## Object Storage
 

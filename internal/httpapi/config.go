@@ -18,6 +18,6 @@ func (s Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, configResponse{
 		PayloadInlineMaxBytes: s.advertisedInlineMaxBytes,
 		MaxFileBytes:          s.maxFileBytes,
-		PipeRelayEnabled:      s.pipeRelayEnabled,
+		PipeRelayEnabled:      s.pipeCoordinator != nil,
 	})
 }

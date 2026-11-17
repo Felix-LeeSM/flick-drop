@@ -59,7 +59,7 @@
 
 1. **Valkey 상태 모델 (암호문 0바이트)**
    - Valkey 키(`pipe:room:{codeHash}`, `TTL <= 3m`)에는 방 메타데이터(`state`, `sender_token_hash`, `selected_connection_id`, `receiver_pod_ip`, `stream_secret_hash`, `expires_at`, `version`)와 대기 연결 목록만 저장한다.
-   - **`polls` 누수 방지**: 기존 인메모리 `conn.polls` 카운터 대신 TTL 35초(`presenceTimeout`) 기반 Redis/Valkey lease 키(`pipe:poll:{codeHash}:{connID}`)를 사용해 파드 크래시 시에도 35초 내 자동 해제된다.
+   - **`polls` 누수 방지**: 기존 인메모리 `conn.polls` 카운터 대신, 연결 존재는 TTL 35초(`presenceTimeout`) 키 `pipe:poll:{roomID}:{hash}`로, 열린 롱폴 수는 poll마다 멤버 하나를 두는 ZSET `pipe:polls:{roomID}:{hash}`(score = hold + 35초, Valkey 시계)로 센다. 정수 카운터는 다른 레플리카의 폴링이 TTL을 계속 늘려 죽은 파드의 몫이 영영 풀리지 않아서(PR 5 리뷰 지적) 멤버별 만료로 바꿨다.
    - Pub/Sub 채널(`pipe:ev:{codeHash}`)로 상태 변경·선택·거절·취소·`receiver_pod_ip` 준비 이벤트를 모든 API 파드에 즉시 브로드캐스트한다.
 2. **양방향 도착 및 스트림 백프레셔**
    - 브라우저는 `POST /api/pipe/select` 직후 `POST /api/pipe/send`를 먼저 호출하므로([web/src/lib/state/pipe-relay.svelte.ts](../../../web/src/lib/state/pipe-relay.svelte.ts#L206-L235)), 송신자가 붙은 Pod B는 `receiver_pod_ip`가 등록될 때까지 Pub/Sub로 최대 `35s` 대기한 뒤 미접속 시 `chosenAbandoned`로 방을 원자적으로 종료한다.
@@ -72,6 +72,14 @@
      1. `SIGTERM` 수신 즉시 대기실 롱폴(`/wait`, `/status`) 컨텍스트를 깨워 현재 스냅샷 `200 OK`를 즉시 반환하게 해,
      2. HTTP `Shutdown` 타임아웃을 `50s`로 늘려 진행 중인 `/send`·`/receive`·`/internal/pipe/stream` 연결은 완료될 때까지 드레이닝한다.
    - 프론트엔드 [web/src/lib/crypto/pipe.ts](../../../web/src/lib/crypto/pipe.ts#L251-L320)의 `waitForPipeUpdate`(`/wait`)에 `5xx`/네트워크 `TypeError` 안전 재시도를 추가하고, `pollPipeStatus`(`/status`)도 소켓 단절(`TypeError`) 1회 재시도를 잡도록 보강한다.
+
+4. **PR 5 (#424) 구현에서 확정·변경된 점**
+   - 방 키는 코드의 SHA-256이 아니라 `FLICK_RATELIMIT_KEY_SALT` HMAC(`roomID`)이다. 6자리 코드는 90만 개뿐이라 SHA-256은 키 덤프만으로 역산된다. 클라이언트 해시도 같은 솔트로 다시 HMAC해 저장한다.
+   - 스트림 1회용 비밀은 **송신 쪽 파드**가 만들고 방에는 SHA-256만 둔다(수신 파드가 만들면 송신 파드가 읽을 평문을 Valkey에 둬야 한다). 수신 파드는 IP만 광고한다.
+   - 방 상태는 해시 하나(`rev`+`state` JSON)를 Lua CAS로 쓰고 같은 스크립트에서 `PUBLISH`한다. 만료·선택 후 미수신은 읽을 때마다 `settle`이 끝내고, 레플리카마다 30초 청소기가 같은 규칙을 돈다. 끝난 방은 1분 묘비로 남아 대기 중인 기기가 끝난 이유를 받는다.
+   - 스트림 리스너는 Kubernetes 밖에서도 항상 뜬다(`FLICK_POD_IP` 비면 `127.0.0.1`). 코드 경로를 하나로 유지한다.
+   - `scripts/dev/up.sh`의 Valkey 연결을 PR 6에서 PR 5로 당겼다. 이 PR부터 Valkey 없이는 `/api/pipe/*`가 503이라 dev와 `tests/e2e/pipe-relay.live.mjs`가 Valkey를 필요로 한다.
+   - 실제 프로세스 두 개 사이의 전송 검증은 한 호스트에서 내부 포트를 공유할 수 없어 PR 6의 k3d multi-replica smoke로 넘긴다. PR 5는 가짜 Pod 네트워크(192.0.2.N → 로컬 리스너)로 두 코디네이터·두 라우터 사이를 검증하고, 실제 바이너리 한 개로 전송과 SIGTERM 드레이닝을 확인했다.
 
 ### 3.3 Rate Limiter · Telemetry · Monitoring
 

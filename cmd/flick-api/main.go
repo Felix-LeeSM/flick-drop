@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,6 +22,11 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
+
+// shutdownTimeout bounds how long SIGTERM waits for in-flight requests,
+// mostly live transfers. It stays under the pod's 60-second
+// terminationGracePeriodSeconds minus its 5-second preStop sleep.
+const shutdownTimeout = 50 * time.Second
 
 func main() {
 	logger := telemetry.NewLogger()
@@ -167,23 +173,51 @@ func main() {
 		log.Fatalf("create request store: %v", err)
 	}
 
-	var pipeCoordinator *piperelay.Coordinator
-	if cfg.PipeRelayEnabled {
-		pipeCoordinator = piperelay.NewCoordinator(piperelay.CoordinatorOptions{
-			MaxConcurrent: cfg.PipeMaxConcurrent,
-		})
-		defer pipeCoordinator.Close()
-		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d)", cfg.PipeMaxConcurrent)
-	}
-
-	// Valkey shares rate-limit buckets across replicas. It is optional: empty
-	// FLICK_VALKEY_ADDR, or Valkey down at runtime, keeps each replica on its
-	// own in-process buckets, and /readyz never depends on it.
+	// Valkey shares rate-limit buckets and live-transfer rooms across
+	// replicas. It is optional: empty FLICK_VALKEY_ADDR, or Valkey down at
+	// runtime, keeps each replica on its own in-process rate-limit buckets,
+	// and /readyz never depends on it.
 	var valkey *redis.Client
 	if cfg.ValkeyAddr != "" {
 		valkey = httpapi.NewValkeyClient(cfg.ValkeyAddr)
 		defer valkey.Close()
 		log.Printf("flick-api rate limiter shares buckets through valkey")
+	}
+
+	// Live transfer needs Valkey: any replica may hold either side of a
+	// transfer. Without it /api/pipe/* answers 503 and /api/config reports
+	// pipe_relay_enabled=false. The stream listener carries ciphertext from
+	// the sender's replica to the receiver's replica.
+	var pipeCoordinator *piperelay.Coordinator
+	var streamServer *http.Server
+	switch {
+	case cfg.PipeRelayEnabled && valkey == nil:
+		log.Printf("flick-api live pipe relay disabled: FLICK_VALKEY_ADDR is empty")
+	case cfg.PipeRelayEnabled:
+		pipeCoordinator, err = piperelay.NewCoordinator(piperelay.CoordinatorOptions{
+			Valkey:        valkey,
+			KeySalt:       cfg.RateLimitKeySalt,
+			InternalToken: cfg.InternalToken,
+			AdvertiseIP:   cfg.PodIP,
+			InternalPort:  cfg.InternalHTTPPort,
+			MaxConcurrent: cfg.PipeMaxConcurrent,
+		})
+		if err != nil {
+			log.Fatalf("create live pipe relay: %v", err)
+		}
+		defer pipeCoordinator.Close()
+		streamServer = &http.Server{
+			// Bound to the advertised address only (FLICK_POD_IP, 127.0.0.1
+			// outside Kubernetes), never every interface.
+			Addr:              netip.AddrPortFrom(cfg.PodIP, cfg.InternalHTTPPort).String(),
+			Handler:           pipeCoordinator.InternalHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+			// No ReadTimeout or WriteTimeout: the stream handler sets its own
+			// 15-minute deadlines (internal/piperelay/stream.go).
+		}
+		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d, stream listener %s)", cfg.PipeMaxConcurrent, streamServer.Addr)
 	}
 
 	server := &http.Server{
@@ -203,7 +237,6 @@ func main() {
 			OutboxStore:              outboxStore,
 			NATSConnected:            natsConn.IsConnected,
 			RequestStore:             requestStore,
-			PipeRelayEnabled:         cfg.PipeRelayEnabled,
 			PipeCoordinator:          pipeCoordinator,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -248,6 +281,10 @@ func main() {
 		log.Printf("flick-api listening on %s", cfg.APIAddr)
 		serverErr <- server.ListenAndServe()
 	}()
+	streamErr := make(chan error, 1)
+	if streamServer != nil {
+		go func() { streamErr <- streamServer.ListenAndServe() }()
+	}
 
 	serverDone := false
 	publisherDone := false
@@ -271,18 +308,34 @@ func main() {
 			log.Fatalf("run reaper: %v", err)
 		}
 		stop()
+	case err := <-streamErr:
+		log.Fatalf("serve live pipe stream listener: %v", err)
 	case <-ctx.Done():
 	}
 
+	// Shutdown order for a rolling update (terminationGracePeriodSeconds 60
+	// after a 5-second preStop): waiting-room long-polls answer at once so
+	// browsers re-poll through another replica, then the API listener drains
+	// in-flight /send and /receive for up to shutdownTimeout. The stream
+	// listener closes only after that: a /receive still waiting here needs it
+	// open for the sender's replica to dial in.
+	if pipeCoordinator != nil {
+		pipeCoordinator.Drain()
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
 	if !serverDone {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown api server: %v", err)
 		}
-		cancel()
 
 		if err := <-serverErr; err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve api: %v", err)
+		}
+	}
+	if streamServer != nil {
+		if err := streamServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown live pipe stream listener: %v", err)
 		}
 	}
 	if !publisherDone {

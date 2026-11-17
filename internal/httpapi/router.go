@@ -45,7 +45,6 @@ type Server struct {
 	requestCreateLimiter     *rateLimiter
 	managementLimiter        *rateLimiter
 	requestLimiter           *rateLimiter
-	pipeRelayEnabled         bool
 	pipeCoordinator          *piperelay.Coordinator
 	pipeInitLimiter          *rateLimiter
 	pipeJoinLimiter          *rateLimiter
@@ -82,10 +81,12 @@ type Options struct {
 	NewJobID         func() (string, error)
 	NATSConnected    func() bool
 	RequestStore     *requests.Store
-	PipeRelayEnabled bool
-	PipeCoordinator  *piperelay.Coordinator
-	Tracer           trace.Tracer
-	TracerProvider   trace.TracerProvider
+	// PipeCoordinator serves /api/pipe/*. Nil disables live transfer: the
+	// endpoints answer 503 and /api/config reports pipe_relay_enabled=false
+	// (cmd/flick-api/main.go leaves it nil without FLICK_VALKEY_ADDR).
+	PipeCoordinator *piperelay.Coordinator
+	Tracer          trace.Tracer
+	TracerProvider  trace.TracerProvider
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -109,11 +110,6 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		} else {
 			tracer = defaultTracer
 		}
-	}
-
-	pipeCoordinator := opts.PipeCoordinator
-	if pipeCoordinator == nil && opts.PipeRelayEnabled {
-		pipeCoordinator = piperelay.NewCoordinator(piperelay.CoordinatorOptions{})
 	}
 
 	var shared *sharedBuckets
@@ -148,8 +144,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		// One bucket across request IDs and operations: rotating IDs must not
 		// bypass the limit or allocate one bucket per guessed request ID.
 		requestLimiter:    limiter("request", opts.OpenRatePerMinute, perNetwork),
-		pipeRelayEnabled:  opts.PipeRelayEnabled,
-		pipeCoordinator:   pipeCoordinator,
+		pipeCoordinator:   opts.PipeCoordinator,
 		pipeInitLimiter:   limiter("pipe_init", opts.CreateRatePerMinute, perNetwork),
 		pipeJoinLimiter:   limiter("pipe_join", opts.OpenRatePerMinute, perNetwork),
 		pipeStatusLimiter: limiter("pipe_status", pipeStatusRatePerMinute, perNetwork),

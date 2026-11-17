@@ -3,17 +3,21 @@ package piperelay
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
-	"sort"
+	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -32,6 +36,9 @@ var (
 	ErrPollInProgress   = errors.New("piperelay: connection already has the maximum open status polls")
 	ErrInvalidCode      = errors.New("piperelay: code must be a 6-digit numeric string")
 	ErrExpired          = errors.New("piperelay: rendezvous session expired")
+	// ErrUnavailable wraps a Valkey failure. The HTTP layer answers 503, the
+	// same as a server without Valkey.
+	ErrUnavailable = errors.New("piperelay: live relay state store unavailable")
 )
 
 const (
@@ -44,10 +51,21 @@ const (
 	// open Receive. Status holds at most 25 seconds in the HTTP layer
 	// (internal/httpapi/piperelay.go pipeWaitMaxHold), so a receiver that keeps
 	// polling is never idle this long.
-	defaultPresenceTimeout  = 35 * time.Second
+	defaultPresenceTimeout = 35 * time.Second
+	defaultNamespace       = "pipe:"
+	// endedRetention is how long an ended room stays in Valkey as a tombstone
+	// (so a caller already in the session learns how it ended), and how long a
+	// room key outlives its own deadline.
+	endedRetention = time.Minute
+	// resyncInterval bounds how long a waiter goes without re-reading its
+	// room. Pub/Sub wakes it at once; this only covers a message lost while
+	// the subscription reconnects.
+	resyncInterval = 2 * time.Second
+	// endRoomTimeout bounds the Valkey write that ends a room from a cleanup
+	// path whose request context is already gone.
+	endRoomTimeout          = 2 * time.Second
 	tokenLengthBytes        = 32
 	connectionIDLengthBytes = 16
-	pipeChunkBufferBytes    = 64 * 1024 // 64 KiB buffer matching age streaming chunk size
 	// MaxPendingConnections caps the receivers one session holds undecided at
 	// once. The next joiner gets ErrRoomFull; the session itself stays alive.
 	MaxPendingConnections = 10
@@ -62,14 +80,8 @@ const (
 	MaxStatusPollsPerConnection = 2
 )
 
-var bufferPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, pipeChunkBufferBytes)
-		return &b
-	},
-}
-
 // SessionMetadata carries lightweight, non-secret file/text descriptor headers.
+// It travels only on the pod-to-pod stream request, never through Valkey.
 type SessionMetadata struct {
 	Kind              string // e.g. "text" or "file"
 	EncryptedFilename string // base64-encoded encrypted filename (if file)
@@ -117,70 +129,16 @@ type WaitSnapshot struct {
 	Recipient string
 }
 
-// Coordinator manages in-memory live relay rendezvous sessions.
-type Coordinator struct {
-	mu                  sync.RWMutex
-	sessions            map[[32]byte]*Session
-	maxConcurrent       int
-	ttl                 time.Duration
-	cleanInterval       time.Duration
-	maxTransferDuration time.Duration
-	presenceTimeout     time.Duration
-	stopClean           chan struct{}
-	cleanDone           chan struct{}
-}
-
-// CoordinatorOptions configures the in-memory coordinator.
-type CoordinatorOptions struct {
-	MaxConcurrent       int
-	TTL                 time.Duration
-	CleanInterval       time.Duration
-	MaxTransferDuration time.Duration
-	// PresenceTimeout defaults to defaultPresenceTimeout (35 seconds).
-	PresenceTimeout time.Duration
-}
-
-// connection is one receiver that entered the right code. decided closes once
-// the sender settles it; result is nil for the chosen connection and the reason
-// otherwise.
-//
-// A waiting connection counts as present only while it polls Status: polls is
-// the number of open Status calls and lastSeen the last time one started or
-// ended. Session.pruneLocked drops a waiting connection idle longer than the
-// presence timeout.
-type connection struct {
-	id         string
-	index      int
-	verifyCode string
-	device     string
-	recipient  string
-	clientKey  ClientKey
-	network    ClientNetwork
-	joinedAt   time.Time
-	lastSeen   time.Time
-	polls      int
-	attached   bool
-	decided    chan struct{}
-	result     error
-}
-
-func (conn *connection) isDecided() bool {
-	select {
-	case <-conn.decided:
-		return true
-	default:
-		return false
-	}
-}
-
 // ClientKey identifies a receiving client for the per-session decline block.
 // The HTTP layer derives it as a hash of the client IP and User-Agent; this
-// package never sees either value.
+// package never sees either value, and stores it in Valkey only after a
+// second HMAC under CoordinatorOptions.KeySalt.
 type ClientKey [32]byte
 
 // ClientNetwork identifies a receiving client's network (IPv4 address or IPv6
 // /64) for the MaxPendingPerNetwork cap. The HTTP layer derives it as a hash;
-// this package never sees the address.
+// this package never sees the address, and stores it in Valkey only after a
+// second HMAC under CoordinatorOptions.KeySalt.
 type ClientNetwork [32]byte
 
 // JoinClient is what Join knows about a receiving client.
@@ -195,80 +153,129 @@ type JoinClient struct {
 	Network   ClientNetwork
 }
 
-// Session tracks the rendezvous lifecycle between sender and receivers.
-type Session struct {
-	codeHash        [32]byte
-	senderTokenHash [32]byte
-	createdAt       time.Time
-	expiresAt       time.Time
-	presenceTimeout time.Duration
-
-	mu          sync.Mutex
-	connections map[string]*connection
-	nextIndex   int
-	// declinedClients holds the client keys the sender declined. It lives only
-	// in memory for the session's lifetime and is never logged.
-	declinedClients map[ClientKey]struct{}
-	selected        *connection
-	selectedAt      time.Time
-	streaming       bool
-	streamStartedAt time.Time
-	ended           bool
-	endCause        error
-	version         uint64
-	changed         chan struct{}
-
-	kind              string
-	encryptedFilename string
-
-	receiverReady chan struct{}
-	senderReady   chan struct{}
-	done          chan struct{}
-
-	pipeReader *io.PipeReader
-	pipeWriter *io.PipeWriter
-
-	receiverOnce sync.Once
-	senderOnce   sync.Once
-	closeOnce    sync.Once
+// CoordinatorOptions configures the coordinator.
+type CoordinatorOptions struct {
+	// Valkey holds every rendezvous room, shared by all API replicas.
+	Valkey *redis.Client
+	// KeySalt is the HMAC-SHA-256 key for room IDs and client hashes in
+	// Valkey (FLICK_RATELIMIT_KEY_SALT).
+	KeySalt string
+	// InternalToken authenticates the pod-to-pod stream request
+	// (FLICK_INTERNAL_TOKEN).
+	InternalToken string
+	// AdvertiseIP is the IP literal the sender's pod dials to reach this
+	// pod's stream listener (FLICK_POD_IP; 127.0.0.1 outside Kubernetes).
+	AdvertiseIP netip.Addr
+	// InternalPort is the stream listener port, the same on every pod
+	// (FLICK_INTERNAL_HTTP_PORT).
+	InternalPort uint16
+	// StreamTransport dials peer pods. Nil uses a direct transport that never
+	// goes through an HTTP proxy. Tests map fake pod IPs to local listeners.
+	StreamTransport http.RoundTripper
+	// Namespace prefixes every Valkey key; defaultNamespace ("pipe:") unless
+	// a test isolates itself.
+	Namespace           string
+	MaxConcurrent       int
+	TTL                 time.Duration
+	CleanInterval       time.Duration
+	MaxTransferDuration time.Duration
+	// PresenceTimeout defaults to defaultPresenceTimeout (35 seconds).
+	PresenceTimeout time.Duration
 }
 
-// NewCoordinator initializes an in-memory coordinator and starts background GC.
-func NewCoordinator(opts CoordinatorOptions) *Coordinator {
-	maxConcurrent := opts.MaxConcurrent
-	if maxConcurrent <= 0 {
-		maxConcurrent = defaultMaxConcurrent
-	}
-	ttl := opts.TTL
-	if ttl <= 0 {
-		ttl = defaultTTL
-	}
-	cleanInterval := opts.CleanInterval
-	if cleanInterval <= 0 {
-		cleanInterval = defaultCleanInterval
-	}
-	maxTransferDuration := opts.MaxTransferDuration
-	if maxTransferDuration <= 0 {
-		maxTransferDuration = defaultMaxTransferDuration
-	}
-	presenceTimeout := opts.PresenceTimeout
-	if presenceTimeout <= 0 {
-		presenceTimeout = defaultPresenceTimeout
-	}
+// Coordinator runs live relay rendezvous across API replicas. Room state
+// lives in Valkey (room.go) so any replica answers any call; the ciphertext
+// itself goes from the sender's replica straight to the receiver's replica
+// over HTTP (stream.go) and never enters Valkey.
+type Coordinator struct {
+	valkey              *redis.Client
+	keySalt             []byte
+	internalToken       string
+	advertiseIP         netip.Addr
+	internalPort        uint16
+	streamClient        *http.Client
+	namespace           string
+	maxConcurrent       int
+	ttl                 time.Duration
+	cleanInterval       time.Duration
+	maxTransferDuration time.Duration
+	presenceTimeout     time.Duration
 
+	hub    roomHub
+	pubsub *redis.PubSub
+
+	slotsMu sync.Mutex
+	slots   map[roomID]*streamSlot
+
+	drainOnce sync.Once
+	draining  chan struct{}
+	closeOnce sync.Once
+	closed    chan struct{}
+	workers   sync.WaitGroup
+}
+
+// NewCoordinator validates opts, subscribes to room events, and starts the
+// background cleaner.
+func NewCoordinator(opts CoordinatorOptions) (*Coordinator, error) {
+	switch {
+	case opts.Valkey == nil:
+		return nil, errors.New("piperelay: Valkey client is required")
+	case opts.KeySalt == "":
+		return nil, errors.New("piperelay: key salt is required")
+	case opts.InternalToken == "":
+		return nil, errors.New("piperelay: internal token is required for the pod-to-pod stream")
+	case !opts.AdvertiseIP.IsValid():
+		return nil, errors.New("piperelay: advertise IP is required")
+	case opts.InternalPort == 0:
+		return nil, errors.New("piperelay: internal port is required")
+	}
+	transport := opts.StreamTransport
+	if transport == nil {
+		transport = newStreamTransport()
+	}
 	c := &Coordinator{
-		sessions:            make(map[[32]byte]*Session),
-		maxConcurrent:       maxConcurrent,
-		ttl:                 ttl,
-		cleanInterval:       cleanInterval,
-		maxTransferDuration: maxTransferDuration,
-		presenceTimeout:     presenceTimeout,
-		stopClean:           make(chan struct{}),
-		cleanDone:           make(chan struct{}),
+		valkey:        opts.Valkey,
+		keySalt:       []byte(opts.KeySalt),
+		internalToken: opts.InternalToken,
+		advertiseIP:   opts.AdvertiseIP.Unmap(),
+		internalPort:  opts.InternalPort,
+		streamClient: &http.Client{
+			Transport: transport,
+			// The stream target comes from Valkey; never follow it elsewhere.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		namespace:           orDefault(opts.Namespace, defaultNamespace),
+		maxConcurrent:       orDefault(opts.MaxConcurrent, defaultMaxConcurrent),
+		ttl:                 orDefault(opts.TTL, defaultTTL),
+		cleanInterval:       orDefault(opts.CleanInterval, defaultCleanInterval),
+		maxTransferDuration: orDefault(opts.MaxTransferDuration, defaultMaxTransferDuration),
+		presenceTimeout:     orDefault(opts.PresenceTimeout, defaultPresenceTimeout),
+		slots:               map[roomID]*streamSlot{},
+		draining:            make(chan struct{}),
+		closed:              make(chan struct{}),
 	}
 
+	// One pattern subscription per process; go-redis reconnects it (and
+	// re-subscribes) on its own when Valkey restarts.
+	c.pubsub = c.valkey.PSubscribe(context.Background(), c.namespace+"ev:*")
+	events := c.pubsub.Channel()
+	c.workers.Add(2)
+	go func() {
+		defer c.workers.Done()
+		for msg := range events {
+			c.hub.fire(roomID(strings.TrimPrefix(msg.Channel, c.namespace+"ev:")))
+		}
+	}()
 	go c.runCleaner()
-	return c
+	return c, nil
+}
+
+func orDefault[T comparable](value, fallback T) T {
+	var zero T
+	if value == zero {
+		return fallback
+	}
+	return value
 }
 
 // NormalizeCode strips spaces and dashes, validating that the remainder is 6 digits.
@@ -315,177 +322,48 @@ func randomToken(size int) (string, error) {
 }
 
 // Init creates a new rendezvous session, generating an uncolliding 6-digit
-// code and the sender token.
+// code and the sender token. The concurrent-session cap counts rooms across
+// every replica.
 func (c *Coordinator) Init(ctx context.Context) (InitResult, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.sessions) >= c.maxConcurrent {
-		return InitResult{}, ErrCapacityExceeded
-	}
-
-	var generatedCode string
-	var hash [32]byte
-	for attempts := 0; attempts < 10; attempts++ {
-		gCode, err := GenerateCode()
-		if err != nil {
-			return InitResult{}, err
-		}
-		candidateHash := sha256.Sum256([]byte(gCode))
-		if _, exists := c.sessions[candidateHash]; !exists {
-			generatedCode = gCode
-			hash = candidateHash
-			break
-		}
-	}
-	if generatedCode == "" {
-		return InitResult{}, errors.New("piperelay: failed to generate unique code")
-	}
-
 	senderToken, err := randomToken(tokenLengthBytes)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("generate sender token: %w", err)
 	}
-
-	pr, pw := io.Pipe()
-	now := time.Now().UTC()
-	s := &Session{
-		codeHash:        hash,
-		senderTokenHash: sha256.Sum256([]byte(senderToken)),
-		createdAt:       now,
-		expiresAt:       now.Add(c.ttl),
-		presenceTimeout: c.presenceTimeout,
-		connections:     make(map[string]*connection),
-		declinedClients: make(map[ClientKey]struct{}),
-		version:         1,
-		changed:         make(chan struct{}),
-		receiverReady:   make(chan struct{}),
-		senderReady:     make(chan struct{}),
-		done:            make(chan struct{}),
-		pipeReader:      pr,
-		pipeWriter:      pw,
+	now := time.Now()
+	r := room{
+		SenderTokenHash: sha256Hex(senderToken),
+		ExpiresAt:       now.Add(c.ttl),
+		Version:         1,
+		Connections:     []roomConn{},
+		DeclinedClients: []string{},
 	}
-
-	c.sessions[hash] = s
-	return InitResult{
-		Code:        generatedCode,
-		SenderToken: senderToken,
-		ExpiresIn:   int(c.ttl.Seconds()),
-	}, nil
-}
-
-// lookup finds a live session by its 6-digit code.
-func (c *Coordinator) lookup(rawCode string) (*Session, [32]byte, error) {
-	normalized, err := NormalizeCode(rawCode)
+	state, err := json.Marshal(r)
 	if err != nil {
-		return nil, [32]byte{}, err
+		return InitResult{}, fmt.Errorf("piperelay: encode room state: %w", err)
 	}
-	hash := sha256.Sum256([]byte(normalized))
-	c.mu.RLock()
-	s, ok := c.sessions[hash]
-	c.mu.RUnlock()
-	if !ok {
-		return nil, hash, ErrNotFound
-	}
-	return s, hash, nil
-}
 
-// lookupSender finds a session and checks the sender token. A wrong token
-// answers exactly like an unknown code, so sender endpoints are no code oracle.
-func (c *Coordinator) lookupSender(rawCode, senderToken string) (*Session, [32]byte, error) {
-	s, hash, err := c.lookup(rawCode)
-	if err != nil {
-		return nil, hash, err
-	}
-	given := sha256.Sum256([]byte(senderToken))
-	if senderToken == "" || subtle.ConstantTimeCompare(given[:], s.senderTokenHash[:]) != 1 {
-		return nil, hash, ErrNotFound
-	}
-	return s, hash, nil
-}
-
-// notifyLocked wakes every Wait long-poll. Caller holds s.mu.
-func (s *Session) notifyLocked() {
-	s.version++
-	close(s.changed)
-	s.changed = make(chan struct{})
-}
-
-// expiredLocked reports whether the rendezvous window closed. A streaming
-// session is exempt; Coordinator.cleanExpired bounds it by maxTransferDuration.
-// Caller holds s.mu.
-func (s *Session) expiredLocked(now time.Time) bool {
-	return !s.streaming && now.After(s.expiresAt)
-}
-
-// pruneLocked drops every waiting connection that has had no open Status poll
-// for the presence timeout, so a joiner that never polls (or stopped) frees its
-// slot. Dropping is not a decision: nothing is blocked and nothing burns.
-// It wakes Wait when it dropped anything. Caller holds s.mu.
-func (s *Session) pruneLocked(now time.Time) {
-	dropped := false
-	for id, conn := range s.connections {
-		idle := !conn.isDecided() && !conn.attached && conn.polls == 0 && now.Sub(conn.lastSeen) > s.presenceTimeout
-		if idle {
-			delete(s.connections, id)
-			dropped = true
+	for range 10 {
+		code, err := GenerateCode()
+		if err != nil {
+			return InitResult{}, err
+		}
+		id, _ := c.roomIDFor(code)
+		created, err := createRoomScript.Run(ctx, c.valkey,
+			[]string{c.roomKey(id), c.roomsKey()},
+			string(id), now.UnixMilli(), c.maxConcurrent, state,
+			(c.ttl + endedRetention).Milliseconds(), r.ExpiresAt.UnixMilli(),
+		).Int()
+		if err != nil {
+			return InitResult{}, unavailable(err)
+		}
+		switch created {
+		case -1:
+			return InitResult{}, ErrCapacityExceeded
+		case 1:
+			return InitResult{Code: code, SenderToken: senderToken, ExpiresIn: int(c.ttl.Seconds())}, nil
 		}
 	}
-	if dropped {
-		s.notifyLocked()
-	}
-}
-
-// chosenAbandonedLocked reports whether the chosen connection never opened
-// Receive within the presence timeout after Select. Caller holds s.mu.
-func (s *Session) chosenAbandonedLocked(now time.Time) bool {
-	return s.selected != nil && !s.selected.attached && now.Sub(s.selectedAt) > s.presenceTimeout
-}
-
-func (s *Session) pendingLocked() []*connection {
-	pending := make([]*connection, 0, len(s.connections))
-	for _, conn := range s.connections {
-		if !conn.isDecided() {
-			pending = append(pending, conn)
-		}
-	}
-	sort.Slice(pending, func(i, j int) bool { return pending[i].index < pending[j].index })
-	return pending
-}
-
-// selectLocked hands the transfer to conn and settles every other undecided
-// connection with loserCause. Caller holds s.mu.
-func (s *Session) selectLocked(conn *connection, loserCause error) {
-	s.selected = conn
-	s.selectedAt = time.Now()
-	close(conn.decided)
-	for _, other := range s.connections {
-		if other != conn && !other.isDecided() {
-			other.result = loserCause
-			close(other.decided)
-		}
-	}
-	s.notifyLocked()
-}
-
-func (s *Session) endedErrLocked() error {
-	if s.endCause != nil {
-		return s.endCause
-	}
-	return ErrSessionClosed
-}
-
-// endLocked marks the session ended with cause (the first cause wins) and
-// returns the cause that stuck. The caller then removes the session with
-// dropLocked. Marking happens under s.mu, the same lock Send holds to set
-// streaming, so a session either ends before its stream starts or streams
-// before anything can end it. Caller holds s.mu.
-func (s *Session) endLocked(cause error) error {
-	s.ended = true
-	if s.endCause == nil {
-		s.endCause = cause
-	}
-	return s.endCause
+	return InitResult{}, errors.New("piperelay: failed to generate unique code")
 }
 
 // Join admits a receiver that entered the right code and returns its
@@ -494,9 +372,16 @@ func (s *Session) endLocked(cause error) error {
 // 11th waiting joiner, a 4th waiting joiner from one client network, a client
 // the sender already declined, or a join after the rendezvous window closed is
 // rejected without touching the session.
-func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error) {
-	s, _, err := c.lookup(rawCode)
+func (c *Coordinator) Join(ctx context.Context, rawCode string, client JoinClient) (JoinResult, error) {
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
+		return JoinResult{}, err
+	}
+	current, err := c.view(ctx, id)
+	if err != nil {
+		return JoinResult{}, err
+	}
+	if _, err := c.pruneIdle(ctx, id, current); err != nil {
 		return JoinResult{}, err
 	}
 
@@ -504,235 +389,299 @@ func (c *Coordinator) Join(rawCode string, client JoinClient) (JoinResult, error
 	if err != nil {
 		return JoinResult{}, fmt.Errorf("generate connection id: %w", err)
 	}
+	// The lease exists before the connection does, so a concurrent prune
+	// never drops a connection that just joined.
+	lease := c.leaseKey(id, connID)
+	if err := c.valkey.Set(ctx, lease, 0, c.presenceTimeout).Err(); err != nil {
+		return JoinResult{}, unavailable(err)
+	}
 
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ended {
-		return JoinResult{}, s.endedErrLocked()
+	key := c.mac([]byte("client"), client.Key[:])
+	network := c.mac([]byte("network"), client.Network[:])
+	var result JoinResult
+	_, err = c.update(ctx, id, func(r *room, now time.Time) (bool, error) {
+		if r.ended() {
+			return false, r.cause()
+		}
+		for _, declined := range r.DeclinedClients {
+			if declined == key {
+				return false, ErrDeclined
+			}
+		}
+		if r.Selected != "" {
+			return false, ErrAlreadyConnected
+		}
+		pending := r.pending()
+		if len(pending) >= MaxPendingConnections {
+			return false, ErrRoomFull
+		}
+		fromNetwork := 0
+		taken := make(map[string]bool, len(pending))
+		for _, conn := range pending {
+			if conn.Network == network {
+				fromNetwork++
+			}
+			taken[conn.VerifyCode] = true
+		}
+		if fromNetwork >= MaxPendingPerNetwork {
+			return false, ErrNetworkFull
+		}
+		verifyCode := ""
+		for verifyCode == "" || taken[verifyCode] {
+			code, err := generateVerifyCode()
+			if err != nil {
+				return false, err
+			}
+			verifyCode = code
+		}
+		r.NextIndex++
+		r.Connections = append(r.Connections, roomConn{
+			ID:         connID,
+			Index:      r.NextIndex,
+			VerifyCode: verifyCode,
+			Device:     client.Device,
+			Recipient:  client.Recipient,
+			ClientKey:  key,
+			Network:    network,
+			JoinedAt:   now,
+		})
+		r.Version++
+		result = JoinResult{
+			ConnectionID: connID,
+			VerifyCode:   verifyCode,
+			Device:       client.Device,
+			ExpiresIn:    max(0, int(r.ExpiresAt.Sub(now).Seconds())),
+		}
+		return true, nil
+	})
+	if err != nil {
+		_ = c.valkey.Del(context.WithoutCancel(ctx), lease).Err()
+		return JoinResult{}, err
 	}
-	if s.expiredLocked(now) {
-		return JoinResult{}, ErrExpired
-	}
-	if _, declined := s.declinedClients[client.Key]; declined {
-		return JoinResult{}, ErrDeclined
-	}
-	if s.selected != nil {
-		return JoinResult{}, ErrAlreadyConnected
-	}
-	s.pruneLocked(now)
-	pending := s.pendingLocked()
-	if len(pending) >= MaxPendingConnections {
-		return JoinResult{}, ErrRoomFull
-	}
-	fromNetwork := 0
-	for _, conn := range pending {
-		if conn.network == client.Network {
-			fromNetwork++
+	return result, nil
+}
+
+// statusAnswer is Status's answer for the room as it stands; done is false
+// while the connection still waits for the sender.
+func statusAnswer(r *room, connID string) (done, selected bool, err error) {
+	conn := r.conn(connID)
+	if conn != nil {
+		if result := conn.loserResult(); result != nil {
+			// A connection the sender already settled keeps its own answer,
+			// even after the session ends.
+			return true, false, result
 		}
 	}
-	if fromNetwork >= MaxPendingPerNetwork {
-		return JoinResult{}, ErrNetworkFull
+	switch {
+	case r.ended():
+		return true, false, r.cause()
+	case conn == nil:
+		return true, false, ErrNotFound
+	case conn.Result == resultSelected:
+		return true, true, nil
 	}
-
-	verifyCode := ""
-	taken := make(map[string]bool, len(pending))
-	for _, conn := range pending {
-		taken[conn.verifyCode] = true
-	}
-	for verifyCode == "" || taken[verifyCode] {
-		if verifyCode, err = generateVerifyCode(); err != nil {
-			return JoinResult{}, err
-		}
-	}
-
-	s.nextIndex++
-	conn := &connection{
-		id:         connID,
-		index:      s.nextIndex,
-		verifyCode: verifyCode,
-		device:     client.Device,
-		recipient:  client.Recipient,
-		clientKey:  client.Key,
-		network:    client.Network,
-		joinedAt:   now,
-		lastSeen:   now,
-		decided:    make(chan struct{}),
-	}
-	s.connections[connID] = conn
-	s.notifyLocked()
-
-	return JoinResult{
-		ConnectionID: connID,
-		VerifyCode:   verifyCode,
-		Device:       client.Device,
-		ExpiresIn:    max(0, int(s.expiresAt.Sub(now).Seconds())),
-	}, nil
+	return false, false, nil
 }
 
 // Status is a waiting receiver's long-poll. It returns selected=true once the
 // sender picked this connection (the receiver then opens Receive), an error
 // once the connection was declined (ErrDeclined), not chosen (ErrNotSelected),
 // or the session ended, and selected=false after maxWait while it is still
-// waiting. An open Status call is what keeps a waiting connection in the room:
-// a connection with no Status call for the presence timeout is dropped
-// (Session.pruneLocked).
+// waiting (or at once while the coordinator drains for shutdown). An open
+// Status call is what keeps a waiting connection in the room: its poll lease
+// expires the presence timeout after the last poll started or ended.
 func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWait time.Duration) (bool, error) {
-	s, _, err := c.lookup(rawCode)
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return false, err
 	}
+	changed, unwatch := c.hub.watch(id)
+	defer unwatch()
 
-	s.mu.Lock()
-	conn, ok := s.connections[connID]
-	if ok && conn.isDecided() && conn.result != nil {
-		// A connection the sender already settled keeps its own answer, even
-		// after the session ends.
-		s.mu.Unlock()
-		return false, conn.result
+	r, err := c.view(ctx, id)
+	if err != nil {
+		return false, err
 	}
-	if s.ended {
-		cause := s.endedErrLocked()
-		s.mu.Unlock()
-		return false, cause
+	if done, selected, err := statusAnswer(&r, connID); done {
+		return selected, err
 	}
-	if !ok {
-		s.mu.Unlock()
-		return false, ErrNotFound
+
+	pollID, err := randomToken(connectionIDLengthBytes)
+	if err != nil {
+		return false, fmt.Errorf("generate poll id: %w", err)
 	}
-	now := time.Now()
-	if s.expiredLocked(now) {
-		s.mu.Unlock()
-		return false, ErrExpired
+	holdFor := min(maxWait, time.Until(r.ExpiresAt))
+	leaseKeys := []string{c.leaseKey(id, connID), c.pollsKey(id, connID)}
+	opened, err := acquireLeaseScript.Run(ctx, c.valkey, leaseKeys, MaxStatusPollsPerConnection,
+		c.presenceTimeout.Milliseconds(), pollID, (max(holdFor, 0) + c.presenceTimeout).Milliseconds()).Int()
+	if err != nil {
+		return false, unavailable(err)
 	}
-	if conn.isDecided() {
-		s.mu.Unlock()
-		return true, nil
-	}
-	if conn.polls >= MaxStatusPollsPerConnection {
-		s.mu.Unlock()
+	if opened == 0 {
 		return false, ErrPollInProgress
 	}
-	conn.polls++
-	conn.lastSeen = now
-	hold := min(maxWait, s.expiresAt.Sub(now))
-	s.mu.Unlock()
-
 	defer func() {
-		s.mu.Lock()
-		conn.polls--
-		conn.lastSeen = time.Now()
-		s.mu.Unlock()
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endRoomTimeout)
+		defer cancel()
+		_ = releaseLeaseScript.Run(releaseCtx, c.valkey, leaseKeys, c.presenceTimeout.Milliseconds(), pollID).Err()
 	}()
 
-	timer := time.NewTimer(hold)
-	defer timer.Stop()
-	select {
-	case <-conn.decided:
-		if conn.result != nil {
-			return false, conn.result
+	hold := time.NewTimer(holdFor)
+	defer hold.Stop()
+	resync := time.NewTicker(resyncInterval)
+	defer resync.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-c.draining:
+			return false, nil
+		case <-hold.C:
+			r, err := c.view(ctx, id)
+			if err != nil {
+				return false, err
+			}
+			_, selected, err := statusAnswer(&r, connID)
+			return selected, err
+		case <-changed:
+		case <-resync.C:
 		}
-		return true, nil
-	case <-s.done:
-		return false, c.endCause(s)
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-timer.C:
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.expiredLocked(time.Now()) {
-			return false, ErrExpired
+		r, err := c.view(ctx, id)
+		if err != nil {
+			return false, err
 		}
-		return false, nil
+		if done, selected, err := statusAnswer(&r, connID); done {
+			return selected, err
+		}
 	}
+}
+
+// senderView reads the room for a sender call. A wrong token answers exactly
+// like an unknown code, so sender endpoints are no code oracle.
+func (c *Coordinator) senderView(ctx context.Context, id roomID, senderToken string) (room, error) {
+	r, err := c.view(ctx, id)
+	if err != nil {
+		return room{}, err
+	}
+	if !r.senderMatches(senderToken) {
+		return room{}, ErrNotFound
+	}
+	if r.ended() {
+		return room{}, r.cause()
+	}
+	return r, nil
 }
 
 // Wait returns the sender's view of the session as soon as its version differs
-// from since, or after maxWait with the current view (long-poll).
+// from since, or after maxWait with the current view (long-poll). While the
+// coordinator drains for shutdown it answers at once.
 func (c *Coordinator) Wait(ctx context.Context, rawCode, senderToken string, since uint64, maxWait time.Duration) (WaitSnapshot, error) {
-	s, _, err := c.lookupSender(rawCode, senderToken)
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return WaitSnapshot{}, err
 	}
+	changed, unwatch := c.hub.watch(id)
+	defer unwatch()
 
-	snapshot, changed, err := s.snapshot()
-	if err != nil || snapshot.Version != since {
-		return snapshot, err
+	snapshot := func() (WaitSnapshot, error) {
+		r, err := c.senderView(ctx, id, senderToken)
+		if err != nil {
+			return WaitSnapshot{}, err
+		}
+		if r, err = c.pruneIdle(ctx, id, r); err != nil {
+			return WaitSnapshot{}, err
+		}
+		if r.ended() {
+			return WaitSnapshot{}, r.cause()
+		}
+		return snapshotOf(&r), nil
 	}
 
-	timer := time.NewTimer(maxWait)
-	defer timer.Stop()
-	select {
-	case <-changed:
-	case <-s.done:
-		return WaitSnapshot{}, c.endCause(s)
-	case <-ctx.Done():
-		return WaitSnapshot{}, ctx.Err()
-	case <-timer.C:
+	snap, err := snapshot()
+	if err != nil || snap.Version != since {
+		return snap, err
 	}
-	// A fresh snapshot also prunes connections that went idle during the hold.
-	snapshot, _, err = s.snapshot()
-	return snapshot, err
+	hold := time.NewTimer(maxWait)
+	defer hold.Stop()
+	resync := time.NewTicker(resyncInterval)
+	defer resync.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return WaitSnapshot{}, ctx.Err()
+		case <-c.draining:
+			return snapshot()
+		case <-hold.C:
+			// A fresh snapshot also prunes connections that went idle during the hold.
+			return snapshot()
+		case <-changed:
+		case <-resync.C:
+		}
+		snap, err := snapshot()
+		if err != nil || snap.Version != since {
+			return snap, err
+		}
+	}
 }
 
-func (s *Session) snapshot() (WaitSnapshot, <-chan struct{}, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ended {
-		return WaitSnapshot{}, nil, s.endedErrLocked()
+func snapshotOf(r *room) WaitSnapshot {
+	snap := WaitSnapshot{Version: r.Version, Pending: []PendingConnection{}}
+	if r.receiverReady() {
+		snap.ReceiverReady = true
+		snap.Recipient = r.conn(r.Selected).Recipient
 	}
-	now := time.Now()
-	if s.expiredLocked(now) {
-		return WaitSnapshot{}, nil, ErrExpired
-	}
-	s.pruneLocked(now)
-	snapshot := WaitSnapshot{Version: s.version, Pending: []PendingConnection{}}
-	select {
-	case <-s.receiverReady:
-		snapshot.ReceiverReady = true
-		snapshot.Recipient = s.selected.recipient
-	default:
-	}
-	for _, conn := range s.pendingLocked() {
-		snapshot.Pending = append(snapshot.Pending, PendingConnection{
-			ID:         conn.id,
-			Index:      conn.index,
-			VerifyCode: conn.verifyCode,
-			Device:     conn.device,
-			Recipient:  conn.recipient,
-			JoinedAt:   conn.joinedAt,
+	for _, conn := range r.pending() {
+		snap.Pending = append(snap.Pending, PendingConnection{
+			ID:         conn.ID,
+			Index:      conn.Index,
+			VerifyCode: conn.VerifyCode,
+			Device:     conn.Device,
+			Recipient:  conn.Recipient,
+			JoinedAt:   conn.JoinedAt,
 		})
 	}
-	return snapshot, s.changed, nil
+	return snap
 }
 
 // Select hands the transfer to one undecided connection. Every other
 // undecided connection ends with ErrNotSelected. A connection that already left
 // the room (dropped as idle) or was already settled answers ErrNotPending.
-func (c *Coordinator) Select(rawCode, senderToken, connID string) error {
-	s, _, err := c.lookupSender(rawCode, senderToken)
+func (c *Coordinator) Select(ctx context.Context, rawCode, senderToken, connID string) error {
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ended {
-		return s.endedErrLocked()
+	r, err := c.senderView(ctx, id, senderToken)
+	if err != nil {
+		return err
 	}
-	if s.expiredLocked(now) {
-		return ErrExpired
+	if _, err := c.pruneIdle(ctx, id, r); err != nil {
+		return err
 	}
-	if s.selected != nil {
-		return ErrAlreadyConnected
-	}
-	s.pruneLocked(now)
-	conn, ok := s.connections[connID]
-	if !ok || conn.isDecided() {
-		return ErrNotPending
-	}
-	s.selectLocked(conn, ErrNotSelected)
-	return nil
+	_, err = c.update(ctx, id, func(r *room, now time.Time) (bool, error) {
+		if !r.senderMatches(senderToken) {
+			return false, ErrNotFound
+		}
+		if r.ended() {
+			return false, r.cause()
+		}
+		if r.Selected != "" {
+			return false, ErrAlreadyConnected
+		}
+		chosen := r.conn(connID)
+		if chosen == nil || chosen.Result != "" {
+			return false, ErrNotPending
+		}
+		for _, conn := range r.pending() {
+			conn.Result = resultNotSelected
+		}
+		chosen.Result = resultSelected
+		r.Selected = connID
+		r.SelectedAt = now
+		r.Version++
+		return true, nil
+	})
+	return err
 }
 
 // Decline ends one undecided connection with ErrDeclined. Its slot reopens
@@ -742,376 +691,150 @@ func (c *Coordinator) Select(rawCode, senderToken, connID string) error {
 // blocked too for this one short session, and a client that changes network or
 // User-Agent gets through; the sender can decline it again. A connection that
 // already left the room or was already settled answers ErrNotPending.
-func (c *Coordinator) Decline(rawCode, senderToken, connID string) error {
-	s, _, err := c.lookupSender(rawCode, senderToken)
+func (c *Coordinator) Decline(ctx context.Context, rawCode, senderToken, connID string) error {
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ended {
-		return s.endedErrLocked()
-	}
-	conn, ok := s.connections[connID]
-	if !ok || conn.isDecided() {
-		return ErrNotPending
-	}
-	conn.result = ErrDeclined
-	close(conn.decided)
-	s.declinedClients[conn.clientKey] = struct{}{}
-	s.notifyLocked()
-	return nil
+	_, err = c.update(ctx, id, func(r *room, _ time.Time) (bool, error) {
+		if !r.senderMatches(senderToken) {
+			return false, ErrNotFound
+		}
+		if r.ended() {
+			return false, r.cause()
+		}
+		conn := r.conn(connID)
+		if conn == nil || conn.Result != "" {
+			return false, ErrNotPending
+		}
+		conn.Result = resultDeclined
+		r.DeclinedClients = append(r.DeclinedClients, conn.ClientKey)
+		r.Version++
+		return true, nil
+	})
+	return err
 }
 
 // Cancel burns the whole session before streaming starts. Every waiting
 // receiver ends with ErrCancelled. A transfer that is already streaming is
 // never cut: Cancel returns ErrStreaming instead (the sender stops a stream by
-// aborting its own send request). The streaming check and the end happen under
-// one s.mu hold, so a stream that Send starts concurrently is never cut.
-func (c *Coordinator) Cancel(rawCode, senderToken string) error {
-	s, hash, err := c.lookupSender(rawCode, senderToken)
+// aborting its own send request). Cancel and Send's start of streaming are
+// both compare-and-set writes on the same room, so exactly one of them wins.
+// A session that already ended answers ErrNotFound.
+func (c *Coordinator) Cancel(ctx context.Context, rawCode, senderToken string) error {
+	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sessions[hash] != s {
-		return ErrNotFound
+	_, err = c.update(ctx, id, func(r *room, _ time.Time) (bool, error) {
+		if !r.senderMatches(senderToken) || r.ended() {
+			return false, ErrNotFound
+		}
+		if r.streaming() {
+			return false, ErrStreaming
+		}
+		r.end(causeCancelled)
+		return true, nil
+	})
+	return err
+}
+
+// ActiveSessions counts the live rendezvous sessions across every replica
+// (for tests and telemetry).
+func (c *Coordinator) ActiveSessions(ctx context.Context) (int, error) {
+	n, err := c.valkey.ZCount(ctx, c.roomsKey(), "("+strconv.FormatInt(time.Now().UnixMilli(), 10), "+inf").Result()
+	if err != nil {
+		return 0, unavailable(err)
 	}
-	s.mu.Lock()
-	if s.streaming {
-		s.mu.Unlock()
-		return ErrStreaming
+	return int(n), nil
+}
+
+// Drain makes every open Status and Wait long-poll on this replica answer at
+// once with its current view, and every later one answer without holding. The
+// API calls it on SIGTERM, so waiting browsers re-poll through another replica
+// instead of being cut when this one stops; Send and Receive keep running.
+func (c *Coordinator) Drain() {
+	c.drainOnce.Do(func() { close(c.draining) })
+}
+
+func (c *Coordinator) runCleaner() {
+	defer c.workers.Done()
+	ticker := time.NewTicker(c.cleanInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-ticker.C:
+			c.cleanOnce()
+		}
 	}
-	cause := s.endLocked(ErrCancelled)
-	s.mu.Unlock()
-	c.dropLocked(hash, s, cause)
+}
+
+// cleanOnce applies the lazy end rules (room.go settle) and idle pruning to
+// every live room, so a room nobody touches still ends on time and frees its
+// slot in the concurrent-session cap. Every replica runs it; the
+// compare-and-set writes make concurrent cleaners harmless.
+func (c *Coordinator) cleanOnce() {
+	ctx, cancel := context.WithTimeout(context.Background(), c.cleanInterval)
+	defer cancel()
+	ids, err := c.valkey.ZRange(ctx, c.roomsKey(), 0, -1).Result()
+	if err != nil {
+		slog.Warn("pipe relay cleaner could not list rooms", "error", err)
+		return
+	}
+	for _, raw := range ids {
+		id := roomID(raw)
+		r, err := c.view(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			_ = c.valkey.ZRem(ctx, c.roomsKey(), raw).Err()
+			continue
+		}
+		if err != nil {
+			slog.Warn("pipe relay cleaner could not read a room", "error", err)
+			continue
+		}
+		if _, err := c.pruneIdle(ctx, id, r); err != nil {
+			slog.Warn("pipe relay cleaner could not prune a room", "error", err)
+		}
+	}
+}
+
+// Close stops the cleaner and the event subscription and releases every local
+// waiter. It leaves rooms in Valkey untouched: another replica keeps serving
+// them. No goroutine started by the coordinator survives Close.
+func (c *Coordinator) Close() error {
+	c.closeOnce.Do(func() {
+		c.Drain()
+		close(c.closed)
+		_ = c.pubsub.Close()
+		c.workers.Wait()
+	})
 	return nil
 }
 
-// Receive returns the pipe for the chosen connection once the sender starts.
-// Only the connection the sender selected may call it: a still-waiting one gets
-// ErrAwaitingDecision (it keeps polling Status), and a declined or not-chosen
-// one gets its own answer. A rejected receiver never counts against the session.
-func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, SessionMetadata, func(), error) {
-	s, hash, err := c.lookup(rawCode)
-	if err != nil {
-		return nil, SessionMetadata{}, nil, err
-	}
+// errReceiverGone is the internal answer when the chosen receiver's request
+// on this replica is no longer waiting for the stream.
+var errReceiverGone = errors.New("piperelay: receiver is not waiting on this replica")
 
-	s.mu.Lock()
-	conn, ok := s.connections[connID]
-	if ok && conn.isDecided() && conn.result != nil {
-		// A connection the sender already settled keeps its own answer, even
-		// after the session ends.
-		s.mu.Unlock()
-		return nil, SessionMetadata{}, nil, conn.result
-	}
-	if s.ended {
-		cause := s.endedErrLocked()
-		s.mu.Unlock()
-		return nil, SessionMetadata{}, nil, cause
-	}
-	if !ok {
-		s.mu.Unlock()
-		return nil, SessionMetadata{}, nil, ErrNotFound
-	}
-	if conn.attached {
-		s.mu.Unlock()
-		return nil, SessionMetadata{}, nil, ErrAlreadyConnected
-	}
-	if s.selected != conn {
-		s.mu.Unlock()
-		return nil, SessionMetadata{}, nil, ErrAwaitingDecision
-	}
-	conn.attached = true
-	s.mu.Unlock()
+// copyBufferBytes matches the age streaming chunk size.
+const copyBufferBytes = 64 * 1024
 
-	s.receiverOnce.Do(func() {
-		close(s.receiverReady)
-		s.mu.Lock()
-		s.notifyLocked()
-		s.mu.Unlock()
-	})
-
-	cleanup := func() {
-		s.closeOnce.Do(func() {
-			close(s.done)
-			_ = s.pipeReader.CloseWithError(io.EOF)
-			_ = s.pipeWriter.CloseWithError(io.EOF)
-		})
-		c.burnSession(hash)
-	}
-
-	select {
-	case <-s.senderReady:
-		s.mu.Lock()
-		meta := SessionMetadata{
-			Kind:              s.kind,
-			EncryptedFilename: s.encryptedFilename,
-		}
-		s.mu.Unlock()
-		return s.pipeReader, meta, cleanup, nil
-	case <-s.done:
-		return nil, SessionMetadata{}, nil, c.endCause(s)
-	case <-ctx.Done():
-		// The chosen receiver leaving before the stream starts ends the
-		// session: nobody else can take over.
-		cleanup()
-		return nil, SessionMetadata{}, nil, ctx.Err()
-	case <-time.After(time.Until(s.expiresAt)):
-		cleanup()
-		return nil, SessionMetadata{}, nil, ErrExpired
-	}
+var bufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, copyBufferBytes)
+		return &b
+	},
 }
 
-func (c *Coordinator) endCause(s *Session) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.endedErrLocked()
-}
-
-// Send sets stream metadata, waits for the chosen receiver, and copies body to
-// the pipe. Only the sender token holder can send.
-func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, meta SessionMetadata, body io.Reader) (int64, error) {
-	s, hash, err := c.lookupSender(rawCode, senderToken)
-	if err != nil {
-		return 0, err
-	}
-
-	s.mu.Lock()
-	if s.ended {
-		cause := s.endedErrLocked()
-		s.mu.Unlock()
-		return 0, cause
-	}
-	s.kind = meta.Kind
-	s.encryptedFilename = meta.EncryptedFilename
-	s.mu.Unlock()
-
-	alreadySending := false
-	s.senderOnce.Do(func() {
-		close(s.senderReady)
-		alreadySending = true
-	})
-
-	if !alreadySending {
-		return 0, ErrAlreadyConnected
-	}
-
-	if err := c.waitForReceiver(ctx, hash, s); err != nil {
-		return 0, err
-	}
-
-	// The stream starts only if nothing ended the session first: Cancel and
-	// cleanExpired check streaming and end the session under this same lock.
-	s.mu.Lock()
-	if s.ended {
-		cause := s.endedErrLocked()
-		s.mu.Unlock()
-		return 0, cause
-	}
-	s.streaming = true
-	s.streamStartedAt = time.Now().UTC()
-	s.mu.Unlock()
-
+// copyWithPool copies src to dst through a pooled 64 KiB buffer and clears
+// the buffer before returning it, so no ciphertext lingers in the pool.
+func copyWithPool(dst io.Writer, src io.Reader) (int64, error) {
 	ptr := bufferPool.Get().(*[]byte)
 	buf := *ptr
 	defer func() {
 		clear(buf)
 		bufferPool.Put(ptr)
 	}()
-
-	n, copyErr := io.CopyBuffer(s.pipeWriter, body, buf)
-	if copyErr != nil {
-		_ = s.pipeWriter.CloseWithError(copyErr)
-		c.burnSession(hash)
-		return n, copyErr
-	}
-
-	_ = s.pipeWriter.Close() // signals clean EOF to PipeReader
-	return n, nil
-}
-
-// waitForReceiver blocks Send until the chosen receiver opened Receive. It also
-// enforces the chosen connection's presence deadline itself, so a selected
-// receiver that never opens Receive ends the session presenceTimeout after
-// Select, not up to one cleaner interval later. Every session change wakes it
-// to re-read that deadline (a Select can land while Send already waits).
-func (c *Coordinator) waitForReceiver(ctx context.Context, hash [32]byte, s *Session) error {
-	expiry := time.NewTimer(time.Until(s.expiresAt))
-	defer expiry.Stop()
-	for {
-		s.mu.Lock()
-		changed := s.changed
-		var abandonAt time.Time
-		if s.selected != nil && !s.selected.attached {
-			abandonAt = s.selectedAt.Add(s.presenceTimeout)
-		}
-		s.mu.Unlock()
-
-		var abandoned <-chan time.Time
-		var abandonTimer *time.Timer
-		if !abandonAt.IsZero() {
-			abandonTimer = time.NewTimer(time.Until(abandonAt))
-			abandoned = abandonTimer.C
-		}
-		stop := func() {
-			if abandonTimer != nil {
-				abandonTimer.Stop()
-			}
-		}
-
-		select {
-		case <-s.receiverReady:
-			stop()
-			return nil
-		case <-s.done:
-			stop()
-			return c.endCause(s)
-		case <-ctx.Done():
-			stop()
-			_ = s.pipeWriter.CloseWithError(ctx.Err())
-			c.burnSession(hash)
-			return ctx.Err()
-		case <-expiry.C:
-			stop()
-			_ = s.pipeWriter.CloseWithError(ErrExpired)
-			c.burnSession(hash)
-			return ErrExpired
-		case <-changed:
-			stop()
-		case <-abandoned:
-			c.endIfChosenAbandoned(hash, s)
-		}
-	}
-}
-
-// endIfChosenAbandoned ends s when its chosen connection still has not opened
-// Receive past the presence timeout, the same rule Coordinator.cleanExpired
-// applies. The check and the end share one s.mu hold.
-func (c *Coordinator) endIfChosenAbandoned(hash [32]byte, s *Session) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sessions[hash] != s {
-		return
-	}
-	s.mu.Lock()
-	if s.ended || s.streaming || !s.chosenAbandonedLocked(time.Now()) {
-		s.mu.Unlock()
-		return
-	}
-	cause := s.endLocked(ErrSessionClosed)
-	s.mu.Unlock()
-	c.dropLocked(hash, s, cause)
-}
-
-// ActiveSessions returns the current number of in-flight sessions (for telemetry/tests).
-func (c *Coordinator) ActiveSessions() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.sessions)
-}
-
-func (c *Coordinator) burnSession(hash [32]byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.removeLocked(hash, ErrSessionClosed)
-}
-
-// removeLocked ends a session unconditionally and wakes everyone blocked on it.
-// Caller holds c.mu.
-func (c *Coordinator) removeLocked(hash [32]byte, cause error) {
-	s, ok := c.sessions[hash]
-	if !ok {
-		return
-	}
-	s.mu.Lock()
-	cause = s.endLocked(cause)
-	s.mu.Unlock()
-	c.dropLocked(hash, s, cause)
-}
-
-// dropLocked deletes an ended session and closes its channels and pipe with
-// cause. Caller holds c.mu and has already marked s ended with endLocked.
-func (c *Coordinator) dropLocked(hash [32]byte, s *Session, cause error) {
-	if c.sessions[hash] == s {
-		delete(c.sessions, hash)
-	}
-	s.closeOnce.Do(func() {
-		close(s.done)
-		_ = s.pipeWriter.CloseWithError(cause)
-		_ = s.pipeReader.CloseWithError(cause)
-	})
-}
-
-func (c *Coordinator) runCleaner() {
-	ticker := time.NewTicker(c.cleanInterval)
-	defer ticker.Stop()
-	defer close(c.cleanDone)
-
-	for {
-		select {
-		case <-c.stopClean:
-			return
-		case now := <-ticker.C:
-			c.cleanExpired(now)
-		}
-	}
-}
-
-// cleanExpired removes sessions past their rendezvous TTL and sessions whose
-// chosen connection never opened Receive, and drops idle waiting connections
-// from the rest. A session that is already streaming is exempt from the TTL and
-// is only cut once it exceeds maxTransferDuration, so the 3-minute rendezvous
-// window never truncates a transfer that started near its end. Each decision
-// and its end happen under one s.mu hold (see Session.endLocked).
-func (c *Coordinator) cleanExpired(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for hash, s := range c.sessions {
-		s.mu.Lock()
-		var cause error
-		switch {
-		case s.streaming:
-			if now.After(s.streamStartedAt.Add(c.maxTransferDuration)) {
-				cause = ErrExpired
-			}
-		case now.After(s.expiresAt):
-			cause = ErrExpired
-		case s.chosenAbandonedLocked(now):
-			// Same as the chosen receiver leaving before the stream starts.
-			cause = ErrSessionClosed
-		default:
-			s.pruneLocked(now)
-		}
-		if cause == nil {
-			s.mu.Unlock()
-			continue
-		}
-		cause = s.endLocked(cause)
-		s.mu.Unlock()
-		c.dropLocked(hash, s, cause)
-	}
-}
-
-// Close gracefully terminates the cleaner and closes all active sessions.
-func (c *Coordinator) Close() error {
-	c.mu.Lock()
-	select {
-	case <-c.stopClean:
-		c.mu.Unlock()
-		return nil
-	default:
-		close(c.stopClean)
-	}
-
-	for hash := range c.sessions {
-		c.removeLocked(hash, ErrSessionClosed)
-	}
-	c.mu.Unlock()
-
-	<-c.cleanDone
-	return nil
+	return io.CopyBuffer(dst, src, buf)
 }
