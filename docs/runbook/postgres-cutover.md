@@ -477,18 +477,33 @@ kubectl -n flick exec deploy/postgres -- psql -U postgres -d flick_api -Atc \
 
 A handful is normal: objects left behind by earlier failures. A number close
 to the object count noted above, or to the size of one bucket listing page
-(`FLICK_REAPER_BATCH_SIZE` keys per backend, at most 1,000), means the database does not match the bucket. In that case stop flick-api,
-drop the queued deletes before any worker runs, and go back to step 7:
+(`FLICK_REAPER_BATCH_SIZE` keys per backend, at most 1,000), means the
+database does not match the bucket. In that case stop flick-api, wait until
+its pods are gone (each one keeps reconciling and publishing during its
+5-second `preStop`), and only then drop the queued deletes, before any worker
+runs:
 
 ```sh
 kubectl -n flick scale deploy/flick-api --replicas=0
+kubectl -n flick wait --for=delete pod -l app.kubernetes.io/name=flick-api --timeout=120s
 kubectl -n flick run nats-purge --rm -i --restart=Never --image=natsio/nats-box:0.18.1 -- \
   nats -s nats://nats:4222 stream purge FLICK_JOBS -f
 ```
 
-The purge also drops every other job waiting in the stream. Nothing is lost
-for good: object reconciliation queues a delete again for each object that no
-row protects once the database is correct.
+Then reload `flick_api` the way the `MISMATCH` paragraph of step 7 describes:
+drop and recreate the database, repeat step 5 for it, and run step 7 with
+`--only api`. The script refuses the current database because it is not
+empty, and dropping it also removes the orphan deletes that are still
+unpublished in `outbox_events`. `flick_worker` is untouched, because no worker
+has run yet.
+
+The purge also drops every other job waiting in the stream, including deletes
+queued before the cutover. Their objects are not deleted wrongly, but some may
+stay in the bucket as leftover ciphertext: a key whose claim in
+`object_reconciliation_pending_v2` or `request_reconciliation_pending_v2` came
+over from SQLite is skipped by reconciliation until a worker acknowledges that
+job, which now never happens. Remove such leftovers by hand or with a provider
+lifecycle rule.
 
 When the count is normal, start the worker and the web front end:
 
