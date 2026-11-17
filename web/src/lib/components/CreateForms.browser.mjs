@@ -488,6 +488,8 @@ for (const width of [320, 360]) {
 						.getByRole('button', { name: `Remove ${name}`, exact: true })
 						.boundingBox();
 					assert.ok(remove.x + remove.width <= width, `${scale} ${name.length}-character name`);
+					// 지우기 버튼은 손가락으로 누를 수 있는 44×44px 이상이다.
+					assert.ok(remove.width >= 44 && remove.height >= 44, `${scale} remove button 44px`);
 					// 잘린 이름 전체는 title로 남는다.
 					assert.equal(await page.getByText(name, { exact: true }).getAttribute('title'), name);
 				}
@@ -529,7 +531,10 @@ test('a picked folder lists as one row and zips under its own name', async () =>
 		assert.match(await row.innerText(), /photos\/[\s\S]*2 files · 9 B/);
 		assert.equal(await page.getByRole('listitem').count(), 1);
 		await page.getByText(/^2 files → photos\.zip · /).waitFor();
-		await page.getByRole('button', { name: 'Remove folder photos', exact: true }).click();
+		const removeFolder = page.getByRole('button', { name: 'Remove folder photos', exact: true });
+		const removeBox = await removeFolder.boundingBox();
+		assert.ok(removeBox.width >= 44 && removeBox.height >= 44, 'remove folder 44px touch target');
+		await removeFolder.click();
 		assert.equal(await page.getByRole('listitem').count(), 0);
 	} finally {
 		await page.close();

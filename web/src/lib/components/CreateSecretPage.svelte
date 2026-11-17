@@ -993,8 +993,10 @@ function typePanelId(type: CreateMode): string {
 							<ul class="grid gap-1.5">
 								{#each pickedRows as row (row.key)}
 									<li
-										class="flex min-h-9 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+										class="flex min-h-11 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 text-sm"
 									>
+										<!-- The remove button fills the row's right end (size-11, -mr-3 over
+										     the row padding), so its 44px hit area leaves the × where it was. -->
 										{#if row.kind === 'folder'}
 											<span class="truncate text-muted-foreground" title={`${row.name}/`}>{row.name}/</span>
 											<span class="flex shrink-0 items-center gap-2">
@@ -1003,7 +1005,7 @@ function typePanelId(type: CreateMode): string {
 												</span>
 												<button
 													type="button"
-													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													class="-mr-3 grid size-11 shrink-0 place-items-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
 													aria-label={`Remove folder ${row.name}`}
 													disabled={isCreating}
 													onclick={() => {
@@ -1021,7 +1023,7 @@ function typePanelId(type: CreateMode): string {
 												</span>
 												<button
 													type="button"
-													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													class="-mr-3 grid size-11 shrink-0 place-items-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
 													aria-label={`Remove ${row.picked.path}`}
 													disabled={isCreating}
 													onclick={() => {
