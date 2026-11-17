@@ -5,6 +5,9 @@ Scripts are the shared local and CI entrypoints.
 - `scripts/ci/*`: deterministic checks used by GitHub Actions and `mise run`.
 - `scripts/dev/*`: local multi-process development entrypoints.
 - `scripts/smoke/*`: scenario checks against running services.
+  `scripts/smoke/canary.sh` is the create/open round trip that
+  `.github/workflows/canary.yml` runs against `FLICK_CANARY_URL`; it creates
+  real secrets on that deployment and opens them at once.
 - `scripts/ops/*`: one-time operator tools run by hand against a live
   deployment, never by CI or `mise run`. `scripts/ops/migrate-sqlite-to-postgres.sh`
   loads the SQLite `api.db`/`worker.db` into PostgreSQL once, following

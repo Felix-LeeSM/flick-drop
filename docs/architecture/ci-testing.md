@@ -24,6 +24,7 @@ PR service containers (Repo checks job)
 
 scheduled/manual checks
   k3d deploy smoke (weekly schedule or manual dispatch)
+  synthetic canary against a live deployment (every 15 minutes or manual dispatch)
 
 manual operator checks (no workflow runs them)
   OCI dev bucket smoke through the application UI
@@ -360,11 +361,67 @@ credentials and removes its own containers, network, volumes, and image tag on e
 Run the script directly to check presigned uploads, size enforcement, and
 HEAD/GET/DELETE against MinIO without starting the application or NATS.
 
-No workflow runs a real OCI bucket check. Verifying OCI Object Storage in
+No workflow runs a dedicated real OCI bucket check. The synthetic canary
+(`.github/workflows/canary.yml`, "Synthetic Canary" below) exercises whatever
+object storage backs the deployment named by `FLICK_CANARY_URL`, but only as a
+round trip through the API. Verifying OCI Object Storage in
 S3-compatibility mode is a manual operator step: the smoke test in
 `docs/runbook/oci-free-tier.md` creates and opens a file above
 `FLICK_PAYLOAD_INLINE_MAX_BYTES` through the application UI against the real
 bucket.
+
+## Synthetic Canary
+
+`.github/workflows/canary.yml` checks a live Flick deployment from outside the
+cluster. It runs every 15 minutes (`cron: "*/15 * * * *"`) and on manual
+dispatch, and only when the repository variable `FLICK_CANARY_URL` holds the
+deployment origin (for example `https://flick.example`). The workflow names no
+domain itself, so forks and repositories without the variable skip the job.
+
+The job builds the `flick` CLI from `cmd/flick` and runs
+`scripts/smoke/canary.sh` three times, one workflow step per check, so a
+failed run shows which path broke:
+
+- `health`: `GET /healthz` on the public origin answers 2xx. Behind the
+  `deploy/base/ingress.yaml` routing this is the web pod; the API is reached by
+  the next two checks.
+- `text`: `flick send` a random 64-character text with the 5-minute minimum
+  TTL, `flick open` the link at once, and compare the bytes. This covers the
+  inline create/open path.
+- `file`: read `payload_inline_max_bytes` and `max_file_bytes` from
+  `GET /api/config`, send a random file of `payload_inline_max_bytes` + 64 KiB
+  (about 1.06 MiB at the default limits), open it, and compare sha256. A file
+  above the inline threshold goes through the presigned object-storage upload
+  (`internal/flickcli/send.go`), so this covers the object-storage upload and
+  download path.
+
+Opening consumes each one-time secret, so a passing run leaves nothing behind;
+a failed attempt leaves at most a secret that expires in 5 minutes. The share
+link carries the decryption key in its URL fragment, so the script keeps it in
+a mode-600 temp file, registers it with `::add-mask::`, and never prints it.
+
+Each run creates exactly two secrets. The API limits creates to 5 per minute
+per client network (`internal/config/defaults.go:defaultCreateRatePerMinute`),
+and GitHub-hosted runners can share egress addresses, so the canary stays well
+under that limit. A failed `text` or `file` check retries once after 65
+seconds, past the one-minute rate window, to absorb runner network flakes; a
+run therefore creates at most four secrets and never retries in a tight loop.
+`CANARY_RETRY_DELAY_SECONDS` overrides the delay for local runs.
+
+Alerting is GitHub's failed-run notification: when a scheduled run fails,
+GitHub emails the user who last changed the `cron` line in
+`.github/workflows/canary.yml`. No ntfy, Telegram, or other push channel is
+wired up yet. GitHub also disables scheduled workflows after 60 days without
+repository activity, and scheduled runs can start several minutes late under
+load, so the canary is a coarse outage signal, not a latency SLO.
+
+Run the same checks by hand:
+
+```sh
+go build -o /tmp/flick ./cmd/flick
+FLICK_CANARY_URL=https://flick.example FLICK_BIN=/tmp/flick \
+  scripts/smoke/canary.sh text
+```
 
 ## Image Publish
 

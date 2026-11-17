@@ -16,6 +16,15 @@ PR checks should stay fast and deterministic:
 k3d and real OCI smoke tests should run only on schedule, manual dispatch, or a
 dedicated workflow after deploy manifests and credentials exist.
 
+`.github/workflows/canary.yml` is the scheduled synthetic canary: every 15
+minutes it runs `scripts/smoke/canary.sh` (`health`, `text`, `file`) against
+the origin in the repository variable `FLICK_CANARY_URL`, and skips when that
+variable is unset. It creates two secrets per run (at most four with its single
+65-second retry) to stay under
+`internal/config/defaults.go:defaultCreateRatePerMinute`; keep any new check
+within that budget. Details: `docs/architecture/ci-testing.md`, "Synthetic
+Canary".
+
 Repository policy:
 
 - `main` is protected.
