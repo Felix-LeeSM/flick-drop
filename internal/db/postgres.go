@@ -21,6 +21,16 @@ const (
 	PostgresConnMaxLifetime = 30 * time.Minute
 )
 
+// postgresStartupWait bounds how long OpenPostgres keeps retrying its first
+// ping, once every postgresStartupRetry. A pod can start before it may reach
+// Postgres: a NetworkPolicy controller (k3s kube-router) admits a new pod a
+// few seconds after it starts, and Postgres itself may be restarting. A wrong
+// DSN or password still fails, with the last error, once the wait is over.
+var (
+	postgresStartupWait  = 30 * time.Second
+	postgresStartupRetry = time.Second
+)
+
 func OpenPostgres(ctx context.Context, dsn string) (*sql.DB, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("postgres DSN is required")
@@ -46,10 +56,25 @@ func OpenPostgres(ctx context.Context, dsn string) (*sql.DB, error) {
 	conn.SetMaxIdleConns(PostgresMaxIdleConns)
 	conn.SetConnMaxLifetime(PostgresConnMaxLifetime)
 
-	if err := conn.PingContext(ctx); err != nil {
+	if err := pingUntilReady(ctx, conn); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
 	return conn, nil
+}
+
+func pingUntilReady(ctx context.Context, conn *sql.DB) error {
+	deadline := time.Now().Add(postgresStartupWait)
+	for {
+		err := conn.PingContext(ctx)
+		if err == nil || ctx.Err() != nil || time.Now().Add(postgresStartupRetry).After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(postgresStartupRetry):
+		}
+	}
 }

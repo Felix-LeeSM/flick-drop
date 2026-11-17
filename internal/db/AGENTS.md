@@ -14,6 +14,12 @@ different lock keys (`migrations.go:apiMigrateLockKey`,
 `ScanLocation: time.UTC` on every connection, because pgx v5 otherwise decodes
 `timestamptz` into the host's `time.Local` and stores emit scanned times in
 UTC JSON and headers (`postgres_test.go:TestOpenPostgresScansTimestamptzAsUTC`).
+`postgres.go:OpenPostgres` retries its first ping once a second for up to 30
+seconds (`postgresStartupWait`), because a Kubernetes NetworkPolicy controller
+admits a new pod to `Service/postgres` a few seconds after it starts
+(`deploy/base/postgres.yaml`); a wrong DSN still fails with the last error
+(`postgres_test.go:TestOpenPostgresWaitsForAPostgresThatIsNotReachableYet`,
+`TestOpenPostgresFailsOnceTheStartupWaitIsOver`).
 
 Directory structure:
 
