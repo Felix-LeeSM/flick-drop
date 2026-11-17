@@ -3,12 +3,22 @@
 `deploy/base/` contains public-safe k3s-compatible manifests for the default
 Flick topology:
 
-```text
-flick-web
-flick-api
-flick-worker
-nats
-```
+| Workload | Kind | Replicas | Manifest |
+| --- | --- | --- | --- |
+| `flick-web` | Deployment | 2 | `deploy/base/web.yaml` |
+| `flick-api` | Deployment | 2 | `deploy/base/api.yaml` |
+| `flick-worker` | Deployment | 1 | `deploy/base/worker.yaml` |
+| `postgres` | Deployment (`strategy: Recreate`) | 1 | `deploy/base/postgres.yaml` |
+| `valkey` | Deployment (`strategy: Recreate`) | 1 | `deploy/base/valkey.yaml` |
+| `nats` | StatefulSet | 1 | `deploy/base/nats.yaml` |
+
+flick-api and flick-worker keep no local state: both databases live in the
+`postgres` pod, so either Deployment can run more than one replica.
+`postgres:17-alpine` holds the `flick_api` and `flick_worker` logical databases,
+each owned by its own role. `valkey/valkey:8.1-alpine` holds only in-memory
+rate-limit buckets and live-transfer waiting rooms. NetworkPolicies limit
+`Service/postgres` to flick-api and flick-worker pods and `Service/valkey` to
+flick-api pods.
 
 The base is intentionally generic. It uses placeholder images, placeholder
 secret values, and `flick.localhost` as the sample ingress host.
@@ -71,7 +81,8 @@ For an end-to-end OCI Free Tier-style deployment checklist, use
 `ConfigMap/flick-config` contains non-secret runtime defaults:
 
 - public and internal service URLs
-- SQLite paths
+- `FLICK_VALKEY_ADDR` (`valkey:6379`) and `FLICK_INTERNAL_HTTP_PORT` (`8081`,
+  the live-transfer stream listener that flick-api replicas dial pod to pod)
 - NATS stream and subject names
 - TTL and size limits
 - storage backend selection (`FLICK_STORAGE_LARGE_BACKEND`, `disabled` in the
@@ -92,11 +103,33 @@ API traffic on the same public origin and routes `/api/*` to `flick-api`.
 
 ## Secrets
 
-`Secret/flick-secrets` (`deploy/base/secret.yaml`) contains two placeholders
-only:
+`deploy/base/secret.yaml` declares four Secrets, all with
+`replace-me-before-use` placeholders:
 
-- `FLICK_INTERNAL_TOKEN`
-- `FLICK_METRICS_TOKEN`
+| Secret | Key | Read by |
+| --- | --- | --- |
+| `flick-secrets` | `FLICK_INTERNAL_TOKEN`, `FLICK_METRICS_TOKEN`, `FLICK_RATELIMIT_KEY_SALT` | flick-api and flick-worker (`envFrom`) |
+| `flick-db-api` | `password` | flick-api, and the postgres init script |
+| `flick-db-worker` | `password` | flick-worker, and the postgres init script |
+| `flick-db-admin` | `POSTGRES_PASSWORD` | the postgres pod only (superuser); no Flick process uses it |
+
+No database DSN is stored anywhere. Each pod builds its own from its role's
+password: `deploy/base/api.yaml` sets
+`FLICK_DATABASE_URL=postgres://flick_api:$(FLICK_API_DB_PASSWORD)@postgres:5432/flick_api?sslmode=disable`,
+and `deploy/base/worker.yaml` sets the matching `FLICK_WORKER_DATABASE_URL` for
+`flick_worker`. Because the password is placed in a URL as is, generate
+URL-safe values, for example `openssl rand -hex 24`.
+
+`ConfigMap/postgres-init` in `deploy/base/postgres.yaml` creates the
+`flick_api` and `flick_worker` roles with those passwords only on the first
+start of an empty `postgres-data` volume. Changing `Secret/flick-db-api` or
+`Secret/flick-db-worker` later does not change the role password; change it in
+PostgreSQL as well (`ALTER ROLE flick_api PASSWORD '...'`), then restart the
+pods that read it.
+
+`FLICK_RATELIMIT_KEY_SALT` keys the Valkey rate-limit buckets and live-transfer
+rooms; every flick-api replica must share the same value
+(`docs/architecture/env-contract.md`).
 
 The base has no object storage settings because the large-object backend is
 disabled. A deployment that enables it adds the `FLICK_S3_*` values (and the
@@ -109,13 +142,18 @@ tenancy details, or production domains.
 
 ## Persistence
 
-The base declares three `ReadWriteOnce` PVCs:
+`deploy/base/pvc.yaml` declares two `ReadWriteOnce` PVCs:
 
 ```text
-flick-api-data      /data/api.db
-flick-worker-data   /data/worker.db
-nats-data           /data/jetstream
+postgres-data   2Gi  /var/lib/postgresql/data (PGDATA=/var/lib/postgresql/data/pgdata)
+nats-data       1Gi  /data/jetstream
 ```
+
+flick-api, flick-worker, flick-web, and Valkey mount no persistent volume.
+`postgres-data` is `ReadWriteOnce`, which is why `Deployment/postgres` uses
+`strategy: Recreate`: the old pod must stop before the new one mounts the
+volume. Backups are `pg_dump` archives; see
+[Backup and restore](backup-restore.md).
 
 Storage classes are left to the cluster default. S3-compatible object storage
 support for larger encrypted payloads (for example, OCI Object Storage in
@@ -129,11 +167,20 @@ with no existing workers or queued jobs, apply the complete base or private over
 
 ```sh
 kubectl apply -k deploy/base
+kubectl -n flick rollout status deploy/postgres
+kubectl -n flick rollout status deploy/valkey
 kubectl -n flick rollout status statefulset/nats
 kubectl -n flick rollout status deploy/flick-api
 kubectl -n flick rollout status deploy/flick-worker
 kubectl -n flick rollout status deploy/flick-web
 ```
+
+An **existing installation still on the SQLite layout** (`flick-api-data` and
+`flick-worker-data` volumes) moves its data once through
+[PostgreSQL cutover](postgres-cutover.md) instead of applying this base
+directly. Starting flick-api against an empty `flick_api` database while the
+bucket still holds objects lets object reconciliation delete live bodies as
+orphans ([Backup and restore](backup-restore.md#why-flick-api-stays-down-until-the-restore-finishes)).
 
 For an **existing installation** upgrading to managed-object reconciliation, all
 workers must support `POST /internal/object-reconciliation/ack` for **both**

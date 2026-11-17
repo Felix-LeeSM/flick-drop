@@ -35,8 +35,8 @@ Check these in order:
 3. Size: PR is small enough for accurate review, or the size exception is clear.
 4. Security: no plaintext, passphrases, derived keys, credentials, or private
    deployment values are exposed.
-5. Ownership: API owns `api.db`; worker owns `worker.db`; NATS carries IDs and
-   safe metadata only.
+5. Ownership: API owns the `flick_api` database; worker owns `flick_worker`;
+   NATS carries IDs and safe metadata only.
 6. Contracts: OpenAPI/event/env/docs are updated with behavior changes.
 7. Directory rules: new directories have clear owners and local `AGENTS.md`
    where required.
