@@ -6,10 +6,11 @@
 #
 # Scrape targets use static DNS / dns_sd rather than Kubernetes service
 # discovery, so vmsingle needs no API access and no RBAC (mirrors node-exporter):
-#   - flick-api / flick-worker / kube-state-metrics: single replicas, scraped by stable Service
-#     DNS (resolv.conf search domain resolves the short name).
-#   - node-exporter: a headless Service, so an A-record dns_sd lookup returns
-#     every pod IP and each node is scraped on the overlay network.
+#   - flick-api / flick-worker / node-exporter: headless Services, so an A-record
+#     dns_sd lookup returns every pod IP and each replica is scraped on its own
+#     (a ClusterIP would hand each scrape to one random replica).
+#   - kube-state-metrics: a single replica, scraped by stable Service DNS
+#     (resolv.conf search domain resolves the short name).
 #
 # Opt-in: applied with the rest of deploy/base/monitoring, NOT the base.
 apiVersion: v1
@@ -30,12 +31,18 @@ data:
 
       # flick API /metrics is bearer-guarded (FLICK_METRICS_TOKEN); the token is
       # mounted from the flick-secrets Secret. Fails the scrape (401) if the
-      # mounted token does not match the API's.
+      # mounted token does not match the API's. Every replica is scraped
+      # (instance = pod IP); its counters are per replica and sum() across
+      # them, while the database-backed gauges (flick_active_uploads,
+      # flick_outbox_pending, flick_storage_bytes_used) repeat one cluster-wide
+      # value per replica and aggregate with max().
       - job_name: flick-api
         metrics_path: /metrics
         bearer_token_file: /etc/vm-secrets/flick-metrics-token
-        static_configs:
-          - targets: ['flick-api:8080']
+        dns_sd_configs:
+          - names: ['flick-api-headless.flick.svc.cluster.local']
+            type: A
+            port: 8080
 
       - job_name: kube-state-metrics
         static_configs:
@@ -46,8 +53,10 @@ data:
       - job_name: flick-worker
         metrics_path: /metrics
         bearer_token_file: /etc/vm-secrets/flick-metrics-token
-        static_configs:
-          - targets: ['flick-worker-metrics:9091']
+        dns_sd_configs:
+          - names: ['flick-worker-metrics-headless.flick.svc.cluster.local']
+            type: A
+            port: 9091
 
       # Headless Service: the A record returns all node-exporter pod IPs, so
       # every node is scraped without hostNetwork (node-IP:9100 is firewalled

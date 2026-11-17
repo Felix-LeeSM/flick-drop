@@ -75,3 +75,21 @@ spec:
     - name: metrics
       port: 9091
       targetPort: metrics
+---
+# Headless twin of flick-worker-metrics: its A record returns every worker pod
+# IP, so VictoriaMetrics scrapes each worker's /metrics through dns_sd_configs
+# (deploy/base/monitoring/vmsingle.yaml). Cluster-internal only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flick-worker-metrics-headless
+  labels:
+    app.kubernetes.io/name: flick-worker
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: flick-worker
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: metrics

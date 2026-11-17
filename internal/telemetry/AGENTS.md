@@ -69,8 +69,10 @@ on `DefaultRegistry` in `init()`:
 worker's dedicated listener (`FLICK_WORKER_METRICS_ADDR`, default `:9091`)
 via `telemetry.NewMetricsServer` — the same bearer credential
 (`FLICK_METRICS_TOKEN`) guards both, and an unset token fails closed (401).
-The worker's Deployment exposes the port through the ClusterIP-only
-`flick-worker-metrics` Service (`deploy/base/worker.yaml`): the port is not
+The worker's Deployment exposes the port through the ClusterIP
+`flick-worker-metrics` Service and its headless twin
+`flick-worker-metrics-headless` (both `deploy/base/worker.yaml`; VictoriaMetrics
+scrapes each pod through the headless one): the port is not
 exposed outside the cluster, but `deploy/` defines no NetworkPolicy, so any pod
 in the cluster can connect and `FLICK_METRICS_TOKEN` is the only guard against
 in-cluster readers. Bucket usage is gauged from the `flick_api` database size aggregate

@@ -478,13 +478,15 @@ retention period.
   `*url.Error`, `internal/secrets/reaper.go`, `internal/storage/object.go`).
 - Loki (`deploy/base/monitoring/alloy.yaml`, `loki.process "private"`): every
   shipped line has delivery IDs in web paths, public and internal API paths
-  (`/api/secrets/`, `/api/requests/`, `/internal/secrets/`), and object keys
-  replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
+  (`/api/secrets/`, `/api/requests/`, `/internal/secrets/`), live-transfer
+  code hashes in pod-to-pod stream paths (`/internal/pipe/stream/`), and object
+  keys replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
   (7-day retention).
 
 Abuse handling does not rely on logged IPs: the API rate limiters key by client
-network in memory only (`internal/httpapi/ratelimit.go`), and an edge proxy or
-CDN in front of a deployment applies its own blocking.
+network in process memory, or in Valkey only as an HMAC-SHA-256 digest under
+`FLICK_RATELIMIT_KEY_SALT` (`internal/httpapi/ratelimit.go`), and an edge proxy
+or CDN in front of a deployment applies its own blocking.
 
 ## Transport
 
