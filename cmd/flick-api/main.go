@@ -32,6 +32,14 @@ func main() {
 	logger := telemetry.NewLogger()
 	telemetry.SetStandardLogger(logger)
 
+	// "flick-api migrate" applies the flick_api schema and exits before object
+	// storage, NATS, the reconciler, or the listeners start, for the one-time
+	// SQLite cutover (docs/runbook/postgres-cutover.md).
+	migrateOnly := len(os.Args) == 2 && os.Args[1] == "migrate"
+	if len(os.Args) > 1 && !migrateOnly {
+		log.Fatalf("usage: flick-api [migrate]")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -65,6 +73,10 @@ func main() {
 
 	if err := db.MigrateAPI(ctx, conn); err != nil {
 		log.Fatalf("migrate api database: %v", err)
+	}
+	if migrateOnly {
+		log.Printf("flick-api migrated the flick_api database")
+		return
 	}
 
 	var objectStore *storage.Registry
