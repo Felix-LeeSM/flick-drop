@@ -210,11 +210,6 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 			reason = "orphan"
 		}
 		telemetry.SecretReaped.WithLabelValues(reason).Inc()
-		// Orphans are pending_upload secrets that never reached /finalize, so
-		// their ActiveUploads Inc (from CreateLarge) is now balanced here.
-		if c.state == "pending_upload" {
-			telemetry.ActiveUploads.Dec()
-		}
 	}
 	span.SetAttributes(attribute.Int("reaper.reclaimed", len(batch)))
 	return len(batch), nil

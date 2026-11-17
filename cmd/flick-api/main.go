@@ -123,24 +123,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
 	}
-	// Seed the in-memory ActiveUploads gauge from the authoritative DB count so an
-	// API restart does not reset it to 0 while pending_upload rows persist (later
-	// finalize/reap Decs would otherwise drive it negative). Set, not Add: this is
-	// the true value at boot, and the gauge starts at 0.
-	// ponytail: a failed count must not block startup — log and carry on.
-	if n, err := secretStore.CountPendingUploads(ctx); err != nil {
-		log.Printf("seed active uploads gauge: %v", err)
-	} else {
-		telemetry.ActiveUploads.Set(float64(n))
-	}
-	// Seed the per-backend storage-usage gauge the same way: the DB aggregate is
-	// what ceiling enforcement reads, so /metrics should not show zeros between
-	// boot and the first placement read.
-	if usage, err := db.StorageObjectBytes(ctx, conn, time.Now().UTC()); err != nil {
-		log.Printf("seed storage bytes gauge: %v", err)
-	} else {
-		telemetry.SetStorageBytesUsed(usage)
-	}
+	// The API-state gauges read the shared database on every scrape, so each
+	// replica reports the same cluster-wide value.
+	telemetry.RegisterAPIStateCollector(telemetry.APIStateQueries{
+		PendingUploads: secretStore.CountPendingUploads,
+		OutboxPending:  outboxStore.CountPending,
+		StorageBytesUsed: func(ctx context.Context) (map[string]int64, error) {
+			return db.StorageObjectBytes(ctx, conn, time.Now().UTC())
+		},
+	})
 	natsConn, err := events.ConnectNATS(cfg.NATSURL)
 	if err != nil {
 		log.Fatalf("connect nats: %v", err)

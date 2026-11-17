@@ -347,7 +347,6 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
 	}
-	telemetry.SetStorageBytesUsed(backendUsage)
 	backend := storage.ChooseBackend(s.objects, backendUsage, s.maxTotalBytes, input.SizeBytes)
 	if backend == "" {
 		return CreateLargeResult{}, ErrStorageFull
@@ -406,7 +405,6 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	}
 
 	telemetry.SecretCreated.WithLabelValues(input.Kind, backend).Inc()
-	telemetry.ActiveUploads.Inc()
 
 	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload, ManagementToken: managementToken}, nil
 }
@@ -497,10 +495,6 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize: %w", err)
 	}
-	// A pending_upload just became active: the client completed the upload, so
-	// the in-flight gauge drops. (The idempotent paths above never reach here,
-	// so we do not double-decrement.)
-	telemetry.ActiveUploads.Dec()
 	return nil
 }
 
@@ -551,10 +545,9 @@ func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now
 func (s *Store) PendingTTL() time.Duration { return s.pendingTTL }
 
 // CountPendingUploads returns the number of secrets still awaiting /finalize.
-// main uses it to seed telemetry.ActiveUploads at boot so an API restart does
-// not reset the in-memory gauge to 0 while real pending_upload rows persist
-// (which would let later Dec calls drive it negative). The state literal matches
-// the reaper's claim query.
+// The API-state metrics collector (telemetry.RegisterAPIStateCollector) reads
+// it on every scrape as flick_active_uploads. The state literal matches the
+// reaper's claim query.
 func (s *Store) CountPendingUploads(ctx context.Context) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `select count(*) from secrets where state = 'pending_upload'`).Scan(&n); err != nil {

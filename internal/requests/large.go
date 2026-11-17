@@ -140,7 +140,6 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if err != nil {
 			return UploadResult{}, ErrStorage
 		}
-		telemetry.SetStorageBytesUsed(usage)
 		backend := storage.ChooseBackend(s.opts.Objects, usage, s.opts.MaxTotalBytes, in.SizeBytes)
 		if backend == "" {
 			return UploadResult{}, ErrStorageFull
