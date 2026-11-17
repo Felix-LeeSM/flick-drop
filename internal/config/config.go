@@ -58,9 +58,16 @@ type Config struct {
 	// WorkerMetricsAddr is the worker's dedicated bearer-gated /metrics listen
 	// address (FLICK_WORKER_METRICS_ADDR). Empty disables the listener.
 	WorkerMetricsAddr string
-	NATSURL           string
-	NATSStream        string
-	NATSJobSubject    string
+	// ValkeyAddr is the Valkey host:port shared by API replicas for rate
+	// limiting (FLICK_VALKEY_ADDR). Empty keeps every limiter in process memory.
+	ValkeyAddr string
+	// RateLimitKeySalt is the HMAC-SHA-256 key that hashes client networks
+	// before they become Valkey keys (FLICK_RATELIMIT_KEY_SALT). Required when
+	// ValkeyAddr is set.
+	RateLimitKeySalt string
+	NATSURL          string
+	NATSStream       string
+	NATSJobSubject   string
 	// PayloadInlineMaxBytes bounds one encrypted secret; MaxFileBytes bounds the
 	// file the browser may pick. MaxTotalBytes bounds the cumulative stored
 	// bytes per backend (0 = unlimited) so multi-backend deployments stay inside
@@ -99,6 +106,8 @@ func Load() (Config, error) {
 		// An explicitly empty value disables the worker metrics listener; the
 		// deployment default binds :9091 (bearer-gated by FLICK_METRICS_TOKEN).
 		WorkerMetricsAddr:     getenv("FLICK_WORKER_METRICS_ADDR", ":9091"),
+		ValkeyAddr:            getenv("FLICK_VALKEY_ADDR", ""),
+		RateLimitKeySalt:      getenv("FLICK_RATELIMIT_KEY_SALT", ""),
 		NATSURL:               getenv("FLICK_NATS_URL", "nats://127.0.0.1:4222"),
 		NATSStream:            getenv("FLICK_NATS_STREAM", "FLICK_JOBS"),
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
@@ -226,6 +235,9 @@ func Load() (Config, error) {
 	}
 	if cfg.PipeMaxConcurrent <= 0 {
 		return Config{}, fmt.Errorf("FLICK_PIPE_MAX_CONCURRENT must be a positive integer")
+	}
+	if cfg.ValkeyAddr != "" && cfg.RateLimitKeySalt == "" {
+		return Config{}, fmt.Errorf("FLICK_RATELIMIT_KEY_SALT is required when FLICK_VALKEY_ADDR is set")
 	}
 	if cfg.S3.Enabled {
 		if cfg.S3.Bucket == "" || cfg.S3.Region == "" {

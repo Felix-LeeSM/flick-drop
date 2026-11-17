@@ -101,6 +101,25 @@ func TestLoadRejectsDefaultTTLAboveRange(t *testing.T) {
 	}
 }
 
+// Valkey 키는 솔트로 해시한 값만 담아야 하므로, 주소만 있고 솔트가 없으면 부팅하지 않는다.
+func TestLoadRequiresRateLimitSaltWithValkey(t *testing.T) {
+	clearFlickEnv(t)
+	t.Setenv("FLICK_VALKEY_ADDR", "127.0.0.1:6379")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected config load error for FLICK_VALKEY_ADDR without FLICK_RATELIMIT_KEY_SALT")
+	}
+
+	t.Setenv("FLICK_RATELIMIT_KEY_SALT", "deployment-salt")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load with salt: %v", err)
+	}
+	if cfg.ValkeyAddr != "127.0.0.1:6379" || cfg.RateLimitKeySalt != "deployment-salt" {
+		t.Fatalf("valkey config = %q / %q", cfg.ValkeyAddr, cfg.RateLimitKeySalt)
+	}
+}
+
 func clearFlickEnv(t *testing.T) {
 	t.Helper()
 
@@ -114,6 +133,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_API_ADDR",
 		"FLICK_DATABASE_URL",
 		"FLICK_WORKER_DATABASE_URL",
+		"FLICK_VALKEY_ADDR",
+		"FLICK_RATELIMIT_KEY_SALT",
 		"FLICK_NATS_URL",
 		"FLICK_NATS_STREAM",
 		"FLICK_NATS_JOB_SUBJECT",

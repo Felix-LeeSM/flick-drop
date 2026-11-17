@@ -11,6 +11,11 @@ Runtime resources in `deploy/base/kustomization.yaml`:
 - `Service/flick-api`
 - `Service/flick-worker-metrics` (`deploy/base/worker.yaml`): ClusterIP
   Service for the worker's bearer-guarded `/metrics` listener on port `9091`
+- `Service/flick-api-headless` (`deploy/base/api.yaml`, port `8080`) and
+  `Service/flick-worker-metrics-headless` (`deploy/base/worker.yaml`, port
+  `9091`): headless (`clusterIP: None`) twins whose A records list every pod,
+  so `deploy/base/monitoring/vmsingle.yaml` scrapes each replica through
+  `dns_sd_configs`
 - `StatefulSet/nats` with JetStream file storage, plus `Service/nats` for
   clients and `Service/nats-headless` as the StatefulSet's governing Service
   (`deploy/base/nats.yaml`)

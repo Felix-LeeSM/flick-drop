@@ -1,20 +1,35 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// rateLimiter is a per-key token bucket limiter with no external dependencies.
-// Every bucket key starts with the client network (clientNetwork: the client
-// IP, with IPv6 collapsed to its /64) and adds the limiter's scope. Each key
-// gets an independent bucket refilled at `rate` tokens/second up to `burst`, so
-// one client cannot starve unrelated callers through a global quota.
+// rateLimiter is a per-key token bucket limiter. Every bucket key starts with
+// the client network (clientNetwork: the client IP, with IPv6 collapsed to its
+// /64) and adds the limiter's scope. Each key gets an independent bucket
+// refilled at `rate` tokens/second up to `burst`, so one client cannot starve
+// unrelated callers through a global quota.
+//
+// With shared set, buckets live in Valkey so every API replica spends one
+// budget per key; the in-process buckets below serve only while Valkey is
+// unreachable (sharedBuckets.allow fails), each replica then enforcing its own
+// budget.
 type rateLimiter struct {
 	mu             sync.Mutex
 	buckets        map[string]*tokenBucket
@@ -22,6 +37,136 @@ type rateLimiter struct {
 	burst          float64
 	trustedProxies []*net.IPNet
 	scope          rateLimitScope
+	// name separates this limiter's Valkey buckets from the other limiters'
+	// (each in-process limiter has its own map; Valkey has one keyspace).
+	name   string
+	shared *sharedBuckets
+}
+
+// sharedBucketTTL bounds how long Valkey keeps an idle bucket. Every limiter
+// refills its full burst within one minute (rate = burst/60s), so a bucket idle
+// longer than that is indistinguishable from a missing one; the security model
+// caps rate-limit key lifetime at 10 minutes.
+const sharedBucketTTL = 2 * time.Minute
+
+// sharedBucketTimeout bounds one Valkey round trip on the request path. On
+// timeout the request is judged by the in-process bucket instead. An in-cluster
+// round trip takes about a millisecond; the margin absorbs a CPU-starved node
+// without a false fallback, and sharedBucketRetryAfter limits an outage to the
+// requests that arrive together once every 5 seconds per replica.
+const sharedBucketTimeout = 250 * time.Millisecond
+
+// tokenBucketScript is the in-process allow() token bucket run atomically in
+// Valkey. It reads the Valkey server clock (TIME), so replicas with skewed
+// clocks still refill one bucket consistently. Returns 1 when a token was
+// spent, 0 when the bucket is empty.
+var tokenBucketScript = redis.NewScript(`
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local rate = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local state = redis.call('HMGET', KEYS[1], 'tokens', 'last')
+local tokens = tonumber(state[1])
+local last = tonumber(state[2])
+if tokens == nil or last == nil then
+  tokens = burst
+  last = now
+end
+local elapsed = now - last
+if elapsed > 0 then
+  tokens = math.min(burst, tokens + elapsed * rate)
+end
+local allowed = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
+end
+redis.call('HSET', KEYS[1], 'tokens', string.format('%.6f', tokens), 'last', string.format('%.6f', now))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+return allowed
+`)
+
+// sharedBuckets stores token buckets in Valkey. Keys are HMAC-SHA-256 digests
+// of the limiter name and bucket key under the deployment salt
+// (FLICK_RATELIMIT_KEY_SALT), so Valkey never holds a raw client network
+// (docs/architecture/security-model.md, "Valkey").
+type sharedBuckets struct {
+	client *redis.Client
+	salt   []byte
+	// degraded is true while Valkey calls fail, so the warning logs once per
+	// outage instead of once per request.
+	degraded atomic.Bool
+	// retryAt (monotonic nanoseconds since sharedBucketsEpoch, so a wall-clock
+	// jump cannot stretch it) skips Valkey for sharedBucketRetryAfter after
+	// a failure, so an unreachable Valkey does not add sharedBucketTimeout to
+	// every request of the outage.
+	retryAt atomic.Int64
+}
+
+// sharedBucketRetryAfter is how long the limiters stay on in-process buckets
+// after a Valkey failure before trying Valkey again.
+const sharedBucketRetryAfter = 5 * time.Second
+
+// sharedBucketsEpoch anchors retryAt on the monotonic clock.
+var sharedBucketsEpoch = time.Now()
+
+var errSharedBucketsCoolingDown = errors.New("valkey rate limiter cooling down after a failure")
+
+// NewValkeyClient builds the Valkey client the rate limiters share
+// (FLICK_VALKEY_ADDR). It connects lazily, so the API boots while Valkey is
+// down, and it never retries: a failed call falls back to the in-process
+// bucket at once instead of holding the request.
+func NewValkeyClient(addr string) *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:                  addr,
+		DialTimeout:           sharedBucketTimeout,
+		ReadTimeout:           sharedBucketTimeout,
+		WriteTimeout:          sharedBucketTimeout,
+		PoolTimeout:           sharedBucketTimeout,
+		ContextTimeoutEnabled: true,
+		MaxRetries:            -1,
+		// One dial attempt: the go-redis default (5 attempts, 100ms apart)
+		// would spend the whole sharedBucketTimeout on a refused connection.
+		DialerRetries: 1,
+	})
+}
+
+func newSharedBuckets(client *redis.Client, salt string) *sharedBuckets {
+	return &sharedBuckets{client: client, salt: []byte(salt)}
+}
+
+func (s *sharedBuckets) key(limiter, bucket string) string {
+	mac := hmac.New(sha256.New, s.salt)
+	mac.Write([]byte(limiter))
+	mac.Write([]byte{0})
+	mac.Write([]byte(bucket))
+	return "rl:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// allow spends one token from the shared bucket. An error means the caller
+// must judge the request itself: Valkey failed now, or failed less than
+// sharedBucketRetryAfter ago. The context is detached from the request so a
+// client hang-up is not mistaken for a Valkey outage.
+func (s *sharedBuckets) allow(ctx context.Context, rl *rateLimiter, bucket string) (bool, error) {
+	now := int64(time.Since(sharedBucketsEpoch))
+	if now < s.retryAt.Load() {
+		return false, errSharedBucketsCoolingDown
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sharedBucketTimeout)
+	defer cancel()
+	allowed, err := tokenBucketScript.Run(ctx, s.client, []string{s.key(rl.name, bucket)},
+		rl.rate, rl.burst, int(sharedBucketTTL.Seconds())).Int()
+	if err != nil {
+		s.retryAt.Store(now + int64(sharedBucketRetryAfter))
+		if s.degraded.CompareAndSwap(false, true) {
+			slog.Warn("valkey rate limiter unavailable; falling back to per-process buckets", "error", err)
+		}
+		return false, err
+	}
+	if s.degraded.CompareAndSwap(true, false) {
+		slog.Info("valkey rate limiter recovered; buckets are shared across replicas again")
+	}
+	return allowed == 1, nil
 }
 
 // rateLimitScope picks which requests from one client network spend the same
@@ -109,13 +254,27 @@ func (rl *rateLimiter) cleanup() {
 // and scope. Requests over the limit get 429 with a Retry-After hint.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.allow(rl.clientNetwork(r)+"|"+rl.scope(r), time.Now().UTC()) {
+		if !rl.allowRequest(r.Context(), rl.clientNetwork(r)+"|"+rl.scope(r)) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowRequest judges one request: by the shared Valkey bucket when one is
+// configured and reachable, otherwise by this process's bucket. Valkey being
+// down never blocks a request outright (fail-open to the local budget).
+func (rl *rateLimiter) allowRequest(ctx context.Context, bucket string) bool {
+	if rl.shared != nil {
+		allowed, err := rl.shared.allow(ctx, rl, bucket)
+		if err == nil {
+			return allowed
+		}
+		telemetry.RateLimitFallbacks.WithLabelValues(rl.name).Inc()
+	}
+	return rl.allow(bucket, time.Now().UTC())
 }
 
 // clientIP resolves the originating client address. The direct peer must be a

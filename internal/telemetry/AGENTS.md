@@ -44,26 +44,35 @@ on `DefaultRegistry` in `init()`:
   paths do not count. They mirror the durable `usage_counters` rows
   (`internal/usage`) as the scraped live view.
 - `flick_outbox_published_total` (counter, label `outcome`
-  `published`|`failed`) and `flick_outbox_pending` (gauge) — set in
-  `events.OutboxPublisher.PublishDue` after each batch; the gauge counts rows
-  still in state `pending` (`OutboxStore.CountPending`), which is the queue's
-  backlog as seen from its producer side.
-- `flick_active_uploads` (gauge) — `Inc` in `CreateLarge`, `Dec` in `Finalize`
-  (upload confirmed) and in the reaper (pending_upload orphan reclaimed).
-- `flick_storage_bytes_used` (gauge, label `storage` `s3_object`|`r2_object`) —
-  set from the `flick_api` database aggregate (`db.StorageObjectBytes`, see
-  `telemetry.SetStorageBytesUsed`) at every placement read in
-  `requests.Store.Reserve` and `secrets.Store.CreateLarge`, plus once at API
-  boot (`cmd/flick-api/main.go`). It reflects what ceiling enforcement reads,
-  not a bucket scan.
+  `published`|`failed`) — incremented in `events.OutboxPublisher.PublishDue`
+  after each batch commits.
+- `flick_ratelimit_fallback_total` (counter, label `limiter`, one of the eight
+  limiter names in `internal/httpapi/router.go:NewRouter`) — incremented in
+  `internal/httpapi/ratelimit.go:rateLimiter.allowRequest` whenever a request is
+  judged by the in-process bucket because the shared Valkey bucket failed or is
+  cooling down after a failure.
+- `flick_active_uploads`, `flick_outbox_pending`, and `flick_storage_bytes_used`
+  (gauges; the last has label `storage` `s3_object`|`r2_object`) — not stored
+  in the process. `api_state.go:RegisterAPIStateCollector`, called only by
+  `cmd/flick-api/main.go`, reads them from the `flick_api` database on every
+  scrape (one 2-second timeout, `apiStateScrapeTimeout`) through
+  `secrets.Store.CountPendingUploads` (`pending_upload` secrets),
+  `events.OutboxStore.CountPending` (outbox rows in state `pending`), and
+  `db.StorageObjectBytes` (the aggregate ceiling enforcement reads, not a
+  bucket scan). Every API replica therefore reports the same cluster-wide
+  value, and dashboards aggregate them with `max(...)`
+  (`deploy/base/monitoring/grafana.yaml`). A failed read drops only that
+  series from the scrape and logs a warning.
 
 `MetricsHandler()` serves the Prometheus text exposition format; mounted on
 `/metrics` by `internal/httpapi/router.go` in the API process, and on the
 worker's dedicated listener (`FLICK_WORKER_METRICS_ADDR`, default `:9091`)
 via `telemetry.NewMetricsServer` — the same bearer credential
 (`FLICK_METRICS_TOKEN`) guards both, and an unset token fails closed (401).
-The worker's Deployment exposes the port through the ClusterIP-only
-`flick-worker-metrics` Service (`deploy/base/worker.yaml`): the port is not
+The worker's Deployment exposes the port through the ClusterIP
+`flick-worker-metrics` Service and its headless twin
+`flick-worker-metrics-headless` (both `deploy/base/worker.yaml`; VictoriaMetrics
+scrapes each pod through the headless one): the port is not
 exposed outside the cluster, but `deploy/` defines no NetworkPolicy, so any pod
 in the cluster can connect and `FLICK_METRICS_TOKEN` is the only guard against
 in-cluster readers. Bucket usage is gauged from the `flick_api` database size aggregate
@@ -113,7 +122,9 @@ Rules:
 - Logs, metric labels, and span attributes never carry client IP addresses or
   delivery IDs (secret, request, or object-storage key IDs), and no setting
   turns them on. The API rate limiter in `internal/httpapi/ratelimit.go` keeps
-  client networks in memory only. The full log policy, including the nginx
+  raw client networks in process memory only; the Valkey buckets it shares
+  across replicas are keyed by an HMAC-SHA-256 digest under
+  `FLICK_RATELIMIT_KEY_SALT`. The full log policy, including the nginx
   `flick_private` format in `web/nginx.conf` and the Loki masking in
   `deploy/base/monitoring/alloy.yaml`, is the `## Logs` section of
   `docs/architecture/security-model.md`.

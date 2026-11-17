@@ -85,14 +85,9 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 	if err := tx.Commit(); err != nil {
 		return PublishResult{}, fmt.Errorf("commit outbox publish batch: %w", err)
 	}
-	// Queue visibility for /metrics: after each batch, report how many events
-	// still wait to be published and count the batch's outcomes. Rows marked
-	// 'failed' stay excluded from the pending gauge until their retry is due —
-	// the publisher tick re-claims them.
-	pending, err := p.store.CountPending(ctx)
-	if err == nil {
-		telemetry.OutboxPending.Set(float64(pending))
-	}
+	// Count the batch's outcomes for /metrics. The backlog gauge
+	// (flick_outbox_pending) is read from the database at scrape time
+	// (telemetry.RegisterAPIStateCollector).
 	if result.Published > 0 {
 		telemetry.OutboxPublished.WithLabelValues("published").Add(float64(result.Published))
 	}

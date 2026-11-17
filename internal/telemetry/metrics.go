@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -33,6 +32,7 @@ const (
 	labelJobKind         = "kind"
 	labelOutcome         = "outcome"
 	labelReason          = "reason"
+	labelLimiter         = "limiter"
 )
 
 var (
@@ -114,38 +114,16 @@ var (
 		[]string{labelOutcome},
 	)
 
-	// OutboxPending gauges outbox rows still waiting to be published (state
-	// 'pending'), set by the publisher after each batch. Rising values mean the
-	// broker is backing up or down.
-	OutboxPending = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "flick_outbox_pending",
-			Help: "Outbox events waiting to be published.",
+	// RateLimitFallbacks counts requests a rate limiter judged with its
+	// per-process bucket because the shared Valkey bucket failed, by limiter
+	// name (internal/httpapi/ratelimit.go). Non-zero means replicas are each
+	// enforcing their own budget.
+	RateLimitFallbacks = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "flick_ratelimit_fallback_total",
+			Help: "Rate-limit decisions made in process memory because Valkey was unavailable, by limiter.",
 		},
-	)
-
-	// ActiveUploads gauges pending_upload secrets: staged by /api/secrets
-	// (CreateLarge) but not yet confirmed by /finalize. It is Inc'd on stage and
-	// Dec'd on both finalize-activate and reaper orphan reclaim, so it never
-	// drifts as long as both paths are wired.
-	ActiveUploads = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "flick_active_uploads",
-			Help: "Pending large-secret uploads awaiting /finalize.",
-		},
-	)
-
-	// StorageBytesUsed gauges each backend's cumulative object bytes as
-	// aggregated from the flick_api database (see db.StorageObjectBytes) — not a bucket scan.
-	// The placement checks in requests.Reserve and secrets.CreateLarge refresh
-	// it alongside every usage read, and process wiring seeds it at boot, so
-	// scrapes see the same numbers the ceiling enforcement uses.
-	StorageBytesUsed = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "flick_storage_bytes_used",
-			Help: "Object bytes per backend, aggregated from the flick_api database.",
-		},
-		[]string{labelStorage},
+		[]string{labelLimiter},
 	)
 )
 
@@ -159,9 +137,7 @@ func init() {
 		RequestSubmitted,
 		RequestConsumed,
 		OutboxPublished,
-		OutboxPending,
-		ActiveUploads,
-		StorageBytesUsed,
+		RateLimitFallbacks,
 	)
 }
 
@@ -208,17 +184,4 @@ func checkBearerToken(got, want string) bool {
 	gotHash := sha256.Sum256([]byte(got))
 	wantHash := sha256.Sum256([]byte(want))
 	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
-}
-
-// SetStorageBytesUsed publishes the per-backend usage aggregates a ceiling
-// check just read (see db.StorageObjectBytes). Keys are storage_backend
-// column values; unknown keys would mint unbounded label series and are
-// dropped.
-func SetStorageBytesUsed(usage map[string]int64) {
-	for backend, total := range usage {
-		switch backend {
-		case storage.PrimaryBackend, storage.SecondaryBackend:
-			StorageBytesUsed.WithLabelValues(backend).Set(float64(total))
-		}
-	}
 }

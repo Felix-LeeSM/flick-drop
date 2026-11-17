@@ -301,6 +301,17 @@ limiter instance in `internal/httpapi/router.go` picks one of two scopes:
   (`requestLimiter`, so rotating request IDs buys no fresh bucket), and the
   live relay's `/init`, `/join`, and `/status` use it.
 
+With `FLICK_VALKEY_ADDR` set, every API replica spends the same buckets: a
+Lua token bucket (`internal/httpapi/ratelimit.go` `tokenBucketScript`, timed
+by the Valkey server clock) runs on the key `rl:` + hex HMAC-SHA-256 of the
+limiter name and bucket key under `FLICK_RATELIMIT_KEY_SALT`, so Valkey never
+holds a raw client network, and each key expires after 2 minutes
+(`sharedBucketTTL`). A Valkey error or timeout (250 ms) fails open to the
+replica's own in-process bucket for the next 5 seconds
+(`sharedBucketRetryAfter`): limits keep holding per replica, so a client can
+get at most one budget per replica during an outage, and every such decision
+counts in `flick_ratelimit_fallback_total`.
+
 **Waiting room confirmation.** Every live relay session is a
 waiting room. Every device that enters the right code is held as a pending
 connection, up to `MaxPendingConnections` (10) in
@@ -467,13 +478,15 @@ retention period.
   `*url.Error`, `internal/secrets/reaper.go`, `internal/storage/object.go`).
 - Loki (`deploy/base/monitoring/alloy.yaml`, `loki.process "private"`): every
   shipped line has delivery IDs in web paths, public and internal API paths
-  (`/api/secrets/`, `/api/requests/`, `/internal/secrets/`), and object keys
-  replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
+  (`/api/secrets/`, `/api/requests/`, `/internal/secrets/`), live-transfer
+  code hashes in pod-to-pod stream paths (`/internal/pipe/stream/`), and object
+  keys replaced with `<id>` and IPv4/IPv6 addresses with `<ip>`, before storage
   (7-day retention).
 
 Abuse handling does not rely on logged IPs: the API rate limiters key by client
-network in memory only (`internal/httpapi/ratelimit.go`), and an edge proxy or
-CDN in front of a deployment applies its own blocking.
+network in process memory, or in Valkey only as an HMAC-SHA-256 digest under
+`FLICK_RATELIMIT_KEY_SALT` (`internal/httpapi/ratelimit.go`), and an edge proxy
+or CDN in front of a deployment applies its own blocking.
 
 ## Transport
 

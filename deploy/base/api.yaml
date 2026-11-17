@@ -89,3 +89,22 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+# Headless twin of flick-api: its A record returns every API pod IP, so
+# VictoriaMetrics scrapes each replica's /metrics through dns_sd_configs
+# (deploy/base/monitoring/vmsingle.yaml) instead of one random pod behind the
+# ClusterIP. Cluster-internal only, like flick-api.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flick-api-headless
+  labels:
+    app.kubernetes.io/name: flick-api
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: flick-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

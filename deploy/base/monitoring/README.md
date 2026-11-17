@@ -98,10 +98,17 @@ It uses static / `dns_sd` scraping instead of Kubernetes service discovery, so i
 needs **no API access and no RBAC**:
 
 - `vmsingle` (`127.0.0.1:8428`) — vmsingle's own metrics.
-- `flick-api:8080/metrics` — bearer-guarded; the token is mounted from
-  `flick-secrets` (`FLICK_METRICS_TOKEN`).
-- `flick-worker` (`flick-worker-metrics:9091/metrics`) — the worker's dedicated
-  metrics listener (`Service/flick-worker-metrics` in `deploy/base/worker.yaml`),
+- `flick-api` (every pod behind `flick-api-headless.flick.svc.cluster.local`,
+  port `8080`, `/metrics`) — bearer-guarded; the token is mounted from
+  `flick-secrets` (`FLICK_METRICS_TOKEN`). Each replica is its own target, so
+  counters `sum()` across replicas while the database-backed gauges
+  (`flick_active_uploads`, `flick_outbox_pending`, `flick_storage_bytes_used`)
+  report one cluster-wide value per replica and the dashboards read them with
+  `max()`.
+- `flick-worker` (every pod behind
+  `flick-worker-metrics-headless.flick.svc.cluster.local`, port `9091`,
+  `/metrics`) — the worker's dedicated metrics listener
+  (`Service/flick-worker-metrics-headless` in `deploy/base/worker.yaml`),
   bearer-guarded with the same mounted `FLICK_METRICS_TOKEN`.
 - `kube-state-metrics:8080` — stable Service DNS.
 - `node-exporter` — the headless Service's A record returns every pod IP, so each

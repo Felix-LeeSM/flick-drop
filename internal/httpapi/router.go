@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -71,14 +72,20 @@ type Options struct {
 	OpenRatePerMinute        int
 	CreateRatePerMinute      int
 	TrustedProxies           []*net.IPNet
-	OutboxStore              *events.OutboxStore
-	NewJobID                 func() (string, error)
-	NATSConnected            func() bool
-	RequestStore             *requests.Store
-	PipeRelayEnabled         bool
-	PipeCoordinator          *piperelay.Coordinator
-	Tracer                   trace.Tracer
-	TracerProvider           trace.TracerProvider
+	// Valkey, when set, shares every rate limiter's buckets across API
+	// replicas; RateLimitKeySalt (FLICK_RATELIMIT_KEY_SALT) keys the HMAC that
+	// hashes client networks before they reach Valkey. Nil keeps the buckets
+	// in process memory.
+	Valkey           *redis.Client
+	RateLimitKeySalt string
+	OutboxStore      *events.OutboxStore
+	NewJobID         func() (string, error)
+	NATSConnected    func() bool
+	RequestStore     *requests.Store
+	PipeRelayEnabled bool
+	PipeCoordinator  *piperelay.Coordinator
+	Tracer           trace.Tracer
+	TracerProvider   trace.TracerProvider
 }
 
 func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handler {
@@ -109,6 +116,18 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		pipeCoordinator = piperelay.NewCoordinator(piperelay.CoordinatorOptions{})
 	}
 
+	var shared *sharedBuckets
+	if opts.Valkey != nil {
+		shared = newSharedBuckets(opts.Valkey, opts.RateLimitKeySalt)
+	}
+	// limiter names each bucket family; the name is the telemetry label and
+	// keeps limiters apart in the one Valkey keyspace.
+	limiter := func(name string, perMinute int, scope rateLimitScope) *rateLimiter {
+		rl := newRateLimiter(perMinute, opts.TrustedProxies, scope)
+		rl.name, rl.shared = name, shared
+		return rl
+	}
+
 	server := Server{
 		db:                       db,
 		secrets:                  secretStore,
@@ -121,19 +140,19 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		allowedOrigin:            strings.TrimRight(opts.AllowedOrigin, "/"),
 		internalToken:            opts.InternalToken,
 		metricsToken:             opts.MetricsToken,
-		openLimiter:              newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perResourceID),
-		secretCreateLimiter:      newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
-		requestCreateLimiter:     newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
+		openLimiter:              limiter("open", opts.OpenRatePerMinute, perResourceID),
+		secretCreateLimiter:      limiter("secret_create", opts.CreateRatePerMinute, perNetwork),
+		requestCreateLimiter:     limiter("request_create", opts.CreateRatePerMinute, perNetwork),
 		// Both management actions (status and revoke) spend one bucket per delivery.
-		managementLimiter: newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perResourceID),
+		managementLimiter: limiter("management", opts.OpenRatePerMinute, perResourceID),
 		// One bucket across request IDs and operations: rotating IDs must not
 		// bypass the limit or allocate one bucket per guessed request ID.
-		requestLimiter:    newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perNetwork),
+		requestLimiter:    limiter("request", opts.OpenRatePerMinute, perNetwork),
 		pipeRelayEnabled:  opts.PipeRelayEnabled,
 		pipeCoordinator:   pipeCoordinator,
-		pipeInitLimiter:   newRateLimiter(opts.CreateRatePerMinute, opts.TrustedProxies, perNetwork),
-		pipeJoinLimiter:   newRateLimiter(opts.OpenRatePerMinute, opts.TrustedProxies, perNetwork),
-		pipeStatusLimiter: newRateLimiter(pipeStatusRatePerMinute, opts.TrustedProxies, perNetwork),
+		pipeInitLimiter:   limiter("pipe_init", opts.CreateRatePerMinute, perNetwork),
+		pipeJoinLimiter:   limiter("pipe_join", opts.OpenRatePerMinute, perNetwork),
+		pipeStatusLimiter: limiter("pipe_status", pipeStatusRatePerMinute, perNetwork),
 		tracer:            tracer,
 	}
 	if opts.NewJobID != nil {

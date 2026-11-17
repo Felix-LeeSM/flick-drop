@@ -17,7 +17,6 @@ func TestMetricsHandlerExposesFormat(t *testing.T) {
 	SecretOpened.Inc()
 	SecretReaped.WithLabelValues("expired").Inc()
 	JobsProcessed.WithLabelValues("delete_secret", "succeeded").Inc()
-	ActiveUploads.Inc()
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -41,8 +40,6 @@ func TestMetricsHandlerExposesFormat(t *testing.T) {
 		"flick_secret_reaped_total{reason=\"expired\"} 1",
 		"# HELP flick_jobs_processed_total",
 		"flick_jobs_processed_total{kind=\"delete_secret\",outcome=\"succeeded\"} 1",
-		"# TYPE flick_active_uploads gauge",
-		"flick_active_uploads 1",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n--- body ---\n%s", want, body)
