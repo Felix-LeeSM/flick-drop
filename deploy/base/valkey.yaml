@@ -1,0 +1,106 @@
+# Valkey holds the shared rate-limit buckets and the live-transfer waiting
+# rooms (docs/architecture/security-model.md, "What Valkey holds"). It persists
+# nothing: --save "" and --appendonly no keep every key in memory only, and the
+# pod has no volume. A restart empties it; the API falls back to per-replica
+# rate limiting and answers /api/pipe/* with 503 until it is back.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The valkey user of the official Alpine image.
+        runAsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: valkey/valkey:8.1-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - valkey-server
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            # Below the container limit. noeviction makes a full Valkey refuse
+            # writes (the API answers 503 or falls back) instead of silently
+            # dropping a live waiting room.
+            - --maxmemory
+            - 96mb
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - name: valkey
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: valkey
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+spec:
+  selector:
+    app.kubernetes.io/name: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+# Valkey has no password; this policy keeps it reachable from flick-api pods
+# only (anyone who can read it can read live rooms' connection IDs and
+# recipients).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-api
+      ports:
+        - port: valkey

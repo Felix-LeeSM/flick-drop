@@ -28,6 +28,8 @@ for guide in \
   deploy/AGENTS.md \
   deploy/base/api.yaml \
   deploy/base/configmap.yaml \
+  deploy/base/postgres.yaml \
+  deploy/base/valkey.yaml \
   deploy/base/ingress.yaml \
   deploy/base/kustomization.yaml \
   deploy/base/namespace.yaml \
@@ -41,12 +43,14 @@ for guide in \
   docs/runbook/container-images.md \
   docs/runbook/k3d-smoke.md \
   docs/runbook/k3s-base.md \
+  docs/runbook/postgres-cutover.md \
   Dockerfile.api \
   Dockerfile.worker \
   internal/AGENTS.md \
   scripts/ci/k8s-manifests.sh \
   scripts/ci/review-gate.sh \
   scripts/ci/images.sh \
+  scripts/ops/migrate-sqlite-to-postgres.sh \
   scripts/AGENTS.md \
   tests/AGENTS.md \
   web/.dockerignore \
@@ -115,6 +119,24 @@ if [ -d internal ]; then
   while IFS= read -r package_dir; do
     require_file "$package_dir/AGENTS.md"
   done < <(find internal -mindepth 1 -maxdepth 1 -type d | sort)
+fi
+
+# Valkey must stay memory-only (docs/architecture/security-model.md): no RDB
+# snapshot and no append-only file.
+if [ -f deploy/base/valkey.yaml ]; then
+  if ! grep -Eq -- '- --save$' deploy/base/valkey.yaml ||
+    ! grep -Fq -- '- --appendonly' deploy/base/valkey.yaml ||
+    ! grep -Fq -- '- "no"' deploy/base/valkey.yaml; then
+    echo "repo-structure: deploy/base/valkey.yaml must run valkey-server with --save \"\" --appendonly no" >&2
+    failed=1
+  fi
+fi
+
+# flick-api and flick-worker run more than one replica on any node, so they
+# must not mount a ReadWriteOnce data volume again (deploy/base/pvc.yaml).
+if grep -Eq 'claimName: flick-(api|worker)-data' deploy/base/*.yaml; then
+  echo "repo-structure: flick-api and flick-worker must not mount a data PVC; their state lives in PostgreSQL" >&2
+  failed=1
 fi
 
 if [ "$failed" -ne 0 ]; then

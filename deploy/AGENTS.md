@@ -19,11 +19,36 @@ Runtime resources in `deploy/base/kustomization.yaml`:
 - `StatefulSet/nats` with JetStream file storage, plus `Service/nats` for
   clients and `Service/nats-headless` as the StatefulSet's governing Service
   (`deploy/base/nats.yaml`)
-- `PersistentVolumeClaim/flick-api-data`, `PersistentVolumeClaim/flick-worker-data`,
-  and `PersistentVolumeClaim/nats-data` (`deploy/base/pvc.yaml`)
+- `Deployment/postgres`, `Service/postgres`, `ConfigMap/postgres-init`, and
+  `NetworkPolicy/postgres` (`deploy/base/postgres.yaml`): one PostgreSQL 17
+  pod holding the `flick_api` and `flick_worker` databases, each owned by its
+  own role; only flick-api and flick-worker pods reach port `5432`
+- `Deployment/valkey`, `Service/valkey`, and `NetworkPolicy/valkey`
+  (`deploy/base/valkey.yaml`): memory-only Valkey (`--save "" --appendonly no`,
+  enforced by `scripts/ci/repo-structure.sh`) reachable from flick-api pods
+  only
+- `NetworkPolicy/flick-api` (`deploy/base/api.yaml`): the live-transfer stream
+  listener (`FLICK_INTERNAL_HTTP_PORT`, `8081`) accepts only other flick-api
+  pods; port `8080` stays open to the ingress and the scraper
+- `PersistentVolumeClaim/postgres-data` and `PersistentVolumeClaim/nats-data`
+  (`deploy/base/pvc.yaml`). flick-api and flick-worker mount no data volume;
+  `scripts/ci/repo-structure.sh` rejects a `flick-api-data` or
+  `flick-worker-data` claim
 - `ConfigMap/flick-config`
-- `Secret/flick-secrets`
+- `Secret/flick-secrets` (internal token, metrics token, Valkey key salt),
+  `Secret/flick-db-api` and `Secret/flick-db-worker` (one role password each;
+  `deploy/base/api.yaml` and `deploy/base/worker.yaml` build
+  `FLICK_DATABASE_URL` / `FLICK_WORKER_DATABASE_URL` from their own role's
+  password only), and `Secret/flick-db-admin` (postgres superuser)
 - `Ingress/flick`
+
+Replicas and rollout (`deploy/base/api.yaml`, `deploy/base/web.yaml`):
+flick-api and flick-web run 2 replicas with `RollingUpdate` `maxSurge: 0`,
+`maxUnavailable: 1`, a 5-second `preStop` sleep, and a soft
+`topologySpreadConstraints` on `kubernetes.io/hostname`. flick-api also sets
+`terminationGracePeriodSeconds: 60` and `FLICK_POD_IP` from the Downward API
+(`status.podIP`). The base stays node-agnostic: pinning workloads to specific
+nodes or pools belongs in a deployment's private overlay.
 
 Subdirectories:
 
@@ -48,8 +73,8 @@ change to a container's `resources` in `deploy/base/` updates that document.
 Operations principles:
 
 - Keep the baseline deployable without a managed database.
-- SQLite and NATS JetStream need persistent volumes; object payload retention
-  must match the documented cleanup model.
+- PostgreSQL and NATS JetStream need persistent volumes; Valkey must never get
+  one. Object payload retention must match the documented cleanup model.
 - S3-compatible object storage behavior (OCI Object Storage in
   S3-compatibility mode in prod) should be verified with a real development
   bucket, not treated as equivalent to the local MinIO simulator.

@@ -3,7 +3,16 @@ kind: Deployment
 metadata:
   name: flick-api
 spec:
-  replicas: 1
+  # Two replicas share every piece of state through Postgres, NATS, and Valkey
+  # (docs/architecture/deployment-target.md, "Scaling Boundaries").
+  replicas: 2
+  # maxSurge 0: a rollout stops one old pod before it starts a new one, so a
+  # small node never holds two API pods at once.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: flick-api
@@ -13,6 +22,19 @@ spec:
         app.kubernetes.io/name: flick-api
     spec:
       automountServiceAccountToken: false
+      # Shutdown budget: 5-second preStop, then SIGTERM and up to the
+      # 50-second shutdownTimeout in cmd/flick-api/main.go for /send,
+      # /receive, and pod-to-pod stream hops still running.
+      terminationGracePeriodSeconds: 60
+      # Prefer one replica per node. A private overlay adds node affinity for
+      # a specific cluster; the base stays node-agnostic.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-api
       securityContext:
         fsGroup: 100
         runAsGroup: 100
@@ -29,9 +51,31 @@ spec:
                 name: flick-config
             - secretRef:
                 name: flick-secrets
+          env:
+            - name: FLICK_API_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flick-db-api
+                  key: password
+            - name: FLICK_DATABASE_URL
+              value: "postgres://flick_api:$(FLICK_API_DB_PASSWORD)@postgres:5432/flick_api?sslmode=disable"
+            # The address this replica advertises to the others for
+            # live-transfer stream hops (internal/piperelay/stream.go).
+            - name: FLICK_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - name: http
               containerPort: 8080
+            - name: stream
+              containerPort: 8081
+          lifecycle:
+            # Endpoints drop this pod before SIGTERM arrives, so no new
+            # request lands on a replica that is shutting down.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz
@@ -63,17 +107,12 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            - name: api-data
-              mountPath: /data
             # Request finalize spools (internal/requests maxCopies: two objects
             # of about 256 MiB each) live here, not on the node's root layer.
             # Keep sizeLimit >= 2 x the age size of FLICK_MAX_FILE_BYTES.
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: api-data
-          persistentVolumeClaim:
-            claimName: flick-api-data
         - name: tmp
           emptyDir:
             sizeLimit: 600Mi
@@ -108,3 +147,25 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+# The live-transfer stream listener (port 8081) accepts only other flick-api
+# pods; the public API port stays open to the ingress and the scraper.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flick-api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flick-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: http
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-api
+      ports:
+        - port: stream

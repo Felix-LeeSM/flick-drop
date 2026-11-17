@@ -1,0 +1,170 @@
+# One PostgreSQL 17 instance holding both logical databases: flick_api (owned
+# by the flick_api role, written only by flick-api) and flick_worker (owned by
+# flick_worker, written only by flick-worker). docs/architecture/database-schema.md
+# "Ownership" is the contract; scripts/dev/postgres-init.sql is the local twin.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  # The data volume is ReadWriteOnce: the old pod must stop before the new one
+  # mounts it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The postgres user of the official Alpine image.
+        fsGroup: 70
+        runAsGroup: 70
+        runAsNonRoot: true
+        runAsUser: 70
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            # A subdirectory, because a fresh volume's root may hold
+            # lost+found and initdb refuses a non-empty directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flick-db-admin
+                  key: POSTGRES_PASSWORD
+            # Read only by the init script on the first start of an empty
+            # volume; changing them later does not change the roles.
+            - name: FLICK_API_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flick-db-api
+                  key: password
+            - name: FLICK_WORKER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flick-db-worker
+                  key: password
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            # Unix socket and lock files; the root filesystem is read-only.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: postgres-init
+          configMap:
+            name: postgres-init
+            # Executable, so the image entrypoint runs the script in its own
+            # shell instead of sourcing it into the entrypoint's.
+            defaultMode: 0555
+        - name: run
+          emptyDir:
+            sizeLimit: 8Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  # Runs once, on the first start of an empty data volume. The passwords come
+  # from Secret/flick-db-api and Secret/flick-db-worker through psql variables,
+  # so they never appear in this ConfigMap.
+  10-flick-init.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
+      -v api_password="$FLICK_API_DB_PASSWORD" \
+      -v worker_password="$FLICK_WORKER_DB_PASSWORD" <<'SQL'
+    create role flick_api login password :'api_password';
+    create role flick_worker login password :'worker_password';
+    create database flick_api owner flick_api;
+    create database flick_worker owner flick_worker;
+    revoke all on database flick_api from public;
+    revoke all on database flick_worker from public;
+    SQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Only flick-api and flick-worker reach PostgreSQL. Each still logs in with
+# its own role, so neither can open the other's database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flick-worker
+      ports:
+        - port: postgres
