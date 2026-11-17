@@ -429,10 +429,21 @@ OK: every table matches SQLite (api worker).
 
 If the load fails, the target is unchanged and you can run step 7 again after
 fixing the cause. If the load committed but verification reports `MISMATCH`,
-do **not** start flick-api. Drop and recreate the database the way
-[backup and restore](backup-restore.md#procedure) step 2 does, repeat step 5
-for it, and load it again with `--only api` or `--only worker`. To re-run only
-the verification later, add `--verify-only`.
+do **not** start flick-api. Drop and recreate only the database that failed,
+repeat step 5 for it, and load it again with `--only api` or `--only worker`.
+For `flick_api`:
+
+```sh
+kubectl -n flick exec -i deploy/postgres -- psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+DROP DATABASE flick_api;
+CREATE DATABASE flick_api OWNER flick_api;
+REVOKE ALL ON DATABASE flick_api FROM PUBLIC;
+SQL
+```
+
+For `flick_worker`, run the same three statements with `flick_worker` in
+place of `flick_api`. To re-run only the verification later, add
+`--verify-only`.
 
 ### 8. Refresh planner statistics
 
@@ -485,14 +496,17 @@ runs:
 
 ```sh
 kubectl -n flick scale deploy/flick-api --replicas=0
-kubectl -n flick wait --for=delete pod -l app.kubernetes.io/name=flick-api --timeout=120s
-kubectl -n flick run nats-purge --rm -i --restart=Never --image=natsio/nats-box:0.18.1 -- \
-  nats -s nats://nats:4222 stream purge FLICK_JOBS -f
+kubectl -n flick wait --for=delete pod -l app.kubernetes.io/name=flick-api --timeout=120s &&
+  kubectl -n flick run nats-purge --rm -i --restart=Never --image=natsio/nats-box:0.18.1 -- \
+    nats -s nats://nats:4222 stream purge FLICK_JOBS -f
 ```
 
-Then reload `flick_api` the way the `MISMATCH` paragraph of step 7 describes:
-drop and recreate the database, repeat step 5 for it, and run step 7 with
-`--only api`. The script refuses the current database because it is not
+If the wait times out, the purge does not run: find the pod that is still
+terminating and run both commands again once it is gone.
+
+Then reload `flick_api` with the `flick_api` block from the `MISMATCH`
+paragraph of step 7: drop and recreate only `flick_api`, repeat step 5 for
+it, and run step 7 with `--only api`. The script refuses the current database because it is not
 empty, and dropping it also removes the orphan deletes that are still
 unpublished in `outbox_events`. `flick_worker` is untouched, because no worker
 has run yet.
