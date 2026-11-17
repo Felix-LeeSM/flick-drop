@@ -115,7 +115,7 @@ const PIPE_ERROR_MESSAGES: Record<string, string> = {
 	streaming: 'The transfer is already streaming.',
 	rate_limited: 'Too many attempts. Wait a minute and try again.',
 	capacity_exceeded: 'Server is at maximum capacity for live transfers. Please try again later.',
-	service_unavailable: 'Live transfer is currently disabled on this server.'
+	service_unavailable: 'Live transfer is not available on this server right now.'
 };
 
 function statusReason(status: number): string {
@@ -245,6 +245,8 @@ async function fetchLongPoll(
 		if (response.status < 500) {
 			return response;
 		}
+		// Release the failed response's connection before the retry.
+		await response.body?.cancel();
 	} catch (err) {
 		if (!(err instanceof TypeError)) {
 			throw err;

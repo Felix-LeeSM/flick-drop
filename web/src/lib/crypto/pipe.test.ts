@@ -141,7 +141,7 @@ describe('client API hooks', () => {
 
 		const mockFetch503: typeof fetch = async () => new Response('Disabled', { status: 503 });
 		await expect(initPipeRendezvous('http://localhost:8080', mockFetch503)).rejects.toThrow(
-			'currently disabled'
+			'not available'
 		);
 	});
 
