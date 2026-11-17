@@ -49,7 +49,9 @@
    - **Worker 경합 및 NATS `AckWait` 수정**: `ReceiptStore.Start`에 `INSERT ... ON CONFLICT (job_id) DO UPDATE` / `FOR UPDATE` 기반 원자적 리스 획득을 적용하고, `internal/events/consumer.go`의 JetStream `ConsumerConfig`에 `AckWait`를 `worker.JobTimeout(30s)`보다 크게(예: `45s`) 명시한다.
    - **Unlock I/O 불변식 유지 (`TestRevokeWinsAgainstInFlightObjectRead`)**: `internal/secrets/store.go`의 `OpenTx`와 `Finalize`는 S3 `objects.Open` / `objects.Head` I/O 동안 DB 행 잠금(`FOR UPDATE`)을 잡지 않는다.
      - `Finalize`: 조건부 활성화(`WHERE state = 'pending_upload'`)가 `affected == 0`이면 상태를 재조회해 이미 `'active'`인 경우 idempotent `nil`을 반환한다(`ErrNotFound` 오반환 방지).
-     - `Revoke` (`internal/secrets/management.go`): 관리 토큰 검증 후 조건부 갱신/삭제가 동시 `Open`에 밀려 `RowsAffected() == 0`일 때 `503 management_status_failed`가 아닌 `ErrManagementUnavailable`(`404 management_unavailable`)로 매핑해 미존재 ID와 바이트 단위 동일 응답 불변식을 지킨다.
+     - `Finalize`의 조건부 활성화는 `reclaim_enqueued_at is null`도 요구한다. 다른 레플리카의 reaper가 먼저 회수를 claim했으면 활성화하지 않고 `ErrNotFound`를 돌려준다.
+     - `Revoke` (`internal/secrets/management.go`): 저장소 메타데이터 조회가 행을 못 찾거나 조건부 삭제가 `RowsAffected() == 0`이면 `management()`로 결과를 다시 읽는다. 열람에 졌으면 `ErrManagementUnavailable`(`404 management_unavailable`, 미존재 ID와 바이트 단위 동일), 오답 잠금에 졌으면 `ErrNotCancellable`(409), 다른 취소에 졌으면 멱등 `cancelled`(200)로 답한다. `503 management_status_failed`로 새지 않는다.
+     - `recordFailedAccessTx`의 `UPDATE ... RETURNING`이 0행이면 행 존재를 다시 확인해 삭제됐으면 `ErrNotFound`, 잠겼으면 `ErrConsumed`를 돌려준다.
    - **Model A 오답 카운터 원자화**: `secrets/store.go:recordFailedAccessTx`를 `UPDATE ... SET failed_access_count = failed_access_count + 1 WHERE id = $1 AND state = 'active' RETURNING failed_access_count, consumed_at`로 실행해 동시 4·5회 오답 요청이 이중 락아웃/이중 `usage_counters` 집계를 일으키지 않게 한다.
    - **Outbox & Reaper 멀티 레플리카**: `events/outbox.go`(`ListDue`)와 `secrets/reaper.go`(`claimReclaimableSQL`), `requests/cleanup.go`(`PurgeExpiredTx`)에 `FOR UPDATE SKIP LOCKED` + Postgres native `TIMESTAMPTZ` / `LEAST` / `ON CONFLICT DO NOTHING`을 적용한다. `requests/store.go`의 SQLite 전용 raw `"rollback"` 더미 락은 표준 `BeginTx`로 대체한다.
 

@@ -18,8 +18,10 @@ const objectGrace = 35 * time.Minute
 
 // RowQueryer is the subset of *sql.DB/*sql.Tx the aggregate needs. It takes a
 // queryer rather than *sql.DB because Reserve reads usage inside its open
-// reservation transaction: passing the tx keeps the read in the same
-// snapshot as the placement decision it guards.
+// reservation transaction, so the read and the reservation write commit or
+// roll back together. Under READ COMMITTED each statement takes a fresh
+// snapshot, so concurrent placements can still overshoot: the ceiling is a
+// soft cap (docs/architecture/storage-model.md).
 type RowQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

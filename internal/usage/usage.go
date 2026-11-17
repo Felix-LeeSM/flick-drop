@@ -1,4 +1,4 @@
-// Package usage owns the api.db usage_counters table: small daily aggregate
+// Package usage owns the flick_api usage_counters table: small daily aggregate
 // counters written inside the same transaction as the state change they
 // describe. Because secrets and requests rows are hard-deleted when they
 // expire, these counters are the only durable usage history. Rows carry

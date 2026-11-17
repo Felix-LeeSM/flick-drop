@@ -43,8 +43,8 @@ func openUsageDB(t *testing.T, ctx context.Context) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so the pool pins the session time
-	// zone to UTC like the production pools do.
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
 	conn, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -105,6 +105,25 @@ func TestIncrementUpsertsPerDayAndMetric(t *testing.T) {
 	}
 	if got := counterValue(t, conn, Day(day2), SecretCreatedText); got != 1 {
 		t.Fatalf("next-day count = %d, want 1", got)
+	}
+}
+
+// 하루 업로드 바이트 합계는 32비트 정수(약 2 GiB)를 쉽게 넘는다. 256 MiB 파일
+// 아홉 개면 넘으므로, 카운터는 그 합계를 오버플로 없이 누적해야 한다.
+func TestIncrementAccumulatesPastInt32(t *testing.T) {
+	ctx := context.Background()
+	conn := openUsageDB(t, ctx)
+	day := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+
+	if err := Increment(ctx, conn, day, BytesUploaded, 2_000_000_000); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if err := Increment(ctx, conn, day, BytesUploaded, 268_435_456); err != nil {
+		t.Fatalf("increment past int32: %v", err)
+	}
+
+	if got, want := counterValue(t, conn, Day(day), BytesUploaded), int64(2_268_435_456); got != want {
+		t.Fatalf("bytes count = %d, want %d", got, want)
 	}
 }
 

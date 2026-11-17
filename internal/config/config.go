@@ -115,7 +115,7 @@ func Load() (Config, error) {
 		// /api/secrets (presigned upload issuance) becomes a DoS amplifier once
 		// large uploads bypass the server, so cap issuance per client network.
 		CreateRatePerMinute: defaultCreateRatePerMinute,
-		// The expiration reaper sweeps expired/orphan secrets out of api.db. A
+		// The expiration reaper sweeps expired/orphan secrets out of the flick_api database. A
 		// minute is frequent enough that rows never linger; the partial index
 		// keeps the claim cheap even at high volume.
 		ReaperIntervalSeconds: defaultReaperIntervalSeconds,

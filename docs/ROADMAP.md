@@ -103,8 +103,9 @@ Out of scope:
 ### 7. Operational Hardening
 
 - backup/restore runbook ([runbook](runbook/backup-restore.md))
-- ~~SQLite checkpoint/vacuum runbook~~ — retired by the M15 Postgres cutover
-  (#422); the Postgres maintenance runbook lands with the cutover (#425)
+- SQLite checkpoint/vacuum runbook ([runbook](runbook/sqlite-maintenance.md))
+  — still describes the pre-M15 deployed layout; the M15 cutover (#425)
+  rewrites the operational runbooks for PostgreSQL
 - rate limiting — done (#71; per client network, IPv6 collapsed to /64, in
   `internal/httpapi/ratelimit.go`)
 - audit event viewer or export — not implemented; no audit event table exists
@@ -277,8 +278,9 @@ shared ephemeral state.
 - [#425](https://github.com/Felix-LeeSM/flick-drop/issues/425): k8s manifests
   for postgres/valkey, the 3A Osaka two-node placement (`loki` to
   `flick-core`, two API/web replicas split across Osaka, Korea nodes
-  excluded), the SQLite→Postgres cutover tool and runbook, and a
-  multi-replica k3d smoke.
+  excluded), the SQLite→Postgres cutover tool and runbook, the PostgreSQL
+  rewrite of the operational runbooks (backup/restore, worker recovery, k3s
+  base, SQLite maintenance), and a multi-replica k3d smoke.
 - Spec: `docs/work/active/2026-11-16-multi-replica-postgres-valkey.md`.
 - Exclude multi-node HA (Patroni, Valkey Sentinel/Cluster, NATS clustering),
   WebRTC peer-to-peer transfer, breaking the `age` format or public HTTP

@@ -1628,7 +1628,7 @@ components:
       type: object
       description: >
         Public client-facing size limits, counted before encryption. payload_inline_max_bytes is
-        the inline (SQLite BLOB) path threshold — files above it take the S3
+        the inline (database row) path threshold — files above it take the S3
         path; max_file_bytes is the absolute bound the server rejects above.
         Both already subtract age overhead, so the age file of any content
         within them fits the server's ciphertext caps. Flat so future fields

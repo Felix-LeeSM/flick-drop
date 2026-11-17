@@ -582,8 +582,8 @@ func openHTTPTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so the pool pins the session time
-	// zone to UTC like the production pools do.
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
 	conn, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()

@@ -10,6 +10,10 @@ connection (`pg_advisory_lock($1)` + `pg_advisory_unlock` on the same
 `*sql.Conn`) so concurrent replica boots cannot race DDL; the two services use
 different lock keys (`migrations.go:apiMigrateLockKey`,
 `migrations_worker.go:workerMigrateLockKey`).
+`postgres.go:OpenPostgres` also registers a `timestamptz` codec with
+`ScanLocation: time.UTC` on every connection, because pgx v5 otherwise decodes
+`timestamptz` into the host's `time.Local` and stores emit scanned times in
+UTC JSON and headers (`postgres_test.go:TestOpenPostgresScansTimestamptzAsUTC`).
 
 Directory structure:
 
@@ -42,9 +46,13 @@ and `requests` tables per `storage_backend` (`s3_object`, `r2_object`) for the
 per-backend placement ceilings enforced in `requests.Store.Reserve` and
 `secrets.Store.CreateLarge` (see docs/architecture/storage-model.md). It only
 reads; the secrets and requests stores remain the sole writers of their tables.
-`RowQueryer` accepts `*sql.DB` or `*sql.Tx` so `Reserve` can run the aggregate
-inside its open reservation transaction — the ceiling check and the claim write
-then see the same transaction snapshot.
+`RowQueryer` accepts `*sql.DB` or `*sql.Tx` so `requests.Store.Reserve` can run
+the aggregate inside its open reservation transaction — the read and the
+reservation write commit or roll back together. Under `READ COMMITTED` each
+statement takes a fresh snapshot, so concurrent placements can still
+overshoot; the per-backend ceiling is a soft cap
+(docs/architecture/storage-model.md). `secrets.Store.CreateLarge` passes the
+`*sql.DB` and reads before its transaction.
 
 ## Legacy-schema boundary
 

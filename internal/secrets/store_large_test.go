@@ -394,6 +394,44 @@ func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
 	}
 }
 
+// 다른 레플리카의 reaper가 먼저 회수를 claim하면(reclaim_enqueued_at 설정, 객체
+// 삭제 job enqueue) finalize는 그 행을 활성화하지 않고 ErrNotFound를 돌려준다.
+func TestActivateSecretTxRefusesReaperClaimedRow(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+
+	insertSecret(t, ctx, conn, secretFixture{
+		id:             "sec_claimed",
+		kind:           "file",
+		storageBackend: "s3_object",
+		storageKey:     "obj_claimed",
+		state:          "pending_upload",
+		expiresAt:      now.Add(1 * time.Hour),
+		createdAt:      now.Add(-1 * time.Minute),
+		updatedAt:      now.Add(-1 * time.Minute),
+	})
+	if _, err := conn.ExecContext(ctx, `update secrets set reclaim_enqueued_at = $1 where id = 'sec_claimed'`, now); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer rollback(tx)
+	if activated, err := store.activateSecretTx(ctx, tx, "sec_claimed", now); activated || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("activate claimed row: activated=%v err=%v, want ErrNotFound", activated, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := secretState(t, ctx, conn, "sec_claimed"); got != "pending_upload" {
+		t.Fatalf("state = %q, want pending_upload", got)
+	}
+}
+
 func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)

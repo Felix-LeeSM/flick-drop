@@ -118,8 +118,24 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if !status.CanCancel {
 		return status, ErrNotCancellable
 	}
+	// Under READ COMMITTED each statement sees the latest commit, so a
+	// concurrent open, lockout, or revoke can land between the reads below.
+	// lostRace re-reads the outcome and answers as if that winner had committed
+	// first: forgotten (open) → 404, locked → not cancellable, cancelled → the
+	// idempotent cancelled status.
+	lostRace := func() (ManagementStatus, error) {
+		status, err := s.management(ctx, tx, id, token)
+		if err != nil || status.Status == "cancelled" {
+			return status, err
+		}
+		return status, ErrNotCancellable
+	}
 	var backend, key string
-	if err := tx.QueryRowContext(ctx, `select storage_backend, storage_key from secrets where id = $1`, id).Scan(&backend, &key); err != nil {
+	err = tx.QueryRowContext(ctx, `select storage_backend, storage_key from secrets where id = $1`, id).Scan(&backend, &key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return lostRace()
+	}
+	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("read cancellation storage: %w", err)
 	}
 	// Recheck after loading storage metadata so an elapsed pending/content
@@ -142,11 +158,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 		return ManagementStatus{}, fmt.Errorf("read cancellation row count: %w", err)
 	}
 	if n != 1 {
-		// The conditional delete lost a race with a concurrent open (or another
-		// revoke): the delivery is gone and reads as unknown. Matching the
-		// unknown-ID answer keeps the 404 management_unavailable mapping
-		// byte-identical for both paths.
-		return ManagementStatus{}, ErrManagementUnavailable
+		return lostRace()
 	}
 	if err := recordManagementOutcomeTx(ctx, tx, id, "cancelled"); err != nil {
 		return ManagementStatus{}, err

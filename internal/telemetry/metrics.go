@@ -136,14 +136,14 @@ var (
 	)
 
 	// StorageBytesUsed gauges each backend's cumulative object bytes as
-	// aggregated from api.db (see db.StorageObjectBytes) — not a bucket scan.
+	// aggregated from the flick_api database (see db.StorageObjectBytes) — not a bucket scan.
 	// The placement checks in requests.Reserve and secrets.CreateLarge refresh
 	// it alongside every usage read, and process wiring seeds it at boot, so
 	// scrapes see the same numbers the ceiling enforcement uses.
 	StorageBytesUsed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "flick_storage_bytes_used",
-			Help: "Object bytes per backend, aggregated from api.db.",
+			Help: "Object bytes per backend, aggregated from the flick_api database.",
 		},
 		[]string{labelStorage},
 	)

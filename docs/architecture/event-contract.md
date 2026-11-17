@@ -123,7 +123,7 @@ Message disposition:
 
 Invalid payloads are not retried because they cannot become valid without a new
 producer write. Dead-lettered jobs are not retried because the worker already
-recorded the terminal state in `worker.db`.
+recorded the terminal state in the `flick_worker` database.
 
 ## Worker Semantics
 
@@ -146,7 +146,8 @@ letters are not replayed; after the dead-letter acknowledgement releases the
 API claim, reconciliation re-lists a surviving managed object and queues a
 fresh job. A dead-lettered `delete_secret` still stores its `secret_id`.
 
-The worker owns `worker.db` and records receipts, attempts, and dead letters.
+The worker owns the `flick_worker` PostgreSQL database and records receipts,
+attempts, and dead letters there (`internal/db/migrations_worker.go:MigrateWorker`).
 The worker calls internal API endpoints for API-owned mutations.
 
 Inline [request links](request-links.md) need no worker event: open/revoke

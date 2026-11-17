@@ -44,8 +44,8 @@ func openTestWorkerDatabase(t *testing.T) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so the pool pins the session time
-	// zone to UTC like the production pools do.
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
 	conn, err := OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()

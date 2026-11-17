@@ -20,9 +20,10 @@ API endpoints for API-owned mutations.
 
 M15 moved both stores onto Postgres: `flick_worker` in PR 2 (issue #421) and
 `flick_api` plus the `modernc.org/sqlite` removal in PR 3 (issue #422). An
-existing self-hosted deployment reaches this schema through the SQLite cutover
-runbook (`docs/runbook/postgres-cutover.md`), which migrates a current-release
-database; the migration code intentionally carries no SQLite-era repair passes.
+existing self-hosted deployment will reach this schema through the SQLite
+cutover runbook (`docs/runbook/postgres-cutover.md`, landing in PR 6 / issue
+#425), which migrates a current-release database; the migration code
+intentionally carries no SQLite-era repair passes.
 
 ## `flick_api` database
 
@@ -40,7 +41,7 @@ create table secrets (
   wrapped_identity text,
   encrypted_filename text,
   content_type text,
-  size_bytes integer not null check (size_bytes >= 0),
+  size_bytes bigint not null check (size_bytes >= 0),
   max_views integer not null default 1 check (max_views > 0),
   view_count integer not null default 0 check (view_count >= 0),
   failed_access_count integer not null default 0 check (failed_access_count >= 0),
@@ -121,7 +122,7 @@ create index idx_outbox_events_state_next_attempt
 create table usage_counters (
   day text not null,
   metric text not null,
-  count integer not null default 0 check (count >= 0),
+  count bigint not null default 0 check (count >= 0),
   primary key (day, metric)
 );
 ```
@@ -171,7 +172,7 @@ create table requests (
   attempt_token_hash bytea check (length(attempt_token_hash) = 32),
   attempt_body_hash bytea check (length(attempt_body_hash) = 32),
   kind text check (kind in ('text', 'file')),
-  size_bytes integer check (size_bytes >= 0),
+  size_bytes bigint check (size_bytes >= 0),
   envelope_json text,
   storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
   upload_key text,
@@ -273,13 +274,12 @@ create index idx_job_receipts_state_updated_at
 
 create table job_attempts (
   id bigint generated always as identity primary key,
-  job_id text not null,
+  job_id text not null references job_receipts(job_id),
   attempt integer not null,
   started_at timestamptz not null,
   finished_at timestamptz,
   result text not null check (result in ('running', 'succeeded', 'failed')),
-  error text,
-  foreign key (job_id) references job_receipts(job_id)
+  error text
 );
 
 create index idx_job_attempts_job_id on job_attempts(job_id);
@@ -322,7 +322,7 @@ The M15 port (issues #421, #422) fixes these rules for every store:
   concurrent starts can never both pass a stale snapshot check.
 - Multi-replica claims use `FOR UPDATE SKIP LOCKED`: the outbox publisher
   (`internal/events/outbox.go:ClaimDueTx`), the secret reaper
-  (`internal/secrets/reaper.go`), and the request purge
+  (`internal/secrets/reaper.go:claimReclaimableSQL`), and the request purge
   (`internal/requests/cleanup.go:PurgeExpiredTx`).
 - The outbox publish batch is one transaction: `ClaimDueTx` takes SKIP LOCKED
   row locks, the NATS publish happens while the locks are held, and the marks
@@ -335,8 +335,9 @@ The M15 port (issues #421, #422) fixes these rules for every store:
   `UPDATE ... SET failed_access_count = failed_access_count + 1 ... RETURNING`
   so concurrent attempts cannot double-lockout or double-count
   (`internal/secrets/store.go:recordFailedAccessTx`).
-- Connection pools set explicit `MaxOpenConns`/`MaxIdleConns`/`ConnMaxLifetime`
-  per role; the SQLite `SetMaxOpenConns(1)` single-writer limit is gone.
+- Every service pool sets the same explicit `MaxOpenConns`/`MaxIdleConns`/
+  `ConnMaxLifetime` (`internal/db/postgres.go:PostgresMaxOpenConns`, 8/4/30m);
+  the SQLite `SetMaxOpenConns(1)` single-writer limit is gone.
 
 Vacuum and connection-policy tuning belong in the operations runbook because
 they affect disk usage and residual ciphertext retention.

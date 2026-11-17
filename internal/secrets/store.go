@@ -510,12 +510,15 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 // hard-deleted between Finalize's SELECT and this UPDATE (the expiration reaper
 // removes pending_upload orphans older than PendingTTL, and any concurrent
 // Revoke has the same effect — the client must learn the upload was reaped or
-// cancelled, not believe it finalized), or another replica already activated
-// the row. The re-read distinguishes the two: already-active is idempotent
+// cancelled, not believe it finalized), the reaper already claimed it for
+// reclamation, or another replica already activated the row. The re-read distinguishes the two: already-active is idempotent
 // success (activated=false), anything else is ErrNotFound. Extracted from
 // Finalize so the race guard is unit-testable in isolation.
 func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (bool, error) {
-	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=$1 where id=$2 and state='pending_upload'`, now, id)
+	// reclaim_enqueued_at is null: once another replica's reaper claimed the
+	// orphan and enqueued its object delete, finalize must not activate it.
+	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=$1
+		where id=$2 and state='pending_upload' and reclaim_enqueued_at is null`, now, id)
 	if err != nil {
 		return false, fmt.Errorf("activate secret: %w", err)
 	}
@@ -753,6 +756,15 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		now,
 	).Scan(&failedAccessCount, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
+		// 0 rows: since load, either a concurrent final attempt locked the row
+		// (consumed) or a concurrent open or revoke deleted it (unknown ID).
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `select exists(select 1 from secrets where id = $1)`, id).Scan(&exists); err != nil {
+			return fmt.Errorf("re-read secret after failed access: %w", err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
 		return ErrConsumed
 	}
 	if err != nil {

@@ -50,7 +50,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			wrapped_identity text,
 			encrypted_filename text,
 			content_type text,
-			size_bytes integer not null check (size_bytes >= 0),
+			size_bytes bigint not null check (size_bytes >= 0),
 			max_views integer not null default 1 check (max_views > 0),
 			view_count integer not null default 0 check (view_count >= 0),
 			failed_access_count integer not null default 0 check (failed_access_count >= 0),
@@ -119,7 +119,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		`create table if not exists usage_counters (
 			day text not null,
 			metric text not null,
-			count integer not null default 0 check (count >= 0),
+			count bigint not null default 0 check (count >= 0),
 			primary key (day, metric)
 		)`,
 		requestsTableSchema,

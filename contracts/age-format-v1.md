@@ -173,7 +173,7 @@ API as for secrets: `size_bytes` is the exact age file length, the filename is
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams one age file from
 a sending browser to a receiving browser through API memory. Nothing is stored
-in SQLite or object storage, and the 6-digit code only routes requests; it is
+in PostgreSQL or object storage, and the 6-digit code only routes requests; it is
 not key material. The full threat model is in
 `docs/architecture/security-model.md`, section "Live Relay (Live Transfer)".
 

@@ -131,6 +131,60 @@ func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
 	}
 }
 
+// 두 API 레플리카가 동시에 부팅하면 MigrateAPI가 동시에 돈다. advisory lock이
+// 직렬화하지 않으면 동시 DDL이 pg_type 카탈로그에서 충돌해 한쪽 부팅이 실패한다.
+func TestMigrateAPIConcurrentBootsSerialize(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestAPIDatabase(t)
+	if _, err := conn.ExecContext(ctx, `drop table usage_counters, outbox_events, secret_open_grace`); err != nil {
+		t.Fatal(err)
+	}
+
+	const replicas = 4
+	errs := make(chan error, replicas)
+	for range replicas {
+		go func() { errs <- MigrateAPI(ctx, conn) }()
+	}
+	for range replicas {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent MigrateAPI: %v", err)
+		}
+	}
+
+	var tables int
+	if err := conn.QueryRowContext(ctx, `select count(*) from information_schema.tables
+		where table_schema = current_schema() and table_name in ('usage_counters', 'outbox_events', 'secret_open_grace')`).Scan(&tables); err != nil || tables != 3 {
+		t.Fatalf("recreated tables = %d, want 3 (%v)", tables, err)
+	}
+}
+
+func TestMigrateAPIPreservesRequestReconciliationProgress(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestAPIDatabase(t)
+	var seeded int
+	if err := conn.QueryRowContext(ctx, `select count(*) from request_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
+		t.Fatalf("request cursor backends seeded: %d %v", seeded, err)
+	}
+	if _, err := conn.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token='page-three',generation=7 where backend='r2_object'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `insert into request_reconciliation_pending_v2 values ('r2_object','managed/requests/key','req-job')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var cursor string
+	var generation int
+	if err := conn.QueryRowContext(ctx, `select continuation_token,generation from request_reconciliation_cursor_v2 where backend='r2_object'`).Scan(&cursor, &generation); err != nil || cursor != "page-three" || generation != 7 {
+		t.Fatalf("migration reset request cursor: %s %d %v", cursor, generation, err)
+	}
+	var job string
+	if err := conn.QueryRowContext(ctx, `select job_id from request_reconciliation_pending_v2 where backend='r2_object' and object_key='managed/requests/key'`).Scan(&job); err != nil || job != "req-job" {
+		t.Fatalf("migration lost request pending claim: %s %v", job, err)
+	}
+}
+
 func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestAPIDatabase(t)

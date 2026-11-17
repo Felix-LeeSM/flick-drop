@@ -18,7 +18,7 @@ const requestsTableSchema = `create table if not exists requests (
 			attempt_token_hash bytea check (length(attempt_token_hash) = 32),
 			attempt_body_hash bytea check (length(attempt_body_hash) = 32),
 			kind text check (kind in ('text', 'file')),
-			size_bytes integer check (size_bytes >= 0),
+			size_bytes bigint check (size_bytes >= 0),
 			envelope_json text,
 			storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
 			upload_key text,
