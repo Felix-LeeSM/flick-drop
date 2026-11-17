@@ -41,6 +41,15 @@ Runtime resources in `deploy/base/kustomization.yaml`:
   `FLICK_DATABASE_URL` / `FLICK_WORKER_DATABASE_URL` from their own role's
   password only), and `Secret/flick-db-admin` (postgres superuser)
 - `Ingress/flick`
+- `ServersTransport/flick-backends` and `Middleware/flick-retry`
+  (`deploy/base/traefik.yaml`, Traefik `traefik.io/v1alpha1` CRDs bundled
+  with k3s): Traefik opens a fresh connection per request to the
+  `Service/flick-api` and `Service/flick-web` pods with a 2 s dial timeout,
+  and retries a request that never reached a pod on the other replica. The
+  annotations `traefik.ingress.kubernetes.io/service.serverstransport` on
+  both Services and `traefik.ingress.kubernetes.io/router.middlewares` on
+  `Ingress/flick` reference them as `flick-<name>@kubernetescrd`, so they
+  assume namespace `flick`
 
 Replicas and rollout (`deploy/base/api.yaml`, `deploy/base/web.yaml`):
 flick-api and flick-web run 2 replicas with `RollingUpdate` `maxSurge: 0`,

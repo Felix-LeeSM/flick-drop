@@ -59,6 +59,8 @@ NetworkPolicy/flick-api
 NetworkPolicy/postgres
 NetworkPolicy/valkey
 Ingress/flick
+ServersTransport/flick-backends
+Middleware/flick-retry
 ```
 
 `Service/flick-worker-metrics` (`deploy/base/worker.yaml`) is a ClusterIP
@@ -77,6 +79,23 @@ creates both roles and databases on the first start of an empty
 `postgres-data` volume. The three NetworkPolicies limit PostgreSQL to the API
 and worker pods, Valkey to the API pods, and the API's live-transfer stream
 listener (`FLICK_INTERNAL_HTTP_PORT`) to other API pods.
+
+`ServersTransport/flick-backends` and `Middleware/flick-retry`
+(`deploy/base/traefik.yaml`) keep a dead node from failing requests at the
+ingress. A dead node's pods stay in the Service endpoints until Kubernetes
+marks the node NotReady (about 50 seconds), and packets to them are dropped,
+not refused. Without these settings Traefik kept sending every other request
+there, and each one hung on a reused keep-alive connection until the client
+gave up. Traefik now opens a fresh connection per request to the
+`flick-api` and `flick-web` pods (an in-cluster connect takes about 1 ms),
+stops dialing after 2 s, and retries the request on the other replica.
+Traefik retries only a request whose headers never reached a pod, so a POST,
+an open-once request, or a streaming live-transfer body is never sent twice;
+the retry middleware sets no `status`, so Traefik does not buffer request
+bodies either. In the 2026-11-18 failure drill (`k3s-killall.sh` on the node
+holding one replica of each), every API request during the outage succeeded,
+and those that first picked the dead pod took about 2.3 s instead of failing.
+Requests already in flight on the dead node when it fails still fail.
 
 Opt-in monitoring lives in `deploy/base/monitoring/` and is applied separately
 with `kubectl apply -k deploy/base/monitoring`; `deploy/base/kustomization.yaml`
