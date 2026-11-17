@@ -58,7 +58,8 @@ import { createAccessVerifier } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
 import { generatePassphrase } from '#lib/crypto/passphrase.js';
 import { sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
-import { bundleFiles } from '#lib/files/bundle.js';
+import { bundleFiles, needsBundle, type PickedFile } from '#lib/files/bundle.js';
+import { readDrop } from '#lib/files/dropped.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { holdMinimumStage, STAGE_FINISH_MS, sleep } from '#lib/stage-timing.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
@@ -77,8 +78,12 @@ let isHydrated = $state(false);
 // once the fetch resolves. The server re-enforces both limits, so a stale
 // default cannot let an oversized file through.
 let limits = $state<ClientLimits>(defaultLimits());
+// iOS Safari has no folder picker; the "Choose a folder" button renders only
+// where an input element exposes webkitdirectory.
+let supportsFolderPick = $state(false);
 onMount(() => {
 	isHydrated = true;
+	supportsFolderPick = 'webkitdirectory' in document.createElement('input');
 	void getConfig(DEFAULT_API_BASE_URL).then((resolved) => {
 		limits = resolved;
 	});
@@ -99,11 +104,13 @@ let passphrase = $state('');
 let usePassphrase = $state(false);
 let revealPassphrase = $state(false);
 let ttlSeconds = $state(DEFAULT_TTL_SECONDS);
-// pickedFiles is what the user chose; selectedFile is what actually uploads —
-// the same File when one was picked, or the zipped bundle when several were.
-let pickedFiles = $state<File[]>([]);
+// pickedFiles is what the user chose, each with its folder-relative path;
+// selectedFile is what actually uploads — the same File when one loose file was
+// picked, or the zipped bundle otherwise.
+let pickedFiles = $state<PickedFile[]>([]);
 let selectedFile = $state<File | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
+let folderInput = $state<HTMLInputElement | null>(null);
 let bundling = $state(false);
 let dragActive = $state(false);
 // Monotonic token: bundling is async and runs can overlap (add, then remove
@@ -155,8 +162,42 @@ $effect(() => {
 const selectedFileTooLarge = $derived(
 	// Judge on the raw byte total, not the zip size: an over-limit batch is
 	// rejected before the slow zip runs. The server re-enforces the exact size.
-	pickedFiles.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes
+	pickedFiles.reduce((total, { file }) => total + file.size, 0) > limits.maxFileBytes
 );
+// One list row per loose file and one per top-level folder, in pick order.
+// Rows group by folder name, so two different folders that share a name (picked
+// from different places) show as one row, and its remove button removes both.
+type PickedRow =
+	| { kind: 'file'; key: string; picked: PickedFile }
+	| { kind: 'folder'; key: string; name: string; count: number; size: number };
+const pickedRows = $derived.by(() => {
+	const rows: PickedRow[] = [];
+	const folders = new Map<string, Extract<PickedRow, { kind: 'folder' }>>();
+	for (const picked of pickedFiles) {
+		const slash = picked.path.indexOf('/');
+		if (slash < 0) {
+			rows.push({ kind: 'file', key: fileKey(picked), picked });
+			continue;
+		}
+		const name = picked.path.slice(0, slash);
+		const folder = folders.get(name);
+		if (folder) {
+			folder.count += 1;
+			folder.size += picked.file.size;
+			continue;
+		}
+		const row = {
+			kind: 'folder' as const,
+			key: `folder:${name}`,
+			name,
+			count: 1,
+			size: picked.file.size
+		};
+		folders.set(name, row);
+		rows.push(row);
+	}
+	return rows;
+});
 const hasCredentialPayload = $derived(hasCredentialContent(credentialEnvelope));
 const hasCreatePayload = $derived(
 	mode === 'text'
@@ -396,9 +437,9 @@ function switchMode(nextMode: CreateMode): void {
 	}
 }
 
-// Recomputes the single File that uploads from the current batch. One file rides
-// as-is; several are zipped into bundle.zip (async, so the form shows "Zipping").
-async function applyFiles(files: File[]): Promise<void> {
+// Recomputes the single File that uploads from the current batch. One loose file
+// rides as-is; anything else is zipped (async, so the form shows "Zipping").
+async function applyFiles(files: PickedFile[]): Promise<void> {
 	status = '';
 	statusKind = 'idle';
 	pickedFiles = files;
@@ -411,13 +452,13 @@ async function applyFiles(files: File[]): Promise<void> {
 	// Pre-flight on the raw total before the slow zip: skip building an unusable
 	// bundle when the batch already exceeds the limit (selectedFileTooLarge shows
 	// it). The server re-enforces the exact bundle size.
-	if (files.reduce((total, file) => total + file.size, 0) > limits.maxFileBytes) {
+	if (files.reduce((total, { file }) => total + file.size, 0) > limits.maxFileBytes) {
 		selectedFile = null;
 		bundling = false;
 		return;
 	}
-	if (files.length <= 1) {
-		selectedFile = files[0] ?? null;
+	if (files.length === 0 || !needsBundle(files)) {
+		selectedFile = files[0]?.file ?? null;
 		bundling = false;
 		return;
 	}
@@ -441,13 +482,21 @@ async function applyFiles(files: File[]): Promise<void> {
 	}
 }
 
-function fileKey(file: File): string {
-	return `${file.name}|${file.size}|${file.lastModified}`;
+function fileKey({ file, path }: PickedFile): string {
+	return `${path}|${file.size}|${file.lastModified}`;
+}
+
+function fileCount(count: number): string {
+	return count === 1 ? '1 file' : `${count} files`;
+}
+
+function looseFiles(files: FileList | null): PickedFile[] {
+	return Array.from(files ?? [], (file) => ({ file, path: file.name }));
 }
 
 // Accumulate: each pick/drop adds to the batch. Same-identity files are skipped so
 // a double-drop doesn't duplicate; order is preserved.
-function addFiles(incoming: File[]): void {
+function addFiles(incoming: PickedFile[]): void {
 	const seen = new Set(pickedFiles.map(fileKey));
 	const merged = [...pickedFiles];
 	for (const file of incoming) {
@@ -459,15 +508,73 @@ function addFiles(incoming: File[]): void {
 	void applyFiles(merged);
 }
 
-function removeFile(index: number): void {
-	void applyFiles(pickedFiles.filter((_, position) => position !== index));
+function removeFile(picked: PickedFile): void {
+	void applyFiles(pickedFiles.filter((entry) => entry !== picked));
+}
+
+function removeFolder(name: string): void {
+	void applyFiles(pickedFiles.filter((entry) => !entry.path.startsWith(`${name}/`)));
+}
+
+function showEmptyFolder(): void {
+	status = 'That folder is empty.';
+	statusKind = 'error';
 }
 
 function onFileInputChange(event: Event): void {
 	const input = event.currentTarget as HTMLInputElement;
-	addFiles(Array.from(input.files ?? []));
+	addFiles(looseFiles(input.files));
 	// Clear so re-picking the same file still fires onchange for the next add.
 	input.value = '';
+}
+
+// A webkitdirectory pick lists every file under the chosen folder, each with a
+// webkitRelativePath that starts with the folder name; empty subfolders are absent.
+function onFolderInputChange(event: Event): void {
+	const input = event.currentTarget as HTMLInputElement;
+	const files = Array.from(input.files ?? [], (file) => ({
+		file,
+		path: file.webkitRelativePath || file.name
+	}));
+	input.value = '';
+	if (files.length === 0) {
+		showEmptyFolder();
+		return;
+	}
+	addFiles(files);
+}
+
+// Shared by the zone and window drops: walks dropped folders, then adds every
+// file found. readDrop captures the items synchronously, before the event ends.
+async function addDrop(items: DataTransferItemList): Promise<void> {
+	let batch: Awaited<ReturnType<typeof readDrop>>;
+	try {
+		batch = await readDrop(items);
+	} catch {
+		status = 'Could not read that folder.';
+		statusKind = 'error';
+		return;
+	}
+	// A large folder walk can finish after the user pressed Create or left the
+	// File tab; its files must not land in a form that moved on.
+	if (isCreating || mode !== 'file') {
+		return;
+	}
+	const { files, emptyFolders, skipped } = batch;
+	if (files.length > 0) {
+		addFiles(files);
+	}
+	// After addFiles, whose applyFiles run resets the status.
+	if (skipped > 0) {
+		status = `Skipped ${skipped === 1 ? '1 item' : `${skipped} items`} that could not be read.`;
+		statusKind = 'error';
+	} else if (emptyFolders.length > 0) {
+		showEmptyFolder();
+	}
+}
+
+function hasDroppedFiles(transfer: DataTransfer | null): transfer is DataTransfer {
+	return transfer !== null && Array.from(transfer.items).some((item) => item.kind === 'file');
 }
 
 function onDragOver(event: DragEvent): void {
@@ -488,9 +595,8 @@ function onDrop(event: DragEvent): void {
 	if (isCreating) {
 		return;
 	}
-	const files = Array.from(event.dataTransfer?.files ?? []);
-	if (files.length > 0) {
-		addFiles(files);
+	if (hasDroppedFiles(event.dataTransfer)) {
+		void addDrop(event.dataTransfer.items);
 	}
 }
 
@@ -516,13 +622,13 @@ function onWindowDrop(event: DragEvent): void {
 	if (!canAcceptFileDrop() || event.defaultPrevented) {
 		return;
 	}
-	const files = Array.from(event.dataTransfer?.files ?? []);
-	if (files.length === 0) {
+	if (!hasDroppedFiles(event.dataTransfer)) {
 		return;
 	}
 	event.preventDefault();
+	const items = event.dataTransfer.items;
 	switchMode('file');
-	addFiles(files);
+	void addDrop(items);
 }
 
 function clearSelectedFile(): void {
@@ -535,6 +641,9 @@ function clearSelectedFile(): void {
 	dragActive = false;
 	if (fileInput) {
 		fileInput.value = '';
+	}
+	if (folderInput) {
+		folderInput.value = '';
 	}
 }
 
@@ -812,13 +921,14 @@ function typePanelId(type: CreateMode): string {
 						aria-labelledby={`${typePanelId(mode)}-tab`}
 					>
 						<span class="text-sm font-medium">Files</span>
-						<!-- Label wraps the input, so a click opens the picker natively and a
-							     drop lands files without any wiring; focus-within surfaces the
-							     visually-hidden input's keyboard focus on the zone. -->
+						<!-- The bordered zone takes drops anywhere inside it. The label wraps the
+							     file input, so a click opens the picker natively; the folder button
+							     sits outside the label so its click opens only the folder picker.
+							     The ring follows keyboard focus on the visually-hidden file input. -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<label
+						<div
 							class={cn(
-								'grid cursor-pointer place-items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-ring',
+								'grid rounded-lg border border-dashed transition-colors has-[#secret-file:focus-visible]:border-primary has-[#secret-file:focus-visible]:ring-2 has-[#secret-file:focus-visible]:ring-ring',
 								dragActive
 									? 'border-primary bg-primary/5'
 									: 'border-border bg-muted/20 hover:bg-muted/40',
@@ -829,53 +939,99 @@ function typePanelId(type: CreateMode): string {
 							ondragleave={onDragLeave}
 							ondrop={onDrop}
 						>
-							<FileUpIcon
-								class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
-								aria-hidden="true"
-							/>
-							<p class="text-sm">
-								<span class="font-medium text-foreground">Drop files</span>
-									<span class="text-muted-foreground"> or click to browse</span>
-							</p>
-							<p class="micro text-muted-foreground">
-								<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
-								Multiple files are zipped into one · up to 
-								<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
-							</p>
-							<input
-								bind:this={fileInput}
-								id="secret-file"
-								type="file"
-								multiple
-								class="sr-only"
-								aria-label="Add files to upload"
-								disabled={isCreating}
-								onchange={onFileInputChange}
-							/>
-						</label>
+							<label
+								class={cn(
+									'grid cursor-pointer place-items-center gap-2 px-4 text-center',
+									supportsFolderPick ? 'pt-8 pb-1' : 'py-8'
+								)}
+							>
+								<FileUpIcon
+									class={cn('size-6', dragActive ? 'text-primary' : 'text-muted-foreground')}
+									aria-hidden="true"
+								/>
+								<p class="text-sm">
+									<span class="font-medium text-foreground">Drop files</span>
+										<span class="text-muted-foreground"> or click to browse</span>
+								</p>
+								<p class="micro text-muted-foreground">
+									<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
+									Multiple files and folders are zipped into one · up to 
+									<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
+								</p>
+								<input
+									bind:this={fileInput}
+									id="secret-file"
+									type="file"
+									multiple
+									class="sr-only"
+									aria-label="Add files to upload"
+									disabled={isCreating}
+									onchange={onFileInputChange}
+								/>
+							</label>
+							{#if supportsFolderPick}
+								<Button
+									variant="link"
+									class="mx-auto mb-3 min-h-11 text-muted-foreground hover:text-foreground"
+									disabled={isCreating}
+									onclick={() => folderInput?.click()}
+								>
+									Choose a folder
+								</Button>
+								<input
+									bind:this={folderInput}
+									id="secret-folder"
+									type="file"
+									webkitdirectory
+									hidden
+									disabled={isCreating}
+									onchange={onFolderInputChange}
+								/>
+							{/if}
+						</div>
 						{#if pickedFiles.length > 0}
 							<ul class="grid gap-1.5">
-								{#each pickedFiles as file, index (fileKey(file))}
+								{#each pickedRows as row (row.key)}
 									<li
 										class="flex min-h-9 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
 									>
-										<span class="truncate text-muted-foreground" title={file.name}>{file.name}</span>
-										<span class="flex shrink-0 items-center gap-2">
+										{#if row.kind === 'folder'}
+											<span class="truncate text-muted-foreground" title={`${row.name}/`}>{row.name}/</span>
+											<span class="flex shrink-0 items-center gap-2">
 												<span class="font-mono text-xs text-muted-foreground">
-													{formatBytes(file.size)}
+													{fileCount(row.count)} · {formatBytes(row.size)}
 												</span>
-											<button
-												type="button"
-												class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-												aria-label={`Remove ${file.name}`}
-												disabled={isCreating}
-												onclick={() => {
-													removeFile(index);
-												}}
+												<button
+													type="button"
+													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													aria-label={`Remove folder ${row.name}`}
+													disabled={isCreating}
+													onclick={() => {
+														removeFolder(row.name);
+													}}
 												>
 													<XIcon class="size-4" aria-hidden="true" />
 												</button>
-										</span>
+											</span>
+										{:else}
+											<span class="truncate text-muted-foreground" title={row.picked.path}>{row.picked.path}</span>
+											<span class="flex shrink-0 items-center gap-2">
+												<span class="font-mono text-xs text-muted-foreground">
+													{formatBytes(row.picked.file.size)}
+												</span>
+												<button
+													type="button"
+													class="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+													aria-label={`Remove ${row.picked.path}`}
+													disabled={isCreating}
+													onclick={() => {
+														removeFile(row.picked);
+													}}
+												>
+													<XIcon class="size-4" aria-hidden="true" />
+												</button>
+											</span>
+										{/if}
 									</li>
 								{/each}
 							</ul>
@@ -885,11 +1041,12 @@ function typePanelId(type: CreateMode): string {
 									role="status"
 									aria-live="polite"
 									>
-										Zipping {pickedFiles.length} files…
+										Zipping {fileCount(pickedFiles.length)}…
 									</p>
-							{:else if pickedFiles.length > 1 && selectedFile}
-									<p class="micro text-right normal-case text-muted-foreground">
-										{pickedFiles.length} files → {selectedFile.name} · {formatBytes(selectedFile.size)}
+							{:else if selectedFile && selectedFile !== pickedFiles[0].file}
+									<!-- A folder-named zip carries the user's folder name, so it wraps. -->
+									<p class="micro text-right normal-case text-muted-foreground [overflow-wrap:anywhere]">
+										{fileCount(pickedFiles.length)} → {selectedFile.name} · {formatBytes(selectedFile.size)}
 									</p>
 							{/if}
 						{/if}
