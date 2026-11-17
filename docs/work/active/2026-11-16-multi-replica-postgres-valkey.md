@@ -73,6 +73,14 @@
      2. HTTP `Shutdown` 타임아웃을 `50s`로 늘려 진행 중인 `/send`·`/receive`·`/internal/pipe/stream` 연결은 완료될 때까지 드레이닝한다.
    - 프론트엔드 [web/src/lib/crypto/pipe.ts](../../../web/src/lib/crypto/pipe.ts#L251-L320)의 `waitForPipeUpdate`(`/wait`)에 `5xx`/네트워크 `TypeError` 안전 재시도를 추가하고, `pollPipeStatus`(`/status`)도 소켓 단절(`TypeError`) 1회 재시도를 잡도록 보강한다.
 
+4. **PR 5 (#424) 구현에서 확정·변경된 점**
+   - 방 키는 코드의 SHA-256이 아니라 `FLICK_RATELIMIT_KEY_SALT` HMAC(`roomID`)이다. 6자리 코드는 90만 개뿐이라 SHA-256은 키 덤프만으로 역산된다. 클라이언트 해시도 같은 솔트로 다시 HMAC해 저장한다.
+   - 스트림 1회용 비밀은 **송신 쪽 파드**가 만들고 방에는 SHA-256만 둔다(수신 파드가 만들면 송신 파드가 읽을 평문을 Valkey에 둬야 한다). 수신 파드는 IP만 광고한다.
+   - 방 상태는 해시 하나(`rev`+`state` JSON)를 Lua CAS로 쓰고 같은 스크립트에서 `PUBLISH`한다. 만료·선택 후 미수신은 읽을 때마다 `settle`이 끝내고, 레플리카마다 30초 청소기가 같은 규칙을 돈다. 끝난 방은 1분 묘비로 남아 대기 중인 기기가 끝난 이유를 받는다.
+   - 스트림 리스너는 Kubernetes 밖에서도 항상 뜬다(`FLICK_POD_IP` 비면 `127.0.0.1`). 코드 경로를 하나로 유지한다.
+   - `scripts/dev/up.sh`의 Valkey 연결을 PR 6에서 PR 5로 당겼다. 이 PR부터 Valkey 없이는 `/api/pipe/*`가 503이라 dev와 `tests/e2e/pipe-relay.live.mjs`가 Valkey를 필요로 한다.
+   - 실제 프로세스 두 개 사이의 전송 검증은 한 호스트에서 내부 포트를 공유할 수 없어 PR 6의 k3d multi-replica smoke로 넘긴다. PR 5는 가짜 Pod 네트워크(192.0.2.N → 로컬 리스너)로 두 코디네이터·두 라우터 사이를 검증하고, 실제 바이너리 한 개로 전송과 SIGTERM 드레이닝을 확인했다.
+
 ### 3.3 Rate Limiter · Telemetry · Monitoring
 
 - **Rate Limiter**: Valkey Lua 토큰버킷 스크립트로 기존 8개 리미터를 분산 공유하되, 키(`pipe/secrets/requests` 각 스코프)는 원시 `clientNetwork` 대신 Deployment 시크릿 솔트 기반 SHA-256/HMAC 해시 + `<= 10m` TTL로 저장한다. Valkey 호출 타임아웃/에러 시 즉시 프로세스 내 기존 인메모리 `rateLimiter`로 폴백하고 경고 로그·메트릭을 남긴다.

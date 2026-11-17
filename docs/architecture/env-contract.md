@@ -23,7 +23,7 @@ Local development:
 | `PUBLIC_FLICK_MAX_TTL_SECONDS` | Browser-safe mirror of `FLICK_MAX_TTL_SECONDS` (client validation). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `PUBLIC_FLICK_DEFAULT_TTL_SECONDS` | Browser-safe mirror of `FLICK_DEFAULT_TTL_SECONDS` (initial lifetime preset). Default must equal the Go const; `scripts/ci/ttl-drift.sh` enforces it. |
 | `FLICK_API_BASE_URL` | API origin used by local scripts only: `scripts/dev/up.sh` polls `${FLICK_API_BASE_URL}/healthz` and `scripts/smoke/local-secret-flow.sh` sends its requests there. No Go service reads it; the browser uses `PUBLIC_FLICK_API_BASE_URL`. |
-| `FLICK_INTERNAL_TOKEN` | Shared token for internal worker to API calls. |
+| `FLICK_INTERNAL_TOKEN` | Shared token for internal worker to API calls, and for the API replicas' live-transfer stream hop (`internal/piperelay/stream.go` `InternalTokenHeader`). |
 
 ## API
 
@@ -33,9 +33,9 @@ Local development:
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` on both the API and the worker's dedicated metrics listener. Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = both fail closed (401). |
 | `FLICK_DATABASE_URL` | PostgreSQL DSN for the API-owned `flick_api` logical database, connected as the least-privilege `flick_api` role (`pgx/v5/stdlib`, `CGO_ENABLED=0`). Required since the M15 PR 3 cutover: the API fails fast without it and has no local file fallback. Local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql` (`scripts/dev/up.sh` exports them). |
 | `FLICK_VALKEY_ADDR` | Valkey `host:port` for the shared rate limiter and live-transfer rendezvous (`internal/httpapi/ratelimit.go`, `internal/piperelay/`). Empty disables Valkey use: the rate limiter falls back to per-process memory and `/api/pipe/*` answers `503`. |
-| `FLICK_RATELIMIT_KEY_SALT` | Deployment-secret salt mixed (HMAC-SHA-256) into Valkey rate-limit keys, so Valkey never stores a raw client network. Required when `FLICK_VALKEY_ADDR` is set; rotating it resets in-flight rate-limit buckets only. |
-| `FLICK_INTERNAL_HTTP_PORT` | Port of the API's pod-to-pod live-transfer stream listener (`/internal/pipe/stream/{codeHash}`) inside the cluster. Set by the Deployment in `deploy/base/api.yaml`; unused outside Kubernetes. |
-| `FLICK_POD_IP` | This pod's IP injected by the Kubernetes Downward API (`status.podIP`). The pod registers it in Valkey so the peer pod can dial the stream listener directly. Empty outside Kubernetes. |
+| `FLICK_RATELIMIT_KEY_SALT` | Deployment-secret salt mixed (HMAC-SHA-256) into Valkey rate-limit keys and live-transfer room keys and client hashes, so Valkey never stores a raw client network or a 6-digit code. Required when `FLICK_VALKEY_ADDR` is set; every replica must share it, and rotating it resets in-flight rate-limit buckets and orphans live-transfer rooms (at most 3 minutes of sessions). |
+| `FLICK_INTERNAL_HTTP_PORT` | Port of the API's live-transfer stream listener (`/internal/pipe/stream/{roomID}`, `internal/piperelay/stream.go`), the same on every replica: a sender's replica dials the receiver's replica on it. Default `8081`; must be 1..65535. The listener runs whenever live transfer is enabled (`cmd/flick-api/main.go`), also outside Kubernetes; it accepts only requests carrying `FLICK_INTERNAL_TOKEN` and a stream's one-time secret, and must stay unreachable from outside the cluster or host. |
+| `FLICK_POD_IP` | IP literal this replica advertises in Valkey for its stream listener, injected by the Kubernetes Downward API (`status.podIP`). Empty (one host outside Kubernetes) advertises `127.0.0.1`; a host name fails startup. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored inline as `secret_payloads.ciphertext` (`bytea`). Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
@@ -49,8 +49,8 @@ Local development:
 | `FLICK_CREATE_RATE_PER_MIN` | Per-minute limit per client network (IPv4 address or IPv6 /64) for `POST /api/secrets` (includes presigned upload issuance), `POST /api/requests`, and `/api/pipe/init`, each with its own bucket. |
 | `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in the `flick_api` database. |
 | `FLICK_REAPER_BATCH_SIZE` | Max secrets reclaimed per reaper tick. |
-| `FLICK_PIPE_RELAY_ENABLED` | Enable live in-memory pipe relay endpoints (`true`/`false`). Default `true`. |
-| `FLICK_PIPE_MAX_CONCURRENT` | Maximum concurrent live pipe rendezvous sessions. Default `100`. |
+| `FLICK_PIPE_RELAY_ENABLED` | Enable live pipe relay endpoints (`true`/`false`). Default `true`. Live transfer also needs `FLICK_VALKEY_ADDR` (and therefore `FLICK_RATELIMIT_KEY_SALT`, which keys its Valkey rooms) and a non-empty `FLICK_INTERNAL_TOKEN`; without Valkey the API logs that live transfer is disabled and `/api/pipe/*` answers `503`. |
+| `FLICK_PIPE_MAX_CONCURRENT` | Maximum concurrent live pipe rendezvous sessions, counted across every API replica in Valkey. Default `100`. |
 | `FLICK_TRUSTED_PROXIES` | Comma-separated CIDRs whose peer may set X-Forwarded-For. Empty = direct peer IP only. |
 
 ## NATS

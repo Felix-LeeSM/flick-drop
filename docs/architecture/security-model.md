@@ -222,8 +222,11 @@ server never sees the note plaintext or memo identity.
 ## Live Relay (Live Transfer)
 
 The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
-one browser to another through API memory; it writes nothing to the databases
-or object storage. The stream is end-to-end encrypted against a passive server:
+one browser to another through API memory, hopping from the sender's API
+replica to the receiver's (`service-topology.md`); it writes nothing to the
+databases or object storage, and the waiting room's metadata lives in
+non-persistent Valkey. The stream is end-to-end encrypted against a passive
+server:
 
 - The receiving browser generates a fresh hybrid ML-KEM-768 + X25519 age
   identity for each receive attempt (`web/src/lib/crypto/pipe.ts`
@@ -237,8 +240,8 @@ or object storage. The stream is end-to-end encrypted against a passive server:
   lowercase bech32 characters, at most `pipeRecipientMaxChars` 4,096
   characters, then a full parse of the ML-KEM-768 + X25519 key with its
   checksum in canonical form, as request links do; anything else is
-  `400 invalid_recipient`) and the coordinator keeps it in memory on
-  that connection.
+  `400 invalid_recipient`) and the coordinator stores it on that connection
+  in the session's Valkey room.
 - `GET /api/pipe/wait` hands recipients to the sender token holder only: each
   waiting row carries its recipient, and once `status` is `ready` the
   top-level `recipient` names the attached receiver's. Neither `/join` nor
@@ -251,16 +254,36 @@ or object storage. The stream is end-to-end encrypted against a passive server:
 
 The server issues no key material for a code transfer: no salt, no passphrase,
 and the 6-digit code only routes requests. A curious or passive server, its
-logs, or a dump of its memory therefore hold recipients and ciphertext but
-nothing that decrypts the stream. A code transfer takes no passphrase on either
+logs, a dump of its memory, or a dump of Valkey therefore hold recipients and
+(memory only) ciphertext but nothing that decrypts the stream. A code transfer takes no passphrase on either
 side; the link tab's "additional passphrase" never reaches it.
 
-M15 transition (issue #424): the rendezvous moves from one API process's
-memory to non-persistent Valkey so two API replicas can serve a transfer.
-Valkey then holds the room metadata described above — states, hashed tokens,
-public age recipients, poll leases — under short TTLs; the encrypted bytes
-keep flowing pod-to-pod through API memory (`service-topology.md`) and never
-touch Valkey.
+**What Valkey holds.** The rendezvous lives in Valkey so any API replica can
+serve any call of a transfer (`internal/piperelay/room.go`). Valkey runs with
+`--save "" --appendonly no`, so nothing reaches disk. One room is a hash keyed by
+the HMAC-SHA-256 of the 6-digit code under `FLICK_RATELIMIT_KEY_SALT`, so a key
+dump does not reveal a code (a bare SHA-256 of 900,000 codes would). Its JSON
+state holds the SHA-256 of the sender token, each connection's ID,
+verification number, device label, public age recipient, and HMAC'd client key
+and network, the decline block list (HMAC'd client keys), the receiver
+replica's IP, the SHA-256 of the one-time stream secret, and timestamps. It
+never holds ciphertext, the encrypted filename, the code, the sender token, the
+stream secret, or a raw client hash; `internal/piperelay/stream_test.go`
+`TestStream_ValkeyHoldsNoCiphertextCodeOrToken` dumps every key mid-stream to
+check. A room expires one minute after its own deadline (the 3-minute window, or
+`maxTransferDuration` once streaming), and an ended room stays one minute as a
+tombstone so devices still waiting learn how it ended. Anyone who can read
+Valkey can read the connection IDs and recipients of live rooms, so a
+deployment keeps Valkey reachable from the API replicas only.
+
+The encrypted bytes hop between replicas over the stream listener
+(`FLICK_INTERNAL_HTTP_PORT`, `internal/piperelay/stream.go`), which accepts a
+request only with `FLICK_INTERNAL_TOKEN` and the stream's one-time secret, and
+only while the receiver's `/receive` waits on that replica. The sender's replica
+dials only an IP literal from the room on the fixed internal port, without
+redirects or an HTTP proxy, so a tampered room cannot aim it at another host or
+port. The hop is plain HTTP inside the cluster network; the bytes on it are the
+same age ciphertext the browsers exchange.
 
 Known limit: the key exchange is not authenticated against the server. An
 actively malicious server can swap in a recipient of its own on `/wait`, decrypt
@@ -363,9 +386,10 @@ The sender can deny a single row. That device ends with "The sender declined
 this device", its slot reopens, and the session stays alive. The API also blocks
 the same client from rejoining the session: it keeps a SHA-256 of the client
 network (the client IP resolved through `FLICK_TRUSTED_PROXIES`, the same way as
-the rate limiter, with IPv6 collapsed to its /64) and the User-Agent, in memory
-only, for the session's lifetime (`internal/httpapi/piperelay.go`
-`pipeJoinClient`). The block is deliberately coarse. Another device behind the
+the rate limiter, with IPv6 collapsed to its /64) and the User-Agent
+(`internal/httpapi/piperelay.go` `pipeJoinClient`), HMAC'd again under
+`FLICK_RATELIMIT_KEY_SALT` in the session's Valkey room for the session's
+lifetime. The block is deliberately coarse. Another device behind the
 same NAT or IPv6 /64 with the same browser and OS string is blocked too for that
 one short session, and a determined person can change network or User-Agent to
 get back in; the sender can deny them again. The declined browser also
@@ -387,16 +411,18 @@ client network, as above) and the 3-minute window. An 11th waiting device gets
 expired` once the window closed, even before cleanup removes the session.
 
 **A started stream is never cut by a burn.** Sender cancel returns `409
-streaming` once bytes flow, and the rendezvous TTL cleanup skips streaming
-sessions until `maxTransferDuration` (10 minutes). Cancel and the cleanup check
-for streaming and end the session under the same lock that `/send` holds to
-mark the stream started, so a cancel racing a starting stream either ends the
-session before any byte flows or loses with `409 streaming`. Only the stream
-itself failing, either side disconnecting, or a server shutdown ends it.
+streaming` once bytes flow, and the rendezvous TTL rules skip streaming
+sessions until `maxTransferDuration` (10 minutes). Cancel, the TTL rules, and
+`/send` marking the stream started are all compare-and-set writes on the same
+Valkey room, so a cancel racing a starting stream either ends the session before
+any byte flows or loses with `409 streaming`. Only the stream itself failing,
+either side disconnecting, or a replica still streaming when its 50-second
+shutdown timeout ends cuts it.
 
 The API never logs 6-digit codes, verification numbers, sender tokens,
-connection IDs, client keys, recipients, or User-Agents. Device labels live in memory only,
-for the session's lifetime.
+connection IDs, client keys, recipients, or User-Agents. Device labels live in
+the session's Valkey room only, for the session's lifetime plus the one-minute
+tombstone.
 
 ## Structured Credentials
 

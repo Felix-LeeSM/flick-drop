@@ -862,7 +862,7 @@ paths:
         "429":
           description: Server at maximum concurrent pipe relay capacity, or client rate limit.
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/join:
     post:
       operationId: joinPipe
@@ -879,8 +879,9 @@ paths:
         /status: one with no open /status call for 35 seconds is dropped and its
         slot reopens. No rejection here ends the session or counts against it.
         The body carries the receiver's age recipient, generated fresh in the
-        receiving browser for this connection. The API keeps it in memory with
-        the connection and returns it only to the sender (/wait); the matching
+        receiving browser for this connection. The API keeps it with the
+        connection in the session's non-persistent rendezvous state and returns
+        it only to the sender (/wait); the matching
         identity never leaves the receiving browser, so the API relays a
         stream it cannot decrypt.
       parameters:
@@ -936,7 +937,7 @@ paths:
         "429":
           description: Client network rate limit.
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/status:
     get:
       operationId: statusPipe
@@ -996,7 +997,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/receive:
     get:
       operationId: receivePipe
@@ -1055,7 +1056,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/wait:
     get:
       operationId: waitPipe
@@ -1094,7 +1095,7 @@ paths:
         "410":
           description: Rendezvous expired, cancelled, or closed.
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/select:
     post:
       operationId: selectPipe
@@ -1133,15 +1134,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/decline:
     post:
       operationId: declinePipe
       summary: Decline one waiting connection.
       description: >-
         Ends that connection with `declined`, reopens its slot, and blocks the
-        same client (hash of client IP and User-Agent, held in memory for the
-        session only) from joining this session again. The session stays alive.
+        same client (keyed hash of client IP and User-Agent, held in the
+        session's non-persistent rendezvous state for the session only) from
+        joining this session again. The session stays alive.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeSender"
@@ -1168,7 +1170,7 @@ paths:
         "410":
           description: Rendezvous expired, cancelled, or closed.
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/cancel:
     post:
       operationId: cancelPipe
@@ -1198,14 +1200,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/send:
     post:
       operationId: sendPipe
       summary: Send the live stream to the chosen receiver.
       description: >-
-        Waits for the chosen receiver, then streams the request body into the
-        in-memory pipe.
+        Waits for the chosen receiver, then streams the request body to the
+        receiver's open /receive response (through the API replica that holds
+        it), without storing it.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeSender"
@@ -1244,7 +1247,7 @@ paths:
         "502":
           description: Stream transfer failed or receiver disconnected.
         "503":
-          description: Live pipe relay is disabled.
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
 components:
   headers:
     RequestNoStore:
@@ -1648,7 +1651,7 @@ components:
           description: Absolute upper bound; files above this are rejected by client and server.
         pipe_relay_enabled:
           type: boolean
-          description: Whether live in-memory pipe relay transfer is enabled on this server.
+          description: Whether live pipe relay transfer is enabled on this server (it needs the shared rendezvous store).
     PipeInitRequest:
       type: object
       additionalProperties: false
@@ -1770,7 +1773,7 @@ components:
         bytes_transferred:
           type: integer
           format: int64
-          description: Total bytes passed through the in-memory pipe.
+          description: Total bytes read from the request body and passed to the receiver.
     ErrorResponse:
       type: object
       additionalProperties: false
