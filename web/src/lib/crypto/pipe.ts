@@ -228,6 +228,32 @@ export async function joinPipe(
 }
 
 /**
+ * Fetches one long-poll (/status or /wait), retrying a single transient
+ * failure: a 5xx from the API or a proxy (Cloudflare's 502 and 524), or a
+ * socket the network dropped (fetch rejects with a TypeError). An API replica
+ * stopping for a rolling update is the usual cause; the retry reaches another
+ * replica, which reads the same waiting room from Valkey. A second failure in
+ * a row is returned or thrown to the caller. An abort is never retried.
+ */
+async function fetchLongPoll(
+	fetcher: typeof fetch,
+	url: string,
+	init: RequestInit
+): Promise<Response> {
+	try {
+		const response = await fetcher(url, init);
+		if (response.status < 500) {
+			return response;
+		}
+	} catch (err) {
+		if (!(err instanceof TypeError)) {
+			throw err;
+		}
+	}
+	return fetcher(url, init);
+}
+
+/**
  * Long-polls GET /api/pipe/status until the sender picks this connection. Each
  * poll holds at most 25 seconds, so a proxy never sees a silent response, and
  * the open poll is what keeps this device in the sender's list. Resolves once
@@ -245,20 +271,14 @@ export async function waitForPipeSelection(
 		'X-Flick-Pipe-Code': normalizePipeCode(code),
 		'X-Flick-Pipe-Connection': connectionId
 	};
-	// One transient server or proxy failure (5xx, including Cloudflare's 502 and
-	// 524) is retried once; a second one in a row fails. The connection stays in
-	// the room for 35 seconds without a poll, so the retry is still in time.
-	let retried = false;
+	// The connection stays in the room for 35 seconds without a poll, so the
+	// one retry inside fetchLongPoll is still in time.
 	while (true) {
-		const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/status`, {
+		const response = await fetchLongPoll(fetcher, `${apiBase(baseUrl)}/api/pipe/status`, {
 			method: 'GET',
 			headers,
 			signal
 		});
-		if (response.status >= 500 && !retried) {
-			retried = true;
-			continue;
-		}
 		if (!response.ok) {
 			const err = await pipeError(response, 'Status check failed');
 			// The join succeeded with this code, so not_found here means the server
@@ -269,7 +289,6 @@ export async function waitForPipeSelection(
 			}
 			throw err;
 		}
-		retried = false;
 		const data = (await response.json()) as { status: 'waiting' | 'selected' };
 		if (data.status === 'selected') {
 			return;
@@ -297,7 +316,8 @@ export type PipeWaitResult = {
 
 /**
  * Long-polls GET /api/pipe/wait. Resolves as soon as the session differs from
- * `since`, or after the server's hold time with the unchanged view.
+ * `since`, or after the server's hold time with the unchanged view. One
+ * transient failure is retried (`fetchLongPoll`).
  */
 export async function waitForPipeUpdate(
 	baseUrl: string,
@@ -307,14 +327,18 @@ export async function waitForPipeUpdate(
 	fetcher: typeof fetch = fetch,
 	signal?: AbortSignal
 ): Promise<PipeWaitResult> {
-	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/wait?since=${since}`, {
-		method: 'GET',
-		headers: {
-			'X-Flick-Pipe-Code': normalizePipeCode(code),
-			'X-Flick-Pipe-Sender': senderToken
-		},
-		signal
-	});
+	const response = await fetchLongPoll(
+		fetcher,
+		`${apiBase(baseUrl)}/api/pipe/wait?since=${since}`,
+		{
+			method: 'GET',
+			headers: {
+				'X-Flick-Pipe-Code': normalizePipeCode(code),
+				'X-Flick-Pipe-Sender': senderToken
+			},
+			signal
+		}
+	);
 	if (!response.ok) {
 		throw await pipeError(response, 'Wait failed');
 	}

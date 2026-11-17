@@ -250,6 +250,28 @@ describe('client API hooks', () => {
 		).rejects.toMatchObject({ status: 503 });
 		expect(down.calls()).toBe(2);
 
+		// Given: 롤링 업데이트로 레플리카가 내려가 소켓이 끊긴다(TypeError) → 한 번 다시 연다
+		let dropped = 0;
+		const socketDrop: typeof fetch = () => {
+			dropped++;
+			return dropped === 1
+				? Promise.reject(new TypeError('Failed to fetch'))
+				: Promise.resolve(jsonResponse({ status: 'selected' }));
+		};
+		await waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', socketDrop);
+		expect(dropped).toBe(2);
+
+		// Given: 사용자가 취소한 요청(AbortError)은 다시 열지 않는다
+		let aborted = 0;
+		const abort: typeof fetch = () => {
+			aborted++;
+			return Promise.reject(new DOMException('aborted', 'AbortError'));
+		};
+		await expect(
+			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', abort)
+		).rejects.toMatchObject({ name: 'AbortError' });
+		expect(aborted).toBe(1);
+
 		// Given: 참가는 됐는데 /status가 404 → 거절이 아니라 연결이 끊긴 것으로 안내한다
 		await expect(
 			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', () =>
@@ -317,6 +339,37 @@ describe('client API hooks', () => {
 				Promise.resolve(errorResponse(410, 'expired'))
 			)
 		).rejects.toThrow('This code expired.');
+	});
+
+	it('waitForPipeUpdate retries one 5xx or dropped socket, then fails', async () => {
+		const waiting = () => jsonResponse({ status: 'waiting', version: 2, connections: [] });
+		const sequence = (...steps: (() => Promise<Response>)[]) => {
+			let calls = 0;
+			const fetcher: typeof fetch = () => steps[calls++]();
+			return { fetcher, calls: () => calls };
+		};
+
+		// Given: 내려가는 레플리카의 502, 끊긴 소켓 → 각각 한 번 다시 열어 대기 목록을 받는다
+		for (const failure of [
+			() => Promise.resolve(new Response('<html>', { status: 502 })),
+			() => Promise.reject(new TypeError('Failed to fetch'))
+		]) {
+			const flaky = sequence(failure, () => Promise.resolve(waiting()));
+			await expect(
+				waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 1, flaky.fetcher)
+			).resolves.toMatchObject({ status: 'waiting', version: 2 });
+			expect(flaky.calls()).toBe(2);
+		}
+
+		// Given: 연달아 두 번 실패 → 두 번째 실패가 그대로 올라간다
+		const down = sequence(
+			() => Promise.resolve(new Response('<html>', { status: 502 })),
+			() => Promise.resolve(errorResponse(503, 'service_unavailable'))
+		);
+		await expect(
+			waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 1, down.fetcher)
+		).rejects.toMatchObject({ status: 503, reason: 'service_unavailable' });
+		expect(down.calls()).toBe(2);
 	});
 
 	it('select, decline, and cancel carry the sender token and connection', async () => {
