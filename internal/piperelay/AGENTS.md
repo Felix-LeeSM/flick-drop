@@ -51,13 +51,18 @@ databases or object storage, served by any number of API replicas.
 - A waiting receiver long-polls `Coordinator.Status` and calls `Receive` only
   after `Status` reports it selected; `Receive` on a still-waiting connection
   returns `ErrAwaitingDecision`. A waiting connection counts as present only
-  while its poll lease `{Namespace}poll:{roomID}:{SHA-256 of the connection
-  ID}` exists: `Join` creates it, and each `Status` call refreshes its TTL
-  (`PresenceTimeout`) when it starts and ends (`acquireLeaseScript`,
+  while its presence key `{Namespace}poll:{roomID}:{SHA-256 of the
+  connection ID}` exists: `Join` creates it, and each `Status` call refreshes
+  its TTL (`PresenceTimeout`) when it starts and ends (`acquireLeaseScript`,
   `releaseLeaseScript`). `Coordinator.pruneIdle` drops a waiting connection
   whose lease expired; dropping frees the slot without a decline or a burn.
 - One connection holds at most `MaxStatusPollsPerConnection` (2) open
-  `Status` calls (the lease value); the next gets `ErrPollInProgress`. The
+  `Status` calls; the next gets `ErrPollInProgress`. Each open call is one
+  member of the sorted set `{Namespace}polls:{roomID}:{SHA-256 of the
+  connection ID}`, scored by its hold plus `PresenceTimeout` on Valkey's clock,
+  so a call that never released its member (a killed replica) stops counting
+  by then even while the connection keeps polling elsewhere
+  (`TestCoordinator_DeadReplicaPollStopsCounting`). The
   HTTP layer also rate-limits `/status` per client network
   (`internal/httpapi/piperelay.go` `pipeStatusRatePerMinute`, 120).
 - `Coordinator.Drain` makes open `Status` and `Wait` calls answer at once;
@@ -69,8 +74,9 @@ databases or object storage, served by any number of API replicas.
 - Residual risk: a holder of the right 6-digit code who keeps polling `Status`
   keeps its slots, up to `MaxPendingPerNetwork` per network; the sender can
   `Decline` those rows. A replica killed without its shutdown (no `SIGTERM`)
-  leaves its connections' poll counts until the lease TTL (35 seconds), so the
-  same connection may get `ErrPollInProgress` until then.
+  leaves each of its open `Status` calls counted for up to its hold plus
+  `PresenceTimeout` (25 + 35 seconds through the HTTP layer), so the same
+  connection may get `ErrPollInProgress` until then.
 - `Join` and `Select` return `ErrExpired` once the 3-minute window closed.
 - Sender calls (`Wait`, `Select`, `Decline`, `Cancel`, `Send`) require the
   sender token returned by `Init`; a wrong token answers `ErrNotFound`.
@@ -78,7 +84,14 @@ databases or object storage, served by any number of API replicas.
   no longer (or never) holds. `Cancel` on an ended session answers
   `ErrNotFound`.
 - A Valkey error surfaces as `ErrUnavailable` (`internal/httpapi/piperelay.go`
-  `writePipeError` answers `503 service_unavailable`).
+  `writePipeError` answers `503 service_unavailable`). The loops that wait
+  for the other side (`Receive` before the stream arrives, and
+  `waitForReceiver` inside `Send`) treat a failed read as transient and re-read
+  at the next `resyncInterval` until the room's window closes, because the
+  shared Valkey client (`internal/httpapi/ratelimit.go`) never retries and
+  times out after 250 ms
+  (`TestStream_SenderSurvivesOneFailedReadWhileWaiting`,
+  `TestStream_ReceiverSurvivesOneFailedReadWhileWaiting`).
 
 ## Stream Path (`internal/piperelay/stream.go`)
 
@@ -86,7 +99,8 @@ databases or object storage, served by any number of API replicas.
   attached and `CoordinatorOptions.AdvertiseIP` (`FLICK_POD_IP`, 127.0.0.1
   outside Kubernetes) into the room, then waits for the stream.
 - `Send` claims the sender side once (`room.SenderClaimed`; a second `Send`
-  gets `ErrAlreadyConnected`), waits for the receiver (`waitForReceiver`),
+  gets `ErrAlreadyConnected`), so every later failure inside `Send` ends the
+  session (`causeClosed`) instead of leaving the receiver waiting. It waits for the receiver (`waitForReceiver`),
   draws a one-time stream secret, writes only its SHA-256 and the stream start
   into the room, and POSTs the body to
   `http://{room.ReceiverIP}:{CoordinatorOptions.InternalPort}` +
@@ -97,8 +111,11 @@ databases or object storage, served by any number of API replicas.
   valid room ID, a waiting local slot, a streaming room, and the matching
   secret, then copies the body into an `io.Pipe` read by the receiver's
   response through a pooled, cleared 64 KiB buffer (`copyWithPool`). It
-  answers `200` only after the receiver's caller finished reading; anything
-  else makes `Send` return `io.ErrClosedPipe` (`502 receiver_disconnected`).
+  answers `200` only after the receiver's caller finished reading. `Send`
+  (`Coordinator.stream`) returns the sender body's own read error when that
+  failed (`502 transfer_failed`), `ErrExpired` past `MaxTransferDuration`
+  (`410`), and otherwise `io.ErrClosedPipe` for any answer but `200`
+  (`502 receiver_disconnected`).
 
 ## Hard Boundaries
 
@@ -106,7 +123,11 @@ databases or object storage, served by any number of API replicas.
 - Valkey never receives ciphertext, the encrypted filename, the 6-digit code,
   the sender token, the stream secret, or a raw client hash:
   `internal/piperelay/stream_test.go`
-  `TestStream_ValkeyHoldsNoCiphertextCodeOrToken` checks every key mid-stream.
+  `TestStream_ValkeyHoldsNoCiphertextCodeOrToken` checks every value
+  mid-stream for the ciphertext, the encrypted filename, the sender token, and
+  the raw client key and network, and every key name for the 6-digit code.
+  The stream secret is drawn inside `Send` (`internal/piperelay/stream.go`),
+  which writes only `sha256Hex(secret)`.
 - The stream client dials only an IP literal parsed with `netip.ParseAddr` on
   the configured internal port, never follows redirects
   (`http.ErrUseLastResponse`), and never uses an HTTP proxy

@@ -59,7 +59,7 @@
 
 1. **Valkey 상태 모델 (암호문 0바이트)**
    - Valkey 키(`pipe:room:{codeHash}`, `TTL <= 3m`)에는 방 메타데이터(`state`, `sender_token_hash`, `selected_connection_id`, `receiver_pod_ip`, `stream_secret_hash`, `expires_at`, `version`)와 대기 연결 목록만 저장한다.
-   - **`polls` 누수 방지**: 기존 인메모리 `conn.polls` 카운터 대신 TTL 35초(`presenceTimeout`) 기반 Redis/Valkey lease 키(`pipe:poll:{codeHash}:{connID}`)를 사용해 파드 크래시 시에도 35초 내 자동 해제된다.
+   - **`polls` 누수 방지**: 기존 인메모리 `conn.polls` 카운터 대신, 연결 존재는 TTL 35초(`presenceTimeout`) 키 `pipe:poll:{roomID}:{hash}`로, 열린 롱폴 수는 poll마다 멤버 하나를 두는 ZSET `pipe:polls:{roomID}:{hash}`(score = hold + 35초, Valkey 시계)로 센다. 정수 카운터는 다른 레플리카의 폴링이 TTL을 계속 늘려 죽은 파드의 몫이 영영 풀리지 않아서(PR 5 리뷰 지적) 멤버별 만료로 바꿨다.
    - Pub/Sub 채널(`pipe:ev:{codeHash}`)로 상태 변경·선택·거절·취소·`receiver_pod_ip` 준비 이벤트를 모든 API 파드에 즉시 브로드캐스트한다.
 2. **양방향 도착 및 스트림 백프레셔**
    - 브라우저는 `POST /api/pipe/select` 직후 `POST /api/pipe/send`를 먼저 호출하므로([web/src/lib/state/pipe-relay.svelte.ts](../../../web/src/lib/state/pipe-relay.svelte.ts#L206-L235)), 송신자가 붙은 Pod B는 `receiver_pod_ip`가 등록될 때까지 Pub/Sub로 최대 `35s` 대기한 뒤 미접속 시 `chosenAbandoned`로 방을 원자적으로 종료한다.

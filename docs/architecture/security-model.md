@@ -269,8 +269,11 @@ and network, the decline block list (HMAC'd client keys), the receiver
 replica's IP, the SHA-256 of the one-time stream secret, and timestamps. It
 never holds ciphertext, the encrypted filename, the code, the sender token, the
 stream secret, or a raw client hash; `internal/piperelay/stream_test.go`
-`TestStream_ValkeyHoldsNoCiphertextCodeOrToken` dumps every key mid-stream to
-check. A room expires one minute after its own deadline (the 3-minute window, or
+`TestStream_ValkeyHoldsNoCiphertextCodeOrToken` dumps every key mid-stream and
+checks the values for the ciphertext, the encrypted filename, the sender token,
+and the raw client hashes, and the key names for the code; the stream secret
+exists only inside `Send` and the outgoing request, so Valkey can hold no more
+than the SHA-256 that `Send` writes. A room expires one minute after its own deadline (the 3-minute window, or
 `maxTransferDuration` once streaming), and an ended room stays one minute as a
 tombstone so devices still waiting learn how it ended. Anyone who can read
 Valkey can read the connection IDs and recipients of live rooms, so a

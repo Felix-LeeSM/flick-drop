@@ -51,9 +51,11 @@ announce every change on `pipe:ev:{roomID}` (`internal/piperelay/room.go`).
 Each replica holds one Pub/Sub pattern subscription and wakes its local
 long-polls from it, re-reading the room at least every 2 seconds
 (`resyncInterval`) in case a message was lost. `pipe:poll:{roomID}:{hash of the
-connection ID}` counts a receiver's open `/status` polls and expires 35 seconds
-after the last one started or ended, so a replica that dies mid-poll frees the
-count on its own. `pipe:rooms` (sorted by deadline) backs the concurrent-session
+connection ID}` marks a waiting receiver present and expires 35 seconds after
+its last `/status` poll started or ended. `pipe:polls:{roomID}:{hash of the
+connection ID}` holds one member per open poll, scored by its 25-second hold
+plus those 35 seconds on Valkey's clock, so a poll that a dead replica never
+released stops counting by then on its own. `pipe:rooms` (sorted by deadline) backs the concurrent-session
 cap across replicas. Ciphertext bytes never touch Valkey.
 
 The encrypted stream itself goes pod-to-pod over direct HTTP
@@ -104,8 +106,9 @@ stream listener (`cmd/flick-api/main.go`): `/api/config` reports
 `pipe_relay_enabled: false` and every `/api/pipe/*` call answers
 `503 service_unavailable`. A Valkey error at runtime answers the same `503` for
 that call only. The web UI still shows "Live transfer";
-a send or receive attempt then reads "Live transfer is currently disabled on
-this server." (`web/src/lib/crypto/pipe.ts`).
+a send or receive attempt then reads "Live transfer is not available on this
+server right now." (`web/src/lib/crypto/pipe.ts`), wording that fits both
+cases.
 
 The relay is a server pipe rather than WebRTC peer-to-peer on purpose. Direct
 browser-to-browser connections fail behind many NATs and mobile carrier CGNAT
