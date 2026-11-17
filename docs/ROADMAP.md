@@ -107,7 +107,8 @@ Out of scope:
   — still describes the pre-M15 deployed layout; the M15 cutover (#425)
   rewrites the operational runbooks for PostgreSQL
 - rate limiting — done (#71; per client network, IPv6 collapsed to /64, in
-  `internal/httpapi/ratelimit.go`)
+  `internal/httpapi/ratelimit.go`; shared across API replicas through Valkey
+  since #423)
 - audit event viewer or export — not implemented; no audit event table exists
 - CSP and security header tightening — done (`web/nginx.conf`; see "Web
   Response Headers" in [security model](architecture/security-model.md))

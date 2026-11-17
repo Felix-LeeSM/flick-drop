@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/Felix-LeeSM/flick-drop/internal/config"
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -183,6 +185,16 @@ func main() {
 		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d)", cfg.PipeMaxConcurrent)
 	}
 
+	// Valkey shares rate-limit buckets across replicas. It is optional: empty
+	// FLICK_VALKEY_ADDR, or Valkey down at runtime, keeps each replica on its
+	// own in-process buckets, and /readyz never depends on it.
+	var valkey *redis.Client
+	if cfg.ValkeyAddr != "" {
+		valkey = httpapi.NewValkeyClient(cfg.ValkeyAddr)
+		defer valkey.Close()
+		log.Printf("flick-api rate limiter shares buckets through valkey")
+	}
+
 	server := &http.Server{
 		Addr: cfg.APIAddr,
 		Handler: httpapi.NewRouter(conn, secretStore, httpapi.Options{
@@ -195,6 +207,8 @@ func main() {
 			OpenRatePerMinute:        cfg.OpenRatePerMinute,
 			CreateRatePerMinute:      cfg.CreateRatePerMinute,
 			TrustedProxies:           cfg.TrustedProxies,
+			Valkey:                   valkey,
+			RateLimitKeySalt:         cfg.RateLimitKeySalt,
 			OutboxStore:              outboxStore,
 			NATSConnected:            natsConn.IsConnected,
 			RequestStore:             requestStore,

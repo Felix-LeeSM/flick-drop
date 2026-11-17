@@ -76,7 +76,7 @@ will migrate through the SQLite cutover runbook
 ## Valkey
 
 ```text
-Client: pure-Go Valkey/Redis client (go-redis/v9 or valkey-go)
+Client: github.com/redis/go-redis/v9 (pure Go; v9.22 — v9.23 requires Go 1.26)
 Persistence: none (`--save "" --appendonly no`)
 ```
 

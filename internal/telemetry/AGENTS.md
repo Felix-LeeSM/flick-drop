@@ -48,6 +48,11 @@ on `DefaultRegistry` in `init()`:
   `events.OutboxPublisher.PublishDue` after each batch; the gauge counts rows
   still in state `pending` (`OutboxStore.CountPending`), which is the queue's
   backlog as seen from its producer side.
+- `flick_ratelimit_fallback_total` (counter, label `limiter`, one of the eight
+  limiter names in `internal/httpapi/router.go:NewRouter`) — incremented in
+  `internal/httpapi/ratelimit.go:rateLimiter.allowRequest` whenever a request is
+  judged by the in-process bucket because the shared Valkey bucket failed or is
+  cooling down after a failure.
 - `flick_active_uploads` (gauge) — `Inc` in `CreateLarge`, `Dec` in `Finalize`
   (upload confirmed) and in the reaper (pending_upload orphan reclaimed).
 - `flick_storage_bytes_used` (gauge, label `storage` `s3_object`|`r2_object`) —
@@ -113,7 +118,9 @@ Rules:
 - Logs, metric labels, and span attributes never carry client IP addresses or
   delivery IDs (secret, request, or object-storage key IDs), and no setting
   turns them on. The API rate limiter in `internal/httpapi/ratelimit.go` keeps
-  client networks in memory only. The full log policy, including the nginx
+  raw client networks in process memory only; the Valkey buckets it shares
+  across replicas are keyed by an HMAC-SHA-256 digest under
+  `FLICK_RATELIMIT_KEY_SALT`. The full log policy, including the nginx
   `flick_private` format in `web/nginx.conf` and the Loki masking in
   `deploy/base/monitoring/alloy.yaml`, is the `## Logs` section of
   `docs/architecture/security-model.md`.

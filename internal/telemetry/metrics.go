@@ -33,6 +33,7 @@ const (
 	labelJobKind         = "kind"
 	labelOutcome         = "outcome"
 	labelReason          = "reason"
+	labelLimiter         = "limiter"
 )
 
 var (
@@ -114,6 +115,18 @@ var (
 		[]string{labelOutcome},
 	)
 
+	// RateLimitFallbacks counts requests a rate limiter judged with its
+	// per-process bucket because the shared Valkey bucket failed, by limiter
+	// name (internal/httpapi/ratelimit.go). Non-zero means replicas are each
+	// enforcing their own budget.
+	RateLimitFallbacks = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "flick_ratelimit_fallback_total",
+			Help: "Rate-limit decisions made in process memory because Valkey was unavailable, by limiter.",
+		},
+		[]string{labelLimiter},
+	)
+
 	// OutboxPending gauges outbox rows still waiting to be published (state
 	// 'pending'), set by the publisher after each batch. Rising values mean the
 	// broker is backing up or down.
@@ -159,6 +172,7 @@ func init() {
 		RequestSubmitted,
 		RequestConsumed,
 		OutboxPublished,
+		RateLimitFallbacks,
 		OutboxPending,
 		ActiveUploads,
 		StorageBytesUsed,
