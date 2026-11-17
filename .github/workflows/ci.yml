@@ -24,8 +24,8 @@ jobs:
     timeout-minutes: 30
     # Postgres/Valkey service containers back the Go integration tests
     # (FLICK_TEST_POSTGRES_URL / FLICK_TEST_VALKEY_ADDR). The API and worker
-    # store tests run against Postgres; Valkey stays unused until the rate
-    # limiter and live-transfer state move onto it (M15 PR 4 and PR 5).
+    # store tests run against Postgres; the shared rate-limiter tests
+    # (internal/httpapi/ratelimit_valkey_test.go) run against Valkey.
     services:
       postgres:
         image: postgres:17-alpine

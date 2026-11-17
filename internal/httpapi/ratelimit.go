@@ -52,8 +52,8 @@ const sharedBucketTTL = 2 * time.Minute
 // sharedBucketTimeout bounds one Valkey round trip on the request path. On
 // timeout the request is judged by the in-process bucket instead. An in-cluster
 // round trip takes about a millisecond; the margin absorbs a CPU-starved node
-// without a false fallback, and sharedBucketRetryAfter keeps an outage from
-// paying it more than once per 5 seconds per replica.
+// without a false fallback, and sharedBucketRetryAfter limits an outage to the
+// requests that arrive together once every 5 seconds per replica.
 const sharedBucketTimeout = 250 * time.Millisecond
 
 // tokenBucketScript is the in-process allow() token bucket run atomically in
@@ -96,7 +96,8 @@ type sharedBuckets struct {
 	// degraded is true while Valkey calls fail, so the warning logs once per
 	// outage instead of once per request.
 	degraded atomic.Bool
-	// retryAt (Unix nanoseconds) skips Valkey for sharedBucketRetryAfter after
+	// retryAt (monotonic nanoseconds since sharedBucketsEpoch, so a wall-clock
+	// jump cannot stretch it) skips Valkey for sharedBucketRetryAfter after
 	// a failure, so an unreachable Valkey does not add sharedBucketTimeout to
 	// every request of the outage.
 	retryAt atomic.Int64
@@ -105,6 +106,9 @@ type sharedBuckets struct {
 // sharedBucketRetryAfter is how long the limiters stay on in-process buckets
 // after a Valkey failure before trying Valkey again.
 const sharedBucketRetryAfter = 5 * time.Second
+
+// sharedBucketsEpoch anchors retryAt on the monotonic clock.
+var sharedBucketsEpoch = time.Now()
 
 var errSharedBucketsCoolingDown = errors.New("valkey rate limiter cooling down after a failure")
 
@@ -144,8 +148,8 @@ func (s *sharedBuckets) key(limiter, bucket string) string {
 // sharedBucketRetryAfter ago. The context is detached from the request so a
 // client hang-up is not mistaken for a Valkey outage.
 func (s *sharedBuckets) allow(ctx context.Context, rl *rateLimiter, bucket string) (bool, error) {
-	now := time.Now()
-	if now.UnixNano() < s.retryAt.Load() {
+	now := int64(time.Since(sharedBucketsEpoch))
+	if now < s.retryAt.Load() {
 		return false, errSharedBucketsCoolingDown
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sharedBucketTimeout)
@@ -153,7 +157,7 @@ func (s *sharedBuckets) allow(ctx context.Context, rl *rateLimiter, bucket strin
 	allowed, err := tokenBucketScript.Run(ctx, s.client, []string{s.key(rl.name, bucket)},
 		rl.rate, rl.burst, int(sharedBucketTTL.Seconds())).Int()
 	if err != nil {
-		s.retryAt.Store(now.Add(sharedBucketRetryAfter).UnixNano())
+		s.retryAt.Store(now + int64(sharedBucketRetryAfter))
 		if s.degraded.CompareAndSwap(false, true) {
 			slog.Warn("valkey rate limiter unavailable; falling back to per-process buckets", "error", err)
 		}
