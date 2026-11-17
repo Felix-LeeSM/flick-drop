@@ -135,6 +135,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_WORKER_DATABASE_URL",
 		"FLICK_VALKEY_ADDR",
 		"FLICK_RATELIMIT_KEY_SALT",
+		"FLICK_INTERNAL_HTTP_PORT",
+		"FLICK_POD_IP",
 		"FLICK_NATS_URL",
 		"FLICK_NATS_STREAM",
 		"FLICK_NATS_JOB_SUBJECT",
@@ -339,6 +341,48 @@ func TestLoadPipeRelayConfig(t *testing.T) {
 			t.Fatal("expected error for zero FLICK_PIPE_MAX_CONCURRENT")
 		}
 	})
+
+	// 쿠버네티스 밖(단일 호스트)에서는 스트림 리스너를 127.0.0.1:8081로 광고한다.
+	t.Run("stream listener defaults", func(t *testing.T) {
+		clearFlickEnv(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load(): %v", err)
+		}
+		if cfg.InternalHTTPPort != 8081 || cfg.PodIP.String() != "127.0.0.1" {
+			t.Fatalf("stream listener = %s:%d, want 127.0.0.1:8081", cfg.PodIP, cfg.InternalHTTPPort)
+		}
+	})
+
+	t.Run("pod IP and port overrides", func(t *testing.T) {
+		clearFlickEnv(t)
+		t.Setenv("FLICK_POD_IP", "fd00::12")
+		t.Setenv("FLICK_INTERNAL_HTTP_PORT", "9081")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load(): %v", err)
+		}
+		if cfg.InternalHTTPPort != 9081 || cfg.PodIP.String() != "fd00::12" {
+			t.Fatalf("stream listener = %s:%d", cfg.PodIP, cfg.InternalHTTPPort)
+		}
+	})
+
+	// 피어 레플리카가 이 값을 그대로 다이얼하므로 호스트 이름이나 범위 밖 포트는 기동에서 막는다.
+	for name, env := range map[string][2]string{
+		"pod IP host name": {"FLICK_POD_IP", "api.internal"},
+		"port over 65535":  {"FLICK_INTERNAL_HTTP_PORT", "70000"},
+		"port zero":        {"FLICK_INTERNAL_HTTP_PORT", "0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearFlickEnv(t)
+			t.Setenv(env[0], env[1])
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected error for %s=%s", env[0], env[1])
+			}
+		})
+	}
 }
 
 func TestLoadR2DefaultsOff(t *testing.T) {

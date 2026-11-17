@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +17,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/piperelay"
 )
@@ -51,23 +56,104 @@ type pipeFixture struct {
 	coord  *piperelay.Coordinator
 }
 
-func newPipeFixture(t *testing.T) pipeFixture {
-	t.Helper()
-	return newPipeFixtureWith(t, piperelay.CoordinatorOptions{MaxConcurrent: 10, TTL: 5 * time.Second}, 100)
+// pipeCluster는 같은 Valkey 이름공간을 쓰는 API 레플리카 묶음이다. 레플리카마다
+// 192.0.2.N(문서용 주소)을 광고하고, 스트림 전송은 그 주소:8081을 그 레플리카의
+// 실제 스트림 리스너로 이어 준다.
+type pipeCluster struct {
+	t         *testing.T
+	valkey    *redis.Client
+	namespace string
+	salt      string
+	token     string
+	mu        sync.Mutex
+	routes    map[string]string
 }
 
-func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRatePerMinute int) pipeFixture {
+const pipeTestInternalPort = 8081
+
+func newPipeCluster(t *testing.T) *pipeCluster {
 	t.Helper()
-	coord := piperelay.NewCoordinator(opts)
-	t.Cleanup(func() { _ = coord.Close() })
-	fixture := newTestRouterFixture(t, Options{
-		PipeRelayEnabled:    true,
+	return &pipeCluster{
+		t:         t,
+		valkey:    openTestValkey(t),
+		namespace: "pipetest:" + randomSalt(t)[:16] + ":",
+		salt:      randomSalt(t),
+		token:     "internal-" + randomSalt(t),
+		routes:    map[string]string{},
+	}
+}
+
+func (c *pipeCluster) transport() http.RoundTripper {
+	dialer := &net.Dialer{Timeout: time.Second}
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c.mu.Lock()
+			real, ok := c.routes[addr]
+			c.mu.Unlock()
+			if !ok {
+				return nil, fmt.Errorf("no replica listens on %s", addr)
+			}
+			return dialer.DialContext(ctx, network, real)
+		},
+	}
+}
+
+// replica는 라우터 + 코디네이터 + 스트림 리스너로 된 API 레플리카 하나를 띄운다.
+func (c *pipeCluster) replica(opts piperelay.CoordinatorOptions, openRatePerMinute int) pipeFixture {
+	c.t.Helper()
+	c.mu.Lock()
+	ip := netip.AddrFrom4([4]byte{192, 0, 2, byte(len(c.routes) + 1)})
+	c.mu.Unlock()
+	if opts.TTL == 0 {
+		opts.TTL = 5 * time.Second
+	}
+	opts.Valkey = c.valkey
+	opts.Namespace = c.namespace
+	opts.KeySalt = c.salt
+	opts.InternalToken = c.token
+	opts.AdvertiseIP = ip
+	opts.InternalPort = pipeTestInternalPort
+	opts.StreamTransport = c.transport()
+	coord, err := piperelay.NewCoordinator(opts)
+	if err != nil {
+		c.t.Fatalf("NewCoordinator: %v", err)
+	}
+	listener := httptest.NewServer(coord.InternalHandler())
+	c.mu.Lock()
+	c.routes[netip.AddrPortFrom(ip, pipeTestInternalPort).String()] = listener.Listener.Addr().String()
+	c.mu.Unlock()
+	c.t.Cleanup(func() {
+		listener.Close()
+		_ = coord.Close()
+	})
+	fixture := newTestRouterFixture(c.t, Options{
 		PipeCoordinator:     coord,
 		AllowedOrigin:       "https://flick.example",
 		OpenRatePerMinute:   openRatePerMinute,
 		CreateRatePerMinute: 100,
 	})
-	return pipeFixture{t: t, router: fixture.router, coord: coord}
+	return pipeFixture{t: c.t, router: fixture.router, coord: coord}
+}
+
+func newPipeFixture(t *testing.T) pipeFixture {
+	t.Helper()
+	return newPipeFixtureWith(t, piperelay.CoordinatorOptions{MaxConcurrent: 10}, 100)
+}
+
+func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRatePerMinute int) pipeFixture {
+	t.Helper()
+	return newPipeCluster(t).replica(opts, openRatePerMinute)
+}
+
+// active는 모든 레플리카를 통틀어 살아 있는 세션 수다.
+func (f pipeFixture) active() int {
+	f.t.Helper()
+	n, err := f.coord.ActiveSessions(context.Background())
+	if err != nil {
+		f.t.Fatalf("ActiveSessions: %v", err)
+	}
+	return n
 }
 
 // pipeTestRecipient는 userAgent 기기가 브라우저에서 만든 것으로 치는 진짜 하이브리드 age 수신자다.
@@ -216,9 +302,7 @@ func awaitRecorder(t *testing.T, ch <-chan *httptest.ResponseRecorder) *httptest
 }
 
 func TestPipeRelay_Disabled(t *testing.T) {
-	fixture := newTestRouterFixture(t, Options{
-		PipeRelayEnabled: false,
-	})
+	fixture := newTestRouterFixture(t, Options{})
 
 	// 1. /api/config reports false
 	resp := performJSON(t, fixture.router, http.MethodGet, "/api/config", nil)
@@ -432,7 +516,7 @@ func TestPipeRelay_SelectOfAConnectionThatLeftIs409NotPending(t *testing.T) {
 			}
 		}
 	}
-	if f.coord.ActiveSessions() != 1 {
+	if f.active() != 1 {
 		t.Fatal("a dropped connection burned the session")
 	}
 }
@@ -569,7 +653,7 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	if other.Device != "Safari on iPhone" {
 		t.Fatalf("other join = %+v", other)
 	}
-	if f.coord.ActiveSessions() != 1 {
+	if f.active() != 1 {
 		t.Fatal("decline or blocked rejoin burned the session")
 	}
 }
@@ -588,7 +672,7 @@ func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 		t.Fatalf("11th join: %d %s", rec.Code, rec.Body.String())
 	}
 	wait := f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == piperelay.MaxPendingConnections })
-	if wait.Status != "waiting" || f.coord.ActiveSessions() != 1 {
+	if wait.Status != "waiting" || f.active() != 1 {
 		t.Fatalf("session after room_full: %+v", wait)
 	}
 }
@@ -610,14 +694,14 @@ func TestPipeRelay_SenderCallsNeedTheSenderToken(t *testing.T) {
 	if rec := pipeDo(f.router, http.MethodGet, "/api/pipe/wait", map[string]string{pipeCodeHeader: init.Code}, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("wait without sender token: %d", rec.Code)
 	}
-	if f.coord.ActiveSessions() != 1 {
+	if f.active() != 1 {
 		t.Fatal("forged sender calls ended the session")
 	}
 
 	if rec := f.senderCall("/api/pipe/cancel", init, ""); rec.Code != http.StatusOK {
 		t.Fatalf("cancel with the real token: %d %s", rec.Code, rec.Body.String())
 	}
-	if f.coord.ActiveSessions() != 0 {
+	if f.active() != 0 {
 		t.Fatal("cancel did not remove the session")
 	}
 }
@@ -717,8 +801,7 @@ func flipBech32(c string) string {
 
 func TestPipeRelay_CORS(t *testing.T) {
 	fixture := newTestRouterFixture(t, Options{
-		PipeRelayEnabled: true,
-		AllowedOrigin:    "https://flick.example",
+		AllowedOrigin: "https://flick.example",
 	})
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/pipe/init", nil)
@@ -759,5 +842,82 @@ func TestPipeDeviceLabel(t *testing.T) {
 		if got := pipeDeviceLabel(ua); got != want {
 			t.Errorf("pipeDeviceLabel(%q) = %q, want %q", ua, got, want)
 		}
+	}
+}
+
+// 송신 브라우저와 수신 브라우저가 서로 다른 API 레플리카에 붙어도(로드밸런서가
+// 요청마다 아무 레플리카로 보낸다) 대기방·선택·전송이 끝까지 이어진다.
+func TestPipeRelay_SenderAndReceiverOnDifferentReplicas(t *testing.T) {
+	cluster := newPipeCluster(t)
+	senderSide := cluster.replica(piperelay.CoordinatorOptions{}, 100)
+	receiverSide := cluster.replica(piperelay.CoordinatorOptions{}, 100)
+
+	init := senderSide.init()
+	join := receiverSide.mustJoin(init.Code, uaSafariIPhone)
+	status := receiverSide.status(init.Code, join.ConnectionID)
+	senderSide.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
+	if rec := senderSide.senderCall("/api/pipe/select", init, join.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("select on the sender's replica: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := awaitRecorder(t, status); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "selected") {
+		t.Fatalf("status on the receiver's replica: %d %s", rec.Code, rec.Body.String())
+	}
+
+	received := receiverSide.receive(init.Code, join.ConnectionID)
+	senderSide.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
+	payload := bytes.Repeat([]byte("ciphertext across replicas 0123456789\n"), 8*1024) // ~300 KiB
+	req := httptest.NewRequest(http.MethodPost, "/api/pipe/send", bytes.NewReader(payload))
+	req.Header.Set(pipeCodeHeader, init.Code)
+	req.Header.Set(pipeSenderHeader, init.SenderToken)
+	req.Header.Set("Flick-Kind", "file")
+	req.Header.Set("Flick-Encrypted-Filename", "ZW5jcnlwdGVkLW5hbWU=")
+	sent := httptest.NewRecorder()
+	senderSide.router.ServeHTTP(sent, req)
+	if sent.Code != http.StatusOK || !strings.Contains(sent.Body.String(), `"bytes_transferred":`+strconv.Itoa(len(payload))) {
+		t.Fatalf("send: %d %s", sent.Code, sent.Body.String())
+	}
+	rec := awaitRecorder(t, received)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), payload) {
+		t.Fatalf("receive: %d, %d of %d bytes", rec.Code, rec.Body.Len(), len(payload))
+	}
+	if rec.Header().Get("Flick-Kind") != "file" || rec.Header().Get("Flick-Encrypted-Filename") != "ZW5jcnlwdGVkLW5hbWU=" {
+		t.Fatalf("receive headers = %v", rec.Header())
+	}
+	if receiverSide.active() != 0 {
+		t.Fatal("the finished transfer left its session alive")
+	}
+}
+
+// Valkey가 죽으면 /api/pipe/*만 503이고, 설정·준비 상태는 그대로다.
+func TestPipeRelay_ValkeyDownAnswers503(t *testing.T) {
+	down := NewValkeyClient("127.0.0.1:1") // 아무도 듣지 않는 포트
+	t.Cleanup(func() { _ = down.Close() })
+	coord, err := piperelay.NewCoordinator(piperelay.CoordinatorOptions{
+		Valkey:        down,
+		KeySalt:       randomSalt(t),
+		InternalToken: "internal-test",
+		AdvertiseIP:   netip.MustParseAddr("127.0.0.1"),
+		InternalPort:  pipeTestInternalPort,
+	})
+	if err != nil {
+		t.Fatalf("NewCoordinator: %v", err)
+	}
+	t.Cleanup(func() { _ = coord.Close() })
+	fixture := newTestRouterFixture(t, Options{
+		PipeCoordinator: coord,
+		NATSConnected:   func() bool { return true },
+	})
+
+	for _, rec := range []*httptest.ResponseRecorder{
+		pipeDo(fixture.router, http.MethodPost, "/api/pipe/init", nil, nil),
+		pipeDo(fixture.router, http.MethodPost, "/api/pipe/join", map[string]string{pipeCodeHeader: "123456"}, pipeJoinBody(uaChromeWindows)),
+		pipeDo(fixture.router, http.MethodGet, "/api/pipe/status", map[string]string{pipeCodeHeader: "123456", pipeConnectionHeader: "c"}, nil),
+	} {
+		if rec.Code != http.StatusServiceUnavailable || pipeErrorCode(t, rec) != "service_unavailable" {
+			t.Fatalf("pipe call with valkey down: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if rec := performJSON(t, fixture.router, http.MethodGet, "/readyz", nil); rec.Code != http.StatusOK {
+		t.Fatalf("readyz with valkey down = %d", rec.Code)
 	}
 }

@@ -14,6 +14,7 @@ const (
 	defaultReaperBatchSize       int   = 50
 	defaultPipeRelayEnabled      bool  = true
 	defaultPipeMaxConcurrent     int   = 100
+	defaultInternalHTTPPort      int   = 8081
 	// Free-tier byte totals per object backend, in decimal GB (10^9 bytes) —
 	// the same unit the providers bill in. Ceilings derive from these so the
 	// margin reads as a fraction, not a magic number.
