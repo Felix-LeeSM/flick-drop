@@ -88,14 +88,20 @@ not refused. Without these settings Traefik kept sending every other request
 there, and each one hung on a reused keep-alive connection until the client
 gave up. Traefik now opens a fresh connection per request to the
 `flick-api` and `flick-web` pods (an in-cluster connect takes about 1 ms),
-stops dialing after 2 s, and retries the request on the other replica.
-Traefik retries only a request whose headers never reached a pod, so a POST,
-an open-once request, or a streaming live-transfer body is never sent twice;
-the retry middleware sets no `status`, so Traefik does not buffer request
-bodies either. In the 2026-11-18 failure drill (`k3s-killall.sh` on the node
-holding one replica of each), every API request during the outage succeeded,
-and those that first picked the dead pod took about 2.3 s instead of failing.
-Requests already in flight on the dead node when it fails still fail.
+stops dialing after 2 s, and retries the request (up to three attempts, since
+under concurrent traffic the round-robin can hand a retry to the dead pod
+again). Traefik retries only a request whose headers never reached a pod, so a
+POST, an open-once request, or a streaming live-transfer body is never sent
+twice; the retry middleware sets no `status`, so Traefik does not buffer
+request bodies either. In the 2026-11-18 failure drill (`k3s-killall.sh` on
+the node holding one replica of each, a sequential 0.5 s probe on
+`GET /api/config`), every probe during the outage returned 200, and those that
+first picked the dead pod took about 2.3 s instead of failing. Requests
+already in flight on the dead node when it fails still fail.
+
+`scripts/ci/k3d-smoke.sh` waits for the Traefik CRDs before applying
+`deploy/k3d`, because k3s installs them in a job that finishes after
+`k3d cluster create --wait` returns.
 
 Opt-in monitoring lives in `deploy/base/monitoring/` and is applied separately
 with `kubectl apply -k deploy/base/monitoring`; `deploy/base/kustomization.yaml`

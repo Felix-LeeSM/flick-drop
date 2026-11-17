@@ -13,6 +13,8 @@
 # - Middleware/flick-retry then sends the request to the other replica. Traefik
 #   retries only when no request header reached the backend, so a POST, an
 #   open-once request, or a streaming live-transfer body is never replayed.
+#   Three attempts, because under concurrent traffic the round-robin can hand
+#   the second attempt to the dead pod again.
 #
 # Ingress and Service annotations reference these as
 # "flick-<name>@kubernetescrd" (namespace "flick" from
@@ -32,4 +34,4 @@ metadata:
   name: flick-retry
 spec:
   retry:
-    attempts: 2
+    attempts: 3
