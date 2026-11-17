@@ -3,7 +3,7 @@
 Flick is a self-hosted, open-source service for sharing short-lived secrets
 and files through one-time links.
 
-**Live demo:** https://flick.dev-felix.work/
+**Live demo:** https://flick.makana.cc/
 
 It is designed for people who want a small deployable alternative to sending
 passwords, API keys, private notes, or temporary files through chat, email, or
@@ -176,7 +176,7 @@ one by name; pin it to the release commit instead, which each release names.
 ```bash
 # Point the client at a deployment (or pass -url per command). The public
 # instance below is the demo; a self-hosted deployment names its own origin.
-export FLICK_URL=https://flick.dev-felix.work
+export FLICK_URL=https://flick.makana.cc
 
 # The key travels in the link fragment; anyone holding the link can open it once.
 flick send "sk-live-example"
@@ -192,8 +192,8 @@ flick send
 
 # Opening consumes the secret. Text goes to stdout, files are saved by their
 # decrypted name; a passphrase is prompted for only when the secret needs one.
-flick open 'https://flick.dev-felix.work/s/abc123#key=...'
-flick open https://flick.dev-felix.work/s/abc123 > recovered.txt
+flick open 'https://flick.makana.cc/s/abc123#key=...'
+flick open https://flick.makana.cc/s/abc123 > recovered.txt
 ```
 
 Flags may be written before or after the text or the link, in any order:
