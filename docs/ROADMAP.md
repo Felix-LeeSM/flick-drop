@@ -116,9 +116,11 @@ Out of scope:
 ## Product Milestones
 
 The historical implementation slices above are not GitHub milestone numbers.
-The following sections match GitHub milestones. Status as of 2026-11-12: M8, M9,
-and M14 are closed; M10 through M13 are still open on GitHub but have no open
-issues. Check current state with
+The following sections match GitHub milestones. Status as of 2026-11-17: M8
+through M11, M13, M14, and M15 are closed; M12 stays open because visual fixes
+still land under it (latest on 2026-11-16), and M5 (Tech Debt & Hygiene) and
+M6 (Operational Hardening) stay open as standing milestones for cross-cutting
+work. Check current state with
 `gh api 'repos/Felix-LeeSM/flick-drop/milestones?state=all'`.
 
 ### M8: Sharing UX and Anonymous Link Management
@@ -285,7 +287,7 @@ shared ephemeral state.
   maintenance), and a multi-replica k3d smoke. The
   demo instance's 3A Osaka placement (`loki` to the larger node, Korea nodes
   excluded) lives in its private deploy overlay, not in `deploy/base`.
-- Spec: `docs/work/active/2026-11-16-multi-replica-postgres-valkey.md`.
+- Spec (completed): `docs/work/done/2026-11-16-multi-replica-postgres-valkey.md`.
 - Exclude multi-node HA (Patroni, Valkey Sentinel/Cluster, NATS clustering),
   WebRTC peer-to-peer transfer, breaking the `age` format or public HTTP
   contracts, and any Korea-region workload placement.

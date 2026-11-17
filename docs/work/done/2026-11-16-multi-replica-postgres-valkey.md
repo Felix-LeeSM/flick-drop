@@ -17,7 +17,7 @@
 
 - 멀티 노드 HA PostgreSQL(Patroni/Citus), 멀티 노드 Valkey Sentinel/Cluster, NATS 멀티 레플리카 클러스터 구성 (OCI Always Free 메모리 예산 상 데이터 계층은 `flick-core` 단일 인스턴스로 유지한다).
 - WebRTC P2P 전송 도입.
-- 클라이언트 `age` 암호화 포맷([contracts/age-format-v1.md](../../contracts/age-format-v1.md)) 및 공개 HTTP 응답 계약([contracts/openapi.yaml](../../contracts/openapi.yaml))의 하위 호환 파괴.
+- 클라이언트 `age` 암호화 포맷([contracts/age-format-v1.md](../../../contracts/age-format-v1.md)) 및 공개 HTTP 응답 계약([contracts/openapi.yaml](../../../contracts/openapi.yaml))의 하위 호환 파괴.
 - 한국 리전 노드(`kr-micro-1`, `kr-micro-2`)로의 Flick API/Worker 워크로드 배치 (오사카 DB/NATS/S3 간 크로스리전 RTT·이그레스 방지).
 
 ---
