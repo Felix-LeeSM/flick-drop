@@ -148,17 +148,18 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if !status.CanCancel {
 		return status, ErrNotCancellable
 	}
-	result, err := tx.ExecContext(ctx, `delete from secrets where id = $1 and consumed_at is null
-		and reclaim_enqueued_at is null and state in ('active', 'pending_upload')`, id)
+	// RETURNING the deleted row's state, not the earlier read: a concurrent
+	// Finalize may flip pending_upload→active (and drop the in-flight gauge)
+	// after that read, and the gauge must drop only once.
+	var deletedState string
+	err = tx.QueryRowContext(ctx, `delete from secrets where id = $1 and consumed_at is null
+		and reclaim_enqueued_at is null and state in ('active', 'pending_upload')
+		returning state`, id).Scan(&deletedState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return lostRace()
+	}
 	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("cancel delivery: %w", err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return ManagementStatus{}, fmt.Errorf("read cancellation row count: %w", err)
-	}
-	if n != 1 {
-		return lostRace()
 	}
 	if err := recordManagementOutcomeTx(ctx, tx, id, "cancelled"); err != nil {
 		return ManagementStatus{}, err
@@ -179,7 +180,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if err := tx.Commit(); err != nil {
 		return ManagementStatus{}, fmt.Errorf("commit cancellation: %w", err)
 	}
-	if status.Status == "pending_upload" {
+	if deletedState == "pending_upload" {
 		telemetry.ActiveUploads.Dec()
 	}
 	status.Status, status.CanCancel = "cancelled", false

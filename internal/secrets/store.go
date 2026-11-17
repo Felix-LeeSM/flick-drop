@@ -511,8 +511,9 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 // removes pending_upload orphans older than PendingTTL, and any concurrent
 // Revoke has the same effect — the client must learn the upload was reaped or
 // cancelled, not believe it finalized), the reaper already claimed it for
-// reclamation, or another replica already activated the row. The re-read distinguishes the two: already-active is idempotent
-// success (activated=false), anything else is ErrNotFound. Extracted from
+// reclamation, or another replica already activated the row. The re-read
+// tells them apart: already-active is idempotent success (activated=false),
+// anything else is ErrNotFound. Extracted from
 // Finalize so the race guard is unit-testable in isolation.
 func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (bool, error) {
 	// reclaim_enqueued_at is null: once another replica's reaper claimed the
