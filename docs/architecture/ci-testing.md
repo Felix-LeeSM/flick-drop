@@ -393,18 +393,29 @@ failed run shows which path broke:
   (about 1.06 MiB at the default limits), open it, and compare sha256. A file
   above the inline threshold goes through the presigned object-storage upload
   (`internal/flickcli/send.go`), so this covers the object-storage upload and
-  download path.
+  API-proxied download.
+
+The Web health step runs before Go setup and the build, so a failed build
+still reports whether the web origin is up.
 
 Opening consumes each one-time secret, so a passing run leaves nothing behind;
 a failed attempt leaves at most a secret that expires in 5 minutes. The share
 link carries the decryption key in its URL fragment, so the script keeps it in
 a mode-600 temp file, registers it with `::add-mask::`, and never prints it.
+CLI error output passes through a URL redaction before it is logged, because a
+failed presigned PUT names the signed object-storage URL in its error.
+
+The CLI's own HTTP timeout is 30 minutes (`internal/flickcli/client.go`
+`NewClient`), so the script caps every CLI call at 90 seconds with coreutils
+`timeout` (`CANARY_CLI_TIMEOUT_SECONDS`). Each round-trip step has an 8-minute
+timeout, enough for two capped attempts plus the retry delay, and the job has
+20 minutes.
 
 Each run creates exactly two secrets. The API limits creates to 5 per minute
 per client network (`internal/config/defaults.go:defaultCreateRatePerMinute`),
 and GitHub-hosted runners can share egress addresses, so the canary stays well
 under that limit. A failed `text` or `file` check retries once after 65
-seconds, past the one-minute rate window, to absorb runner network flakes; a
+seconds, after the 5-per-minute bucket refills, to absorb runner network flakes; a
 run therefore creates at most four secrets and never retries in a tight loop.
 `CANARY_RETRY_DELAY_SECONDS` overrides the delay for local runs.
 

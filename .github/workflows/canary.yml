@@ -23,34 +23,42 @@ jobs:
     name: Canary
     runs-on: ubuntu-latest
     if: vars.FLICK_CANARY_URL != ''
-    timeout-minutes: 10
+    # Step timeouts 1 + 8 + 8 minutes plus checkout, Go setup, and build.
+    # Each round-trip step needs up to ~7 minutes in the worst case: two
+    # attempts of send + open capped at 90 s each, plus the 65 s retry delay
+    # (scripts/smoke/canary.sh).
+    timeout-minutes: 20
     env:
       FLICK_CANARY_URL: ${{ vars.FLICK_CANARY_URL }}
     steps:
       - uses: actions/checkout@v4
 
+      # Before Go setup and the build, so the web origin is still checked when
+      # either of them fails.
+      - name: Web health
+        timeout-minutes: 1
+        run: scripts/smoke/canary.sh health
+
       - uses: actions/setup-go@v5
+        if: ${{ !cancelled() }}
         with:
           go-version: "1.25.11"
 
       - name: Build flick CLI
         id: build
+        if: ${{ !cancelled() }}
         run: |
           go build -o "$RUNNER_TEMP/flick" ./cmd/flick
           echo "FLICK_BIN=$RUNNER_TEMP/flick" >> "$GITHUB_ENV"
-
-      - name: Web health
-        timeout-minutes: 1
-        run: scripts/smoke/canary.sh health
 
       # Each check reports on its own even when an earlier one failed, so the
       # run shows which path broke; none runs without a built CLI.
       - name: Text secret round trip (inline)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        timeout-minutes: 4
+        timeout-minutes: 8
         run: scripts/smoke/canary.sh text
 
       - name: File secret round trip (object storage)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        timeout-minutes: 4
+        timeout-minutes: 8
         run: scripts/smoke/canary.sh file
