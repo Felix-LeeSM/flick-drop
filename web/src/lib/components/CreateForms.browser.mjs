@@ -5,7 +5,8 @@
 // Every API call is intercepted; no deliveries are stored. Optional blank-form
 // screenshots: FLICK_BROWSER_SCREENSHOT_DIR=/tmp/flick-create-forms.
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
@@ -501,6 +502,76 @@ for (const width of [320, 360]) {
 		}
 	});
 }
+
+// 폴더 하나를 임시 디렉터리에 만든다: 최상위 파일 하나와 하위 폴더 안의 파일 하나.
+async function tempFolder(name) {
+	const root = await mkdtemp(join(tmpdir(), 'flick-folder-'));
+	const folder = join(root, name);
+	await mkdir(join(folder, 'nested'), { recursive: true });
+	await writeFile(join(folder, 'a.txt'), 'alpha');
+	await writeFile(join(folder, 'nested', 'b.txt'), 'beta');
+	return { root, folder };
+}
+
+test('a picked folder lists as one row and zips under its own name', async () => {
+	const page = await browser.newPage();
+	const { root, folder } = await tempFolder('photos');
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		await typeTab(page, 'File').click();
+		await editorVisible(page, 'File');
+		const choose = page.getByRole('button', { name: 'Choose a folder', exact: true });
+		assert.ok((await choose.boundingBox()).height >= 44, '44px touch target');
+		await page.locator('#secret-folder').setInputFiles(folder);
+		const row = page.getByRole('listitem').filter({ hasText: 'photos/' });
+		await row.waitFor();
+		assert.match(await row.innerText(), /photos\/[\s\S]*2 files · 9 B/);
+		assert.equal(await page.getByRole('listitem').count(), 1);
+		await page.getByText(/^2 files → photos\.zip · /).waitFor();
+		await page.getByRole('button', { name: 'Remove folder photos', exact: true }).click();
+		assert.equal(await page.getByRole('listitem').count(), 0);
+	} finally {
+		await page.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('360px long unbroken folder name truncates inside the page at 100% and 150% text', async () => {
+	const width = 360;
+	const page = await browser.newPage({ viewport: { width, height: 740 } });
+	const name = 'F'.repeat(200);
+	const { root, folder } = await tempFolder(name);
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		await typeTab(page, 'File').click();
+		await editorVisible(page, 'File');
+		await page.locator('#secret-folder').setInputFiles(folder);
+		await page.getByText(`${name}/`, { exact: true }).waitFor();
+		for (const scale of ['100%', '150%']) {
+			await page.evaluate((size) => {
+				document.documentElement.style.fontSize = size;
+			}, scale);
+			const remove = await page
+				.getByRole('button', { name: `Remove folder ${name}`, exact: true })
+				.boundingBox();
+			assert.ok(remove.x + remove.width <= width, scale);
+			assert.equal(
+				await page.getByText(`${name}/`, { exact: true }).getAttribute('title'),
+				`${name}/`
+			);
+			assert.equal(
+				await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+				true,
+				scale
+			);
+		}
+	} finally {
+		await page.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test('320px request button wraps its longest label inside itself at 150% text', async () => {
 	const page = await browser.newPage({ viewport: { width: 320, height: 740 } });
