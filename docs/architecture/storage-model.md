@@ -28,8 +28,8 @@ Postgres with its own least-privilege role against its own logical database
 database in PR 2 (issue #421), the API database and the `modernc.org/sqlite`
 removal in PR 3 (issue #422). An existing self-hosted deployment reaches this
 state through the SQLite cutover runbook
-(`docs/runbook/postgres-cutover.md`, PR 6 / issue #425), which carries the
-one-time migration.
+(`docs/runbook/postgres-cutover.md`, issue #425), which loads the old
+`api.db` and `worker.db` once with `scripts/ops/migrate-sqlite-to-postgres.sh`.
 
 ## Payload Storage
 

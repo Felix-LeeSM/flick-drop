@@ -70,8 +70,10 @@ Rationale (decided 2026-11-16, milestone M15):
 M15 shipped the move in order: `cmd/flick-worker` and its store moved to
 Postgres first (issue #421), then the API-owned database and the
 `modernc.org/sqlite` removal (issue #422). Existing self-hosted deployments
-will migrate through the SQLite cutover runbook
-(`docs/runbook/postgres-cutover.md`, landing in PR 6 / issue #425).
+migrate once through the SQLite cutover runbook
+(`docs/runbook/postgres-cutover.md`, issue #425), which reads the old files
+with the `sqlite3` CLI (`scripts/ops/migrate-sqlite-to-postgres.sh`) rather
+than a Go SQLite driver.
 
 ## Valkey
 

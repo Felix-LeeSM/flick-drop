@@ -90,7 +90,14 @@ Merge strategy:
 check and requires Docker plus k3d on the runner; `.github/workflows/ci.yml`
 runs it on the weekly schedule or on a manual dispatch with `run_k3d=true`. The k3d
 smoke entrypoint uses the dedicated `deploy/k3d/` overlay so the generic public
-base does not try to pull placeholder images.
+base does not try to pull placeholder images. It runs a two-node cluster with
+two API and two web replicas and checks what one replica cannot show: a secret
+and a request link written on one API pod and read on the other, a live
+transfer whose sender and receiver sit on different API pods, the
+NetworkPolicies, and zero failed requests through the ingress during a rolling
+restart (`docs/runbook/k3d-smoke.md`). The `scripts/ops/` cutover tool is not a
+CI check: `scripts/ops/test-migrate-sqlite-to-postgres.sh` is its local
+regression run.
 
 `Review gate` is a metadata-only workflow. It triggers on `pull_request`
 events (2026-11-16: switched from `pull_request_target` after that pipeline
