@@ -118,8 +118,9 @@ Out of scope:
 The historical implementation slices above are not GitHub milestone numbers.
 The following sections match GitHub milestones. Status as of 2026-11-17: M8
 through M11, M13, M14, and M15 are closed; M12 stays open because visual fixes
-still land under it (latest on 2026-11-16), and M5 (Tech Debt & Hygiene) and M6 (Operational Hardening) stay open as
-standing milestones for cross-cutting work. Check current state with
+still land under it (latest on 2026-11-16), and M5 (Tech Debt & Hygiene) and
+M6 (Operational Hardening) stay open as standing milestones for cross-cutting
+work. Check current state with
 `gh api 'repos/Felix-LeeSM/flick-drop/milestones?state=all'`.
 
 ### M8: Sharing UX and Anonymous Link Management
