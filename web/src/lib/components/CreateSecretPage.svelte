@@ -165,6 +165,8 @@ const selectedFileTooLarge = $derived(
 	pickedFiles.reduce((total, { file }) => total + file.size, 0) > limits.maxFileBytes
 );
 // One list row per loose file and one per top-level folder, in pick order.
+// Rows group by folder name, so two different folders that share a name (picked
+// from different places) show as one row, and its remove button removes both.
 type PickedRow =
 	| { kind: 'file'; key: string; picked: PickedFile }
 	| { kind: 'folder'; key: string; name: string; count: number; size: number };
@@ -545,12 +547,28 @@ function onFolderInputChange(event: Event): void {
 // Shared by the zone and window drops: walks dropped folders, then adds every
 // file found. readDrop captures the items synchronously, before the event ends.
 async function addDrop(items: DataTransferItemList): Promise<void> {
-	const { files, emptyFolders } = await readDrop(items);
+	let batch: Awaited<ReturnType<typeof readDrop>>;
+	try {
+		batch = await readDrop(items);
+	} catch {
+		status = 'Could not read that folder.';
+		statusKind = 'error';
+		return;
+	}
+	// A large folder walk can finish after the user pressed Create or left the
+	// File tab; its files must not land in a form that moved on.
+	if (isCreating || mode !== 'file') {
+		return;
+	}
+	const { files, emptyFolders, skipped } = batch;
 	if (files.length > 0) {
 		addFiles(files);
 	}
 	// After addFiles, whose applyFiles run resets the status.
-	if (emptyFolders.length > 0) {
+	if (skipped > 0) {
+		status = `Skipped ${skipped === 1 ? '1 item' : `${skipped} items`} that could not be read.`;
+		statusKind = 'error';
+	} else if (emptyFolders.length > 0) {
 		showEmptyFolder();
 	}
 }
