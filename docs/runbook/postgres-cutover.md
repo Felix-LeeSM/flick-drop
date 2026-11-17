@@ -76,6 +76,13 @@ binaries support the migrate-only mode (`flick-api migrate`,
 `Secret/flick-db-admin`, `Secret/flick-db-api`, and `Secret/flick-db-worker`,
 not `replace-me-before-use`.
 
+**Automated deploys paused.** Nothing may re-apply your overlay while this
+runbook runs: pause every deploy workflow, GitOps sync, or self-heal that
+targets the `flick` namespace. Your overlay sets flick-api to two replicas, so
+an automated apply between steps 4 and 9 starts flick-api against an empty or
+partially loaded `flick_api` database, the exact situation the rule above
+forbids. Turn them back on at the end of step 9.
+
 **Operator machine.** `kubectl` with access to the `flick` namespace,
 `sqlite3` 3.31 or newer, `bash`, `sha256sum` or `shasum`, and a checkout of the
 new release (for the script and for the kustomization in step 4).
@@ -446,19 +453,55 @@ kubectl -n flick exec deploy/postgres -- psql -U postgres -d flick_api -Atc \
         + (SELECT count(*) FROM requests WHERE upload_key IS NOT NULL OR final_key IS NOT NULL);"
 ```
 
-Start the worker first, then the API, then the web front end:
+Start flick-api alone and keep flick-worker at zero:
+
+```sh
+kubectl -n flick scale deploy/flick-api --replicas=2
+kubectl -n flick rollout status deploy/flick-api --timeout=300s
+```
+
+flick-api only queues object deletes; flick-worker carries them out. With the
+worker stopped, every delete that reconciliation queues waits in the
+`FLICK_JOBS` stream, so the tripwire below can still stop it. Each flick-api
+replica reconciles once as soon as it starts and again every
+`FLICK_REAPER_INTERVAL_SECONDS` (60 by default,
+`internal/secrets/reaper.go:DefaultReaperInterval`).
+
+**Reconciliation tripwire.** Wait one reaper interval after both replicas are
+`Ready`, then count the orphan deletes queued since `START`:
+
+```sh
+kubectl -n flick exec deploy/postgres -- psql -U postgres -d flick_api -Atc \
+  "SELECT count(*) FROM outbox_events WHERE created_at >= '$START' AND payload_json::jsonb->>'reason' = 'orphan';"
+```
+
+A handful is normal: objects left behind by earlier failures. A number close
+to the object count noted above, or to the size of one bucket listing page
+(`FLICK_REAPER_BATCH_SIZE` keys per backend, at most 1,000), means the database does not match the bucket. In that case stop flick-api,
+drop the queued deletes before any worker runs, and go back to step 7:
+
+```sh
+kubectl -n flick scale deploy/flick-api --replicas=0
+kubectl -n flick run nats-purge --rm -i --restart=Never --image=natsio/nats-box:0.18.1 -- \
+  nats -s nats://nats:4222 stream purge FLICK_JOBS -f
+```
+
+The purge also drops every other job waiting in the stream. Nothing is lost
+for good: object reconciliation queues a delete again for each object that no
+row protects once the database is correct.
+
+When the count is normal, start the worker and the web front end:
 
 ```sh
 kubectl -n flick scale deploy/flick-worker --replicas=1
 kubectl -n flick rollout status deploy/flick-worker --timeout=180s
-kubectl -n flick scale deploy/flick-api --replicas=2
-kubectl -n flick rollout status deploy/flick-api --timeout=300s
 kubectl -n flick scale deploy/flick-web --replicas=2
 kubectl -n flick rollout status deploy/flick-web --timeout=180s
 ```
 
 Then apply the real overlay, so the live objects match it again and no longer
-carry the zero-replica pin, and remove the wrapper:
+carry the zero-replica pin, remove the wrapper, and turn automated deploys back
+on:
 
 ```sh
 kubectl apply -k <overlay-parent>/<overlay-name>
@@ -477,18 +520,10 @@ rm -r <overlay-parent>/cutover-hold
   curl -fsS http://127.0.0.1:18080/readyz; kill %1
   ```
 
-- **Reconciliation tripwire.** After a few minutes, count the orphan deletes
-  queued since `START`:
-
-  ```sh
-  kubectl -n flick exec deploy/postgres -- psql -U postgres -d flick_api -Atc \
-    "SELECT count(*) FROM outbox_events WHERE created_at >= '$START' AND payload_json::jsonb->>'reason' = 'orphan';"
-  ```
-
-  A handful is normal: objects left behind by earlier failures. A number close
-  to the object count noted in step 9 means the database does not match the
-  bucket. Scale flick-api and flick-worker to 0 immediately and investigate
-  before anything else.
+- **Reconciliation, later sweeps.** Each sweep reads one more page of the
+  bucket listing. Run the step 9 tripwire query again after a few minutes. If
+  the count jumps toward the object count, scale flick-api and flick-worker to
+  0 immediately and investigate before anything else.
 
 - **Smoke test.** Create a text secret and open it once; a second open must be
   blocked. Open one secret that existed before the cutover. Run a Live

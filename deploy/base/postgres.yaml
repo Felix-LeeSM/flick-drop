@@ -118,14 +118,15 @@ metadata:
   name: postgres-init
 data:
   # Runs once, on the first start of an empty data volume. The passwords come
-  # from Secret/flick-db-api and Secret/flick-db-worker through psql variables,
-  # so they never appear in this ConfigMap.
+  # from Secret/flick-db-api and Secret/flick-db-worker; psql reads them from
+  # the environment with \getenv, so they never appear in this ConfigMap or in
+  # a process argument list.
   10-flick-init.sh: |
     #!/bin/sh
     set -eu
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
-      -v api_password="$FLICK_API_DB_PASSWORD" \
-      -v worker_password="$FLICK_WORKER_DB_PASSWORD" <<'SQL'
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
+    \getenv api_password FLICK_API_DB_PASSWORD
+    \getenv worker_password FLICK_WORKER_DB_PASSWORD
     create role flick_api login password :'api_password';
     create role flick_worker login password :'worker_password';
     create database flick_api owner flick_api;

@@ -6,8 +6,9 @@ spec:
   # Two replicas share every piece of state through Postgres, NATS, and Valkey
   # (docs/architecture/deployment-target.md, "Scaling Boundaries").
   replicas: 2
-  # maxSurge 0: a rollout stops one old pod before it starts a new one, so a
-  # small node never holds two API pods at once.
+  # maxSurge 0: a rollout stops one old pod before it starts a new one, so the
+  # namespace never runs more than two API pods. Which node a pod lands on is
+  # up to the soft spread below and the deployment's own node pinning.
   strategy:
     type: RollingUpdate
     rollingUpdate:

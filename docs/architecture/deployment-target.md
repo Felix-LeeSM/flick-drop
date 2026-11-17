@@ -122,8 +122,8 @@ with `kubectl top`, pod restarts, and real upload/download smoke tests.
 
 Rollout and spread (`deploy/base/api.yaml`, `deploy/base/web.yaml`):
 `flick-api` and `flick-web` use `RollingUpdate` with `maxSurge: 0,
-maxUnavailable: 1`, so a small node never runs two API replicas at once, plus
-a 5-second `preStop` sleep. `flick-api` also sets
+maxUnavailable: 1`, so a rollout never runs more pods than the replica count
+(no surge pod needs spare memory), plus a 5-second `preStop` sleep. `flick-api` also sets
 `terminationGracePeriodSeconds: 60` for live-transfer draining
 (`cmd/flick-api/main.go` `shutdownTimeout`, 50 seconds). Both carry a soft
 `topologySpreadConstraints` on `kubernetes.io/hostname` that prefers one
