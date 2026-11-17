@@ -22,7 +22,8 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 			ctx := context.Background()
 			conn := openTestDB(t, ctx)
 			store := newTestStore(t, conn)
-			now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
+			// timestamptz는 마이크로초 정밀도라 마감 경계 확인도 마이크로초 단위다.
+			now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 			store.SetNowForTest(func() time.Time { return now })
 			input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600,
 				AccessProofHash: "proof", AccessKDF: testAccessKDF, WrappedIdentity: testWrappedIdentity}
@@ -35,7 +36,7 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 				t.Fatal("invalid issued capability")
 			}
 			var stored []byte
-			if err := conn.QueryRow(`select token_hash from secret_management where secret_id = ?`, created.ID).Scan(&stored); err != nil {
+			if err := conn.QueryRow(`select token_hash from secret_management where secret_id = $1`, created.ID).Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
 			expected := sha256.Sum256(raw)
@@ -69,7 +70,7 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 				t.Fatalf("terminal cancellation: %v %v", status, err)
 			}
 			// Capability reads remain valid until the exact original deadline.
-			now = created.ExpiresAt.Add(-time.Nanosecond)
+			now = created.ExpiresAt.Add(-time.Microsecond)
 			if _, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +126,14 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	if _, err := store.Management(ctx, "missing", first.ManagementToken); !errors.Is(err, ErrManagementUnavailable) {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`create trigger reject_management before insert on secret_management begin select raise(abort, 'test failure'); end`); err != nil {
+	if _, err := conn.Exec(`create function reject_management() returns trigger language plpgsql as $fn$
+		begin
+			raise exception 'test failure';
+		end;
+		$fn$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create trigger reject_management before insert on secret_management for each row execute function reject_management()`); err != nil {
 		t.Fatal(err)
 	}
 	if created, err := store.Create(ctx, input); err == nil || created.ManagementToken != "" {
@@ -135,7 +143,14 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	if err := conn.QueryRow(`select count(*) from secrets`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("create did not roll back: %d %v", count, err)
 	}
-	if _, err := conn.Exec(`create trigger reject_forget before delete on secret_management begin select raise(abort, 'test failure'); end`); err != nil {
+	if _, err := conn.Exec(`create function reject_forget() returns trigger language plpgsql as $fn$
+		begin
+			raise exception 'test failure';
+		end;
+		$fn$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create trigger reject_forget before delete on secret_management for each row execute function reject_forget()`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := conn.BeginTx(ctx, nil)
@@ -149,11 +164,14 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	if _, err := store.Get(ctx, first.ID); err != nil {
 		t.Fatalf("failed outcome consumed payload: %v", err)
 	}
-	if _, err := conn.Exec(`drop trigger reject_forget`); err != nil {
+	if _, err := conn.Exec(`drop trigger reject_forget on secret_management`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`drop function reject_forget`); err != nil {
 		t.Fatal(err)
 	}
 	// A legacy row without a management record keeps its old recipient flow.
-	if _, err := conn.Exec(`delete from secret_management where secret_id = ?`, second.ID); err != nil {
+	if _, err := conn.Exec(`delete from secret_management where secret_id = $1`, second.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Management(ctx, second.ID, second.ManagementToken); !errors.Is(err, ErrManagementUnavailable) {

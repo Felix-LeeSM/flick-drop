@@ -31,24 +31,23 @@ Local development:
 | --- | --- |
 | `FLICK_API_ADDR` | API listen address. |
 | `FLICK_METRICS_TOKEN` | Bearer token guarding `/metrics` on both the API and the worker's dedicated metrics listener. Separate from `FLICK_INTERNAL_TOKEN` (least privilege). Empty = both fail closed (401). |
-| `FLICK_API_DB_PATH` | Transitional SQLite file owned by API. Removed once the M15 PostgreSQL cutover completes (PR 3); superseded by `FLICK_DATABASE_URL`. |
-| `FLICK_DATABASE_URL` | PostgreSQL DSN for the API-owned `flick_api` logical database, connected as the least-privilege `flick_api` role (`pgx/v5/stdlib`, `CGO_ENABLED=0`). Required after the M15 cutover; local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql`. |
+| `FLICK_DATABASE_URL` | PostgreSQL DSN for the API-owned `flick_api` logical database, connected as the least-privilege `flick_api` role (`pgx/v5/stdlib`, `CGO_ENABLED=0`). Required since the M15 PR 3 cutover: the API fails fast without it and has no local file fallback. Local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql` (`scripts/dev/up.sh` exports them). |
 | `FLICK_VALKEY_ADDR` | Valkey `host:port` for the shared rate limiter and live-transfer rendezvous (`internal/httpapi/ratelimit.go`, `internal/piperelay/`). Empty disables Valkey use: the rate limiter falls back to per-process memory and `/api/pipe/*` answers `503`. |
 | `FLICK_RATELIMIT_KEY_SALT` | Deployment-secret salt mixed (HMAC-SHA-256) into Valkey rate-limit keys, so Valkey never stores a raw client network. Required when `FLICK_VALKEY_ADDR` is set; rotating it resets in-flight rate-limit buckets only. |
 | `FLICK_INTERNAL_HTTP_PORT` | Port of the API's pod-to-pod live-transfer stream listener (`/internal/pipe/stream/{codeHash}`) inside the cluster. Set by the Deployment in `deploy/base/api.yaml`; unused outside Kubernetes. |
 | `FLICK_POD_IP` | This pod's IP injected by the Kubernetes Downward API (`status.podIP`). The pod registers it in Valkey so the peer pod can dial the stream listener directly. Empty outside Kubernetes. |
-| `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored as SQLite BLOB. Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
+| `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored inline as `secret_payloads.ciphertext` (`bytea`). Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
 | `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
 | `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
-| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from api.db (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot a ceiling (soft cap; see storage-model.md). |
+| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from the `flick_api` database (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot a ceiling (soft cap; see storage-model.md). |
 | `FLICK_R2_MAX_TOTAL_BYTES` | Same cap for the secondary backend (`r2_object`). Default `9000000000` (9 GB = R2 free 10 GB × 9/10). |
 | `FLICK_R2_ENABLED` | `true` enables the secondary backend, used in parallel with the primary to pool free tiers. Independent of `FLICK_STORAGE_LARGE_BACKEND` (requires it to be `s3`; disabled storage disables both). |
 | `FLICK_OPEN_RATE_PER_MIN` | Per-minute limit per client network (IPv4 address or IPv6 /64) for `/api/secrets/{id}/open` and sender management (one bucket per secret ID), for all request-link calls after creation (one bucket across IDs), and for `/api/pipe/join` (one bucket shared with `/api/v1/pipe/join`). |
 | `FLICK_CREATE_RATE_PER_MIN` | Per-minute limit per client network (IPv4 address or IPv6 /64) for `POST /api/secrets` (includes presigned upload issuance), `POST /api/requests`, and `/api/pipe/init`, each with its own bucket. |
-| `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in api.db. |
+| `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in the `flick_api` database. |
 | `FLICK_REAPER_BATCH_SIZE` | Max secrets reclaimed per reaper tick. |
 | `FLICK_PIPE_RELAY_ENABLED` | Enable live in-memory pipe relay endpoints (`true`/`false`). Default `true`. |
 | `FLICK_PIPE_MAX_CONCURRENT` | Maximum concurrent live pipe rendezvous sessions. Default `100`. |
@@ -93,7 +92,7 @@ back to per-process memory and only `/api/pipe/*` answers `503`. CI reads
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_WORKER_DB_PATH` | Retired since the M15 worker cutover (PR 2): the worker no longer reads it; PR 3 deletes the last uses. Superseded by `FLICK_WORKER_DATABASE_URL`. |
+| `FLICK_WORKER_DB_PATH` | Retired by the M15 PostgreSQL cutover (PR 2/#421, PR 3/#422): no code reads it. Superseded by `FLICK_WORKER_DATABASE_URL`. |
 | `FLICK_WORKER_DATABASE_URL` | PostgreSQL DSN for the worker-owned `flick_worker` logical database, connected as the least-privilege `flick_worker` role. Required since PR 2; the worker fails fast without it. Local dev defaults match `compose.yaml` + `scripts/dev/postgres-init.sql` (`scripts/dev/up.sh` exports them). |
 | `FLICK_INTERNAL_API_BASE_URL` | Internal API base URL. |
 | `FLICK_WORKER_METRICS_ADDR` | Worker `/metrics` listen address (`internal/config/config.go`). Default `:9091`; explicitly empty disables the listener. Same bearer credential as the API (`FLICK_METRICS_TOKEN`). |

@@ -72,7 +72,7 @@ but the ordering keeps them out of normal operation. The JSON schema is
 
 The API publishes through an outbox table:
 
-1. Commit the domain change and `outbox_events` row in one `api.db`
+1. Commit the domain change and `outbox_events` row in one `flick_api`
    transaction.
 2. A publisher loop reads pending rows.
 3. Publish to NATS JetStream and wait for ack.
@@ -150,7 +150,7 @@ The worker owns `worker.db` and records receipts, attempts, and dead letters.
 The worker calls internal API endpoints for API-owned mutations.
 
 Inline [request links](request-links.md) need no worker event: open/revoke
-remove their BLOB and encrypted metadata in the same API SQLite transaction,
+remove their bytea payload and encrypted metadata in the same API transaction,
 and the API reaper cascades payload deletion when purging expired requests.
 No request capability, public key, envelope, or ciphertext enters the outbox.
 Large requests reuse `delete_oci_object` and the existing reasons. Request

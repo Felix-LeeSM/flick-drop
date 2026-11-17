@@ -53,7 +53,17 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 	}
 
 	now := p.now().UTC()
-	records, err := p.store.ListDue(ctx, now, limit)
+	// One transaction fences the whole batch: ClaimDueTx takes SKIP LOCKED row
+	// locks, the publish happens while the locks are held, and the marks
+	// commit atomically. A concurrent replica's claim skips these rows, and a
+	// crash rolls everything back to the due pool.
+	tx, err := p.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("begin outbox publish batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	records, err := p.store.ClaimDueTx(ctx, tx, now, limit)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -61,16 +71,19 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 	var result PublishResult
 	for _, record := range records {
 		if err := p.publisher.Publish(ctx, record.Subject, []byte(record.PayloadJSON)); err != nil {
-			if markErr := p.store.MarkFailed(ctx, record.ID, err, now.Add(p.retryDelay)); markErr != nil {
-				return result, markErr
+			if markErr := markOutboxFailedTx(ctx, tx, record.ID, err, now.Add(p.retryDelay), now); markErr != nil {
+				return PublishResult{}, markErr
 			}
 			result.Failed++
 			continue
 		}
-		if err := p.store.MarkPublished(ctx, record.ID); err != nil {
-			return result, err
+		if err := markOutboxPublishedTx(ctx, tx, record.ID, now); err != nil {
+			return PublishResult{}, err
 		}
 		result.Published++
+	}
+	if err := tx.Commit(); err != nil {
+		return PublishResult{}, fmt.Errorf("commit outbox publish batch: %w", err)
 	}
 	// Queue visibility for /metrics: after each batch, report how many events
 	// still wait to be published and count the batch's outcomes. Rows marked

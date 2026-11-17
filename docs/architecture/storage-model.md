@@ -24,24 +24,25 @@ NATS JetStream filestore
 
 The API and worker do not directly share write ownership: each speaks to
 Postgres with its own least-privilege role against its own logical database
-(`database-schema.md`). M15 transition: the worker database moves in PR 2
-(issue #421), the API database and the `modernc.org/sqlite` removal in PR 3
-(issue #422); until both merge these tables live in local SQLite files, and
-the cutover runbook (`docs/runbook/postgres-cutover.md`, PR 6 / issue #425)
-carries the one-time migration.
+(`database-schema.md`). M15 moved both stores onto Postgres — the worker
+database in PR 2 (issue #421), the API database and the `modernc.org/sqlite`
+removal in PR 3 (issue #422). An existing self-hosted deployment reaches this
+state through the SQLite cutover runbook
+(`docs/runbook/postgres-cutover.md`, PR 6 / issue #425), which carries the
+one-time migration.
 
 ## Payload Storage
 
 Initial thresholds:
 
 ```text
-text secret: api.db BLOB
-file <= 1 MiB: api.db BLOB
+text secret: flick_api bytea row
+file <= 1 MiB: flick_api bytea row
 file > 1 MiB: S3-compatible object storage when enabled
 max file size: 256 MiB
 ```
 
-The local web flow accepts files only up to the SQLite inline threshold while
+The local web flow accepts files only up to the inline threshold while
 large-object storage is disabled.
 
 No API path holds a large body in memory, and the browser and CLI encrypt and
@@ -82,7 +83,7 @@ secondary once the primary's remaining ceiling cannot fit the object
 records the choice so opens, finalize copies, deletes, and reconciliation all
 resolve the same bucket. Each backend carries its own cumulative byte ceiling
 (`FLICK_S3_MAX_TOTAL_BYTES`, `FLICK_R2_MAX_TOTAL_BYTES`, default 90 percent of
-the provider free tier, `0` = unlimited) enforced against the api.db aggregate
+the provider free tier, `0` = unlimited) enforced against the `flick_api` aggregate
 `db.StorageObjectBytes` at placement time; when no configured backend has room,
 placement fails with `503 storage_full`. The ceiling is a soft cap: the usage
 read is check-then-act, so concurrent placements can transiently overshoot
@@ -124,7 +125,7 @@ the existing pending-upload expiry and orphan cleanup policy.
 M9 [request links](request-links.md) use separate API-owned request metadata
 and inline ciphertext, with the original request deadline bounding both
 submission and retrieval. `internal/requests/store.go` stores one inline payload,
-removes the BLOB and encrypted metadata transactionally on open/revoke, and
+removes the bytea payload and encrypted metadata transactionally on open/revoke, and
 retains only owner metadata and the bounded acceptance receipt until that
 deadline. `internal/secrets/reaper.go:ClaimOnce` invokes the bounded request
 purge, which cascades payload deletion. Inline cleanup needs no NATS job.
@@ -167,19 +168,16 @@ ID until the reaper prunes the published outbox row one hour after publish
 diagnosis and can hold the key until it publishes. Aggregate
 `usage_counters` count opens without IDs. Locked, cancelled, and unavailable
 deliveries keep their documented retention.
-`internal/db/migrations.go:forgetOpenedSecrets` removes rows that earlier
-releases kept after opens.
 
 Deleted ciphertext bytes can linger on disk until the storage engine reclaims
-them: SQLite BLOB deletion leaves bytes in WAL/freelist pages until checkpoint
-or vacuum, and Postgres dead tuples hold old row versions until autovacuum.
+them: Postgres dead tuples hold old row versions until autovacuum.
 Backups may also retain old ciphertext. Runbooks must document this residual
 risk.
 
 Cleanup jobs are idempotent:
 
 - missing secret: success
-- missing SQLite payload: success
+- missing inline payload: success
 - missing object-storage object: success
 - already consumed/expired: success
 

@@ -18,9 +18,8 @@ const objectGrace = 35 * time.Minute
 
 // RowQueryer is the subset of *sql.DB/*sql.Tx the aggregate needs. It takes a
 // queryer rather than *sql.DB because Reserve reads usage inside its open
-// reservation transaction: the SQLite pool is a single connection
-// (db/sqlite.go SetMaxOpenConns(1)), so an out-of-band read would wait on the
-// transaction's own connection and deadlock.
+// reservation transaction: passing the tx keeps the read in the same
+// snapshot as the placement decision it guards.
 type RowQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -40,21 +39,23 @@ func StorageObjectBytes(ctx context.Context, conn RowQueryer, now time.Time) (ma
 		storage.PrimaryBackend:   0,
 		storage.SecondaryBackend: 0,
 	}
-	// secrets.consumed_at is written with RFC3339Nano (varying length), so the
-	// grace comparison goes through julianday instead of text comparison.
+	// consumed_at compares natively as timestamptz.
 	const secretsSQL = `select coalesce(sum(size_bytes), 0) from secrets
-		where storage_backend = ?
-			and (consumed_at is null or julianday(consumed_at) > julianday(?))`
+		where storage_backend = $1
+			and (consumed_at is null or consumed_at > $2)`
 	// requests.size_bytes is nulled once an object is consumed; the grace
 	// window for consumed requests therefore contributes nothing, a small
 	// under-count the 90% ceiling margin absorbs. Uploading rows carry both
 	// keys (staging + final), so they count twice: the DB cannot tell whether
 	// finalize has already copied the final object into the bucket, and the
 	// double count is the over-count direction, which the ceiling check needs.
-	const requestsSQL = `select coalesce(sum(((upload_key is not null) + (final_key is not null)) * size_bytes), 0)
+	const requestsSQL = `select coalesce(sum((
+			case when upload_key is not null then 1 else 0 end
+			+ case when final_key is not null then 1 else 0 end
+		) * size_bytes), 0)
 		from requests
-		where storage_backend = ? and (upload_key is not null or final_key is not null)`
-	grace := now.UTC().Add(-objectGrace).Format(time.RFC3339)
+		where storage_backend = $1 and (upload_key is not null or final_key is not null)`
+	grace := now.UTC().Add(-objectGrace)
 	for _, backend := range []string{storage.PrimaryBackend, storage.SecondaryBackend} {
 		var total int64
 		if err := conn.QueryRowContext(ctx, secretsSQL, backend, grace).Scan(&total); err != nil {

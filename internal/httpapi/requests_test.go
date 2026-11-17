@@ -201,22 +201,43 @@ func TestRequestHTTPRejectsMalformedBodies(t *testing.T) {
 	assertRequestStatus(t, resp, 404, "request_unavailable")
 }
 
+// injectInsertFailure aborts request_payloads inserts with a raised plpgsql
+// exception — the Postgres analogue of the SQLite raise(abort) trigger. The
+// statement fails inside the submit transaction, so it must roll back with it.
+// The returned func drops the trigger mid-test; cleanup also calls it.
+func injectInsertFailure(t *testing.T, conn *sql.DB) func() {
+	t.Helper()
+	if _, err := conn.Exec(`create function flick_test_fail_submit_fn() returns trigger language plpgsql as $fn$
+		begin
+			raise exception 'injected storage failure';
+		end;
+		$fn$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create trigger flick_test_fail_submit before insert on request_payloads
+		for each row execute function flick_test_fail_submit_fn()`); err != nil {
+		t.Fatal(err)
+	}
+	drop := func() {
+		_, _ = conn.Exec(`drop trigger if exists flick_test_fail_submit on request_payloads`)
+		_, _ = conn.Exec(`drop function if exists flick_test_fail_submit_fn`)
+	}
+	t.Cleanup(drop)
+	return drop
+}
+
 func TestRequestHTTPExpiryRevokeAndStorageFailure(t *testing.T) {
 	router, store, conn := requestFixture(t, 100)
 	c := createHTTPRequest(t, router)
 	path := "/api/requests/" + c.ID
 	in := requestSubmission()
-	if _, err := conn.Exec(`create trigger fail before insert on request_payloads begin select raise(abort,'private database detail'); end`); err != nil {
-		t.Fatal(err)
-	}
+	dropTrigger := injectInsertFailure(t, conn)
 	resp := performJSON(t, router, http.MethodPost, path+"/submit", in, auth(c.SubmissionToken))
 	assertRequestStatus(t, resp, 503, "storage_unavailable")
-	if strings.Contains(resp.Body.String(), "private database detail") {
+	if strings.Contains(resp.Body.String(), "injected storage failure") {
 		t.Fatal("storage error leaked")
 	}
-	if _, err := conn.Exec(`drop trigger fail`); err != nil {
-		t.Fatal(err)
-	}
+	dropTrigger()
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/submit", in, auth(c.SubmissionToken)), 200, "")
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/revoke", nil, auth(c.RetrievalToken)), 200, "")
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, path+"/revoke", nil, auth(c.RetrievalToken)), 200, "")
@@ -335,7 +356,7 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 	// Revoking clears encrypted_note from SQLite.
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+created.ID+"/revoke", nil, auth(created.RetrievalToken)), 200, "")
 	var stored sql.NullString
-	if err := conn.QueryRow(`select encrypted_note from requests where id = ?`, created.ID).Scan(&stored); err != nil || stored.Valid {
+	if err := conn.QueryRow(`select encrypted_note from requests where id = $1`, created.ID).Scan(&stored); err != nil || stored.Valid {
 		t.Fatalf("encrypted_note survived revoke: %+v err=%v", stored, err)
 	}
 
@@ -354,7 +375,7 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 		t.Fatalf("submitted GET exposed encrypted_note: %s", submittedInstResp.Body.String())
 	}
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+openCreated.ID+"/open", nil, auth(openCreated.RetrievalToken)), 200, "")
-	if err := conn.QueryRow(`select encrypted_note from requests where id = ?`, openCreated.ID).Scan(&stored); err != nil || stored.Valid {
+	if err := conn.QueryRow(`select encrypted_note from requests where id = $1`, openCreated.ID).Scan(&stored); err != nil || stored.Valid {
 		t.Fatalf("encrypted_note survived HTTP open: %+v err=%v", stored, err)
 	}
 

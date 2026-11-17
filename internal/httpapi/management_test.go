@@ -53,7 +53,7 @@ func TestManagementHTTPAuthorizationAndOutcomes(t *testing.T) {
 				t.Fatal("public metadata gained management fields")
 			}
 			var failed int
-			if err := f.db.QueryRow(`select failed_access_count from secrets where id = ?`, created.ID).Scan(&failed); err != nil || failed != 0 {
+			if err := f.db.QueryRow(`select failed_access_count from secrets where id = $1`, created.ID).Scan(&failed); err != nil || failed != 0 {
 				t.Fatal("status request changed proof attempts", err)
 			}
 			rawToken, err := base64.RawURLEncoding.DecodeString(created.ManagementToken)
@@ -215,10 +215,10 @@ func TestOpenedSecretIsIndistinguishableFromUnknownID(t *testing.T) {
 		})
 	}
 	for _, query := range []string{
-		`select count(*) from secrets where id = ?`,
-		`select count(*) from secret_payloads where secret_id = ?`,
-		`select count(*) from secret_management where secret_id = ?`,
-		`select count(*) from outbox_events where instr(payload_json, ?) > 0`,
+		`select count(*) from secrets where id = $1`,
+		`select count(*) from secret_payloads where secret_id = $1`,
+		`select count(*) from secret_management where secret_id = $1`,
+		`select count(*) from outbox_events where strpos(payload_json, $1) > 0`,
 	} {
 		var n int
 		if err := f.db.QueryRow(query, created.ID).Scan(&n); err != nil || n != 0 {

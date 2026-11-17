@@ -24,18 +24,16 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apk add --no-cache ca-certificates tzdata \
 	&& addgroup -S flick \
-	&& adduser -S -D -H -G flick flick \
-	&& mkdir -p /data \
-	&& chown -R flick:flick /data
+	&& adduser -S -D -H -G flick flick
 
 WORKDIR /app
 COPY --from=build /out/flick-api /usr/local/bin/flick-api
 
-ENV FLICK_API_ADDR=:8080 \
-	FLICK_API_DB_PATH=/data/api.db
+# State lives in PostgreSQL (FLICK_DATABASE_URL, required at boot); the image
+# carries no data volume.
+ENV FLICK_API_ADDR=:8080
 
 EXPOSE 8080
-VOLUME ["/data"]
 USER flick
 
 ENTRYPOINT ["/usr/local/bin/flick-api"]

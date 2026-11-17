@@ -103,17 +103,15 @@ The API image defaults to:
 
 ```text
 FLICK_API_ADDR=:8080
-FLICK_API_DB_PATH=/data/api.db
 ```
 
-The worker image defaults to:
+and requires `FLICK_DATABASE_URL` (the `flick_api` PostgreSQL DSN) from the
+deployment environment; the entrypoint fails fast without it.
 
-```text
-FLICK_WORKER_DB_PATH=/data/worker.db
-```
+The worker image requires `FLICK_WORKER_DATABASE_URL` from the deployment
+environment and fails fast without it.
 
-Both Go images create `/data` for SQLite files. Kubernetes manifests should
-mount the persistent volume there or override the database path explicitly.
+Neither Go image carries a data volume: state lives in PostgreSQL.
 
 The web image serves static assets with Nginx on port `8080` and exposes
 `/healthz` for simple readiness checks.

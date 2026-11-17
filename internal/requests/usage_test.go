@@ -12,7 +12,7 @@ import (
 func usageCount(t *testing.T, conn *sql.DB, day, metric string) int64 {
 	t.Helper()
 	var count int64
-	err := conn.QueryRow(`select count from usage_counters where day = ? and metric = ?`, day, metric).Scan(&count)
+	err := conn.QueryRow(`select count from usage_counters where day = $1 and metric = $2`, day, metric).Scan(&count)
 	if err == sql.ErrNoRows {
 		return 0
 	}

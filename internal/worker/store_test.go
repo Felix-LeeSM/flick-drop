@@ -10,7 +10,9 @@ import (
 
 // 동일한 만료 리스를 여러 Start가 동시에 손에 봤을 때 정확히 하나만 이기는지
 // 검증한다. 조건부 upsert가 클레임을 원자화하지 않으면 READ COMMITTED의
-// 오래된 스냅샷으로 둘 이상이 통과한다.
+// 오래된 스냅샷으로 둘 이상이 통과한다. 단일 경쟁은 우연히 통과하기 쉽다
+// (구 read-then-write 구현에서 이 테스트는 8회 중 1회만 적발했다), 그래서
+// 라운드를 반복해 매 라운드 리스를 새로 만료시키고 정확히 한 명의 승자를 단언한다.
 func TestReceiptStoreStartClaimsExpiredLeaseExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
@@ -23,41 +25,48 @@ func TestReceiptStoreStartClaimsExpiredLeaseExactlyOnce(t *testing.T) {
 		t.Fatalf("first start: %v", err)
 	}
 
-	// 모든 경쟁자가 같은 만료 시점을 본다. 승자는 updated_at을 자기 now로
-	// 쓰므로, 뒤따르는 클레임은 같은 시계값에서 리스가 신선하다고 판정된다.
-	store.SetNowForTest(func() time.Time { return now.Add(2 * ProcessingLease) })
-
+	const rounds = 25
 	const racers = 4
-	var wg sync.WaitGroup
-	results := make(chan error, racers)
-	var claimed sync.Mutex
-	claimedCount := 0
-	for range racers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			started, err := store.Start(ctx, "job_race", "delete_secret", payload, DefaultMaxAttempts)
-			if err == nil {
-				claimed.Lock()
-				claimedCount++
-				claimed.Unlock()
-				if started.Attempt.Attempt < 2 {
-					t.Errorf("winner attempt number = %d, want >= 2", started.Attempt.Attempt)
-				}
-			}
-			results <- err
-		}()
-	}
-	wg.Wait()
-	close(results)
+	clock := now
+	for round := 1; round <= rounds; round++ {
+		// 모든 경쟁자가 같은 만료 시점을 본다. 승자는 updated_at을 자기 now로
+		// 쓰므로, 같은 라운드의 뒤따르는 클레임은 같은 시계값에서 리스가
+		// 신선하다고 판정되고 다음 라운드는 다시 만료된다.
+		clock = clock.Add(2 * ProcessingLease)
+		roundClock := clock
+		store.SetNowForTest(func() time.Time { return roundClock })
 
-	for err := range results {
-		if err != nil && !errors.Is(err, ErrJobProcessing) {
-			t.Fatalf("racer error = %v, want nil or ErrJobProcessing", err)
+		var wg sync.WaitGroup
+		results := make(chan error, racers)
+		var claimed sync.Mutex
+		claimedCount := 0
+		for range racers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				started, err := store.Start(ctx, "job_race", "delete_secret", payload, DefaultMaxAttempts)
+				if err == nil {
+					claimed.Lock()
+					claimedCount++
+					claimed.Unlock()
+					if got, want := started.Attempt.Attempt, round+1; got != want {
+						t.Errorf("round %d: winner attempt number = %d, want %d", round, got, want)
+					}
+				}
+				results <- err
+			}()
 		}
-	}
-	if claimedCount != 1 {
-		t.Fatalf("expired-lease claim won %d times, want exactly 1", claimedCount)
+		wg.Wait()
+		close(results)
+
+		for err := range results {
+			if err != nil && !errors.Is(err, ErrJobProcessing) {
+				t.Fatalf("round %d: racer error = %v, want nil or ErrJobProcessing", round, err)
+			}
+		}
+		if claimedCount != 1 {
+			t.Fatalf("round %d: expired-lease claim won %d times, want exactly 1", round, claimedCount)
+		}
 	}
 
 	// 원래 클레이머의 시도는 새 클레임이 리스를 빼앗았으므로 더 이상 끝낼 수 없다.

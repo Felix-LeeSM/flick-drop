@@ -413,8 +413,7 @@ component knows the passphrase or derived key.
 Residual risks remain:
 
 - The database engine may retain deleted ciphertext on disk after deletion:
-  SQLite in WAL or freelist pages until checkpoint or vacuum, and Postgres in
-  dead tuples until autovacuum.
+  Postgres in dead tuples until autovacuum.
 - Backups may retain old ciphertext.
 - Clipboard managers, screenshots, or chat history may retain the passphrase if
   users share it insecurely.
@@ -595,8 +594,8 @@ the original expiry. Residual traces remain outside that guarantee:
 - the edge proxy (traefik) writes request paths, which include the secret ID,
   to its container log on the node until kubelet rotates it; Loki only ever
   receives the masked line (see Logs);
-- Database pages and backups may hold deleted rows: SQLite WAL pages until a
-  checkpoint, Postgres dead tuples until autovacuum.
+- Database pages and backups may hold deleted rows: Postgres dead tuples until
+  autovacuum.
 
 Raw management tokens belong only in the private browser fragment,
 the creation response, and the management Authorization header; exclude them

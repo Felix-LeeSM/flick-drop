@@ -45,9 +45,8 @@ func SecretCreatedMetric(kind string) string {
 
 // Counter is the subset of *sql.Tx/*sql.DB the increment needs. It takes the
 // caller's transaction handle rather than *sql.DB because the increment must
-// commit or roll back with the state change it describes, and the SQLite pool
-// is a single connection (db/sqlite.go SetMaxOpenConns(1)) — an out-of-band
-// write would wait on that transaction's own connection and deadlock.
+// commit or roll back with the state change it describes — the write stays in
+// the same snapshot and atomicity scope as the row it describes.
 type Counter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -64,8 +63,8 @@ func Day(t time.Time) string {
 // the counters record committed usage events, not current inventory.
 func Increment(ctx context.Context, q Counter, t time.Time, metric string, delta int64) error {
 	_, err := q.ExecContext(ctx, `insert into usage_counters (day, metric, count)
-		values (?, ?, ?)
-		on conflict(day, metric) do update set count = count + excluded.count`,
+		values ($1, $2, $3)
+		on conflict(day, metric) do update set count = usage_counters.count + excluded.count`,
 		Day(t), metric, delta)
 	if err != nil {
 		return fmt.Errorf("increment usage counter %s: %w", metric, err)

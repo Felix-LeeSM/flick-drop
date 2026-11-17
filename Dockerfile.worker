@@ -24,16 +24,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apk add --no-cache ca-certificates tzdata \
 	&& addgroup -S flick \
-	&& adduser -S -D -H -G flick flick \
-	&& mkdir -p /data \
-	&& chown -R flick:flick /data
+	&& adduser -S -D -H -G flick flick
 
 WORKDIR /app
 COPY --from=build /out/flick-worker /usr/local/bin/flick-worker
 
-ENV FLICK_WORKER_DB_PATH=/data/worker.db
+# State lives in PostgreSQL (FLICK_WORKER_DATABASE_URL, required at boot); the
+# image carries no data volume.
 
-VOLUME ["/data"]
 USER flick
 
 ENTRYPOINT ["/usr/local/bin/flick-worker"]

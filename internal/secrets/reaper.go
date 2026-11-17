@@ -19,46 +19,45 @@ const (
 	DefaultReaperBatchSize = 50
 )
 
-// claimReclaimableSQL atomically claims reclaimable secrets and returns the
-// columns needed to build their cleanup events in a single statement. The
-// WHERE guard (reclaim_enqueued_at IS NULL) makes the claim multi-instance and
-// multi-tick safe: only one claimer can flip the timestamp per row. Consumed
-// secrets are excluded because /open already enqueued their cleanup. Reason is
-// derived from state: active → expired, pending_upload → orphan. Pending
-// uploads are also reclaimable at content expiry, even before PendingTTL.
-// formatTime stores canonical UTC RFC3339Nano. Removing its final Z preserves
-// exact chronological ordering for expiry, including absent or shorter fractions.
+// claimReclaimableSQL atomically claims one batch of reclaimable secrets and
+// returns the columns needed to build their cleanup events. The candidate CTE
+// takes FOR UPDATE SKIP LOCKED row locks, so concurrent API replicas claim
+// disjoint sets: rows locked by another replica's in-flight claim batch are
+// skipped instead of blocking, and the locks last until this transaction
+// commits, which also pins the reclaim_enqueued_at flip. The WHERE guard
+// (reclaim_enqueued_at IS NULL) keeps already-claimed rows out of later ticks.
+// Consumed secrets are excluded because /open already enqueued their cleanup.
+// Reason is derived from state: active → expired, pending_upload → orphan.
+// Pending uploads are also reclaimable at content expiry, even before
+// PendingTTL. Both comparisons are native timestamptz comparisons.
 //
 // Ordering is by a unified "reclaimable-since" timestamp so the two classes
 // compete fairly for a batch slot: an expired-active row is reclaimable since
 // its expires_at, while a pending_upload orphan is reclaimable since
 // the earlier of expires_at and created_at + PendingTTL. Without this, a
-// future expires_at on orphans would
-// always sort them behind an active-expiry backlog and starve orphan reclaim.
-// Both branches are wrapped in datetime() so they compare as the same
-// 'YYYY-MM-DD HH:MM:SS' shape — expires_at is stored RFC3339Nano (a 'T'/​'Z'
-// lexical suffix would otherwise outrank the space-delimited datetime() output
-// and mis-order the two classes).
+// future expires_at on orphans would always sort them behind an active-expiry
+// backlog and starve orphan reclaim.
 const claimReclaimableSQL = `with candidates as (
-	select id, state, storage_backend, storage_key
+	select id
 	from secrets
 	where reclaim_enqueued_at is null
 		and consumed_at is null
 		and (
-			(rtrim(expires_at, 'Z') <= rtrim(?, 'Z'))
-			or (state = 'pending_upload' and rtrim(created_at, 'Z') <= rtrim(?, 'Z'))
+			expires_at <= $1
+			or (state = 'pending_upload' and created_at <= $2)
 		)
 	order by case state
-			when 'active' then datetime(expires_at)
-			else min(datetime(expires_at), datetime(created_at, ?))
+			when 'active' then expires_at
+			else least(expires_at, created_at + $3::interval)
 		end
-	limit ?
+	limit $4
+	for update skip locked
 )
 update secrets
-set reclaim_enqueued_at = ?, updated_at = ?
+set reclaim_enqueued_at = $5, updated_at = $6
 from candidates
 where secrets.id = candidates.id
-returning id, state, storage_backend, storage_key`
+returning secrets.id, secrets.state, secrets.storage_backend, secrets.storage_key`
 
 // outboxEnqueuer is the subset of *events.OutboxStore the reaper needs, kept as
 // an interface so tests can inject a failing fake for atomicity checks.
@@ -143,31 +142,27 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 
 	now := r.now().UTC()
 	orphanCutoff := now.Add(-r.pendingTTL)
-	// datetime(created_at, '+N seconds') = the moment the orphan became
-	// reclaimable; used by the CASE in claimReclaimableSQL for fair ordering.
-	orphanTTLModifier := fmt.Sprintf("+%d seconds", int(r.pendingTTL.Seconds()))
+	// created_at + this interval is the moment the orphan became reclaimable;
+	// the CASE in claimReclaimableSQL uses it for fair ordering.
+	orphanTTLInterval := fmt.Sprintf("%d seconds", int(r.pendingTTL.Seconds()))
 
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("acquire reaper connection: %w", err)
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin reaper claim tx: %w", err)
 	}
 	defer rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, claimReclaimableSQL,
-		formatTime(now), formatTime(orphanCutoff), orphanTTLModifier, r.batchSize,
-		formatTime(now), formatTime(now),
+		now, orphanCutoff, orphanTTLInterval, r.batchSize,
+		now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("claim reclaimable secrets: %w", err)
 	}
 
-	// Collect before mutating: reusing the tx while a cursor is open can conflict
-	// on SQLite, so drain and close the rows first.
+	// Collect before mutating: a database/sql transaction is bound to one
+	// connection, so the result cursor must be drained and closed before this
+	// transaction executes further statements.
 	var batch []claimedRow
 	for rows.Next() {
 		var c claimedRow
@@ -200,8 +195,10 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 		return 0, err
 	}
 
+	// A failed COMMIT aborts the server-side transaction and database/sql
+	// returns the connection to the pool, so no manual rollback is needed; the
+	// deferred rollback only sweeps earlier exits.
 	if err := tx.Commit(); err != nil {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
 	}
 	// Record the reclaim after the commit so a rolled-back tick does not bump

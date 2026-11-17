@@ -44,14 +44,14 @@ func TestReaperPrunesPublishedOutboxRowsAfterRetention(t *testing.T) {
 		id, state   string
 		publishedAt any
 	}{
-		{"published-old", events.StatePublished, now.Add(-time.Hour).Format(time.RFC3339Nano)},
-		{"published-recent", events.StatePublished, now.Add(-time.Hour + time.Second).Format(time.RFC3339Nano)},
+		{"published-old", events.StatePublished, now.Add(-time.Hour)},
+		{"published-recent", events.StatePublished, now.Add(-time.Hour + time.Second)},
 		{"failed-old", events.StateFailed, nil},
 		{"pending", events.StatePending, nil},
 	} {
-		created := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+		created := now.Add(-2 * time.Hour)
 		if _, err := conn.ExecContext(ctx, `insert into outbox_events (id, subject, payload_json, state, next_attempt_at, published_at, created_at, updated_at)
-			values (?, 'test.jobs', '{"object_key":"managed/secrets/synthetic"}', ?, ?, ?, ?, ?)`,
+			values ($1, 'test.jobs', '{"object_key":"managed/secrets/synthetic"}', $2, $3, $4, $5, $6)`,
 			row.id, row.state, created, row.publishedAt, created, created); err != nil {
 			t.Fatal(err)
 		}
@@ -88,18 +88,25 @@ func TestReaperPurgesRequestsAtOriginalDeadline(t *testing.T) {
 	conn := openTestDB(t, ctx)
 	store := newTestStore(t, conn)
 	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
-	now := time.Date(2026, 10, 8, 0, 0, 0, 500000000, time.UTC)
+	// timestamptz는 마이크로초 정밀도라 마감 경계도 마이크로초 단위로 확인한다.
+	now := time.Date(2026, 10, 8, 0, 0, 0, 500000, time.UTC)
 	reaper.SetNowForTest(func() time.Time { return now })
-	for _, entry := range []struct{ id, state, expires string }{
-		{"waiting", "waiting", "2026-10-08T00:00:00.500000000Z"},
-		{"consumed", "consumed", "2026-10-08T00:00:00.000000000Z"},
-		{"cancelled", "cancelled", "2026-10-08T00:00:00.499999999Z"},
-		{"live", "waiting", "2026-10-08T00:00:00.500000001Z"},
+	zeroHash := make([]byte, 32)
+	zeroCiphertext := make([]byte, 16)
+	for _, entry := range []struct {
+		id      string
+		state   string
+		expires time.Time
+	}{
+		{"waiting", "waiting", now},
+		{"consumed", "consumed", now.Add(-500 * time.Microsecond)},
+		{"cancelled", "cancelled", now.Add(-time.Microsecond)},
+		{"live", "waiting", now.Add(time.Microsecond)},
 	} {
-		if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,expires_at) values (?, 'synthetic', 'synthetic', zeroblob(32), zeroblob(32), ?, ?)`, entry.id, entry.state, entry.expires); err != nil {
+		if _, err := conn.Exec(`insert into requests(id,public_key,fingerprint,submission_token_hash,retrieval_token_hash,state,expires_at) values ($1, 'synthetic', 'synthetic', $2, $2, $3, $4)`, entry.id, zeroHash, entry.state, entry.expires); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values (?, zeroblob(16))`, entry.id); err != nil {
+		if _, err := conn.Exec(`insert into request_payloads(request_id,ciphertext) values ($1, $2)`, entry.id, zeroCiphertext); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -155,14 +162,14 @@ func insertSecret(t *testing.T, ctx context.Context, conn *sql.DB, f secretFixtu
 
 	var consumed any
 	if !f.consumedAt.IsZero() {
-		consumed = formatTime(f.consumedAt)
+		consumed = f.consumedAt
 	}
 	_, err := conn.ExecContext(ctx, `insert into secrets (
 		id, kind, storage_backend, storage_key, size_bytes,
 		max_views, view_count, failed_access_count, state, expires_at, consumed_at, created_at, updated_at
-	) values (?,?,?,?,?,1,0,0,?,?,?,?,?)`,
+	) values ($1,$2,$3,$4,$5,1,0,0,$6,$7,$8,$9,$10)`,
 		f.id, f.kind, f.storageBackend, f.storageKey, f.sizeBytes,
-		f.state, formatTime(f.expiresAt), consumed, formatTime(f.createdAt), formatTime(f.updatedAt),
+		f.state, f.expiresAt, consumed, f.createdAt, f.updatedAt,
 	)
 	if err != nil {
 		t.Fatalf("insert secret %s: %v", f.id, err)
@@ -178,10 +185,10 @@ func countSecrets(t *testing.T, ctx context.Context, conn *sql.DB) int {
 	return n
 }
 
-func reclaimEnqueuedAt(t *testing.T, ctx context.Context, conn *sql.DB, id string) sql.NullString {
+func reclaimEnqueuedAt(t *testing.T, ctx context.Context, conn *sql.DB, id string) sql.NullTime {
 	t.Helper()
-	var v sql.NullString
-	if err := conn.QueryRowContext(ctx, `select reclaim_enqueued_at from secrets where id = ?`, id).Scan(&v); err != nil {
+	var v sql.NullTime
+	if err := conn.QueryRowContext(ctx, `select reclaim_enqueued_at from secrets where id = $1`, id).Scan(&v); err != nil {
 		t.Fatalf("read reclaim_enqueued_at for %s: %v", id, err)
 	}
 	return v
@@ -414,15 +421,15 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 	for _, state := range []string{"active", "pending_upload"} {
 		for _, tc := range []struct {
 			name      string
-			expiresNS int
-			nowNS     int
+			expiresUs int
+			nowUs     int
 		}{
-			{"whole-second cutoff", 123456789, 0},
-			{"shorter cutoff fraction", 123456789, 123000000},
-			{"one nanosecond before", 123456789, 123456788},
-			{"exact fractional expiry", 123456789, 123456789},
-			{"longer cutoff fraction", 123000000, 123456789},
-			{"one nanosecond before whole second", 0, -1},
+			{"whole-second cutoff", 123456, 0},
+			{"shorter cutoff fraction", 123456, 123},
+			{"one microsecond before", 123456, 123455},
+			{"exact fractional expiry", 123456, 123456},
+			{"longer cutoff fraction", 123, 123456},
+			{"one microsecond before whole second", 0, -1},
 			{"exact whole-second expiry", 0, 0},
 			{"after whole-second expiry", 0, 1},
 		} {
@@ -430,8 +437,9 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 				ctx := context.Background()
 				conn := openTestDB(t, ctx)
 				store := newLargeTestStore(t, conn, newMockObjectStore())
+				// timestamptz는 마이크로초 정밀도라 만료 경계도 마이크로초 단위다.
 				base := time.Date(2026, 10, 8, 1, 10, 0, 0, time.UTC)
-				expires := base.Add(time.Duration(tc.expiresNS))
+				expires := base.Add(time.Duration(tc.expiresUs) * time.Microsecond)
 				now := expires.Add(-10 * time.Minute) // Content expiry precedes the 15-minute pending deadline.
 				store.SetNowForTest(func() time.Time { return now })
 				var id, token string
@@ -448,7 +456,7 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 					}
 					id, token = created.ID, created.ManagementToken
 				}
-				now = base.Add(time.Duration(tc.nowNS))
+				now = base.Add(time.Duration(tc.nowUs) * time.Microsecond)
 				reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
 				reaper.SetNowForTest(func() time.Time { return now })
 				want := 0
@@ -456,7 +464,7 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 					want = 1
 				}
 				if got, err := reaper.ClaimOnce(ctx); err != nil || got != want {
-					t.Fatalf("at %s with expiry %s: claimed = %d, want %d; error = %v", formatTime(now), formatTime(expires), got, want, err)
+					t.Fatalf("at %s with expiry %s: claimed = %d, want %d; error = %v", now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), got, want, err)
 				}
 				if got := countSecrets(t, ctx, conn); got != 1-want {
 					t.Fatalf("remaining secrets = %d, want %d", got, 1-want)
@@ -570,7 +578,7 @@ func TestReaperAtomicityOnFailure(t *testing.T) {
 		t.Fatalf("secrets = %d, want 1 (row survived rollback)", got)
 	}
 	if v := reclaimEnqueuedAt(t, ctx, conn, "sec_fail"); v.Valid {
-		t.Fatalf("reclaim_enqueued_at = %q, want NULL (claim rolled back)", v.String)
+		t.Fatalf("reclaim_enqueued_at = %v, want NULL (claim rolled back)", v.Time)
 	}
 }
 
@@ -796,8 +804,18 @@ func TestReaperRollsBackFailedCommit(t *testing.T) {
 	store := newTestStore(t, conn)
 	now := time.Now().UTC()
 	insertSecret(t, ctx, conn, secretFixture{id: "expire", expiresAt: now.Add(-time.Second), createdAt: now.Add(-time.Hour)})
-	_, err := conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_reap after delete on secrets begin insert into fail_commit values (old.id); end;`)
-	if err != nil {
+	// A deferred constraint trigger fires at COMMIT, so the claim and the delete
+	// succeed and only the commit fails — the boundary where Postgres aborts the
+	// server-side transaction on its own.
+	if _, err := conn.Exec(`create function fail_reap() returns trigger language plpgsql as $fn$
+		begin
+			raise exception 'injected reap commit failure';
+		end;
+		$fn$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`create constraint trigger fail_reap after delete on secrets
+		deferrable initially deferred for each row execute function fail_reap()`); err != nil {
 		t.Fatal(err)
 	}
 	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)

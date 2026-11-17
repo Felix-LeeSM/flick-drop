@@ -27,7 +27,8 @@ and removed.
 - Stores only ciphertext and metadata on the server side.
 - Encrypts in the browser using a passphrase-derived key or a random link key.
 - Keeps passphrases and derived keys outside HTTP requests and server logs.
-- Supports local SQLite storage for small encrypted payloads.
+- Stores small encrypted payloads inline in PostgreSQL, larger files in
+  S3-compatible object storage.
 - Supports S3-compatible object storage for larger encrypted files when enabled.
 - Can run a second S3-compatible backend (for example Cloudflare R2) in parallel
   with the primary to pool provider free tiers, with per-backend byte ceilings.
@@ -116,8 +117,8 @@ The intended production shape is:
 - `flick-api`: Go HTTP API.
 - `flick-worker`: Go worker for cleanup and async jobs.
 - `nats`: NATS JetStream broker.
-- SQLite files on persistent volume for metadata, small ciphertext payloads,
-  and worker state.
+- PostgreSQL 17 for metadata, small ciphertext payloads, and worker state
+  (two logical databases: `flick_api`, `flick_worker`).
 - S3-compatible object storage bucket (MinIO dev, OCI S3-compatibility prod)
   for larger encrypted files, optionally plus a second S3-compatible bucket
   (Cloudflare R2) running in parallel with per-backend byte ceilings.
@@ -225,7 +226,7 @@ It must not contain:
 - production domains, except the public demo instance this README names on
   purpose so the client has a working example to point at
 - real bucket names
-- SQLite databases
+- database dumps
 - PVC dumps
 - backup archives
 

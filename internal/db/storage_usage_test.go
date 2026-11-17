@@ -34,14 +34,20 @@ type usageRequest struct {
 func insertUsageSecrets(t *testing.T, conn *sql.DB, rows []usageSecret) {
 	t.Helper()
 	for i, r := range rows {
-		consumed := "null"
+		var consumedAt any
 		if r.consumedAt != "" {
-			consumed = "'" + r.consumedAt + "'"
+			parsed, err := time.Parse(time.RFC3339Nano, r.consumedAt)
+			if err != nil {
+				t.Fatalf("parse consumed_at %q: %v", r.consumedAt, err)
+			}
+			consumedAt = parsed
 		}
 		_, err := conn.Exec(`insert into secrets
 			(id, kind, storage_backend, storage_key, size_bytes, max_views, view_count, state, expires_at, consumed_at, created_at, updated_at)
-			values (?, 'text', ?, ?, ?, 1, 0, ?, '2026-12-01T00:00:00Z', `+consumed+`, '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')`,
-			"sec-"+r.backend+"-"+string(rune('a'+i)), r.backend, "key-"+r.backend, r.size, r.state)
+			values ($1, 'text', $2, $3, $4, 1, 0, $5, $6, $7, $8, $9)`,
+			"sec-"+r.backend+"-"+string(rune('a'+i)), r.backend, "key-"+r.backend, r.size, r.state,
+			time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), consumedAt,
+			time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
 		if err != nil {
 			t.Fatalf("insert secret %d (%s): %v", i, r.backend, err)
 		}
@@ -65,7 +71,7 @@ func insertUsageRequests(t *testing.T, conn *sql.DB, rows []usageRequest) {
 		}
 		_, err := conn.Exec(`insert into requests
 			(id, public_key, fingerprint, submission_token_hash, retrieval_token_hash, state, kind, size_bytes, envelope_json, storage_backend, upload_key, final_key, ciphertext_sha256, attempt_token_hash, attempt_body_hash, reservation_expires_at, expires_at)
-			values (?, ?, 'fp', ?, ?, ?, 'file', ?, '{}', ?, ?, ?, ?, ?, ?, ?, '2026-12-01T00:00:00Z')`,
+			values ($1, $2, 'fp', $3, $4, $5, 'file', $6, '{}', $7, $8, $9, $10, $11, $12, $13, $14)`,
 			id,
 			"pk-"+id,
 			[]byte{
@@ -89,7 +95,8 @@ func insertUsageRequests(t *testing.T, conn *sql.DB, rows []usageRequest) {
 				5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 				5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 			},
-			"2026-11-09T12:10:00Z")
+			time.Date(2026, 11, 9, 12, 10, 0, 0, time.UTC),
+			time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC))
 		if err != nil {
 			t.Fatalf("insert request %d (%s, %s): %v", i, r.backend, r.state, err)
 		}
@@ -98,14 +105,7 @@ func insertUsageRequests(t *testing.T, conn *sql.DB, rows []usageRequest) {
 
 func TestStorageObjectBytesPerBackend(t *testing.T) {
 	ctx := context.Background()
-	conn, err := OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	if err := MigrateAPI(ctx, conn); err != nil {
-		t.Fatal(err)
-	}
+	conn := openTestAPIDatabase(t)
 
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 

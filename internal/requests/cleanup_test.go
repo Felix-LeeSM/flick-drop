@@ -60,7 +60,7 @@ func TestRequestReconciliationRestartsAndFindsLatePUTAfterMetadataPurge(t *testi
 		t.Fatal("duplicate pending jobs", n, err)
 	}
 	var previousJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=?`, upload).Scan(&previousJob); err != nil {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=$1`, upload).Scan(&previousJob); err != nil {
 		t.Fatal(err)
 	}
 	if err := restarted.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, previousJob, upload); err != nil {
@@ -73,7 +73,7 @@ func TestRequestReconciliationRestartsAndFindsLatePUTAfterMetadataPurge(t *testi
 		t.Fatal(err)
 	}
 	var currentJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=?`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=$1`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
 		t.Fatal("stale ACK erased/reused claim", err)
 	}
 	for _, event := range outboxKeys(t, f.db) {
@@ -111,19 +111,14 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 			}
 			switch failure {
 			case "lookup":
-				if _, err := f.db.Exec(`drop table requests`); err != nil {
+				// cascade: request_payloads carries the only foreign key to requests.
+				if _, err := f.db.Exec(`drop table requests cascade`); err != nil {
 					t.Fatal(err)
 				}
 			case "outbox":
-				if _, err := f.db.Exec(`create trigger fail before insert on outbox_events begin select raise(abort,'enqueue failure'); end`); err != nil {
-					t.Fatal(err)
-				}
+				injectFailureTrigger(t, f.db, "fail", "outbox_events", "before insert", "")
 			case "commit":
-				for _, sql := range []string{`create table deferred_failure(id text references requests(id) deferrable initially deferred)`, `create trigger fail after insert on request_reconciliation_pending_v2 begin insert into deferred_failure values('missing'); end`} {
-					if _, err := f.db.Exec(sql); err != nil {
-						t.Fatal(err)
-					}
-				}
+				injectDeferredCommitFailure(t, f.db, "fail", "request_reconciliation_pending_v2", "after insert", "")
 			}
 			_, err := f.store.ReconcileOnce(ctx, 10)
 			if failure == "stale_page" {
@@ -165,26 +160,21 @@ func TestLargeTransitionsRollBackOutboxAndCommitFailures(t *testing.T) {
 				if operation != "reserve" {
 					reserve(t, f, o, c, in, data)
 				}
-				table := "outbox_events"
+				table, event := "outbox_events", "insert"
 				if operation == "reserve" {
-					table = "requests"
+					table, event = "requests", "update of state"
 				}
-				statement := `create trigger fail before insert on outbox_events begin select raise(abort,'failure'); end`
-				if operation == "reserve" {
-					statement = `create trigger fail before update of state on requests when new.state='uploading' begin select raise(abort,'failure'); end`
-				}
-				if failure == "commit" {
-					if _, err := f.db.Exec(`create table deferred_failure(id text references requests(id) deferrable initially deferred)`); err != nil {
-						t.Fatal(err)
+				// 문장 실패는 예약 전이 문장만 노린다(when new.state='uploading');
+				// 커밋 실패는 when 없이 같은 행 사건마다 유예 FK 위반 행을 쌓아
+				// COMMIT 시점에 실패시킨다.
+				if failure == "statement" {
+					when := ""
+					if operation == "reserve" {
+						when = `new.state = 'uploading'`
 					}
-					action := "insert"
-					if table == "requests" {
-						action = "update of state"
-					}
-					statement = `create trigger fail after ` + action + ` on ` + table + ` begin insert into deferred_failure values('missing'); end`
-				}
-				if _, err := f.db.Exec(statement); err != nil {
-					t.Fatal(err)
+					injectFailureTrigger(t, f.db, "fail", table, "before "+event, when)
+				} else {
+					injectDeferredCommitFailure(t, f.db, "fail", table, "after "+event, "")
 				}
 				var err error
 				switch operation {
@@ -219,7 +209,7 @@ func TestLargeTransitionsRollBackOutboxAndCommitFailures(t *testing.T) {
 				}
 				var state string
 				var generation int
-				if err := f.db.QueryRow(`select state,generation from requests where id=?`, c.ID).Scan(&state, &generation); err != nil {
+				if err := f.db.QueryRow(`select state,generation from requests where id=$1`, c.ID).Scan(&state, &generation); err != nil {
 					t.Fatal(err)
 				}
 				want := "uploading"

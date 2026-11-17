@@ -10,14 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"filippo.io/age"
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
 var testKeyOnce sync.Once
@@ -38,28 +36,20 @@ func publicKey(t *testing.T) string {
 type fixture struct {
 	store *Store
 	db    *sql.DB
-	path  string
+	url   string
 	now   time.Time
 }
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "requests.db")
-	conn, err := db.OpenSQLite(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	if err := db.MigrateAPI(context.Background(), conn); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(conn, Options{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	database := openTestRequestsDatabase(t)
+	store, err := NewStore(database.db, Options{PayloadInlineMaxBytes: 1024, MaxObjectBytes: 900, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 8, 0, 0, 0, 500000000, time.UTC)
 	store.now = func() time.Time { return now }
-	return fixture{store, conn, path, now}
+	return fixture{store, database.db, database.url, now}
 }
 
 func (f fixture) create(t *testing.T) Created {
@@ -130,7 +120,7 @@ func TestCreateCapabilitiesAndAuthorization(t *testing.T) {
 	}
 	var sh, rh []byte
 	var key, fp string
-	if err := f.db.QueryRow(`select submission_token_hash, retrieval_token_hash, public_key, fingerprint from requests where id = ?`, c.ID).Scan(&sh, &rh, &key, &fp); err != nil {
+	if err := f.db.QueryRow(`select submission_token_hash, retrieval_token_hash, public_key, fingerprint from requests where id = $1`, c.ID).Scan(&sh, &rh, &key, &fp); err != nil {
 		t.Fatal(err)
 	}
 	wantSH, _ := tokenHash(c.SubmissionToken)
@@ -205,7 +195,7 @@ func TestInlineLifecycleAndReceiptAfterConsumption(t *testing.T) {
 				t.Fatal("payload retained after open")
 			}
 			var envelope sql.NullString
-			if err := f.db.QueryRow(`select envelope_json from requests where id=?`, c.ID).Scan(&envelope); err != nil || envelope.Valid {
+			if err := f.db.QueryRow(`select envelope_json from requests where id=$1`, c.ID).Scan(&envelope); err != nil || envelope.Valid {
 				t.Fatal("envelope retained")
 			}
 			_, err = f.store.Open(ctx, c.ID, c.RetrievalToken)
@@ -272,16 +262,9 @@ func TestConcurrentSubmissionAndOpenAcrossConnections(t *testing.T) {
 			f := newFixture(t)
 			c := f.create(t)
 			ctx := context.Background()
-			conn, err := db.OpenSQLite(ctx, f.path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close()
-			second, err := NewStore(conn, f.store.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			second.now = f.store.now
+			// A second pool over the same schema is the Postgres analogue of a
+			// second API connection: each pool commits independently.
+			second := reopenLarge(t, f)
 			stores := []*Store{f.store, second}
 			start := make(chan struct{})
 			results := make(chan error, 2)
@@ -463,12 +446,10 @@ func TestTransactionRollbackAndExpiryAtCommit(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			trigger := `create trigger fail before insert on request_payloads begin select raise(abort,'storage failure'); end`
-			if operation != "submit" {
-				trigger = `create trigger fail before update of state on requests when new.state in ('consumed','cancelled') begin select raise(abort,'storage failure'); end`
-			}
-			if _, err := f.db.Exec(trigger); err != nil {
-				t.Fatal(err)
+			if operation == "submit" {
+				injectFailureTrigger(t, f.db, "fail", "request_payloads", "before insert", "")
+			} else {
+				injectFailureTrigger(t, f.db, "fail", "requests", "before update of state", `new.state in ('consumed','cancelled')`)
 			}
 			perform := func() error {
 				switch operation {
@@ -485,7 +466,11 @@ func TestTransactionRollbackAndExpiryAtCommit(t *testing.T) {
 			if perform() == nil {
 				t.Fatal("failed transaction succeeded")
 			}
-			if _, err := f.db.Exec(`drop trigger fail`); err != nil {
+			table := "requests"
+			if operation == "submit" {
+				table = "request_payloads"
+			}
+			if _, err := f.db.Exec(`drop trigger fail on ` + table); err != nil {
 				t.Fatal(err)
 			}
 			status, err := f.store.Owner(ctx, c.ID, c.RetrievalToken)
@@ -534,7 +519,16 @@ func TestFailedCommitRollsBackBeforeConnectionReuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := map[string]string{"submit": "submitted", "open": "consumed", "revoke": "cancelled"}[operation]
-			if _, err := f.db.Exec(`create trigger fail_transition after update of state on requests when new.state = '` + target + `' and old.state != new.state begin insert into fail_commit values ('missing-parent'); end`); err != nil {
+			fn := `create function fail_transition_fn() returns trigger language plpgsql as $fn$
+				begin
+					insert into fail_commit values ('missing-parent');
+					return null;
+				end;
+				$fn$`
+			if _, err := f.db.Exec(fn); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`create trigger fail_transition after update of state on requests for each row when (new.state = '` + target + `' and old.state is distinct from new.state) execute function fail_transition_fn()`); err != nil {
 				t.Fatal(err)
 			}
 			perform := func() error {
@@ -562,7 +556,10 @@ func TestFailedCommitRollsBackBeforeConnectionReuse(t *testing.T) {
 			if err != nil || status.State != want || count(t, f.db, "request_payloads") != payloads || count(t, f.db, "fail_commit") != 0 {
 				t.Fatal("failed COMMIT leaked partial state")
 			}
-			if _, err := f.db.Exec(`drop trigger fail_transition`); err != nil {
+			if _, err := f.db.Exec(`drop trigger fail_transition on requests`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`drop function fail_transition_fn`); err != nil {
 				t.Fatal(err)
 			}
 			if err := perform(); err != nil {
@@ -582,8 +579,8 @@ func TestCancelledCommitPreservesReplacementCleanup(t *testing.T) {
 		calls++
 		if calls == 2 {
 			cancel()
-			// Let database/sql perform its asynchronous cancellation rollback.
-			// Our failed-COMMIT cleanup then discards that physical connection.
+			// Let database/sql complete its asynchronous cancellation rollback
+			// and discard the cancelled physical connection.
 			time.Sleep(10 * time.Millisecond)
 		}
 		return f.now
@@ -594,11 +591,10 @@ func TestCancelledCommitPreservesReplacementCleanup(t *testing.T) {
 		t.Fatalf("cancelled submission: %v", err)
 	}
 	f.store.now = func() time.Time { return f.now }
-	for pragma, want := range map[string]int{"foreign_keys": 1, "busy_timeout": 5000} {
-		var got int
-		if err := f.db.QueryRow("pragma " + pragma).Scan(&got); err != nil || got != want {
-			t.Fatalf("replacement %s = %d, want %d: %v", pragma, got, want, err)
-		}
+	// A replacement connection from the pool must be healthy: the cancelled
+	// one is discarded, and nothing about the pool may be poisoned by it.
+	if err := f.db.PingContext(context.Background()); err != nil {
+		t.Fatalf("replacement pool ping: %v", err)
 	}
 	if count(t, f.db, "request_payloads") != 0 {
 		t.Fatal("cancelled transaction retained a payload")
@@ -741,7 +737,7 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		t.Fatal(err)
 	}
 	var dbNote sql.NullString
-	if err := f.db.QueryRow(`select encrypted_note from requests where id = ?`, created.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+	if err := f.db.QueryRow(`select encrypted_note from requests where id = $1`, created.ID).Scan(&dbNote); err != nil || dbNote.Valid {
 		t.Fatalf("encrypted_note retained after open: %+v err=%v", dbNote, err)
 	}
 
@@ -781,7 +777,7 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 	if openedObj.Body != nil {
 		openedObj.Body.Close()
 	}
-	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, lc.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = $1`, lc.ID).Scan(&dbNote); err != nil || dbNote.Valid {
 		t.Fatalf("encrypted_note survived object consume (final %s / %s): %+v err=%v", finalKey, final2, dbNote, err)
 	}
 
@@ -792,13 +788,13 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 	}
 	exIn, exData := largeInput()
 	reserve(t, lf, obj, exhausted, exIn, exData)
-	if _, err := lf.db.Exec(`update requests set generation = ? where id = ?`, MaxGeneration, exhausted.ID); err != nil {
+	if _, err := lf.db.Exec(`update requests set generation = $1 where id = $2`, MaxGeneration, exhausted.ID); err != nil {
 		t.Fatal(err)
 	}
 	exIn.Generation = MaxGeneration
 	_, err = lf.store.Abandon(ctx, exhausted.ID, exhausted.SubmissionToken, attemptInput(exIn))
 	requireError(t, err, ErrUnavailable)
-	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, exhausted.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = $1`, exhausted.ID).Scan(&dbNote); err != nil || dbNote.Valid {
 		t.Fatalf("encrypted_note survived generation exhaustion: %+v err=%v", dbNote, err)
 	}
 
@@ -819,7 +815,7 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		if err := lf.store.Revoke(ctx, revoked.ID, revoked.RetrievalToken); err != nil {
 			t.Fatal(err)
 		}
-		if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, revoked.ID).Scan(&dbNote); err != nil || dbNote.Valid {
+		if err := lf.db.QueryRow(`select encrypted_note from requests where id = $1`, revoked.ID).Scan(&dbNote); err != nil || dbNote.Valid {
 			t.Fatalf("encrypted_note survived revoke from %s: %+v err=%v", stage, dbNote, err)
 		}
 	}
@@ -839,7 +835,7 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := lf.db.QueryRow(`select encrypted_note from requests where id = ?`, exp.ID).Scan(&dbNote); !errors.Is(err, sql.ErrNoRows) {
+	if err := lf.db.QueryRow(`select encrypted_note from requests where id = $1`, exp.ID).Scan(&dbNote); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expired request row retained: note=%+v err=%v", dbNote, err)
 	}
 }

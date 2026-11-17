@@ -173,9 +173,9 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, createSecretResponse{
 		ManagementToken:     created.ManagementToken,
-		ManagementExpiresAt: created.ExpiresAt.Format(timeFormat),
+		ManagementExpiresAt: created.ExpiresAt.UTC().Format(timeFormat),
 		ID:                  created.ID,
-		ExpiresAt:           created.ExpiresAt.Format(timeFormat),
+		ExpiresAt:           created.ExpiresAt.UTC().Format(timeFormat),
 	})
 }
 
@@ -210,13 +210,13 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 
 	writeJSON(w, http.StatusCreated, createSecretLargeResponse{
 		ManagementToken:     res.ManagementToken,
-		ManagementExpiresAt: res.ExpiresAt.Format(timeFormat),
+		ManagementExpiresAt: res.ExpiresAt.UTC().Format(timeFormat),
 		ID:                  res.ID,
-		ExpiresAt:           res.ExpiresAt.Format(timeFormat),
+		ExpiresAt:           res.ExpiresAt.UTC().Format(timeFormat),
 		Upload: presignedUploadResponse{
 			URL:       res.Upload.URL,
 			Method:    res.Upload.Method,
-			ExpiresAt: res.Upload.ExpiresAt.Format(timeFormat),
+			ExpiresAt: res.Upload.ExpiresAt.UTC().Format(timeFormat),
 			Headers:   res.Upload.Headers,
 		},
 	})
@@ -249,7 +249,7 @@ func (s Server) getSecretMetadata(w http.ResponseWriter, r *http.Request) {
 		ID:        metadata.ID,
 		Kind:      metadata.Kind,
 		SizeBytes: metadata.SizeBytes,
-		ExpiresAt: metadata.ExpiresAt.Format(timeFormat),
+		ExpiresAt: metadata.ExpiresAt.UTC().Format(timeFormat),
 	}
 	// Model A exposes access KDF so the browser can derive the proof; Model B
 	// omits the access block so the browser opens with the fragment key instead.
@@ -314,7 +314,7 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "application/octet-stream")
 	h.Set("Content-Length", strconv.FormatInt(secret.SizeBytes, 10))
 	h.Set(headerKind, secret.Kind)
-	h.Set(headerExpiresAt, secret.ExpiresAt.Format(timeFormat))
+	h.Set(headerExpiresAt, secret.ExpiresAt.UTC().Format(timeFormat))
 	if secret.ContentType != nil {
 		h.Set(headerContentType, *secret.ContentType)
 	}
@@ -555,7 +555,7 @@ type managementStatusResponse struct {
 }
 
 func managementResponse(status secrets.ManagementStatus) managementStatusResponse {
-	return managementStatusResponse{status.ID, status.Status, status.ExpiresAt.Format(timeFormat), status.ExpiresAt.Format(timeFormat), status.CanCancel}
+	return managementStatusResponse{status.ID, status.Status, status.ExpiresAt.UTC().Format(timeFormat), status.ExpiresAt.UTC().Format(timeFormat), status.CanCancel}
 }
 
 func managementBearer(r *http.Request) string {

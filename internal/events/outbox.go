@@ -92,14 +92,14 @@ func (s *OutboxStore) EnqueueTx(ctx context.Context, tx *sql.Tx, event JobEvent)
 	now := s.now().UTC()
 	_, err = tx.ExecContext(ctx, `insert into outbox_events (
 		id, subject, payload_json, state, attempts, next_attempt_at, created_at, updated_at
-	) values (?, ?, ?, ?, 0, ?, ?, ?)`,
+	) values ($1, $2, $3, $4, 0, $5, $6, $7)`,
 		event.JobID,
 		s.subject,
 		string(payloadJSON),
 		StatePending,
-		formatTime(now),
-		formatTime(now),
-		formatTime(now),
+		now,
+		now,
+		now,
 	)
 	if err != nil {
 		return OutboxRecord{}, fmt.Errorf("insert outbox event: %w", err)
@@ -118,25 +118,33 @@ func (s *OutboxStore) EnqueueTx(ctx context.Context, tx *sql.Tx, event JobEvent)
 	}, nil
 }
 
-func (s *OutboxStore) ListDue(ctx context.Context, dueAt time.Time, limit int) ([]OutboxRecord, error) {
+// ClaimDueTx claims up to limit rows that are due inside the caller's
+// transaction using FOR UPDATE SKIP LOCKED: concurrent API replicas each take
+// a disjoint set of due rows, rows locked by another replica's in-flight
+// publish batch are skipped instead of blocking, and the claim (the row
+// locks) lasts until the publisher marks and commits. The caller publishes
+// while the locks are held, so a crash rolls the batch back and every row
+// returns to the due pool.
+func (s *OutboxStore) ClaimDueTx(ctx context.Context, tx *sql.Tx, dueAt time.Time, limit int) ([]OutboxRecord, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be positive")
 	}
 
-	rows, err := s.db.QueryContext(ctx, `select
+	rows, err := tx.QueryContext(ctx, `select
 			id, subject, payload_json, state, attempts, next_attempt_at,
 			published_at, last_error, created_at, updated_at
 		from outbox_events
-		where state in (?, ?) and next_attempt_at <= ?
+		where state in ($1, $2) and next_attempt_at <= $3
 		order by next_attempt_at, created_at
-		limit ?`,
+		limit $4
+		for update skip locked`,
 		StatePending,
 		StateFailed,
-		formatTime(dueAt.UTC()),
+		dueAt.UTC(),
 		limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list due outbox events: %w", err)
+		return nil, fmt.Errorf("claim due outbox events: %w", err)
 	}
 	defer rows.Close()
 
@@ -157,16 +165,60 @@ func (s *OutboxStore) ListDue(ctx context.Context, dueAt time.Time, limit int) (
 func (s *OutboxStore) MarkPublished(ctx context.Context, id string) error {
 	now := s.now().UTC()
 	result, err := s.db.ExecContext(ctx, `update outbox_events
-		set state = ?, published_at = ?, last_error = null, updated_at = ?
-		where id = ? and state != ?`,
+		set state = $1, published_at = $2, last_error = null, updated_at = $3
+		where id = $4 and state != $1`,
 		StatePublished,
-		formatTime(now),
-		formatTime(now),
+		now,
+		now,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("mark outbox event published: %w", err)
+	}
+	return requireAffected(result)
+}
+
+// markOutboxPublishedTx marks a claimed row inside the publisher's batch
+// transaction. The claim already holds the row lock, so the state guard is a
+// formality that keeps standalone and batched marks on one code path.
+func markOutboxPublishedTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `update outbox_events
+		set state = $1, published_at = $2, last_error = null, updated_at = $3
+		where id = $4 and state != $1`,
+		StatePublished,
+		now,
+		now,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("mark outbox event published: %w", err)
+	}
+	return requireAffected(result)
+}
+
+func markOutboxFailedTx(ctx context.Context, tx *sql.Tx, id string, publishErr error, nextAttemptAt, now time.Time) error {
+	if publishErr == nil {
+		return fmt.Errorf("publish error is required")
+	}
+	if nextAttemptAt.IsZero() {
+		return fmt.Errorf("next attempt time is required")
+	}
+	result, err := tx.ExecContext(ctx, `update outbox_events
+		set state = $1,
+			attempts = attempts + 1,
+			next_attempt_at = $2,
+			last_error = $3,
+			updated_at = $4
+		where id = $5 and state != $6`,
+		StateFailed,
+		nextAttemptAt.UTC(),
+		publishErr.Error(),
+		now,
 		id,
 		StatePublished,
 	)
 	if err != nil {
-		return fmt.Errorf("mark outbox event published: %w", err)
+		return fmt.Errorf("mark outbox event failed: %w", err)
 	}
 	return requireAffected(result)
 }
@@ -175,19 +227,17 @@ func (s *OutboxStore) MarkPublished(ctx context.Context, id string) error {
 // Payloads name object keys (managed/secrets/{id}) and secret IDs, and the
 // JetStream work-queue stream drops messages once acknowledged, so pruning
 // these rows is what lets the API forget an opened secret.
-// internal/db/migrations.go pins the same value for its one-time purge.
 const PublishedRetention = time.Hour
 
 // PurgePublishedTx deletes up to limit outbox rows published at least
 // PublishedRetention before now. Pending and failed rows stay: they are still
-// due for delivery or needed to diagnose a broken publish. published_at uses
-// RFC3339Nano (varying width), so the comparison goes through julianday.
+// due for delivery or needed to diagnose a broken publish.
 func PurgePublishedTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
-	cutoff := formatTime(now.Add(-PublishedRetention))
+	cutoff := now.Add(-PublishedRetention)
 	if _, err := tx.ExecContext(ctx, `delete from outbox_events where id in (
 		select id from outbox_events
-		where state = ? and julianday(published_at) <= julianday(?)
-		order by published_at limit ?)`, StatePublished, cutoff, limit); err != nil {
+		where state = $1 and published_at <= $2
+		order by published_at limit $3)`, StatePublished, cutoff, limit); err != nil {
 		return fmt.Errorf("purge published outbox events: %w", err)
 	}
 	return nil
@@ -202,16 +252,16 @@ func (s *OutboxStore) MarkFailed(ctx context.Context, id string, publishErr erro
 	}
 	now := s.now().UTC()
 	result, err := s.db.ExecContext(ctx, `update outbox_events
-		set state = ?,
+		set state = $1,
 			attempts = attempts + 1,
-			next_attempt_at = ?,
-			last_error = ?,
-			updated_at = ?
-		where id = ? and state != ?`,
+			next_attempt_at = $2,
+			last_error = $3,
+			updated_at = $4
+		where id = $5 and state != $6`,
 		StateFailed,
-		formatTime(nextAttemptAt.UTC()),
+		nextAttemptAt.UTC(),
 		publishErr.Error(),
-		formatTime(now),
+		now,
 		id,
 		StatePublished,
 	)
@@ -227,11 +277,8 @@ type outboxScanner interface {
 
 func scanOutboxRecord(scanner outboxScanner) (OutboxRecord, error) {
 	var record OutboxRecord
-	var nextAttemptRaw string
-	var publishedRaw sql.NullString
+	var publishedAt sql.NullTime
 	var lastError sql.NullString
-	var createdRaw string
-	var updatedRaw string
 
 	err := scanner.Scan(
 		&record.ID,
@@ -239,11 +286,11 @@ func scanOutboxRecord(scanner outboxScanner) (OutboxRecord, error) {
 		&record.PayloadJSON,
 		&record.State,
 		&record.Attempts,
-		&nextAttemptRaw,
-		&publishedRaw,
+		&record.NextAttemptAt,
+		&publishedAt,
 		&lastError,
-		&createdRaw,
-		&updatedRaw,
+		&record.CreatedAt,
+		&record.UpdatedAt,
 	)
 	if err != nil {
 		return OutboxRecord{}, fmt.Errorf("scan outbox event: %w", err)
@@ -254,28 +301,9 @@ func scanOutboxRecord(scanner outboxScanner) (OutboxRecord, error) {
 	}
 	record.Payload = event
 
-	nextAttemptAt, err := parseTime(nextAttemptRaw)
-	if err != nil {
-		return OutboxRecord{}, fmt.Errorf("parse next_attempt_at: %w", err)
-	}
-	createdAt, err := parseTime(createdRaw)
-	if err != nil {
-		return OutboxRecord{}, fmt.Errorf("parse created_at: %w", err)
-	}
-	updatedAt, err := parseTime(updatedRaw)
-	if err != nil {
-		return OutboxRecord{}, fmt.Errorf("parse updated_at: %w", err)
-	}
-	record.NextAttemptAt = nextAttemptAt
-	record.CreatedAt = createdAt
-	record.UpdatedAt = updatedAt
-
-	if publishedRaw.Valid {
-		publishedAt, err := parseTime(publishedRaw.String)
-		if err != nil {
-			return OutboxRecord{}, fmt.Errorf("parse published_at: %w", err)
-		}
-		record.PublishedAt = &publishedAt
+	if publishedAt.Valid {
+		published := publishedAt.Time
+		record.PublishedAt = &published
 	}
 	if lastError.Valid {
 		record.LastError = &lastError.String
@@ -296,16 +324,4 @@ func requireAffected(result sql.Result) error {
 
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
-}
-
-func formatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func parseTime(raw string) (time.Time, error) {
-	value, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return value.UTC(), nil
 }

@@ -46,8 +46,10 @@ type Config struct {
 	OTLPEndpoint       string
 	InternalAPIBaseURL string
 	APIAddr            string
-	APIDBPath          string
-	WorkerDBPath       string
+	// APIDatabaseURL is the PostgreSQL DSN for the flick_api logical database
+	// (FLICK_DATABASE_URL, flick_api role). M15 PR 3 moved the API store to
+	// Postgres; the api entrypoint fails fast when it is empty.
+	APIDatabaseURL string
 	// WorkerDatabaseURL is the PostgreSQL DSN for the flick_worker logical
 	// database (FLICK_WORKER_DATABASE_URL, flick_worker role). M15 PR 2 moved
 	// the worker store to Postgres; the worker entrypoint fails fast when it
@@ -92,8 +94,7 @@ func Load() (Config, error) {
 		OTLPEndpoint:       getenv("FLICK_OTLP_ENDPOINT", ""),
 		InternalAPIBaseURL: getenv("FLICK_INTERNAL_API_BASE_URL", "http://localhost:8080"),
 		APIAddr:            getenv("FLICK_API_ADDR", ":8080"),
-		APIDBPath:          getenv("FLICK_API_DB_PATH", "./var/api.db"),
-		WorkerDBPath:       getenv("FLICK_WORKER_DB_PATH", "./var/worker.db"),
+		APIDatabaseURL:     getenv("FLICK_DATABASE_URL", ""),
 		WorkerDatabaseURL:  getenv("FLICK_WORKER_DATABASE_URL", ""),
 		// An explicitly empty value disables the worker metrics listener; the
 		// deployment default binds :9091 (bearer-gated by FLICK_METRICS_TOKEN).

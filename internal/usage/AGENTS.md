@@ -1,6 +1,6 @@
 # `internal/usage/` Guide
 
-This package owns the api.db `usage_counters` table: daily aggregate usage
+This package owns the `flick_api` `usage_counters` table: daily aggregate usage
 counters written inside the secrets and requests state-change transactions.
 There is no HTTP reader — the table is the durable record, inspected through
 ops-side DB access; the live scraped view is the Prometheus counters served on
@@ -11,9 +11,9 @@ Boundary:
 - `usage.Increment` (`usage.go`) is the only writer of `usage_counters`. The
   `internal/secrets` and `internal/requests` stores call it inside the same
   transaction as the state change the counter describes, passing their
-  `*sql.Tx` as the `Counter` handle — the single-connection SQLite pool makes
-  an out-of-band write deadlock (see `internal/db/storage_usage.go` for the
-  same pattern).
+  `*sql.Tx` as the `Counter` handle — the increment must commit or roll back
+  with the row it describes, never drift to its own transaction
+  (see `internal/db/storage_usage.go` for the same pattern).
 - Table schema is created idempotently in `internal/db/migrations.go`
   (`MigrateAPI`), like every other table.
 

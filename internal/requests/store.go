@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,10 +20,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 	"github.com/Felix-LeeSM/flick-drop/internal/usage"
 )
-
-// Fixed-width UTC timestamps preserve indexed subsecond deadline ordering.
-// The literal Z assumes the value is pinned to UTC before formatting.
-const timeFormat = "2006-01-02T15:04:05.000000000Z"
 
 type finalizeCall struct {
 	done    chan struct{}
@@ -182,7 +177,7 @@ func (s *Store) Create(ctx context.Context, publicKey string, ttl *int, encrypte
 	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `insert into requests
 		(id, public_key, fingerprint, encrypted_note, submission_token_hash, retrieval_token_hash, expires_at)
-		values (?, ?, ?, ?, ?, ?, ?)`, id, publicKey, fingerprint, note, submitHash, retrieveHash, expires.Format(timeFormat))
+		values ($1, $2, $3, $4, $5, $6, $7)`, id, publicKey, fingerprint, note, submitHash, retrieveHash, expires)
 	if err != nil {
 		return Created{}, err
 	}
@@ -216,31 +211,24 @@ func (s *Store) authorized(ctx context.Context, db rowReader, id string, hash []
 	}
 	var row record
 	var storedHash []byte
-	var expiry string
-	var encryptedNote, reservationExpiry sql.NullString
-	err := db.QueryRowContext(ctx, `select public_key, fingerprint, encrypted_note, expires_at, state, generation, reservation_expires_at, `+column+` from requests where id = ?`, id).
-		Scan(&row.publicKey, &row.fingerprint, &encryptedNote, &expiry, &row.state, &row.generation, &reservationExpiry, &storedHash)
-	if encryptedNote.Valid {
-		row.encryptedNote = encryptedNote.String
-	}
+	var encryptedNote sql.NullString
+	var reservationExpiry sql.NullTime
+	err := db.QueryRowContext(ctx, `select public_key, fingerprint, encrypted_note, expires_at, state, generation, reservation_expires_at, `+column+` from requests where id = $1`, id).
+		Scan(&row.publicKey, &row.fingerprint, &encryptedNote, &row.expires, &row.state, &row.generation, &reservationExpiry, &storedHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record{}, ErrUnavailable
 	}
 	if err != nil {
 		return record{}, err
 	}
-	if subtle.ConstantTimeCompare(hash, storedHash) != 1 {
-		return record{}, ErrUnavailable
-	}
-	row.expires, err = time.Parse(timeFormat, expiry)
-	if err != nil {
-		return record{}, err
+	if encryptedNote.Valid {
+		row.encryptedNote = encryptedNote.String
 	}
 	if reservationExpiry.Valid {
-		row.reservationExpires, err = time.Parse(timeFormat, reservationExpiry.String)
-		if err != nil {
-			return record{}, err
-		}
+		row.reservationExpires = reservationExpiry.Time
+	}
+	if subtle.ConstantTimeCompare(hash, storedHash) != 1 {
+		return record{}, ErrUnavailable
 	}
 	if row.state == "unavailable" || !s.now().UTC().Before(row.expires) {
 		return record{}, ErrUnavailable
@@ -288,6 +276,12 @@ func (s *Store) Owner(ctx context.Context, id, token string) (OwnerStatus, error
 	return OwnerStatus{r.publicKey, r.fingerprint, r.expires, r.state}, nil
 }
 
+// writeTx pins the transaction's pool connection: begin takes the request row
+// lock through a no-op UPDATE on this connection, every later statement of the
+// transaction reuses it, and close releases both handles together on every
+// early-return path. Postgres rolls a failed COMMIT back server-side and
+// database/sql recycles the connection itself, so commit carries no manual
+// rollback.
 type writeTx struct {
 	*sql.Tx
 	conn *sql.Conn
@@ -313,14 +307,17 @@ func (s *Store) begin(ctx context.Context, id, token string, owner bool) (*write
 		return nil, record{}, err
 	}
 	tx := &writeTx{Tx: transaction, conn: conn}
-	// Acquire the SQLite writer before reading. A deferred read-then-write can
-	// fail with SQLITE_BUSY_SNAPSHOT across API connections. Check the clock
-	// after the lock, so a blocked writer cannot reuse a pre-expiry decision.
+	// Lock the request row before reading: the no-op UPDATE conflicts with any
+	// concurrent writer on the same row (submit, open, revoke, reservation
+	// expiry), and under READ COMMITTED a blocked writer re-reads the committed
+	// row after the lock wait instead of building on a stale snapshot. Check
+	// the clock after the lock, so a blocked writer cannot reuse a pre-expiry
+	// decision.
 	column := "submission_token_hash"
 	if owner {
 		column = "retrieval_token_hash"
 	}
-	if _, err = tx.ExecContext(ctx, `update requests set state = state where id = ? and `+column+` = ?`, id, hash); err != nil {
+	if _, err = tx.ExecContext(ctx, `update requests set state = state where id = $1 and `+column+` = $2`, id, hash); err != nil {
 		tx.close()
 		return nil, record{}, err
 	}
@@ -348,20 +345,7 @@ func (s *Store) commit(tx *writeTx, expires time.Time) error {
 	if !expires.IsZero() && !s.now().UTC().Before(expires) {
 		return ErrUnavailable
 	}
-	err := tx.Commit()
-	if err != nil {
-		// SQLite can leave the transaction active after a failed COMMIT, while
-		// database/sql marks Tx done. Pin the connection until explicit rollback
-		// completes, so a pooled connection cannot expose uncommitted state.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, rollbackErr := tx.conn.ExecContext(ctx, "rollback"); rollbackErr != nil {
-			// A cancelled driver transaction may already be rolled back. Discard
-			// conservatively if its state cannot be established.
-			_ = tx.conn.Raw(func(any) error { return driver.ErrBadConn })
-		}
-	}
-	return err
+	return tx.Commit()
 }
 
 func (s *Store) validateSubmission(in SubmitInput) ([]byte, []byte, []byte, error) {
@@ -413,7 +397,7 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	}
 	if row.state != "waiting" {
 		var storedAttempt, storedBody []byte
-		if err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash from requests where id = ?`, id).Scan(&storedAttempt, &storedBody); err != nil {
+		if err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash from requests where id = $1`, id).Scan(&storedAttempt, &storedBody); err != nil {
 			return Receipt{}, err
 		}
 		if !bytes.Equal(attempt, storedAttempt) || !bytes.Equal(bodyHash[:], storedBody) {
@@ -424,14 +408,14 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 		}
 		return Receipt{in.Generation, "submitted"}, nil
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = 'submitted', attempt_token_hash = ?, attempt_body_hash = ?, kind = ?, size_bytes = ?, envelope_json = ? where id = ? and state = 'waiting' and generation = ?`, attempt, bodyHash[:], in.Kind, in.SizeBytes, string(envelope), id, in.Generation)
+	changed, err := tx.ExecContext(ctx, `update requests set state = 'submitted', attempt_token_hash = $1, attempt_body_hash = $2, kind = $3, size_bytes = $4, envelope_json = $5 where id = $6 and state = 'waiting' and generation = $7`, attempt, bodyHash[:], in.Kind, in.SizeBytes, string(envelope), id, in.Generation)
 	if err != nil {
 		return Receipt{}, err
 	}
 	if err := requireTransition(changed); err != nil {
 		return Receipt{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `insert into request_payloads (request_id, ciphertext) values (?, ?)`, id, ciphertext); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into request_payloads (request_id, ciphertext) values ($1, $2)`, id, ciphertext); err != nil {
 		return Receipt{}, err
 	}
 	// Only the waiting -> submitted transition counts: the replay branch above
@@ -464,7 +448,7 @@ func (s *Store) Attempt(ctx context.Context, id, token string, generation int, a
 		return Receipt{}, ErrUnavailable
 	}
 	var stored []byte
-	if err := tx.QueryRowContext(ctx, `select attempt_token_hash from requests where id = ?`, id).Scan(&stored); err != nil {
+	if err := tx.QueryRowContext(ctx, `select attempt_token_hash from requests where id = $1`, id).Scan(&stored); err != nil {
 		return Receipt{}, err
 	}
 	state := "unavailable"
@@ -498,7 +482,7 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 	var envelope, backend string
 	var key sql.NullString
 	var ciphertext []byte
-	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, r.storage_backend, r.final_key, p.ciphertext from requests r left join request_payloads p on p.request_id = r.id where r.id = ?`, id).Scan(&opened.Kind, &opened.SizeBytes, &envelope, &backend, &key, &ciphertext); err != nil {
+	if err := tx.QueryRowContext(ctx, `select r.kind, r.size_bytes, r.envelope_json, r.storage_backend, r.final_key, p.ciphertext from requests r left join request_payloads p on p.request_id = r.id where r.id = $1`, id).Scan(&opened.Kind, &opened.SizeBytes, &envelope, &backend, &key, &ciphertext); err != nil {
 		return Opened{}, err
 	}
 	if err := json.Unmarshal([]byte(envelope), &opened.Envelope); err != nil {
@@ -522,8 +506,9 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 		return opened, nil
 	}
 
-	// Object I/O must not hold the SQLite writer. Cancellation or another open
-	// can commit meanwhile; only the later conditional transaction consumes.
+	// Object I/O must not hold the consuming transaction's row lock. Cancellation
+	// or another open can commit meanwhile; only the later conditional
+	// transaction consumes.
 	tx.close()
 	if s.opts.Objects == nil {
 		return Opened{}, ErrStorage
@@ -563,7 +548,7 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 	}
 	// final_key stays set: it protects the object while the body streams, and
 	// FinishOpen or the stream grace releases it.
-	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = ?, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = ? and state = 'submitted' and final_key = ?`, s.now().UTC().Format(timeFormat), id, key.String)
+	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = $1, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = $2 and state = 'submitted' and final_key = $3`, s.now().UTC(), id, key.String)
 	if err != nil {
 		return err
 	}
@@ -596,14 +581,14 @@ func (s *Store) FinishOpen(ctx context.Context, id, key string) error {
 	tx := &writeTx{Tx: transaction, conn: conn}
 	defer tx.close()
 	var backend sql.NullString
-	if err := tx.QueryRowContext(ctx, `select storage_backend from requests where id = ?`, id).Scan(&backend); err != nil {
+	if err := tx.QueryRowContext(ctx, `select storage_backend from requests where id = $1`, id).Scan(&backend); err != nil {
 		return err
 	}
 	placedBackend := storage.PrimaryBackend
 	if backend.Valid && backend.String != "" {
 		placedBackend = backend.String
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set final_key = null where id = ? and state = 'consumed' and final_key = ?`, id, key)
+	changed, err := tx.ExecContext(ctx, `update requests set final_key = null where id = $1 and state = 'consumed' and final_key = $2`, id, key)
 	if err != nil {
 		return err
 	}
@@ -635,10 +620,10 @@ func (s *Store) clearPayloadTx(ctx context.Context, tx *sql.Tx, id, previousStat
 	if err := enqueueRequestKeysTx(ctx, tx, s.opts.Outbox, id, reason, s.now().UTC()); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from request_payloads where request_id = $1`, id); err != nil {
 		return err
 	}
-	changed, err := tx.ExecContext(ctx, `update requests set state = ?, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null, consumed_at = case when ? = 'consumed' then ? else consumed_at end where id = ? and state = ?`, state, state, s.now().UTC().Format(timeFormat), id, previousState)
+	changed, err := tx.ExecContext(ctx, `update requests set state = $1, attempt_token_hash = case when state = 'uploading' then null else attempt_token_hash end, attempt_body_hash = case when state = 'uploading' then null else attempt_body_hash end, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, upload_key = null, final_key = null, reservation_expires_at = null, ciphertext_sha256 = null, consumed_at = case when $2 = 'consumed' then $3 else consumed_at end where id = $4 and state = $5`, state, state, s.now().UTC(), id, previousState)
 	if err != nil {
 		return err
 	}

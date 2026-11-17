@@ -240,7 +240,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 		id, kind, storage_backend, storage_key, access_kdf_params_json,
 		access_proof_hash, wrapped_identity, encrypted_filename, content_type,
 		size_bytes, max_views, view_count, expires_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+	) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12, $13, $14)`,
 		id,
 		input.Kind,
 		StorageSQLite,
@@ -252,9 +252,9 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 		input.ContentType,
 		input.SizeBytes,
 		input.MaxViews,
-		formatTime(expiresAt),
-		formatTime(now),
-		formatTime(now),
+		expiresAt,
+		now,
+		now,
 	)
 	if err != nil {
 		return Secret{}, fmt.Errorf("insert secret metadata: %w", err)
@@ -262,7 +262,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 
 	_, err = tx.ExecContext(ctx, `insert into secret_payloads (
 		secret_id, ciphertext, created_at
-	) values (?, ?, ?)`, id, input.Ciphertext, formatTime(now))
+	) values ($1, $2, $3)`, id, input.Ciphertext, now)
 	if err != nil {
 		return Secret{}, fmt.Errorf("insert secret payload: %w", err)
 	}
@@ -373,7 +373,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		id, kind, storage_backend, storage_key, access_kdf_params_json,
 		access_proof_hash, wrapped_identity, encrypted_filename, content_type,
 		size_bytes, max_views, view_count, state, expires_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending_upload', ?, ?, ?)`,
+	) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, 'pending_upload', $12, $13, $14)`,
 		id,
 		input.Kind,
 		backend,
@@ -385,9 +385,9 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		input.ContentType,
 		input.SizeBytes,
 		input.MaxViews,
-		formatTime(expiresAt),
-		formatTime(now),
-		formatTime(now),
+		expiresAt,
+		now,
+		now,
 	)
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("insert large secret metadata: %w", err)
@@ -414,6 +414,8 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 // Finalize confirms a pending_upload secret: it HEADs the object to verify it
 // exists with exactly the declared age file length, then flips state to
 // active. Idempotent — finalizing an already-active secret is a no-op success.
+// The HEAD runs inside the transaction but the SELECT takes no row lock, so a
+// concurrent Revoke or open is never blocked by the bucket round-trip.
 func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	ctx, span := tracer.Start(ctx, "secrets.Finalize", trace.WithAttributes(
 		attribute.String("storage.backend", StorageS3),
@@ -430,10 +432,11 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	}
 	defer rollback(tx)
 
-	var state, storageBackend, storageKey, expiresRaw, createdRaw string
+	var state, storageBackend, storageKey string
+	var expiresAt, createdAt time.Time
 	var sizeBytes int64
-	err = tx.QueryRowContext(ctx, `select state, storage_backend, storage_key, expires_at, created_at, size_bytes from secrets where id = ?`, id).
-		Scan(&state, &storageBackend, &storageKey, &expiresRaw, &createdRaw, &sizeBytes)
+	err = tx.QueryRowContext(ctx, `select state, storage_backend, storage_key, expires_at, created_at, size_bytes from secrets where id = $1`, id).
+		Scan(&state, &storageBackend, &storageKey, &expiresAt, &createdAt, &sizeBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -445,14 +448,6 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	}
 	if state != "pending_upload" {
 		return ErrNotPending
-	}
-	expiresAt, err := parseTime(expiresRaw)
-	if err != nil {
-		return fmt.Errorf("parse expires_at: %w", err)
-	}
-	createdAt, err := parseTime(createdRaw)
-	if err != nil {
-		return fmt.Errorf("parse upload creation time: %w", err)
 	}
 	deadline := expiresAt
 	if pendingDeadline := createdAt.Add(s.pendingTTL); pendingDeadline.Before(deadline) {
@@ -482,12 +477,20 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if !now.Before(deadline) {
 		return ErrExpired
 	}
-	if err := s.activateSecretTx(ctx, tx, id, now); err != nil {
+	activated, err := s.activateSecretTx(ctx, tx, id, now)
+	if err != nil {
 		return err
 	}
+	if !activated {
+		// Another replica finalized this upload between this transaction's
+		// SELECT and the conditional UPDATE. Its commit already counted the
+		// bytes and dropped the in-flight gauge, so returning nil without
+		// incrementing is what keeps finalize replays from double-counting.
+		return nil
+	}
 	// The object is confirmed at exactly the staged length, so this is where the
-	// large upload's bytes actually landed. The idempotent already-active early
-	// return above never reaches here, so finalize replays cannot double-count.
+	// large upload's bytes actually landed. The idempotent paths above never
+	// reach here, so finalize replays cannot double-count.
 	if err := usage.Increment(ctx, tx, now, usage.BytesUploaded, sizeBytes); err != nil {
 		return err
 	}
@@ -495,32 +498,48 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 		return fmt.Errorf("commit finalize: %w", err)
 	}
 	// A pending_upload just became active: the client completed the upload, so
-	// the in-flight gauge drops. (The no-op "already active" early return above
-	// never reaches here, so we do not double-decrement.)
+	// the in-flight gauge drops. (The idempotent paths above never reach here,
+	// so we do not double-decrement.)
 	telemetry.ActiveUploads.Dec()
 	return nil
 }
 
-// activateSecretTx flips a pending_upload secret to active, guarding the
-// affected-row count: 0 rows means the row vanished between Finalize's SELECT
-// and this UPDATE — the expiration reaper hard-deletes pending_upload orphans
-// older than PendingTTL, and any concurrent hard-delete has the same effect.
-// Surfacing ErrNotFound (instead of a silent success) lets the client learn the
-// upload was reaped rather than believe it finalized. Extracted from Finalize so
-// the race guard is unit-testable in isolation.
-func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=? where id=? and state='pending_upload'`, formatTime(now), id)
+// activateSecretTx flips a pending_upload secret to active and reports whether
+// this transaction performed the flip. Guarding the affected-row count keeps
+// the pending→active flip race-safe across replicas: 0 rows means the row was
+// hard-deleted between Finalize's SELECT and this UPDATE (the expiration reaper
+// removes pending_upload orphans older than PendingTTL, and any concurrent
+// Revoke has the same effect — the client must learn the upload was reaped or
+// cancelled, not believe it finalized), or another replica already activated
+// the row. The re-read distinguishes the two: already-active is idempotent
+// success (activated=false), anything else is ErrNotFound. Extracted from
+// Finalize so the race guard is unit-testable in isolation.
+func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (bool, error) {
+	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=$1 where id=$2 and state='pending_upload'`, now, id)
 	if err != nil {
-		return fmt.Errorf("activate secret: %w", err)
+		return false, fmt.Errorf("activate secret: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read activate row count: %w", err)
+		return false, fmt.Errorf("read activate row count: %w", err)
 	}
 	if affected != 1 {
-		return ErrNotFound
+		// Under READ COMMITTED this re-read sees the concurrent commit that beat
+		// this UPDATE, so an already-active row reads as idempotent success.
+		var state string
+		err := tx.QueryRowContext(ctx, `select state from secrets where id = $1`, id).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		if err != nil {
+			return false, fmt.Errorf("re-read secret state after activate: %w", err)
+		}
+		if state == "active" {
+			return false, nil
+		}
+		return false, ErrNotFound
 	}
-	return nil
+	return true, nil
 }
 
 // PendingTTL is how long a pending_upload secret may wait for /finalize before
@@ -561,12 +580,11 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 
 	var metadata Metadata
 	var accessKDFJSON sql.NullString
-	var expiresRaw string
-	var consumedAt sql.NullString
+	var consumedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `select
 			s.id, s.kind, s.access_kdf_params_json, s.size_bytes, s.expires_at, s.consumed_at
 		from secrets s
-		where s.id = ? and (s.storage_backend in ('s3_object', 'r2_object')
+		where s.id = $1 and (s.storage_backend in ('s3_object', 'r2_object')
 			or exists (select 1 from secret_payloads p where p.secret_id = s.id))`,
 		id,
 	).Scan(
@@ -574,7 +592,7 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 		&metadata.Kind,
 		&accessKDFJSON,
 		&metadata.SizeBytes,
-		&expiresRaw,
+		&metadata.ExpiresAt,
 		&consumedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -595,11 +613,6 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 			return Metadata{}, fmt.Errorf("decode access kdf params: %w", err)
 		}
 	}
-	expiresAt, err := parseTime(expiresRaw)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("parse expires_at: %w", err)
-	}
-	metadata.ExpiresAt = expiresAt
 	if !s.now().UTC().Before(metadata.ExpiresAt) {
 		return Metadata{}, ErrExpired
 	}
@@ -662,7 +675,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	// its management record go in this transaction, so every later request for
 	// the ID gets the unknown-ID response. An inline body was already loaded
 	// into secret.Ciphertext. A lost race reads as unknown too.
-	result, err := tx.ExecContext(ctx, `delete from secrets where id = ? and consumed_at is null`, id)
+	result, err := tx.ExecContext(ctx, `delete from secrets where id = $1 and consumed_at is null`, id)
 	if err != nil {
 		return Secret{}, fmt.Errorf("delete opened secret: %w", err)
 	}
@@ -673,15 +686,15 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if affected != 1 {
 		return Secret{}, ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id = $1`, id); err != nil {
 		return Secret{}, fmt.Errorf("delete opened management record: %w", err)
 	}
 	// A bucket body may still be streaming. With its row gone, only this
 	// key-and-deadline record keeps reconciliation away until the stream
 	// deadline has certainly passed (reconciliation.go:protectObjectTx).
 	if secret.Body != nil {
-		if _, err := tx.ExecContext(ctx, `insert into secret_open_grace (object_key, grace_until) values (?, ?)`,
-			secret.StorageKey, now.Add(openObjectGrace).Format(managementTimeFormat)); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into secret_open_grace (object_key, grace_until) values ($1, $2)`,
+			secret.StorageKey, now.Add(openObjectGrace)); err != nil {
 			return Secret{}, fmt.Errorf("protect streaming object: %w", err)
 		}
 	}
@@ -691,9 +704,9 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	return secret, nil
 }
 
-// openBody starts reading an S3-backed body. SQLite-backed secrets already
-// carry their ciphertext from load. The object must be exactly the length
-// /finalize checked, because the caller announces that length before
+// openBody starts reading an S3-backed body. Inline (sqlite_blob) secrets
+// already carry their ciphertext from load. The object must be exactly the
+// length /finalize checked, because the caller announces that length before
 // streaming.
 func (s *Store) openBody(ctx context.Context, secret *Secret) error {
 	if secret.StorageBackend != StorageS3 && secret.StorageBackend != storage.SecondaryBackend {
@@ -719,38 +732,36 @@ func (s *Store) openBody(ctx context.Context, secret *Secret) error {
 }
 
 func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string, storageBackend, storageKey string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, `update secrets
+	// One atomic statement increments and returns the post-increment state, so
+	// two concurrent final attempts cannot both read a pre-lockout count and
+	// double-record the lockout or its usage counter. Under READ COMMITTED the
+	// loser's UPDATE re-evaluates consumed_at is null after the winner commits
+	// and matches 0 rows.
+	var failedAccessCount int
+	var consumedAt sql.NullTime
+	err := tx.QueryRowContext(ctx, `update secrets
 		set failed_access_count = failed_access_count + 1,
 			consumed_at = case
-				when failed_access_count + 1 >= ? then ?
+				when failed_access_count + 1 >= $2 then $3
 				else consumed_at
 			end,
-			updated_at = ?
-		where id = ? and consumed_at is null`,
-		maxFailedAccessAttempts,
-		formatTime(now),
-		formatTime(now),
+			updated_at = $3
+		where id = $1 and consumed_at is null
+		returning failed_access_count, consumed_at`,
 		id,
-	)
+		maxFailedAccessAttempts,
+		now,
+	).Scan(&failedAccessCount, &consumedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConsumed
+	}
 	if err != nil {
 		return fmt.Errorf("record failed secret access: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read failed access row count: %w", err)
-	}
-	if affected != 1 {
-		return ErrConsumed
 	}
 	if err := usage.Increment(ctx, tx, now, usage.SecretOpenFailed, 1); err != nil {
 		return err
 	}
 
-	var failedAccessCount int
-	var consumedAt sql.NullString
-	if err := tx.QueryRowContext(ctx, `select failed_access_count, consumed_at from secrets where id = ?`, id).Scan(&failedAccessCount, &consumedAt); err != nil {
-		return fmt.Errorf("load failed secret access count: %w", err)
-	}
 	if failedAccessCount >= maxFailedAccessAttempts && consumedAt.Valid {
 		if err := recordManagementOutcomeTx(ctx, tx, id, "locked"); err != nil {
 			return err
@@ -758,13 +769,13 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		// Lock reached: purge the payload so it can never be read. S3-backed
 		// secrets have no inline row, so delete the object instead. Enqueue the
 		// delete in this tx (same pattern as the consumed-open path) rather than
-		// calling the object store inline: a synchronous S3 round-trip would both
-		// pin the single SQLite write connection across network I/O and silently
-		// leak the object on a transient failure. The worker retries the job; an
-		// orphan is also swept by the expiration reaper (issue #76).
+		// calling the object store inline: a synchronous S3 round-trip would hold
+		// this transaction's row locks across network I/O and silently leak the
+		// object on a transient failure. The worker retries the job; an orphan is
+		// also swept by the expiration reaper (issue #76).
 		switch {
 		case storageBackend == StorageSQLite:
-			if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = $1`, id); err != nil {
 				return fmt.Errorf("delete locked secret payload: %w", err)
 			}
 		case s.outbox != nil:
@@ -807,7 +818,7 @@ func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
 	}
 	defer rollback(tx)
 
-	result, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id)
+	result, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = $1`, id)
 	if err != nil {
 		return false, fmt.Errorf("delete secret payload: %w", err)
 	}
@@ -816,7 +827,7 @@ func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
 		return false, fmt.Errorf("read cleanup row count: %w", err)
 	}
 	if affected > 0 {
-		if _, err := tx.ExecContext(ctx, `update secrets set updated_at = ? where id = ?`, formatTime(now), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `update secrets set updated_at = $1 where id = $2`, now, id); err != nil {
 			return false, fmt.Errorf("mark secret cleaned: %w", err)
 		}
 	}
@@ -837,10 +848,10 @@ func (s *Store) ReclaimTx(ctx context.Context, tx *sql.Tx, id string) error {
 	if id == "" {
 		return ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = $1`, id); err != nil {
 		return fmt.Errorf("delete secret payload on reclaim: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from secrets where id = ? and reclaim_enqueued_at is not null`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from secrets where id = $1 and reclaim_enqueued_at is not null`, id); err != nil {
 		return fmt.Errorf("delete secret on reclaim: %w", err)
 	}
 	return nil
@@ -850,9 +861,9 @@ type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.NullString, error) {
+func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.NullTime, error) {
 	if id == "" {
-		return Secret{}, sql.NullString{}, ErrNotFound
+		return Secret{}, sql.NullTime{}, ErrNotFound
 	}
 
 	var secret Secret
@@ -864,8 +875,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	var contentType sql.NullString
 	var storageBackend sql.NullString
 	var storageKey sql.NullString
-	var expiresRaw string
-	var consumedAt sql.NullString
+	var consumedAt sql.NullTime
 	var failedAccessCount int
 
 	err := q.QueryRowContext(ctx, `select
@@ -875,7 +885,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 			s.consumed_at, s.failed_access_count
 		from secrets s
 		left join secret_payloads p on p.secret_id = s.id
-		where s.id = ? and s.state = 'active'`,
+		where s.id = $1 and s.state = 'active'`,
 		id,
 	).Scan(
 		&secret.ID,
@@ -889,23 +899,23 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 		&encryptedFilename,
 		&contentType,
 		&secret.SizeBytes,
-		&expiresRaw,
+		&secret.ExpiresAt,
 		&consumedAt,
 		&failedAccessCount,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Secret{}, sql.NullString{}, ErrNotFound
+		return Secret{}, sql.NullTime{}, ErrNotFound
 	}
 	if err != nil {
-		return Secret{}, sql.NullString{}, fmt.Errorf("load secret: %w", err)
+		return Secret{}, sql.NullTime{}, fmt.Errorf("load secret: %w", err)
 	}
 	secret.StorageBackend = storageBackend.String
 	secret.StorageKey = storageKey.String
-	// SQLite-backed secrets carry ciphertext inline; S3-backed secrets fetch it
-	// on demand from the object store, so an empty blob here is expected for
-	// pending/active s3_object rows.
+	// Inline (sqlite_blob) secrets carry ciphertext in their secret_payloads
+	// bytea row; S3-backed secrets fetch it on demand from the object store, so
+	// an empty blob here is expected for pending/active s3_object rows.
 	if secret.StorageBackend == StorageSQLite && len(ciphertext) == 0 && !consumedAt.Valid {
-		return Secret{}, sql.NullString{}, ErrNotFound
+		return Secret{}, sql.NullTime{}, ErrNotFound
 	}
 	secret.Ciphertext = ciphertext
 
@@ -913,20 +923,15 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	// Model B rows carry none (the identity travels in the URL fragment). The
 	// table CHECK enforces this; a mix here is corruption.
 	if accessKDFJSON.Valid != accessProofHash.Valid || accessProofHash.Valid != wrappedIdentity.Valid {
-		return Secret{}, sql.NullString{}, ErrInvalidInput
+		return Secret{}, sql.NullTime{}, ErrInvalidInput
 	}
 	if accessKDFJSON.Valid {
 		if err := json.Unmarshal([]byte(accessKDFJSON.String), &secret.AccessKDF); err != nil {
-			return Secret{}, sql.NullString{}, fmt.Errorf("decode access kdf params: %w", err)
+			return Secret{}, sql.NullTime{}, fmt.Errorf("decode access kdf params: %w", err)
 		}
 		secret.accessProofHash = accessProofHash.String
 		secret.WrappedIdentity = &wrappedIdentity.String
 	}
-	expiresAt, err := parseTime(expiresRaw)
-	if err != nil {
-		return Secret{}, sql.NullString{}, fmt.Errorf("parse expires_at: %w", err)
-	}
-	secret.ExpiresAt = expiresAt
 
 	if encryptedFilename.Valid {
 		secret.EncryptedFilename = &encryptedFilename.String
@@ -951,8 +956,8 @@ func (s *Store) validateCreate(input CreateInput) error {
 // validateCreateLarge mirrors validateCreate minus the body checks: the body
 // never touches the server for the large path.
 func (s *Store) validateCreateLarge(input CreateLargeInput) error {
-	// Text lives in api.db (docs/architecture/storage-model.md); only files
-	// are large enough to need the bucket.
+	// Text lives in the API database (docs/architecture/storage-model.md); only
+	// files are large enough to need the bucket.
 	if input.Kind == KindText {
 		return ErrInvalidInput
 	}
@@ -1053,16 +1058,4 @@ func generateID() (string, error) {
 
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
-}
-
-func formatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func parseTime(raw string) (time.Time, error) {
-	value, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return value.UTC(), nil
 }

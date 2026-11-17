@@ -10,7 +10,8 @@ In scope:
 - Go API service.
 - Go worker service.
 - NATS JetStream job delivery.
-- SQLite `api.db` and `worker.db`.
+- PostgreSQL logical databases `flick_api` and `flick_worker`
+  (M15 moved both off SQLite files).
 - Browser-side encryption in the standard age format
   ([age format contract](../contracts/age-format-v1.md)); M13 replaced the
   original AES-GCM format.
@@ -19,7 +20,7 @@ In scope:
 - File secret creation and one-time download.
 - Preset and custom TTLs within runtime bounds; defaults are 5 minutes to
   7 days (`FLICK_MIN_TTL_SECONDS` / `FLICK_MAX_TTL_SECONDS` in `.env.example`).
-- Small payload storage in SQLite BLOBs.
+- Small payload storage in inline Postgres `bytea` rows.
 - Larger encrypted file storage in S3-compatible object storage.
 - Worker cleanup for consumed and expired secrets.
 - `/healthz`, `/readyz`, `/metrics`.
@@ -66,7 +67,7 @@ Out of scope:
 ### 4. File Flow
 
 - Browser encrypts files.
-- API stores files up to 1 MiB in SQLite BLOBs.
+- API stores files up to 1 MiB in inline Postgres rows.
 - File download decrypts in browser.
 - Size and content-type limits enforced.
 
@@ -102,7 +103,8 @@ Out of scope:
 ### 7. Operational Hardening
 
 - backup/restore runbook ([runbook](runbook/backup-restore.md))
-- SQLite checkpoint/vacuum runbook ([runbook](runbook/sqlite-maintenance.md))
+- ~~SQLite checkpoint/vacuum runbook~~ — retired by the M15 Postgres cutover
+  (#422); the Postgres maintenance runbook lands with the cutover (#425)
 - rate limiting — done (#71; per client network, IPv6 collapsed to /64, in
   `internal/httpapi/ratelimit.go`)
 - audit event viewer or export — not implemented; no audit event table exists
@@ -228,7 +230,7 @@ standard age format, so neither client holds a whole file in memory.
 ### M14: Live Relay Code Drop
 
 Goal: send text or a file to a nearby device by a short code, streamed through
-API memory with nothing written to SQLite or object storage.
+API memory with nothing written to Postgres or object storage.
 
 - [#255](https://github.com/Felix-LeeSM/flick-drop/issues/255) with
   [#318](https://github.com/Felix-LeeSM/flick-drop/issues/318) (in-memory

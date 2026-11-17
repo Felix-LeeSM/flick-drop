@@ -46,7 +46,7 @@ func TestOutboxPublisherPublishesDueEvents(t *testing.T) {
 	}
 	assertPayloadSafe(t, string(fake.messages[0].payload))
 
-	due, err := store.ListDue(ctx, now, 10)
+	due, err := store.listDueForTest(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("list due: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestOutboxPublisherMarksFailedEventsForRetry(t *testing.T) {
 		t.Fatalf("result = %+v, want 0 published and 1 failed", result)
 	}
 
-	due, err := store.ListDue(ctx, now, 10)
+	due, err := store.listDueForTest(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("list due before retry: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestOutboxPublisherMarksFailedEventsForRetry(t *testing.T) {
 	}
 
 	retryAt := now.Add(time.Minute)
-	due, err = store.ListDue(ctx, retryAt, 10)
+	due, err = store.listDueForTest(ctx, retryAt, 10)
 	if err != nil {
 		t.Fatalf("list due at retry: %v", err)
 	}
