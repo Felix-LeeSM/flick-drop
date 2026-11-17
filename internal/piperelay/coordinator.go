@@ -506,8 +506,14 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 		return selected, err
 	}
 
-	lease := c.leaseKey(id, connID)
-	opened, err := acquireLeaseScript.Run(ctx, c.valkey, []string{lease}, MaxStatusPollsPerConnection, c.presenceTimeout.Milliseconds()).Int()
+	pollID, err := randomToken(connectionIDLengthBytes)
+	if err != nil {
+		return false, fmt.Errorf("generate poll id: %w", err)
+	}
+	holdFor := min(maxWait, time.Until(r.ExpiresAt))
+	leaseKeys := []string{c.leaseKey(id, connID), c.pollsKey(id, connID)}
+	opened, err := acquireLeaseScript.Run(ctx, c.valkey, leaseKeys, MaxStatusPollsPerConnection,
+		c.presenceTimeout.Milliseconds(), pollID, (max(holdFor, 0) + c.presenceTimeout).Milliseconds()).Int()
 	if err != nil {
 		return false, unavailable(err)
 	}
@@ -517,10 +523,10 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endRoomTimeout)
 		defer cancel()
-		_ = releaseLeaseScript.Run(releaseCtx, c.valkey, []string{lease}, c.presenceTimeout.Milliseconds()).Err()
+		_ = releaseLeaseScript.Run(releaseCtx, c.valkey, leaseKeys, c.presenceTimeout.Milliseconds(), pollID).Err()
 	}()
 
-	hold := time.NewTimer(min(maxWait, time.Until(r.ExpiresAt)))
+	hold := time.NewTimer(holdFor)
 	defer hold.Stop()
 	resync := time.NewTicker(resyncInterval)
 	defer resync.Stop()

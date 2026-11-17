@@ -150,13 +150,18 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 		case <-resync.C:
 		case <-expiry.C:
 		}
-		r, err := c.view(ctx, id)
+		current, err := c.view(ctx, id)
+		if errors.Is(err, ErrUnavailable) && time.Now().Before(r.ExpiresAt) {
+			// One failed read retries at the next resync instead of ending
+			// a transfer that is still on track.
+			continue
+		}
 		if err != nil {
 			return leave(err)
 		}
-		if r.ended() {
+		if current.ended() {
 			c.closeSlot(id, slot)
-			return nil, SessionMetadata{}, nil, r.cause()
+			return nil, SessionMetadata{}, nil, current.cause()
 		}
 	}
 }
@@ -189,7 +194,7 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 	if err != nil {
 		return 0, err
 	}
-	_, err = c.update(ctx, id, func(r *room, _ time.Time) (bool, error) {
+	claimed, err := c.update(ctx, id, func(r *room, _ time.Time) (bool, error) {
 		if !r.senderMatches(senderToken) {
 			return false, ErrNotFound
 		}
@@ -205,9 +210,16 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 	if err != nil {
 		return 0, err
 	}
-
-	if err := c.waitForReceiver(ctx, id); err != nil {
+	// The claim makes every later Send answer ErrAlreadyConnected, so any
+	// failure from here on ends the session rather than leaving the receiver
+	// waiting for a sender that cannot come back.
+	abandon := func(err error) (int64, error) {
+		c.endRoom(ctx, id, causeClosed)
 		return 0, err
+	}
+
+	if err := c.waitForReceiver(ctx, id, claimed.ExpiresAt); err != nil {
+		return abandon(err)
 	}
 
 	// The stream starts only if nothing ended the session first. Cancel and
@@ -216,7 +228,7 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 	// can end it.
 	secret, err := randomToken(tokenLengthBytes)
 	if err != nil {
-		return 0, err
+		return abandon(err)
 	}
 	r, err := c.update(ctx, id, func(r *room, now time.Time) (bool, error) {
 		if r.ended() {
@@ -227,7 +239,7 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 		return true, nil
 	})
 	if err != nil {
-		return 0, err
+		return abandon(err)
 	}
 	return c.stream(ctx, id, r, secret, meta, body)
 }
@@ -236,30 +248,32 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 // re-reads the room on every change and at the next deadline, so the lazy end
 // rules (room.go settle) end a session whose chosen receiver never opens
 // Receive presenceTimeout after Select, and one whose window closed, without
-// waiting for the cleaner. A sender leaving while it waits ends the session.
-func (c *Coordinator) waitForReceiver(ctx context.Context, id roomID) error {
+// waiting for the cleaner. A failed read retries at the next resync until
+// expiresAt. Send ends the session on every error this returns.
+func (c *Coordinator) waitForReceiver(ctx context.Context, id roomID, expiresAt time.Time) error {
 	changed, unwatch := c.hub.watch(id)
 	defer unwatch()
 	for {
+		next := resyncInterval
 		r, err := c.view(ctx, id)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrUnavailable) && time.Now().Before(expiresAt):
+		case err != nil:
 			return err
-		}
-		if r.ended() {
+		case r.ended():
 			return r.cause()
-		}
-		if r.receiverReady() {
+		case r.receiverReady():
 			return nil
-		}
-		next := min(time.Until(r.ExpiresAt), resyncInterval)
-		if r.Selected != "" {
-			next = min(next, time.Until(r.SelectedAt.Add(c.presenceTimeout)))
+		default:
+			next = min(time.Until(r.ExpiresAt), resyncInterval)
+			if r.Selected != "" {
+				next = min(next, time.Until(r.SelectedAt.Add(c.presenceTimeout)))
+			}
 		}
 		timer := time.NewTimer(max(next, time.Millisecond))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			c.endRoom(ctx, id, causeClosed)
 			return ctx.Err()
 		case <-changed:
 		case <-timer.C:

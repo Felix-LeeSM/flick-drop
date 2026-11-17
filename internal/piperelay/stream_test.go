@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // 송신자와 수신자가 서로 다른 레플리카에 붙어도 암호문은 수신자 쪽 레플리카로
@@ -332,5 +335,143 @@ func TestStream_ReceiverLeavingMidStreamFailsTheSender(t *testing.T) {
 	_ = writer.CloseWithError(errors.New("test done"))
 	if n := active(t, senderPod); n != 0 {
 		t.Fatalf("ActiveSessions after a broken stream = %d, want 0", n)
+	}
+}
+
+// flakyReads는 방 읽기(HMGET)를 remaining번 Valkey 타임아웃처럼 실패시키는 훅이다.
+// 레이트리미터와 함께 쓰는 클라이언트는 재시도 없이 250ms에 끊기므로, 대기 중에 한 번
+// 읽기가 실패하는 일은 운영에서 실제로 일어난다.
+type flakyReads struct{ remaining atomic.Int32 }
+
+func (f *flakyReads) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (f *flakyReads) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "hmget" && f.remaining.Add(-1) >= 0 {
+			err := errors.New("injected valkey timeout")
+			cmd.SetErr(err)
+			return err
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (f *flakyReads) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// flakyPod는 방 읽기를 일부러 실패시킬 수 있는 레플리카를 띄운다.
+func flakyPod(t *testing.T, network *podNetwork) (*Coordinator, *flakyReads) {
+	t.Helper()
+	flaky := &flakyReads{}
+	valkey := redis.NewClient(&redis.Options{Addr: network.valkey.Options().Addr})
+	valkey.AddHook(flaky)
+	t.Cleanup(func() { _ = valkey.Close() })
+	return network.startPod(CoordinatorOptions{Valkey: valkey}), flaky
+}
+
+// selectedReceiver는 receiverPod에서 들어온 수신자 하나를 senderPod가 고른 상태를 만든다.
+func selectedReceiver(t *testing.T, ctx context.Context, senderPod, receiverPod *Coordinator) (InitResult, JoinResult) {
+	t.Helper()
+	init, err := senderPod.Init(ctx)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	join, err := receiverPod.Join(ctx, init.Code, client(1))
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if err := senderPod.Select(ctx, init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	return init, join
+}
+
+// 송신자가 수신자를 기다리는 동안 방 읽기가 한 번 실패해도 전송은 이어진다. 실패를
+// 그대로 돌려주면 송신자는 이미 송신 자리를 차지해 다시 보낼 수 없고(409), 수신자는
+// 창이 닫힐 때까지 기다린다.
+func TestStream_SenderSurvivesOneFailedReadWhileWaiting(t *testing.T) {
+	network := newPodNetwork(t)
+	senderPod, flaky := flakyPod(t, network)
+	receiverPod := network.startPod(CoordinatorOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	init, join := selectedReceiver(t, ctx, senderPod, receiverPod)
+	id, _ := receiverPod.roomIDFor(init.Code)
+
+	payload := []byte("ciphertext after a valkey hiccup")
+	type sendResult struct {
+		n   int64
+		err error
+	}
+	sent := make(chan sendResult, 1)
+	go func() {
+		n, err := senderPod.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, bytes.NewReader(payload))
+		sent <- sendResult{n, err}
+	}()
+	for {
+		r, err := receiverPod.view(ctx, id)
+		if err != nil {
+			t.Fatalf("view: %v", err)
+		}
+		if r.SenderClaimed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Given: 송신자가 자리를 차지했고 다음 방 읽기 한 번이 실패한다.
+	flaky.remaining.Store(1)
+
+	// When: 수신자가 붙어 송신 레플리카가 방을 다시 읽는다.
+	received := startReceive(ctx, receiverPod, init.Code, join.ConnectionID)
+
+	// Then: 실패한 읽기는 다음 재동기화에서 다시 읽히고 전송이 끝난다.
+	select {
+	case got := <-sent:
+		if got.err != nil || got.n != int64(len(payload)) {
+			t.Fatalf("Send = %d, %v; want %d bytes", got.n, got.err, len(payload))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send did not finish")
+	}
+	if got := recv(t, received); got.err != nil || !bytes.Equal(got.body, payload) {
+		t.Fatalf("receiver got %q, err %v", got.body, got.err)
+	}
+	if flaky.remaining.Load() >= 1 {
+		t.Fatal("the injected read failure never happened")
+	}
+}
+
+// 수신자가 스트림을 기다리는 동안 방 읽기가 한 번 실패해도 세션을 닫지 않는다.
+func TestStream_ReceiverSurvivesOneFailedReadWhileWaiting(t *testing.T) {
+	network := newPodNetwork(t)
+	senderPod := network.startPod(CoordinatorOptions{})
+	receiverPod, flaky := flakyPod(t, network)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	init, join := selectedReceiver(t, ctx, senderPod, receiverPod)
+
+	received := startReceive(ctx, receiverPod, init.Code, join.ConnectionID)
+	waitUntil(t, senderPod, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
+	// Given: 수신자의 다음 재동기화 읽기가 실패한다.
+	flaky.remaining.Store(1)
+	deadline := time.Now().Add(2*resyncInterval + time.Second)
+	for flaky.remaining.Load() >= 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the receiver never re-read the room")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// When: 송신자가 보낸다.
+	payload := []byte("ciphertext after a valkey hiccup")
+	n, err := senderPod.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, bytes.NewReader(payload))
+
+	// Then: 수신자는 아직 기다리고 있어 전체를 받는다.
+	if err != nil || n != int64(len(payload)) {
+		t.Fatalf("Send = %d, %v; want %d bytes", n, err, len(payload))
+	}
+	if got := recv(t, received); got.err != nil || !bytes.Equal(got.body, payload) {
+		t.Fatalf("receiver got %q, err %v", got.body, got.err)
 	}
 }

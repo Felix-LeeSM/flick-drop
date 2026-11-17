@@ -180,12 +180,20 @@ func (c *Coordinator) roomKey(id roomID) string      { return c.namespace + "roo
 func (c *Coordinator) roomsKey() string              { return c.namespace + "rooms" }
 func (c *Coordinator) eventChannel(id roomID) string { return c.namespace + "ev:" + string(id) }
 
-// leaseKey counts the open Status polls of one connection. Its TTL is the
-// presence timeout, refreshed when a poll starts and ends, so the key exists
-// exactly while the connection counts as present, and a pod that dies
-// mid-poll frees the count within the presence timeout.
+// leaseKey marks one connection as present. Its TTL is the presence timeout,
+// refreshed when a Status poll starts and ends, so the key exists exactly
+// while the connection counts as present.
 func (c *Coordinator) leaseKey(id roomID, connID string) string {
 	return c.namespace + "poll:" + string(id) + ":" + sha256Hex(connID)[:32]
+}
+
+// pollsKey holds one member per open Status poll of a connection, scored by
+// the time after which the poll no longer counts (its hold plus the presence
+// timeout). A replica that dies mid-poll never removes its member, so the
+// member's own score frees the slot even while the connection keeps polling
+// through other replicas and keeps the key alive.
+func (c *Coordinator) pollsKey(id roomID, connID string) string {
+	return c.namespace + "polls:" + string(id) + ":" + sha256Hex(connID)[:32]
 }
 
 // createRoomScript adds a room unless the concurrent-room cap is reached
@@ -224,23 +232,27 @@ return 1
 `)
 
 // acquireLeaseScript opens one Status poll: 0 when the connection already has
-// ARGV[1] polls open. KEYS: lease. ARGV: max polls, presence TTL ms.
+// ARGV[1] polls that still count. It reads Valkey's clock, so replicas with
+// skewed clocks agree on when a poll stops counting.
+//
+// KEYS: lease, polls. ARGV: max polls, presence TTL ms, poll member, poll
+// lifetime ms.
 var acquireLeaseScript = redis.NewScript(`
-local n = redis.call('INCR', KEYS[1])
-if n > tonumber(ARGV[1]) then
-  redis.call('DECR', KEYS[1])
-  return 0
-end
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[2], now + tonumber(ARGV[4]), ARGV[3])
+redis.call('PEXPIRE', KEYS[2], ARGV[4])
+redis.call('SET', KEYS[1], 1, 'PX', ARGV[2])
 return 1
 `)
 
 // releaseLeaseScript closes one Status poll and restarts the presence TTL.
-// KEYS: lease. ARGV: presence TTL ms.
+// KEYS: lease, polls. ARGV: presence TTL ms, poll member.
 var releaseLeaseScript = redis.NewScript(`
-local n = redis.call('DECR', KEYS[1])
-if n < 0 then redis.call('SET', KEYS[1], 0) end
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
 return 1
 `)
 

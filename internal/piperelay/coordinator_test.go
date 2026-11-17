@@ -192,7 +192,9 @@ func (n *podNetwork) startPod(opts CoordinatorOptions) *Coordinator {
 	if opts.TTL == 0 {
 		opts.TTL = 5 * time.Second
 	}
-	opts.Valkey = n.valkey
+	if opts.Valkey == nil {
+		opts.Valkey = n.valkey
+	}
 	opts.Namespace = n.namespace
 	opts.KeySalt = n.salt
 	opts.InternalToken = n.token
@@ -667,6 +669,48 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	}
 	if selected, err := coord.Status(ctx, init.Code, join.ConnectionID, time.Second); err != nil || !selected {
 		t.Fatalf("status after the polls closed: %v %v", selected, err)
+	}
+}
+
+// 롱폴 도중 죽은 레플리카의 poll은 연결이 다른 레플리카로 계속 폴링해도 제 수명이
+// 지나면 더는 세지 않는다. 그러지 않으면 그 연결은 롱폴을 하나만 열 수 있고, 끊긴
+// 소켓을 다시 여는 순간 409 poll_in_progress로 수신이 실패한다.
+func TestCoordinator_DeadReplicaPollStopsCounting(t *testing.T) {
+	const presence = 300 * time.Millisecond
+	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: presence})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, _ := coord.Init(ctx)
+	join, _ := coord.Join(ctx, init.Code, client(1))
+	id, _ := coord.roomIDFor(init.Code)
+
+	// Given: 다른 레플리카가 poll을 연 채로 죽었다(해제 없음). 수명은 hold 50ms + presence.
+	leaseKeys := []string{coord.leaseKey(id, join.ConnectionID), coord.pollsKey(id, join.ConnectionID)}
+	if err := acquireLeaseScript.Run(ctx, coord.valkey, leaseKeys, MaxStatusPollsPerConnection,
+		presence.Milliseconds(), "dead-replica-poll", (50*time.Millisecond + presence).Milliseconds()).Err(); err != nil {
+		t.Fatalf("acquire the dead poll: %v", err)
+	}
+
+	// When: 수신자는 그 수명보다 오래 짧은 롱폴을 이어 간다(존재 키는 계속 살아 있다).
+	until := time.Now().Add(3 * presence)
+	for time.Now().Before(until) {
+		if _, err := coord.Status(ctx, init.Code, join.ConnectionID, 50*time.Millisecond); err != nil {
+			t.Fatalf("keep-alive status: %v", err)
+		}
+	}
+
+	// Then: 두 롱폴을 동시에 열 수 있다.
+	held := make(chan error, MaxStatusPollsPerConnection)
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		go func() {
+			_, err := coord.Status(ctx, init.Code, join.ConnectionID, 200*time.Millisecond)
+			held <- err
+		}()
+	}
+	for i := 0; i < MaxStatusPollsPerConnection; i++ {
+		if err := decided(t, held); err != nil {
+			t.Fatalf("poll %d after the dead poll expired: %v", i, err)
+		}
 	}
 }
 

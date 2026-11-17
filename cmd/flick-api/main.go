@@ -4,9 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -207,7 +207,9 @@ func main() {
 		}
 		defer pipeCoordinator.Close()
 		streamServer = &http.Server{
-			Addr:              ":" + strconv.Itoa(int(cfg.InternalHTTPPort)),
+			// Bound to the advertised address only (FLICK_POD_IP, 127.0.0.1
+			// outside Kubernetes), never every interface.
+			Addr:              netip.AddrPortFrom(cfg.PodIP, cfg.InternalHTTPPort).String(),
 			Handler:           pipeCoordinator.InternalHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
@@ -215,7 +217,7 @@ func main() {
 			// No ReadTimeout or WriteTimeout: the stream handler sets its own
 			// 15-minute deadlines (internal/piperelay/stream.go).
 		}
-		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d, stream listener :%d)", cfg.PipeMaxConcurrent, cfg.InternalHTTPPort)
+		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d, stream listener %s)", cfg.PipeMaxConcurrent, streamServer.Addr)
 	}
 
 	server := &http.Server{
@@ -313,23 +315,15 @@ func main() {
 
 	// Shutdown order for a rolling update (terminationGracePeriodSeconds 60
 	// after a 5-second preStop): waiting-room long-polls answer at once so
-	// browsers re-poll through another replica, then both listeners drain
-	// in-flight /send, /receive, and stream hops for up to shutdownTimeout.
+	// browsers re-poll through another replica, then the API listener drains
+	// in-flight /send and /receive for up to shutdownTimeout. The stream
+	// listener closes only after that: a /receive still waiting here needs it
+	// open for the sender's replica to dial in.
 	if pipeCoordinator != nil {
 		pipeCoordinator.Drain()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	streamDrained := make(chan struct{})
-	go func() {
-		defer close(streamDrained)
-		if streamServer == nil {
-			return
-		}
-		if err := streamServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown live pipe stream listener: %v", err)
-		}
-	}()
 	if !serverDone {
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown api server: %v", err)
@@ -339,9 +333,11 @@ func main() {
 			log.Fatalf("serve api: %v", err)
 		}
 	}
-	// The receiving end of a transfer may finish after the sender's /send
-	// returned on another replica; wait for this replica's stream hops too.
-	<-streamDrained
+	if streamServer != nil {
+		if err := streamServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown live pipe stream listener: %v", err)
+		}
+	}
 	if !publisherDone {
 		if err := <-publisherErr; err != nil {
 			log.Fatalf("run outbox publisher: %v", err)
