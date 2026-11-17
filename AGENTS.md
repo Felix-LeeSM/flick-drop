@@ -8,8 +8,8 @@ will change.
 Flick is a small self-hosted service with four runtime parts:
 
 - `flick-web`: SvelteKit UI.
-- `flick-api`: HTTP API and owner of `api.db` (SQLite until the M15 PR 3
-  cutover to the `flick_api` PostgreSQL database).
+- `flick-api`: HTTP API and owner of the `flick_api` PostgreSQL database
+  (`FLICK_DATABASE_URL`).
 - `flick-worker`: NATS JetStream consumer and owner of the `flick_worker`
   PostgreSQL database (`FLICK_WORKER_DATABASE_URL`).
 - `nats`: broker for async job delivery.

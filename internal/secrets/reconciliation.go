@@ -37,7 +37,7 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string) (int, error) {
 	var cursor string
 	var generation int64
-	if err := r.db.QueryRowContext(ctx, `select continuation_token, generation from object_reconciliation_cursor_v2 where backend = ?`, backend).Scan(&cursor, &generation); err != nil {
+	if err := r.db.QueryRowContext(ctx, `select continuation_token, generation from object_reconciliation_cursor_v2 where backend = $1`, backend).Scan(&cursor, &generation); err != nil {
 		return 0, fmt.Errorf("read object reconciliation cursor: %w", err)
 	}
 	limit := min(r.batchSize, 1000) // ListObjectsV2 permits at most 1,000 keys per page.
@@ -46,7 +46,7 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 	cancel()
 	if err != nil {
 		if errors.Is(err, storage.ErrInvalidCursor) && cursor != "" {
-			if _, resetErr := r.db.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = '', generation = generation + 1 where backend = ? and generation = ?`, backend, generation); resetErr != nil {
+			if _, resetErr := r.db.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = '', generation = generation + 1 where backend = $1 and generation = $2`, backend, generation); resetErr != nil {
 				return 0, fmt.Errorf("reset object reconciliation cursor: %w", resetErr)
 			}
 		}
@@ -55,19 +55,14 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 	if len(page.Keys) > limit || (page.NextCursor != "" && page.NextCursor == cursor) {
 		return 0, errors.New("invalid object listing page")
 	}
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer rollback(tx)
 	// Claim this generation before live-row reads. A concurrent scanner may have
 	// advanced the same page while List was in flight; only one result can commit.
-	result, err := tx.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = ?, generation = generation + 1 where backend = ? and generation = ?`, page.NextCursor, backend, generation)
+	result, err := tx.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = $1, generation = generation + 1 where backend = $2 and generation = $3`, page.NextCursor, backend, generation)
 	if err != nil {
 		return 0, fmt.Errorf("advance object reconciliation cursor: %w", err)
 	}
@@ -95,7 +90,11 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 		if err != nil {
 			return 0, err
 		}
-		result, err := tx.ExecContext(ctx, `insert or ignore into object_reconciliation_pending_v2 (backend, object_key, job_id) values (?,?,?)`, backend, key, jobID)
+		// The conflict target is the (backend, object_key) primary key: a job_id
+		// collision must fail loudly rather than silently skip a real orphan's
+		// cleanup enqueue.
+		result, err := tx.ExecContext(ctx, `insert into object_reconciliation_pending_v2 (backend, object_key, job_id) values ($1, $2, $3)
+			on conflict (backend, object_key) do nothing`, backend, key, jobID)
 		if err != nil {
 			return 0, fmt.Errorf("claim object cleanup: %w", err)
 		}
@@ -112,7 +111,6 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 		count++
 	}
 	if err := tx.Commit(); err != nil {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")
 		return 0, fmt.Errorf("commit object reconciliation: %w", err)
 	}
 	return count, nil
@@ -123,23 +121,18 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	// row is already gone, and the open handler enqueues its delete when the
 	// stream ends. The grace record protects it until the stream deadline has
 	// certainly passed, then it is reconciled like any orphan.
-	var graceRaw string
-	err := tx.QueryRowContext(ctx, `select grace_until from secret_open_grace where object_key = ?`, key).Scan(&graceRaw)
+	var graceUntil time.Time
+	err := tx.QueryRowContext(ctx, `select grace_until from secret_open_grace where object_key = $1`, key).Scan(&graceUntil)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("check streaming object protection: %w", err)
 	}
-	if err == nil {
-		graceUntil, err := parseTime(graceRaw)
-		if err != nil {
-			return false, fmt.Errorf("parse streaming grace: %w", err)
-		}
-		if now.Before(graceUntil) {
-			return true, nil
-		}
+	if err == nil && now.Before(graceUntil) {
+		return true, nil
 	}
-	var state, expiresRaw, createdRaw string
-	var consumedRaw sql.NullString
-	err = tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = ? and reclaim_enqueued_at is null`, key).Scan(&state, &expiresRaw, &createdRaw, &consumedRaw)
+	var state string
+	var expiresAt, createdAt time.Time
+	var consumedAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = $1 and reclaim_enqueued_at is null`, key).Scan(&state, &expiresAt, &createdAt, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -148,18 +141,11 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	}
 	// Only a locked row is still consumed here (opens delete their row), and
 	// lockout queues its object delete at once; the grace stays as a margin.
-	if consumedRaw.Valid {
-		consumed, err := parseTime(consumedRaw.String)
-		if err != nil {
-			return false, fmt.Errorf("parse protected open time: %w", err)
-		}
-		return now.Before(consumed.Add(openObjectGrace)), nil
+	// A consumed row is protected exactly until the grace ends, never longer.
+	if consumedAt.Valid {
+		return now.Before(consumedAt.Time.Add(openObjectGrace)), nil
 	}
-	expires, err := parseTime(expiresRaw)
-	if err != nil {
-		return false, fmt.Errorf("parse protected expiry: %w", err)
-	}
-	if !now.Before(expires) {
+	if !now.Before(expiresAt) {
 		return false, nil
 	}
 	if state == "active" {
@@ -168,11 +154,7 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	if state != "pending_upload" {
 		return false, errors.New("unknown protected delivery state")
 	}
-	created, err := parseTime(createdRaw)
-	if err != nil {
-		return false, fmt.Errorf("parse protected upload time: %w", err)
-	}
-	return now.Before(created.Add(r.pendingTTL)), nil
+	return now.Before(createdAt.Add(r.pendingTTL)), nil
 }
 
 // AcknowledgeObjectCleanup removes only the claim for this completed worker job.
@@ -186,7 +168,7 @@ func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, ke
 	if backend == "" {
 		backend = storage.PrimaryBackend
 	}
-	_, err := s.db.ExecContext(ctx, `delete from object_reconciliation_pending_v2 where backend = ? and object_key = ? and job_id = ?`, backend, key, jobID)
+	_, err := s.db.ExecContext(ctx, `delete from object_reconciliation_pending_v2 where backend = $1 and object_key = $2 and job_id = $3`, backend, key, jobID)
 	if err != nil {
 		return fmt.Errorf("acknowledge object cleanup: %w", err)
 	}

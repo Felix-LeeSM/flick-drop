@@ -195,8 +195,9 @@ Run the API service:
 go run ./cmd/flick-api
 ```
 
-The service listens on `FLICK_API_ADDR` and uses `FLICK_API_DB_PATH`.
-Defaults come from `.mise.toml` and local overrides should live in
+The service listens on `FLICK_API_ADDR` and connects to
+`FLICK_DATABASE_URL` (the `flick_api` PostgreSQL database — `scripts/dev/up.sh`
+starts the compose Postgres and exports both DSNs). Local overrides live in
 `.env.local`.
 
 Check the process:
@@ -208,11 +209,6 @@ curl -fsS http://localhost:8080/readyz
 
 ## Data
 
-Local runtime files are under `./var` by default and are ignored by git.
-
-Expected files:
-
-```text
-var/api.db
-var/worker.db
-```
+Local state lives in the compose PostgreSQL instance (docker volumes, not the
+working tree). `scripts/dev/up.sh` starts it and pins the two DSNs, so no
+database files appear under `./var` any more.

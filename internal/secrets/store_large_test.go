@@ -220,7 +220,7 @@ func TestStoreOpenTxLockoutDeletesObjectInlineWithoutOutbox(t *testing.T) {
 func secretState(t *testing.T, ctx context.Context, conn *sql.DB, id string) string {
 	t.Helper()
 	var state string
-	if err := conn.QueryRowContext(ctx, `select state from secrets where id = ?`, id).Scan(&state); err != nil {
+	if err := conn.QueryRowContext(ctx, `select state from secrets where id = $1`, id).Scan(&state); err != nil {
 		t.Fatalf("read state: %v", err)
 	}
 	return state
@@ -251,7 +251,7 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	}
 
 	var payloadCount int
-	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, res.ID).Scan(&payloadCount); err != nil {
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = $1`, res.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads: %v", err)
 	}
 	if payloadCount != 0 {
@@ -375,9 +375,8 @@ func TestFinalizeOversized(t *testing.T) {
 // TestActivateSecretTxReturnsNotFoundWhenRowGone covers the reaper hard-delete
 // race: if a pending_upload row is removed between Finalize's SELECT and its
 // UPDATE, the UPDATE matches 0 rows and the guard must surface ErrNotFound
-// rather than a silent success. The race can't be reproduced through SQLite
-// concurrency (a read txn blocks a concurrent write with SQLITE_BUSY_SNAPSHOT),
-// so the guard is exercised directly on a transaction with no matching row.
+// rather than a silent success. The guard is exercised directly on a
+// transaction whose target row does not exist.
 func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -390,8 +389,46 @@ func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
 	}
 	defer rollback(tx)
 
-	if err := store.activateSecretTx(ctx, tx, "sec_reaped", now); !errors.Is(err, ErrNotFound) {
+	if _, err := store.activateSecretTx(ctx, tx, "sec_reaped", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("activate err = %v, want ErrNotFound (row reaped mid-finalize)", err)
+	}
+}
+
+// 다른 레플리카의 reaper가 먼저 회수를 claim하면(reclaim_enqueued_at 설정, 객체
+// 삭제 job enqueue) finalize는 그 행을 활성화하지 않고 ErrNotFound를 돌려준다.
+func TestActivateSecretTxRefusesReaperClaimedRow(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+
+	insertSecret(t, ctx, conn, secretFixture{
+		id:             "sec_claimed",
+		kind:           "file",
+		storageBackend: "s3_object",
+		storageKey:     "obj_claimed",
+		state:          "pending_upload",
+		expiresAt:      now.Add(1 * time.Hour),
+		createdAt:      now.Add(-1 * time.Minute),
+		updatedAt:      now.Add(-1 * time.Minute),
+	})
+	if _, err := conn.ExecContext(ctx, `update secrets set reclaim_enqueued_at = $1 where id = 'sec_claimed'`, now); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer rollback(tx)
+	if activated, err := store.activateSecretTx(ctx, tx, "sec_claimed", now); activated || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("activate claimed row: activated=%v err=%v, want ErrNotFound", activated, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := secretState(t, ctx, conn, "sec_claimed"); got != "pending_upload" {
+		t.Fatalf("state = %q, want pending_upload", got)
 	}
 }
 
@@ -416,14 +453,61 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	if err := store.activateSecretTx(ctx, tx, "sec_pending", now); err != nil {
-		t.Fatalf("activate: %v", err)
+	activated, err := store.activateSecretTx(ctx, tx, "sec_pending", now)
+	if err != nil || !activated {
+		t.Fatalf("activate: activated=%v err=%v, want activated=true", activated, err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if got := secretState(t, ctx, conn, "sec_pending"); got != "active" {
 		t.Fatalf("state = %q, want active", got)
+	}
+}
+
+// Given: 다른 트랜잭션이 이미 pending_upload 행을 active로 바꾼 뒤
+// When: 후발 finalize 트랜잭션이 같은 행에 조건부 활성화를 실행하면
+// Then: 0행이고 재조회 결과 이미 active이므로 idempotent 성공(activated=false, nil)을 답한다
+func TestActivateSecretTxIsIdempotentWhenAlreadyActive(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	store := newLargeTestStore(t, conn, newMockObjectStore())
+	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+
+	insertSecret(t, ctx, conn, secretFixture{
+		id:             "sec_activated",
+		kind:           "file",
+		storageBackend: "s3_object",
+		storageKey:     "obj_activated",
+		state:          "pending_upload",
+		expiresAt:      now.Add(1 * time.Hour),
+		createdAt:      now.Add(-1 * time.Minute),
+		updatedAt:      now.Add(-1 * time.Minute),
+	})
+
+	first, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin first tx: %v", err)
+	}
+	activated, err := store.activateSecretTx(ctx, first, "sec_activated", now)
+	if err != nil || !activated {
+		t.Fatalf("first activate: activated=%v err=%v", activated, err)
+	}
+	if err := first.Commit(); err != nil {
+		t.Fatalf("commit first tx: %v", err)
+	}
+
+	second, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin second tx: %v", err)
+	}
+	defer second.Rollback()
+	activated, err = store.activateSecretTx(ctx, second, "sec_activated", now)
+	if err != nil || activated {
+		t.Fatalf("second activate: activated=%v err=%v, want idempotent activated=false nil", activated, err)
+	}
+	if got := secretState(t, ctx, conn, "sec_activated"); got != "active" {
+		t.Fatalf("state = %q, want still active", got)
 	}
 }
 
@@ -551,10 +635,10 @@ func TestCreateLargeValidatesAgeFields(t *testing.T) {
 	}
 }
 
-func consumedAt(t *testing.T, conn *sql.DB, id string) sql.NullString {
+func consumedAt(t *testing.T, conn *sql.DB, id string) sql.NullTime {
 	t.Helper()
-	var consumed sql.NullString
-	if err := conn.QueryRow(`select consumed_at from secrets where id = ?`, id).Scan(&consumed); err != nil {
+	var consumed sql.NullTime
+	if err := conn.QueryRow(`select consumed_at from secrets where id = $1`, id).Scan(&consumed); err != nil {
 		t.Fatalf("read consumed_at: %v", err)
 	}
 	return consumed
@@ -592,7 +676,7 @@ func TestStoreOpenTxS3OpenFailureLeavesSecretOpenable(t *testing.T) {
 		t.Fatal("open succeeded although the bucket failed")
 	}
 	if c := consumedAt(t, conn, id); c.Valid {
-		t.Fatalf("failed object open consumed the secret at %s", c.String)
+		t.Fatalf("failed object open consumed the secret at %s", c.Time)
 	}
 
 	mock.openErr = nil
@@ -623,7 +707,7 @@ func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
 				t.Fatalf("refused body not closed (opened %d)", len(mock.opened))
 			}
 			if c := consumedAt(t, conn, id); c.Valid {
-				t.Fatalf("length mismatch consumed the secret at %s", c.String)
+				t.Fatalf("length mismatch consumed the secret at %s", c.Time)
 			}
 
 			mock.openSizeDelta = 0
@@ -675,7 +759,7 @@ func dualLargeTestStore(t *testing.T, conn *sql.DB, ceilings map[string]int64) (
 func secretBackend(t *testing.T, ctx context.Context, conn *sql.DB, id string) string {
 	t.Helper()
 	var backend string
-	if err := conn.QueryRowContext(ctx, `select storage_backend from secrets where id = ?`, id).Scan(&backend); err != nil {
+	if err := conn.QueryRowContext(ctx, `select storage_backend from secrets where id = $1`, id).Scan(&backend); err != nil {
 		t.Fatal(err)
 	}
 	return backend

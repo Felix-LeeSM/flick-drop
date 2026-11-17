@@ -67,10 +67,11 @@ Rationale (decided 2026-11-16, milestone M15):
   of `LastInsertId`, and `FOR UPDATE SKIP LOCKED` claims for the outbox,
   reaper, and request cleanup. See `database-schema.md`.
 
-M15 transition: `cmd/flick-worker` and its store move to Postgres first
-(issue #421), then the API-owned database and the `modernc.org/sqlite`
-removal (issue #422). Until both land, the services still run on SQLite files
-(`FLICK_API_DB_PATH` / `FLICK_WORKER_DB_PATH`).
+M15 shipped the move in order: `cmd/flick-worker` and its store moved to
+Postgres first (issue #421), then the API-owned database and the
+`modernc.org/sqlite` removal (issue #422). Existing self-hosted deployments
+will migrate through the SQLite cutover runbook
+(`docs/runbook/postgres-cutover.md`, landing in PR 6 / issue #425).
 
 ## Valkey
 
@@ -127,7 +128,8 @@ web: web/Dockerfile, SvelteKit static output served by nginx
 ```
 
 The Go images keep `CGO_ENABLED=0`, install only CA certificates and timezone
-data, run as a non-root `flick` user, and use `/data` for SQLite files. The web
+data, and run as a non-root `flick` user with no data volume — state lives in
+PostgreSQL. The web
 image builds with pinned pnpm through Corepack and serves the static adapter
 output on port 8080 as the unprivileged `nginx` user.
 

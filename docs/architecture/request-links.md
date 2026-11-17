@@ -195,7 +195,7 @@ residual risks still apply.
 | any live state | Request deadline | unavailable, never reopen |
 | consumed/cancelled | Repeated revoke | consumed conflict / cancelled idempotent success |
 
-Transitions use conditional writes in API-owned SQLite transactions. The first
+Transitions use conditional writes in API-owned Postgres transactions. The first
 committed accepted submission or open/revoke wins. A submitter cannot replace
 an accepted payload, reset TTL, or cancel an accepted submission. Every lookup
 checks the deadline even when the reaper is delayed. No status claims a human
@@ -274,10 +274,9 @@ An object-store body is opened before the consuming transaction, so a bucket
 that cannot serve it leaves the request openable. A stream may last at most 30
 minutes (`requests.OpenStreamTimeout`).
 
-Inline open/revoke delete payload bytes and encrypted metadata in their SQLite
+Inline open/revoke delete payload bytes and encrypted metadata in their
 transaction, so no external cleanup job remains. Every write transaction checks
-the deadline after acquiring the writer and before commit. Failed COMMIT rolls
-back on the same pinned connection before the connection can be reused.
+the deadline before commit; failed COMMIT leaves the row unchanged.
 The existing API reaper purges request rows and cascading payloads in bounded
 batches, including consumed/cancelled requests, at the original deadline.
 

@@ -7,8 +7,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
 func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
@@ -34,7 +32,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 	}
 	assertPayloadSafe(t, record.PayloadJSON)
 
-	due, err := store.ListDue(ctx, now, 10)
+	due, err := store.listDueForTest(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("list due: %v", err)
 	}
@@ -49,7 +47,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 	if err := store.MarkFailed(ctx, event.JobID, errors.New("nats unavailable"), nextAttempt); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
-	due, err = store.ListDue(ctx, now, 10)
+	due, err = store.listDueForTest(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("list due after failure: %v", err)
 	}
@@ -57,7 +55,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 		t.Fatalf("due count after failure = %d, want 0", len(due))
 	}
 
-	due, err = store.ListDue(ctx, nextAttempt, 10)
+	due, err = store.listDueForTest(ctx, nextAttempt, 10)
 	if err != nil {
 		t.Fatalf("list due at retry time: %v", err)
 	}
@@ -75,7 +73,7 @@ func TestOutboxStoreEnqueueListAndMark(t *testing.T) {
 	if err := store.MarkPublished(ctx, event.JobID); err != nil {
 		t.Fatalf("mark published: %v", err)
 	}
-	due, err = store.ListDue(ctx, nextAttempt, 10)
+	due, err = store.listDueForTest(ctx, nextAttempt, 10)
 	if err != nil {
 		t.Fatalf("list due after publish: %v", err)
 	}
@@ -90,20 +88,20 @@ func TestOutboxStoreRejectsPayloadJSONWithUnknownFields(t *testing.T) {
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	_, err := conn.ExecContext(ctx, `insert into outbox_events (
 		id, subject, payload_json, next_attempt_at, created_at, updated_at
-	) values (?, ?, ?, ?, ?, ?)`,
+	) values ($1, $2, $3, $4, $5, $6)`,
 		"job_unsafe",
 		"flick.jobs",
 		`{"job_id":"job_unsafe","kind":"delete_secret","secret_id":"sec_1","requested_at":"2026-06-17T10:00:00Z","payload":{"passphrase":"do-not-send"}}`,
-		formatTime(now),
-		formatTime(now),
-		formatTime(now),
+		now,
+		now,
+		now,
 	)
 	if err != nil {
 		t.Fatalf("insert unsafe outbox event: %v", err)
 	}
 
 	store := newTestOutboxStore(t, conn)
-	if _, err := store.ListDue(ctx, now, 10); !errors.Is(err, ErrInvalidEvent) {
+	if _, err := store.listDueForTest(ctx, now, 10); !errors.Is(err, ErrInvalidEvent) {
 		t.Fatalf("list due error = %v, want ErrInvalidEvent", err)
 	}
 }
@@ -128,20 +126,28 @@ func TestOutboxStoreMarkMissingEvent(t *testing.T) {
 	}
 }
 
+// listDueForTest runs ClaimDueTx in its own committed transaction, so tests
+// can observe the claimed set the way a publisher batch would see it.
+func (s *OutboxStore) listDueForTest(ctx context.Context, dueAt time.Time, limit int) ([]OutboxRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+
+	records, err := s.ClaimDueTx(ctx, tx, dueAt, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 func openEventsTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
-
-	conn, err := db.OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatalf("migrate api: %v", err)
-	}
-	return conn
+	return openAPITestDatabase(t)
 }
 
 func newTestOutboxStore(t *testing.T, conn *sql.DB) *OutboxStore {

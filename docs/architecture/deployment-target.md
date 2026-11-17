@@ -66,7 +66,8 @@ back VictoriaMetrics per-pod `dns_sd_configs` scraping (`deploy/base/monitoring/
 credentials so the API pod holds only `FLICK_DATABASE_URL` and the worker pod
 only `FLICK_WORKER_DATABASE_URL`; neither secretRef reaches the other role's
 DSN. M15 transition: these resources land in PR 6 (issue #425); until then
-`deploy/base` still runs the single-replica SQLite layout.
+`deploy/base` still runs the single-replica layout and does not carry the
+`FLICK_DATABASE_URL` secret yet.
 
 Opt-in monitoring lives in `deploy/base/monitoring/` and is applied separately
 with `kubectl apply -k deploy/base/monitoring`; `deploy/base/kustomization.yaml`

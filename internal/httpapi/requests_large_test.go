@@ -99,7 +99,7 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 		t.Fatal("reservation shape")
 	}
 	var upload, final string
-	if err := conn.QueryRow(`select upload_key,final_key from requests where id=?`, c.ID).Scan(&upload, &final); err != nil {
+	if err := conn.QueryRow(`select upload_key,final_key from requests where id=$1`, c.ID).Scan(&upload, &final); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(reserved.Body.String(), final) {
@@ -117,15 +117,15 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	// The handler finished the stream, so the final object is queued and the
 	// row no longer protects it.
 	var finalKey sql.NullString
-	if err := conn.QueryRow(`select final_key from requests where id=?`, c.ID).Scan(&finalKey); err != nil || finalKey.Valid {
+	if err := conn.QueryRow(`select final_key from requests where id=$1`, c.ID).Scan(&finalKey); err != nil || finalKey.Valid {
 		t.Fatal("open did not release the final key", err)
 	}
 	var queued int
-	conn.QueryRow(`select count(*) from outbox_events where payload_json like ?`, "%"+final+"%").Scan(&queued)
+	conn.QueryRow(`select count(*) from outbox_events where payload_json like $1`, "%"+final+"%").Scan(&queued)
 	if queued != 1 {
 		t.Fatal("open did not queue the final object", queued)
 	}
-	if _, err := conn.Exec(`insert into request_reconciliation_pending_v2(backend,object_key,job_id) values('s3_object',?,?)`, final, "current-job"); err != nil {
+	if _, err := conn.Exec(`insert into request_reconciliation_pending_v2(backend,object_key,job_id) values('s3_object',$1,$2)`, final, "current-job"); err != nil {
 		t.Fatal(err)
 	}
 	ack := func(job string, headers map[string]string) *httptest.ResponseRecorder {

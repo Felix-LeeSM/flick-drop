@@ -25,7 +25,7 @@ caller: a failed or dead-lettered job attempt logs `"worker job failed"` with
 on `DefaultRegistry` in `init()`:
 
 - `flick_secret_created_total` (counter, labels `kind`, `storage`) — incremented
-  in `secrets.Store.Create` (`storage` `sqlite_blob`) and `CreateLarge`
+  in `secrets.Store.Create` (`storage` `sqlite_blob`, the inline bytea row) and `CreateLarge`
   (`storage` `s3_object` or `r2_object`, the backend chosen by
   `internal/storage/registry.go:ChooseBackend`).
 - `flick_secret_opened_total` (counter) — incremented in
@@ -51,7 +51,7 @@ on `DefaultRegistry` in `init()`:
 - `flick_active_uploads` (gauge) — `Inc` in `CreateLarge`, `Dec` in `Finalize`
   (upload confirmed) and in the reaper (pending_upload orphan reclaimed).
 - `flick_storage_bytes_used` (gauge, label `storage` `s3_object`|`r2_object`) —
-  set from the api.db aggregate (`db.StorageObjectBytes`, see
+  set from the `flick_api` database aggregate (`db.StorageObjectBytes`, see
   `telemetry.SetStorageBytesUsed`) at every placement read in
   `requests.Store.Reserve` and `secrets.Store.CreateLarge`, plus once at API
   boot (`cmd/flick-api/main.go`). It reflects what ceiling enforcement reads,
@@ -66,7 +66,7 @@ The worker's Deployment exposes the port through the ClusterIP-only
 `flick-worker-metrics` Service (`deploy/base/worker.yaml`): the port is not
 exposed outside the cluster, but `deploy/` defines no NetworkPolicy, so any pod
 in the cluster can connect and `FLICK_METRICS_TOKEN` is the only guard against
-in-cluster readers. Bucket usage is gauged from the api.db size aggregate
+in-cluster readers. Bucket usage is gauged from the `flick_api` database size aggregate
 (`flick_storage_bytes_used`), deliberately not from a `ListObjectsV2` scan: a
 scan on every scrape is too costly for a health endpoint.
 

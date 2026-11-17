@@ -35,7 +35,7 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 		t.Fatal(err)
 	}
 	var upload, final string
-	if err := f.db.QueryRow(`select upload_key,final_key from requests where id=?`, c.ID).Scan(&upload, &final); err != nil {
+	if err := f.db.QueryRow(`select upload_key,final_key from requests where id=$1`, c.ID).Scan(&upload, &final); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = objectStore.Delete(ctx, upload); _ = objectStore.Delete(ctx, final) })
@@ -92,7 +92,7 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 			t.Fatal(err)
 		}
 		var n int
-		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending_v2 where backend=? and object_key=?`, storage.PrimaryBackend, upload).Scan(&n); err != nil {
+		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending_v2 where backend=$1 and object_key=$2`, storage.PrimaryBackend, upload).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n == 1 {

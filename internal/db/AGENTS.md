@@ -1,11 +1,19 @@
 # `internal/db/` Guide
 
-This package owns database connection setup, migrations, transactions, and
-low-level database helpers. The API still runs on SQLite
-(`sqlite.go:OpenSQLite`, `migrations.go:MigrateAPI`) during the M15
-transition; the worker's Postgres database lives in `postgres.go:OpenPostgres`
-and `migrations_worker.go:MigrateWorker` (session-level `pg_advisory_lock`
-serializes it across replicas). PR 3 removes the SQLite side entirely.
+This package owns database connection setup, migrations, and low-level
+database helpers. Both stores run on PostgreSQL since the M15 cutover:
+`postgres.go:OpenPostgres` opens the pgx/v5/stdlib pool (`CGO_ENABLED=0`, no
+SQLite driver in the binary), `migrations.go:MigrateAPI` owns the `flick_api`
+schema, and `migrations_worker.go:MigrateWorker` owns the `flick_worker`
+schema. Each migration takes a session-level `pg_advisory_lock` on a pinned
+connection (`pg_advisory_lock($1)` + `pg_advisory_unlock` on the same
+`*sql.Conn`) so concurrent replica boots cannot race DDL; the two services use
+different lock keys (`migrations.go:apiMigrateLockKey`,
+`migrations_worker.go:workerMigrateLockKey`).
+`postgres.go:OpenPostgres` also registers a `timestamptz` codec with
+`ScanLocation: time.UTC` on every connection, because pgx v5 otherwise decodes
+`timestamptz` into the host's `time.Local` and stores emit scanned times in
+UTC JSON and headers (`postgres_test.go:TestOpenPostgresScansTimestamptzAsUTC`).
 
 Directory structure:
 
@@ -18,10 +26,15 @@ Directory structure:
 
 Rules:
 
-- Enable WAL, foreign keys, and busy timeout consistently for every SQLite
-  connection.
 - Preserve API-owned (`flick_api`) and worker-owned (`flick_worker`) database
   separation: each service connects with its own least-privilege role.
+- Every statement in `MigrateAPI` and `MigrateWorker` must stay idempotent:
+  both run on every service start, including simultaneous starts of multiple
+  replicas behind the advisory lock.
+- Write Postgres dialect SQL only: `$n` placeholders, native `timestamptz`
+  comparisons, `bytea` payloads, and `FOR UPDATE SKIP LOCKED` for multi-replica
+  claims. No SQLite constructs (`?` binding, `datetime()`/`julianday()`,
+  `zeroblob`, `insert or ignore`, `LastInsertId`).
 - Do not store plaintext secret content, passphrases, derived keys, real
   credentials, or production identifiers in migrations or fixtures.
 
@@ -33,22 +46,19 @@ and `requests` tables per `storage_backend` (`s3_object`, `r2_object`) for the
 per-backend placement ceilings enforced in `requests.Store.Reserve` and
 `secrets.Store.CreateLarge` (see docs/architecture/storage-model.md). It only
 reads; the secrets and requests stores remain the sole writers of their tables.
-`RowQueryer` accepts `*sql.DB` or `*sql.Tx` because `Reserve` runs the
-aggregate inside its open reservation transaction and the SQLite pool is a
-single connection (`sqlite.go:SetMaxOpenConns(1)`) — an out-of-band read would
-wait on that transaction's own connection and deadlock. Locked (consumed)
-secrets keep counting for 35 minutes (the open-stream grace); opened secrets
-stop counting at open because `secrets.Store.OpenTx` deletes their row and the
-`secret_open_grace` record carries no size; consumed requests do not count;
-uploading requests count twice because the aggregate cannot know whether
-finalize has already copied the final object.
+`RowQueryer` accepts `*sql.DB` or `*sql.Tx` so `requests.Store.Reserve` can run
+the aggregate inside its open reservation transaction — the read and the
+reservation write commit or roll back together. Under `READ COMMITTED` each
+statement takes a fresh snapshot, so concurrent placements can still
+overshoot; the per-backend ceiling is a soft cap
+(docs/architecture/storage-model.md). `secrets.Store.CreateLarge` passes the
+`*sql.DB` and reads before its transaction.
 
-## Opened-secret purge
+## Legacy-schema boundary
 
-`migrations.go:forgetOpenedSecrets` runs inside `MigrateAPI` on every start. It
-deletes `secrets` rows with `consumed_at is not null and view_count > 0`
-(opened, not locked), their payloads by cascade, and `secret_management` rows
-with `outcome = 'opened'`. An `s3_object`/`r2_object` row opened less than 35
-minutes ago (`storage_usage.go:objectGrace`) first moves its `storage_key` and
-deadline into `secret_open_grace`. After the first run it is a no-op, because
-`secrets.Store.OpenTx` deletes those rows itself.
+`MigrateAPI` deliberately contains no SQLite-era repair passes (AES-GCM/RSA
+table drops, CHECK-widening rebuilds, opened-secret backlog purges): a
+Postgres database reaches it either fresh or through the SQLite cutover
+runbook, which migrates a current-release database that already carries this
+schema. Do not add repair passes here; a genuinely new schema change gets a
+new idempotent step instead.

@@ -1,5 +1,10 @@
 # SQLite Maintenance
 
+> **Pre-M15 layout.** This runbook describes the SQLite deployment that
+> `deploy/base` still runs until the M15 cutover (issue #425) rewrites it for
+> PostgreSQL. `internal/db/sqlite.go`, cited below, was removed by M15 PR 3
+> (issue #422); the commands target the SQLite files still on the volume.
+
 This runbook covers WAL checkpointing and `VACUUM` for the Flick SQLite
 databases (`api.db`, `worker.db`). It is public-safe and contains no real data.
 

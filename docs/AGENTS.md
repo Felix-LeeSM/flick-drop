@@ -15,7 +15,7 @@ Routing:
 CI and test strategy belongs in `architecture/ci-testing.md`. Test run output
 does not belong in durable docs unless it is evidence for an active work note.
 
-Implementation defaults such as frontend adapter, Go router, SQLite driver,
+Implementation defaults such as frontend adapter, Go router, database driver,
 object storage SDK, container base, and ID format belong in
 `architecture/implementation-choices.md`.
 

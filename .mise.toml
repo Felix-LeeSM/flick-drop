@@ -36,12 +36,13 @@ FLICK_NATS_URL = "nats://127.0.0.1:4222"
 FLICK_NATS_STREAM = "FLICK_JOBS"
 FLICK_NATS_JOB_SUBJECT = "flick.jobs"
 
-# SQLite files under ./var (git-ignored).
-FLICK_API_DB_PATH = "./var/api.db"
-FLICK_WORKER_DB_PATH = "./var/worker.db"
+# PostgreSQL logical databases, started by `docker compose up -d postgres`
+# (roles and databases from scripts/dev/postgres-init.sql).
+FLICK_DATABASE_URL = "postgres://flick_api:flick_api@127.0.0.1:5432/flick_api?sslmode=disable"
+FLICK_WORKER_DATABASE_URL = "postgres://flick_worker:flick_worker@127.0.0.1:5432/flick_worker?sslmode=disable"
 
-# Payload routing. At or below the inline threshold the ciphertext is stored as
-# an api.db BLOB; above it the large-object backend takes over. When that
+# Payload routing. At or below the inline threshold the ciphertext is stored
+# inline in a flick_api bytea row; above it the large-object backend takes over. When that
 # backend is disabled the server clamps the advertised ceiling down to the
 # inline threshold, so /api/config never promises more than it will accept.
 FLICK_PAYLOAD_INLINE_MAX_BYTES = "1048576" # 1 MiB

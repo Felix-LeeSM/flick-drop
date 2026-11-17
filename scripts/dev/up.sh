@@ -13,11 +13,10 @@ export FLICK_API_ADDR="${FLICK_API_ADDR:-:8080}"
 export FLICK_NATS_URL="${FLICK_NATS_URL:-nats://127.0.0.1:4222}"
 export FLICK_NATS_STREAM="${FLICK_NATS_STREAM:-FLICK_JOBS}"
 export FLICK_NATS_JOB_SUBJECT="${FLICK_NATS_JOB_SUBJECT:-flick.jobs}"
-export FLICK_API_DB_PATH="${FLICK_API_DB_PATH:-./var/api.db}"
-export FLICK_WORKER_DB_PATH="${FLICK_WORKER_DB_PATH:-./var/worker.db}"
-# M15: the worker owns the flick_worker PostgreSQL database. compose.yaml +
-# scripts/dev/postgres-init.sql create the local role and database; the API
-# still runs on SQLite until the M15 API cutover.
+# M15: the API and worker each own their PostgreSQL logical database.
+# compose.yaml + scripts/dev/postgres-init.sql create the local roles and
+# databases; both entrypoints fail fast when their DSN is empty.
+export FLICK_DATABASE_URL="${FLICK_DATABASE_URL:-postgres://flick_api:flick_api@127.0.0.1:5432/flick_api?sslmode=disable}"
 export FLICK_WORKER_DATABASE_URL="${FLICK_WORKER_DATABASE_URL:-postgres://flick_worker:flick_worker@127.0.0.1:5432/flick_worker?sslmode=disable}"
 export FLICK_PAYLOAD_INLINE_MAX_BYTES="${FLICK_PAYLOAD_INLINE_MAX_BYTES:-1048576}"
 export FLICK_MAX_FILE_BYTES="${FLICK_MAX_FILE_BYTES:-268435456}"

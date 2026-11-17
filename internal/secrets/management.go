@@ -16,10 +16,8 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// Fixed-width UTC timestamps make the new table's indexed expiry comparison
-// exact even when one timestamp has no fractional seconds.
-// The literal Z assumes the value is pinned to UTC before formatting.
-const managementTimeFormat = "2006-01-02T15:04:05.000000000Z"
+// Expiry comparisons are native timestamptz comparisons; values are pinned to
+// UTC before they are written.
 const managedObjectPrefix = "managed/secrets/"
 
 var ErrManagementUnavailable = errors.New("management unavailable")
@@ -38,14 +36,14 @@ func createManagementTx(ctx context.Context, tx *sql.Tx, id string, expires time
 		return "", fmt.Errorf("generate management capability: %w", err)
 	}
 	hash := sha256.Sum256(raw[:])
-	if _, err := tx.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at) values (?, ?, ?)`, id, hash[:], expires.UTC().Format(managementTimeFormat)); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into secret_management (secret_id, token_hash, expires_at) values ($1, $2, $3)`, id, hash[:], expires.UTC()); err != nil {
 		return "", fmt.Errorf("insert management capability: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func recordManagementOutcomeTx(ctx context.Context, tx *sql.Tx, id, outcome string) error {
-	_, err := tx.ExecContext(ctx, `update secret_management set outcome = ? where secret_id = ? and outcome is null`, outcome, id)
+	_, err := tx.ExecContext(ctx, `update secret_management set outcome = $1 where secret_id = $2 and outcome is null`, outcome, id)
 	if err != nil {
 		return fmt.Errorf("record management outcome: %w", err)
 	}
@@ -65,11 +63,12 @@ func (s *Store) management(ctx context.Context, q queryer, id, token string) (Ma
 		return ManagementStatus{}, ErrManagementUnavailable
 	}
 	var hash []byte
-	var expiresRaw string
-	var outcome, state, createdRaw sql.NullString
+	var expires time.Time
+	var outcome, state sql.NullString
+	var created sql.NullTime
 	err = q.QueryRowContext(ctx, `select m.token_hash, m.expires_at, m.outcome, s.state, s.created_at
-		from secret_management m left join secrets s on s.id = m.secret_id where m.secret_id = ?`, id).
-		Scan(&hash, &expiresRaw, &outcome, &state, &createdRaw)
+		from secret_management m left join secrets s on s.id = m.secret_id where m.secret_id = $1`, id).
+		Scan(&hash, &expires, &outcome, &state, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ManagementStatus{}, ErrManagementUnavailable
 	}
@@ -79,10 +78,6 @@ func (s *Store) management(ctx context.Context, q queryer, id, token string) (Ma
 	got := sha256.Sum256(raw)
 	if subtle.ConstantTimeCompare(got[:], hash) != 1 {
 		return ManagementStatus{}, ErrManagementUnavailable
-	}
-	expires, err := parseTime(expiresRaw)
-	if err != nil {
-		return ManagementStatus{}, fmt.Errorf("read management expiry: %w", err)
 	}
 	now := s.now().UTC()
 	if !now.Before(expires) {
@@ -95,11 +90,10 @@ func (s *Store) management(ctx context.Context, q queryer, id, token string) (Ma
 		}
 		status = state.String
 		if status == "pending_upload" {
-			created, err := parseTime(createdRaw.String)
-			if err != nil {
-				return ManagementStatus{}, fmt.Errorf("read management upload time: %w", err)
+			if !created.Valid {
+				return ManagementStatus{}, fmt.Errorf("management upload time missing")
 			}
-			if !now.Before(created.Add(s.pendingTTL)) {
+			if !now.Before(created.Time.Add(s.pendingTTL)) {
 				status = "unavailable"
 			}
 		}
@@ -109,13 +103,10 @@ func (s *Store) management(ctx context.Context, q queryer, id, token string) (Ma
 
 // Revoke retains only the authenticated outcome, removing access and payload in
 // the same transaction as any required object cleanup. No network I/O occurs.
+// A failed COMMIT leaves the server-side transaction aborted and database/sql
+// returns the connection to the pool, so no manual rollback is needed.
 func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus, error) {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return ManagementStatus{}, fmt.Errorf("acquire cancellation connection: %w", err)
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("begin cancellation: %w", err)
 	}
@@ -127,12 +118,29 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if !status.CanCancel {
 		return status, ErrNotCancellable
 	}
+	// Under READ COMMITTED each statement sees the latest commit, so a
+	// concurrent open, lockout, or revoke can land between the reads below.
+	// lostRace re-reads the outcome and answers as if that winner had committed
+	// first: forgotten (open) → 404, locked → not cancellable, cancelled → the
+	// idempotent cancelled status.
+	lostRace := func() (ManagementStatus, error) {
+		status, err := s.management(ctx, tx, id, token)
+		if err != nil || status.Status == "cancelled" {
+			return status, err
+		}
+		return status, ErrNotCancellable
+	}
 	var backend, key string
-	if err := tx.QueryRowContext(ctx, `select storage_backend, storage_key from secrets where id = ?`, id).Scan(&backend, &key); err != nil {
+	err = tx.QueryRowContext(ctx, `select storage_backend, storage_key from secrets where id = $1`, id).Scan(&backend, &key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return lostRace()
+	}
+	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("read cancellation storage: %w", err)
 	}
 	// Recheck after loading storage metadata so an elapsed pending/content
-	// deadline wins over cancellation, even if the transaction waited.
+	// deadline, or a concurrent open or revoke that committed while this
+	// transaction waited on its lock, wins over cancellation.
 	status, err = s.management(ctx, tx, id, token)
 	if err != nil {
 		return ManagementStatus{}, err
@@ -140,13 +148,18 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if !status.CanCancel {
 		return status, ErrNotCancellable
 	}
-	result, err := tx.ExecContext(ctx, `delete from secrets where id = ? and consumed_at is null
-		and reclaim_enqueued_at is null and state in ('active', 'pending_upload')`, id)
+	// RETURNING the deleted row's state, not the earlier read: a concurrent
+	// Finalize may flip pending_upload→active (and drop the in-flight gauge)
+	// after that read, and the gauge must drop only once.
+	var deletedState string
+	err = tx.QueryRowContext(ctx, `delete from secrets where id = $1 and consumed_at is null
+		and reclaim_enqueued_at is null and state in ('active', 'pending_upload')
+		returning state`, id).Scan(&deletedState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return lostRace()
+	}
 	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("cancel delivery: %w", err)
-	}
-	if n, err := result.RowsAffected(); err != nil || n != 1 {
-		return ManagementStatus{}, fmt.Errorf("cancellation did not claim a live delivery")
 	}
 	if err := recordManagementOutcomeTx(ctx, tx, id, "cancelled"); err != nil {
 		return ManagementStatus{}, err
@@ -165,13 +178,9 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		// SQLite may leave a failed COMMIT transaction open (for example a
-		// deferred constraint). sql.Tx is already done, so roll back on the
-		// still-exclusively-owned connection before returning it to the pool.
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "rollback")
 		return ManagementStatus{}, fmt.Errorf("commit cancellation: %w", err)
 	}
-	if status.Status == "pending_upload" {
+	if deletedState == "pending_upload" {
 		telemetry.ActiveUploads.Dec()
 	}
 	status.Status, status.CanCancel = "cancelled", false
@@ -183,9 +192,9 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 // Opened secrets have no rows left to purge (OpenTx deletes them); only their
 // streaming-grace records remain, and those go once the stream deadline passes.
 func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
-	cutoff := now.UTC().Format(managementTimeFormat)
+	cutoff := now.UTC()
 	const expired = `select m.secret_id from secret_management m
-		where m.expires_at <= ? order by m.expires_at, m.secret_id limit ?`
+		where m.expires_at <= $1 order by m.expires_at, m.secret_id limit $2`
 	if _, err := tx.ExecContext(ctx, `delete from secrets where consumed_at is not null and id in (`+expired+`)`, cutoff, limit); err != nil {
 		return fmt.Errorf("purge managed terminal metadata: %w", err)
 	}
@@ -193,7 +202,7 @@ func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int
 		return fmt.Errorf("purge management capabilities: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `delete from secret_open_grace where object_key in (
-		select object_key from secret_open_grace where grace_until <= ? order by grace_until limit ?)`, cutoff, limit); err != nil {
+		select object_key from secret_open_grace where grace_until <= $1 order by grace_until limit $2)`, cutoff, limit); err != nil {
 		return fmt.Errorf("purge streaming grace records: %w", err)
 	}
 	return nil

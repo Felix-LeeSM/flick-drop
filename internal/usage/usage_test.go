@@ -3,29 +3,72 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
+// openUsageDB opens an isolated Postgres schema for one test and runs
+// MigrateAPI in it. Without FLICK_TEST_POSTGRES_URL the test skips: the
+// compose/CI service provides the URL (scripts/dev/postgres-init.sql,
+// .github/workflows/ci.yml).
 func openUsageDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
-	conn, err := db.OpenSQLite(ctx, ":memory:")
+
+	baseURL := os.Getenv("FLICK_TEST_POSTGRES_URL")
+	if baseURL == "" {
+		t.Skip("FLICK_TEST_POSTGRES_URL is not set; Postgres-backed usage tests run only against the compose/CI service")
+	}
+
+	schema := fmt.Sprintf("flick_usage_test_%d", time.Now().UnixNano())
+	admin, err := sql.Open("pgx", baseURL)
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("open postgres admin pool: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := admin.ExecContext(ctx, fmt.Sprintf("create schema %s", schema)); err != nil {
+		_ = admin.Close()
+		t.Fatalf("create test schema %s: %v", schema, err)
+	}
+
+	scoped, err := url.Parse(baseURL)
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("parse FLICK_TEST_POSTGRES_URL: %v", err)
+	}
+	query := scoped.Query()
+	query.Set("search_path", schema)
+	scoped.RawQuery = query.Encode()
+
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
+	conn, err := db.OpenPostgres(ctx, scoped.String())
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("open postgres test pool: %v", err)
+	}
 	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatalf("migrate api: %v", err)
+		_ = conn.Close()
+		_ = admin.Close()
+		t.Fatalf("migrate api schema %s: %v", schema, err)
 	}
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_, _ = admin.ExecContext(context.Background(), fmt.Sprintf("drop schema %s cascade", schema))
+		_ = admin.Close()
+	})
+
 	return conn
 }
 
 func counterValue(t *testing.T, conn *sql.DB, day, metric string) int64 {
 	t.Helper()
 	var count int64
-	err := conn.QueryRow(`select count from usage_counters where day = ? and metric = ?`, day, metric).Scan(&count)
+	err := conn.QueryRow(`select count from usage_counters where day = $1 and metric = $2`, day, metric).Scan(&count)
 	if err == sql.ErrNoRows {
 		return 0
 	}
@@ -62,6 +105,25 @@ func TestIncrementUpsertsPerDayAndMetric(t *testing.T) {
 	}
 	if got := counterValue(t, conn, Day(day2), SecretCreatedText); got != 1 {
 		t.Fatalf("next-day count = %d, want 1", got)
+	}
+}
+
+// 하루 업로드 바이트 합계는 32비트 정수(약 2 GiB)를 쉽게 넘는다. 256 MiB 파일
+// 아홉 개면 넘으므로, 카운터는 그 합계를 오버플로 없이 누적해야 한다.
+func TestIncrementAccumulatesPastInt32(t *testing.T) {
+	ctx := context.Background()
+	conn := openUsageDB(t, ctx)
+	day := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+
+	if err := Increment(ctx, conn, day, BytesUploaded, 2_000_000_000); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if err := Increment(ctx, conn, day, BytesUploaded, 268_435_456); err != nil {
+		t.Fatalf("increment past int32: %v", err)
+	}
+
+	if got, want := counterValue(t, conn, Day(day), BytesUploaded), int64(2_268_435_456); got != want {
+		t.Fatalf("bytes count = %d, want %d", got, want)
 	}
 }
 

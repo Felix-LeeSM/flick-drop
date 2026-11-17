@@ -32,11 +32,11 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.InternalAPIBaseURL != "http://localhost:8080" {
 		t.Fatalf("InternalAPIBaseURL = %q, want http://localhost:8080", cfg.InternalAPIBaseURL)
 	}
-	if cfg.APIDBPath != "./var/api.db" {
-		t.Fatalf("APIDBPath = %q, want ./var/api.db", cfg.APIDBPath)
+	if cfg.APIDatabaseURL != "" {
+		t.Fatalf("APIDatabaseURL = %q, want empty default", cfg.APIDatabaseURL)
 	}
-	if cfg.WorkerDBPath != "./var/worker.db" {
-		t.Fatalf("WorkerDBPath = %q, want ./var/worker.db", cfg.WorkerDBPath)
+	if cfg.WorkerDatabaseURL != "" {
+		t.Fatalf("WorkerDatabaseURL = %q, want empty default", cfg.WorkerDatabaseURL)
 	}
 	if cfg.NATSURL != "nats://127.0.0.1:4222" {
 		t.Fatalf("NATSURL = %q, want nats://127.0.0.1:4222", cfg.NATSURL)
@@ -112,8 +112,8 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_OTLP_ENDPOINT",
 		"FLICK_INTERNAL_API_BASE_URL",
 		"FLICK_API_ADDR",
-		"FLICK_API_DB_PATH",
-		"FLICK_WORKER_DB_PATH",
+		"FLICK_DATABASE_URL",
+		"FLICK_WORKER_DATABASE_URL",
 		"FLICK_NATS_URL",
 		"FLICK_NATS_STREAM",
 		"FLICK_NATS_JOB_SUBJECT",

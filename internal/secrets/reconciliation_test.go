@@ -3,11 +3,9 @@ package secrets
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/requests"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
@@ -23,21 +21,16 @@ func (o listingObjects) List(ctx context.Context, prefix, cursor string, limit i
 
 func TestReconciliationResumesPaginationAndProtectsLiveObjects(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "api.db")
-	conn, err := db.OpenSQLite(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = conn.Close() }()
-	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatal(err)
-	}
+	database := openTestAPIDatabase(t)
+	conn := database.openPool(t)
 	objects := newMockObjectStore()
 	store := newLargeTestStore(t, conn, objects)
-	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
+	// Microsecond precision is what timestamptz stores, so the one-unit offsets
+	// below are one microsecond.
+	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	fixtures := []secretFixture{
 		{id: "a-active", state: "active", expiresAt: now.Add(time.Hour), createdAt: now},
-		{id: "b-pending", state: "pending_upload", expiresAt: now.Add(time.Hour), createdAt: now.Add(-15*time.Minute + time.Nanosecond)},
+		{id: "b-pending", state: "pending_upload", expiresAt: now.Add(time.Hour), createdAt: now.Add(-15*time.Minute + time.Microsecond)},
 		{id: "c-expired", state: "active", expiresAt: now, createdAt: now.Add(-time.Hour)},
 		{id: "d-abandoned", state: "pending_upload", expiresAt: now.Add(time.Hour), createdAt: now.Add(-15 * time.Minute)},
 	}
@@ -55,16 +48,9 @@ func TestReconciliationResumesPaginationAndProtectsLiveObjects(t *testing.T) {
 	if n, err := reaper.ReconcileOnce(ctx); err != nil || n != 0 {
 		t.Fatalf("live page: %d %v", n, err)
 	}
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	conn, err = db.OpenSQLite(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatal(err)
-	}
+	// A fresh pool over the same schema is the restart: the cursor row and the
+	// pending claims must survive it.
+	conn = database.openPool(t)
 	store = newLargeTestStore(t, conn, objects)
 	reaper = newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
 	reaper.SetNowForTest(func() time.Time { return now })
@@ -122,7 +108,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("late object missed: %d %v", n, err)
 	}
 	var firstJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&firstJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&firstJob); err != nil {
 		t.Fatal(err)
 	}
 	if firstJob == immediate.JobID {
@@ -147,7 +133,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("second late object missed: %d %v", n, err)
 	}
 	var secondJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&secondJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&secondJob); err != nil {
 		t.Fatal(err)
 	}
 	if secondJob == firstJob {
@@ -157,7 +143,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	var remaining string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = ?`, key).Scan(&remaining); err != nil || remaining != secondJob {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&remaining); err != nil || remaining != secondJob {
 		t.Fatalf("stale ack removed new job: %s %v", remaining, err)
 	}
 	if err := objects.Delete(ctx, key); err != nil {
@@ -179,8 +165,10 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			objects := newMockObjectStore()
 			store := newLargeTestStore(t, conn, objects)
 			reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
-			_, err := conn.Exec(`update object_reconciliation_cursor_v2 set continuation_token = 'old' where backend = 's3_object'; insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/existing','existing-job')`)
-			if err != nil {
+			if _, err := conn.Exec(`update object_reconciliation_cursor_v2 set continuation_token = 'old' where backend = 's3_object'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Exec(`insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/existing','existing-job')`); err != nil {
 				t.Fatal(err)
 			}
 			wrapped, wrapErr := storage.NewRegistry(listingObjects{objects, func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
@@ -203,16 +191,29 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 				t.Fatal(wrapErr)
 			}
 			store.objects = wrapped
+			var setupErr error
 			switch failure {
 			case "lookup":
-				_, err = conn.Exec(`drop table secrets`)
+				// The pending claims and cursor tables survive; only the live-row
+				// source is gone. CASCADE drops the dependents of secrets.
+				_, setupErr = conn.Exec(`drop table secrets cascade`)
 			case "outbox":
 				reaper.outbox = &fakeOutbox{err: errors.New("enqueue failed")}
 			case "commit":
-				_, err = conn.Exec(`create table fail_commit (id text references secrets(id) deferrable initially deferred); create trigger fail_claim after insert on object_reconciliation_pending_v2 begin insert into fail_commit values (new.job_id); end;`)
+				// A deferred constraint trigger fires at COMMIT, so the claim
+				// insert succeeds and only the commit fails.
+				if _, err := conn.Exec(`create function fail_claim() returns trigger language plpgsql as $fn$
+					begin
+						raise exception 'injected claim commit failure';
+					end;
+					$fn$`); err != nil {
+					t.Fatal(err)
+				}
+				_, setupErr = conn.Exec(`create constraint trigger fail_claim after insert on object_reconciliation_pending_v2
+					deferrable initially deferred for each row execute function fail_claim()`)
 			}
-			if err != nil {
-				t.Fatal(err)
+			if setupErr != nil {
+				t.Fatal(setupErr)
 			}
 			n, err := reaper.ReconcileOnce(ctx)
 			if n != 0 || (err == nil) != (failure == "wrong prefix") {
@@ -347,14 +348,16 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 // reconciliation leaves it alone for openObjectGrace after consumed_at and
 // deletes it as an orphan once that has passed.
 func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
-	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
+	// timestamptz keeps microseconds, so grace boundaries are probed at
+	// one-microsecond granularity.
+	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	for _, tc := range []struct {
 		name       string
 		consumedAt time.Time
 		wantJobs   int
 	}{
 		{"just opened", now, 0},
-		{"one nanosecond inside the grace", now.Add(-openObjectGrace + time.Nanosecond), 0},
+		{"one microsecond inside the grace", now.Add(-openObjectGrace + time.Microsecond), 0},
 		{"grace elapsed", now.Add(-openObjectGrace), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -388,7 +391,8 @@ func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
 func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) {
 	// Given: 방금 열람한 S3 시크릿
 	ctx := context.Background()
-	now := time.Date(2026, 10, 8, 1, 0, 0, 123, time.UTC)
+	// timestamptz는 마이크로초 정밀도라 유예 경계는 1마이크로초 간격으로 확인한다.
+	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	conn := openTestDB(t, ctx)
 	objects := newMockObjectStore()
 	store := newLargeTestStore(t, conn, objects)
@@ -417,13 +421,13 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 		}
 		return n
 	}
-	if n := count(`select count(*) from secrets where id = ?`, created.ID) + count(`select count(*) from secret_management where secret_id = ?`, created.ID); n != 0 {
+	if n := count(`select count(*) from secrets where id = $1`, created.ID) + count(`select count(*) from secret_management where secret_id = $1`, created.ID); n != 0 {
 		t.Fatalf("%d rows still remember the opened ID", n)
 	}
-	if n := count(`select count(*) from pragma_table_info('secret_open_grace') where name not in ('object_key', 'grace_until')`); n != 0 {
+	if n := count(`select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'secret_open_grace' and column_name not in ('object_key', 'grace_until')`); n != 0 {
 		t.Fatalf("secret_open_grace has %d columns beyond the key and deadline", n)
 	}
-	if n := count(`select count(*) from secret_open_grace where object_key = ?`, key); n != 1 {
+	if n := count(`select count(*) from secret_open_grace where object_key = $1`, key); n != 1 {
 		t.Fatalf("grace rows for the streaming object = %d, want 1", n)
 	}
 
@@ -437,7 +441,7 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 		}
 		return len(readOutboxEvents(t, ctx, conn))
 	}
-	if n := tick(now.Add(openObjectGrace - time.Nanosecond)); n != 0 {
+	if n := tick(now.Add(openObjectGrace - time.Microsecond)); n != 0 {
 		t.Fatalf("%d object delete jobs while the body may still stream, want 0", n)
 	}
 	if n := count(`select count(*) from secret_open_grace`); n != 1 {

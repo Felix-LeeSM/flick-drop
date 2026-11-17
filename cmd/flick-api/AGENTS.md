@@ -19,11 +19,12 @@ when `FLICK_OTLP_ENDPOINT` is set.)
 Startup wiring should stay easy to read:
 
 1. load config
-2. open API-owned SQLite
+2. open the API-owned `flick_api` PostgreSQL database (`db.OpenPostgres` with
+   `FLICK_DATABASE_URL`; empty DSN fails fast)
 3. wire storage, secrets, and events (metrics are process-global instruments
    in `internal/telemetry/metrics.go`; tracing is installed by
    `telemetry.SetupTracing` right after config load in `cmd/flick-api/main.go`)
 4. build HTTP router
 5. start server and graceful shutdown
 
-The API process is the only writer for `api.db`.
+The API process is the only writer for the `flick_api` database.

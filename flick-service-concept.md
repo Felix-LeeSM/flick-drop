@@ -7,6 +7,8 @@
 > [service topology](docs/architecture/service-topology.md)) plus the contracts
 > in `contracts/`. Statements here were corrected on 2026-11-12 where they had
 > become wrong; where this document and those files disagree, those files win.
+> Its SQLite (`api.db`/`worker.db`) storage description predates M15, which
+> moved both stores to PostgreSQL (`docs/architecture/database-schema.md`).
 
 Flick is a self-hosted, open-source service for sharing short-lived secrets
 and files through one-time links.

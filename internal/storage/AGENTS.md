@@ -1,7 +1,7 @@
 # `internal/storage/` Guide
 
 This package owns the S3-compatible object store for large secret payloads
-(SQLite BLOB stays the default for small payloads in `internal/secrets`).
+(inline `bytea` rows stay the default for small payloads in `internal/secrets`).
 
 Directory structure:
 

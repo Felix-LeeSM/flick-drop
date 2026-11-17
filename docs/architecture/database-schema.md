@@ -18,13 +18,17 @@ flick_worker database
 The worker must not mutate the `flick_api` database directly. It calls internal
 API endpoints for API-owned mutations.
 
-M15 transition (decided 2026-11-16): `flick_worker` moves to Postgres in PR 2
-(issue #421), `flick_api` and the `modernc.org/sqlite` removal in PR 3 (issue
-#422). Until those merge, the services still run the same tables on local
-SQLite files. The table shapes below carry over unchanged except for the
-dialect notes in "PostgreSQL dialect".
+M15 moved both stores onto Postgres: `flick_worker` in PR 2 (issue #421) and
+`flick_api` plus the `modernc.org/sqlite` removal in PR 3 (issue #422). An
+existing self-hosted deployment will reach this schema through the SQLite
+cutover runbook (`docs/runbook/postgres-cutover.md`, landing in PR 6 / issue
+#425), which migrates a current-release database; the migration code
+intentionally carries no SQLite-era repair passes.
 
-## `api.db`
+## `flick_api` database
+
+`MigrateAPI` (`internal/db/migrations.go`) creates every table below on each
+API start, idempotently, holding one session-level `pg_advisory_lock`.
 
 ```sql
 create table secrets (
@@ -37,16 +41,16 @@ create table secrets (
   wrapped_identity text,
   encrypted_filename text,
   content_type text,
-  size_bytes integer not null check (size_bytes >= 0),
+  size_bytes bigint not null check (size_bytes >= 0),
   max_views integer not null default 1 check (max_views > 0),
   view_count integer not null default 0 check (view_count >= 0),
   failed_access_count integer not null default 0 check (failed_access_count >= 0),
   state text not null default 'active' check (state in ('active', 'pending_upload')),
-  expires_at datetime not null,
-  consumed_at datetime,
-  created_at datetime not null,
-  updated_at datetime not null,
-  reclaim_enqueued_at datetime,
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  reclaim_enqueued_at timestamptz,
   check ((access_kdf_params_json is null) = (access_proof_hash is null)
     and (access_proof_hash is null) = (wrapped_identity is null))
 );
@@ -60,15 +64,15 @@ create index idx_secrets_reclaim_pending on secrets(state, expires_at, created_a
 
 create table secret_payloads (
   secret_id text primary key,
-  ciphertext blob not null,
-  created_at datetime not null,
+  ciphertext bytea not null,
+  created_at timestamptz not null,
   foreign key (secret_id) references secrets(id) on delete cascade
 );
 
 create table secret_management (
   secret_id text primary key,
-  token_hash blob not null check (length(token_hash) = 32),
-  expires_at datetime not null,
+  token_hash bytea not null check (length(token_hash) = 32),
+  expires_at timestamptz not null,
   outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
 );
 
@@ -79,7 +83,7 @@ create index idx_secret_management_expires_at
 -- No secret ID column, kind, or size.
 create table secret_open_grace (
   object_key text primary key,
-  grace_until datetime not null
+  grace_until timestamptz not null
 );
 
 create index idx_secret_open_grace_until on secret_open_grace(grace_until);
@@ -105,11 +109,11 @@ create table outbox_events (
   state text not null default 'pending'
     check (state in ('pending', 'published', 'failed')),
   attempts integer not null default 0 check (attempts >= 0),
-  next_attempt_at datetime not null,
-  published_at datetime,
+  next_attempt_at timestamptz not null,
+  published_at timestamptz,
   last_error text,
-  created_at datetime not null,
-  updated_at datetime not null
+  created_at timestamptz not null,
+  updated_at timestamptz not null
 );
 
 create index idx_outbox_events_state_next_attempt
@@ -118,7 +122,7 @@ create index idx_outbox_events_state_next_attempt
 create table usage_counters (
   day text not null,
   metric text not null,
-  count integer not null default 0 check (count >= 0),
+  count bigint not null default 0 check (count >= 0),
   primary key (day, metric)
 );
 ```
@@ -142,12 +146,6 @@ the last two are stored base64. `size_bytes` is the exact body age file length.
 file; only the verified open returns it. Model B rows leave it, the access KDF,
 and the proof hash NULL, which the table CHECK enforces.
 
-A database that still has the AES-GCM `nonce` column is migrated by dropping
-its `secrets` and `secret_payloads` tables (`internal/db/migrations.go`
-`dropAESGCMSecrets`): age clients cannot open those secrets. Their management
-pages report `unavailable`, and object reconciliation deletes their bucket
-objects.
-
 `access_kdf_params_json` stores separate browser-side derivation parameters for
 the one-time open proof. `access_proof_hash` stores a server-side hash of that
 proof. The proof is not an encryption key and cannot directly decrypt the
@@ -167,22 +165,22 @@ create table requests (
   public_key text not null,
   fingerprint text not null,
   encrypted_note text,
-  submission_token_hash blob not null check (length(submission_token_hash) = 32),
-  retrieval_token_hash blob not null check (length(retrieval_token_hash) = 32),
+  submission_token_hash bytea not null check (length(submission_token_hash) = 32),
+  retrieval_token_hash bytea not null check (length(retrieval_token_hash) = 32),
   state text not null default 'waiting' check (state in ('waiting', 'uploading', 'submitted', 'consumed', 'cancelled', 'unavailable')),
   generation integer not null default 1 check (generation between 1 and 16),
-  attempt_token_hash blob check (length(attempt_token_hash) = 32),
-  attempt_body_hash blob check (length(attempt_body_hash) = 32),
+  attempt_token_hash bytea check (length(attempt_token_hash) = 32),
+  attempt_body_hash bytea check (length(attempt_body_hash) = 32),
   kind text check (kind in ('text', 'file')),
-  size_bytes integer check (size_bytes >= 0),
+  size_bytes bigint check (size_bytes >= 0),
   envelope_json text,
   storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
   upload_key text,
   final_key text,
-  ciphertext_sha256 blob check (length(ciphertext_sha256) = 32),
-  reservation_expires_at text,
-  consumed_at text,
-  expires_at text not null,
+  ciphertext_sha256 bytea check (length(ciphertext_sha256) = 32),
+  reservation_expires_at timestamptz,
+  consumed_at timestamptz,
+  expires_at timestamptz not null,
   check ((attempt_token_hash is null) = (attempt_body_hash is null)),
   check (state != 'uploading' or (storage_backend in ('s3_object', 'r2_object') and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
   check (state != 'submitted' or storage_backend not in ('s3_object', 'r2_object') or (final_key is not null and ciphertext_sha256 is not null)),
@@ -199,24 +197,24 @@ create unique index idx_requests_final_key on requests(final_key)
 
 create table request_payloads (
   request_id text primary key,
-  ciphertext blob not null,
+  ciphertext bytea not null,
   foreign key (request_id) references requests(id) on delete cascade
 );
 ```
 
-`expires_at` is fixed-width UTC with nine fractional digits for exact indexed
-comparisons. Only SHA-256 token hashes are stored. The immutable submission
-hash covers canonical envelope, kind, size, and ciphertext; duplicate attempts
-cannot overwrite content or extend the deadline. For object reservations the
-hash covers the expected ciphertext SHA-256 instead of inline ciphertext. An
-expired/abandoned reservation atomically advances generation; ending generation
-16 stores internal state `unavailable`, exposed as HTTP 404 for both capabilities.
-A cancelled pending reservation clears its attempt hashes; only accepted receipts
-survive open/revoke. Reservation deadlines use the same fixed-width UTC format.
-Open/revoke clear payloads, envelope, encrypted_note, kind, and size in the
-same transaction. `encrypted_note` holds optional canonical base64 of an
-age-encrypted requester memo whose decryption identity stays solely in the
-submission URL fragment.
+Timestamps are native `timestamptz` columns compared with `$n` parameter
+values, so the SQLite-era fixed-width text format and `julianday` arithmetic
+have no equivalent here. Only SHA-256 token hashes are stored. The immutable
+submission hash covers canonical envelope, kind, size, and ciphertext;
+duplicate attempts cannot overwrite content or extend the deadline. For object
+reservations the hash covers the expected ciphertext SHA-256 instead of inline
+ciphertext. An expired/abandoned reservation atomically advances generation;
+ending generation 16 stores internal state `unavailable`, exposed as HTTP 404
+for both capabilities. A cancelled pending reservation clears its attempt
+hashes; only accepted receipts survive open/revoke. Open/revoke clear payloads,
+envelope, encrypted_note, kind, and size in the same transaction.
+`encrypted_note` holds optional canonical base64 of an age-encrypted requester
+memo whose decryption identity stays solely in the submission URL fragment.
 An opened object-store request keeps `final_key` and records `consumed_at`
 while its body streams; the API clears the key when the stream ends, and the
 purge and reconciliation leave the row and object alone for 35 minutes after
@@ -225,11 +223,6 @@ Public key, token hashes, minimal owner state, and attempt receipt expire at
 the original deadline; the API reaper purges them even after early consumption
 or cancellation. The worker never reads or writes request tables.
 
-
-`internal/db/requests.go:dropRSARequests` drops a `requests` table that lacks
-`consumed_at`, together with `request_payloads`: such a table is from before
-request links moved to age, and its RSA-era submissions cannot be opened by any
-current client. The age schema is then created in their place.
 `normalizeRequestsSchema` adds the indexes, which cover expiry, pending
 reservation deadlines, and unique non-null staging/final keys.
 
@@ -257,24 +250,11 @@ rows together. A worker terminal ACK removes only the matching
 backend/key/job-ID claim, so later PUTs can receive a new cleanup job after
 metadata is gone.
 
-## Legacy reconciliation tables
+## `flick_worker` database
 
-`MigrateAPI` still creates the single-backend tables `object_reconciliation_cursor`,
-`object_reconciliation_pending` (`internal/db/migrations.go`),
-`request_reconciliation_cursor`, and `request_reconciliation_pending`
-(`internal/db/requests.go:normalizeRequestsSchema`). They predate the second
-storage backend: a single cursor row cannot track two buckets, and a pending
-table keyed on `object_key` alone collides when both backends hold the same key.
-No runtime code reads or writes them; they stay so that existing databases keep
-a valid schema without a destructive migration.
-
-## Backend widening
-
-`internal/db/migrations.go:widenSecretsBackends` and
-`internal/db/requests.go:widenRequestsBackends` rebuild `secrets` and `requests`
-in place when their stored CHECK constraints predate `'r2_object'`.
-
-## `worker.db`
+`MigrateWorker` (`internal/db/migrations_worker.go`) creates every table below,
+idempotently, holding one session-level `pg_advisory_lock` distinct from the
+API migration's key.
 
 ```sql
 create table job_receipts (
@@ -284,23 +264,22 @@ create table job_receipts (
     check (state in ('processing', 'succeeded', 'failed', 'dead')),
   attempts integer not null default 0 check (attempts >= 0),
   last_error text,
-  first_seen_at datetime not null,
-  updated_at datetime not null,
-  completed_at datetime
+  first_seen_at timestamptz not null,
+  updated_at timestamptz not null,
+  completed_at timestamptz
 );
 
 create index idx_job_receipts_state_updated_at
   on job_receipts(state, updated_at);
 
 create table job_attempts (
-  id integer primary key autoincrement,
-  job_id text not null,
+  id bigint generated always as identity primary key,
+  job_id text not null references job_receipts(job_id),
   attempt integer not null,
-  started_at datetime not null,
-  finished_at datetime,
+  started_at timestamptz not null,
+  finished_at timestamptz,
   result text not null check (result in ('running', 'succeeded', 'failed')),
-  error text,
-  foreign key (job_id) references job_receipts(job_id)
+  error text
 );
 
 create index idx_job_attempts_job_id on job_attempts(job_id);
@@ -310,7 +289,7 @@ create table dead_letters (
   kind text not null,
   payload_json text not null,
   error text not null,
-  created_at datetime not null
+  created_at timestamptz not null
 );
 ```
 
@@ -331,7 +310,7 @@ The M15 port (issues #421, #422) fixes these rules for every store:
 
 - `MigrateAPI` and `MigrateWorker` take a session-level `pg_advisory_lock`
   before running DDL, so concurrent replica boot cannot race `pg_type`
-  catalog updates.
+  catalog updates. The two services use different lock keys.
 - Insert identity uses `INSERT ... RETURNING id`; `LastInsertId` is never
   used (`internal/worker/store.go:ReceiptStore.Start`).
 - Worker job-lease acquisition is one conditional upsert
@@ -342,9 +321,12 @@ The M15 port (issues #421, #422) fixes these rules for every store:
   `READ COMMITTED` Postgres re-evaluates the `WHERE` after row-lock waits, so
   concurrent starts can never both pass a stale snapshot check.
 - Multi-replica claims use `FOR UPDATE SKIP LOCKED`: the outbox publisher
-  (`internal/events/outbox.go:ListDue`), the secret reaper
+  (`internal/events/outbox.go:ClaimDueTx`), the secret reaper
   (`internal/secrets/reaper.go:claimReclaimableSQL`), and the request purge
   (`internal/requests/cleanup.go:PurgeExpiredTx`).
+- The outbox publish batch is one transaction: `ClaimDueTx` takes SKIP LOCKED
+  row locks, the NATS publish happens while the locks are held, and the marks
+  commit atomically (`internal/events/publisher.go:PublishDue`).
 - Timestamps compare natively as `timestamptz`; the SQLite fixed-width text
   RFC3339 comparisons and `julianday` arithmetic do not survive the port.
 - Boolean arithmetic like `((a is not null) + (b is not null))` becomes
@@ -353,8 +335,9 @@ The M15 port (issues #421, #422) fixes these rules for every store:
   `UPDATE ... SET failed_access_count = failed_access_count + 1 ... RETURNING`
   so concurrent attempts cannot double-lockout or double-count
   (`internal/secrets/store.go:recordFailedAccessTx`).
-- Connection pools set explicit `MaxOpenConns`/`MaxIdleConns`/`ConnMaxLifetime`
-  per role; the SQLite `SetMaxOpenConns(1)` single-writer limit is gone.
+- Every service pool sets the same explicit `MaxOpenConns`/`MaxIdleConns`/
+  `ConnMaxLifetime` (`internal/db/postgres.go:PostgresMaxOpenConns`, 8/4/30m);
+  the SQLite `SetMaxOpenConns(1)` single-writer limit is gone.
 
 Vacuum and connection-policy tuning belong in the operations runbook because
 they affect disk usage and residual ciphertext retention.
@@ -363,27 +346,22 @@ they affect disk usage and residual ciphertext retention.
 
 `secret_management` has no cascading foreign key: orphan/payload reclamation
 must not erase an authenticated outcome before the original expiry. SHA-256
-hashes are 32-byte BLOBs; raw management tokens are never persisted. Expiry uses
-fixed-width UTC nanosecond timestamps for exact indexed comparisons. Existing
-secrets receive no retroactive credential.
+hashes are 32-byte `bytea` values; raw management tokens are never persisted.
+Expiry compares native `timestamptz` values. Existing secrets receive no
+retroactive credential.
 
 `internal/secrets/store.go` records `locked` with the lockout transition; the
 reaper records orphan `unavailable` before deleting its secret row. A
 successful open deletes the `secrets` row (payload by cascade) and the
 `secret_management` row in the open transaction and writes no outcome; the
-CHECK still admits the retired `opened` value because SQLite cannot alter a
-CHECK without a table rebuild. For an `s3_object`/`r2_object` body the same
-transaction inserts `secret_open_grace` (`object_key`, `grace_until` = open
-time + 35 minutes, fixed-width UTC); `internal/secrets/reconciliation.go`
-protects that key until `grace_until`, and the reaper sweep deletes expired
-grace rows. `internal/db/migrations.go:forgetOpenedSecrets` runs in
-`MigrateAPI` and deletes rows earlier releases kept after opens: `secrets` rows
-with `consumed_at is not null and view_count > 0` (lockout never increments
-`view_count`) and `secret_management` rows with `outcome = 'opened'`, first
-moving the key and deadline of a bucket row opened in the last 35 minutes into
-`secret_open_grace`. Bounded reaper sweeps purge expired management rows and
-their consumed (locked) secret metadata, without changing legacy locked-row
-retention. Public management reads enforce
+CHECK still admits the retired `opened` value so rows carried over from a
+SQLite cutover database stay valid without a repair pass. For an
+`s3_object`/`r2_object` body the open transaction inserts `secret_open_grace`
+(`object_key`, `grace_until` = open time + 35 minutes);
+`internal/secrets/reconciliation.go` protects that key until `grace_until`,
+and the reaper sweep deletes expired grace rows. Bounded reaper sweeps purge
+expired management rows and their consumed (locked) secret metadata, without
+changing locked-row retention. Public management reads enforce
 the deadline even while cleanup is delayed. Cancellation deletes its live row and inline payload after committing the
 `cancelled` outcome and required object-delete outbox record in the same
 transaction. `object_reconciliation_cursor_v2` has one row per backend

@@ -7,13 +7,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
@@ -78,16 +83,13 @@ func TestSecretHTTPFlow(t *testing.T) {
 	})
 	// The open transaction already deleted the inline payload, so no cleanup
 	// job (which would carry the opened ID) is queued.
-	due, err := fixture.outbox.ListDue(context.Background(), time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
-	if err != nil {
-		t.Fatalf("list due outbox events: %v", err)
-	}
+	due := listOutboxDue(t, fixture.db, fixture.outbox, time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
 	if len(due) != 0 {
 		t.Fatalf("due outbox events = %+v, want none for an inline open", due)
 	}
 
 	var payloadCount int
-	if err := fixture.db.QueryRowContext(context.Background(), `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+	if err := fixture.db.QueryRowContext(context.Background(), `select count(*) from secret_payloads where secret_id = $1`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads after open: %v", err)
 	}
 	if payloadCount != 0 {
@@ -193,7 +195,7 @@ func TestOpenDeletesSecretAfterFiveInvalidProofs(t *testing.T) {
 
 	var failedAccessCount int
 	var consumedAt sql.NullString
-	if err := fixture.db.QueryRowContext(context.Background(), `select failed_access_count, consumed_at from secrets where id = ?`, created.ID).Scan(&failedAccessCount, &consumedAt); err != nil {
+	if err := fixture.db.QueryRowContext(context.Background(), `select failed_access_count, consumed_at from secrets where id = $1`, created.ID).Scan(&failedAccessCount, &consumedAt); err != nil {
 		t.Fatalf("load failed access count: %v", err)
 	}
 	if failedAccessCount != 5 {
@@ -204,7 +206,7 @@ func TestOpenDeletesSecretAfterFiveInvalidProofs(t *testing.T) {
 	}
 
 	var payloadCount int
-	if err := fixture.db.QueryRowContext(context.Background(), `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+	if err := fixture.db.QueryRowContext(context.Background(), `select count(*) from secret_payloads where secret_id = $1`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads after failed access limit: %v", err)
 	}
 	if payloadCount != 0 {
@@ -549,19 +551,56 @@ func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	}
 }
 
+// openHTTPTestDB opens an isolated Postgres schema for one test and runs
+// MigrateAPI in it. Without FLICK_TEST_POSTGRES_URL the test skips: the
+// compose/CI service provides the URL (scripts/dev/postgres-init.sql,
+// .github/workflows/ci.yml).
 func openHTTPTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 
-	conn, err := db.OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+	baseURL := os.Getenv("FLICK_TEST_POSTGRES_URL")
+	if baseURL == "" {
+		t.Skip("FLICK_TEST_POSTGRES_URL is not set; Postgres-backed httpapi tests run only against the compose/CI service")
 	}
+
+	schema := fmt.Sprintf("flick_httpapi_test_%d", time.Now().UnixNano())
+	admin, err := sql.Open("pgx", baseURL)
+	if err != nil {
+		t.Fatalf("open postgres admin pool: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, fmt.Sprintf("create schema %s", schema)); err != nil {
+		_ = admin.Close()
+		t.Fatalf("create test schema %s: %v", schema, err)
+	}
+
+	scoped, err := url.Parse(baseURL)
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("parse FLICK_TEST_POSTGRES_URL: %v", err)
+	}
+	query := scoped.Query()
+	query.Set("search_path", schema)
+	scoped.RawQuery = query.Encode()
+
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
+	conn, err := db.OpenPostgres(ctx, scoped.String())
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("open postgres test pool: %v", err)
+	}
+	if err := db.MigrateAPI(ctx, conn); err != nil {
+		_ = conn.Close()
+		_ = admin.Close()
+		t.Fatalf("migrate api schema %s: %v", schema, err)
+	}
+
 	t.Cleanup(func() {
 		_ = conn.Close()
+		_, _ = admin.ExecContext(context.Background(), fmt.Sprintf("drop schema %s cascade", schema))
+		_ = admin.Close()
 	})
-	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatalf("migrate api: %v", err)
-	}
+
 	return conn
 }
 
@@ -827,14 +866,31 @@ func (e *eofHookReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// listOutboxDue claims the due outbox rows inside one committed transaction —
+// the same shape a publisher batch uses.
+func listOutboxDue(t *testing.T, conn *sql.DB, outbox *events.OutboxStore, dueAt time.Time, limit int) []events.OutboxRecord {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin outbox claim: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	records, err := outbox.ClaimDueTx(ctx, tx, dueAt, limit)
+	if err != nil {
+		t.Fatalf("claim due outbox events: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit outbox claim: %v", err)
+	}
+	return records
+}
+
 // outboxKinds lists the kinds of every outbox job, in no particular order.
-func outboxKinds(t *testing.T, outbox *events.OutboxStore) map[string]events.JobEvent {
+func outboxKinds(t *testing.T, conn *sql.DB, outbox *events.OutboxStore) map[string]events.JobEvent {
 	t.Helper()
 
-	due, err := outbox.ListDue(context.Background(), time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), 100)
-	if err != nil {
-		t.Fatalf("list outbox: %v", err)
-	}
+	due := listOutboxDue(t, conn, outbox, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), 100)
 	kinds := map[string]events.JobEvent{}
 	for _, record := range due {
 		kinds[record.Payload.Kind] = record.Payload
@@ -879,7 +935,7 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	fixture, id := newS3OpenFixture(t, objects)
 
 	var atEOF map[string]events.JobEvent
-	objects.onEOF = func() { atEOF = outboxKinds(t, fixture.outbox) }
+	objects.onEOF = func() { atEOF = outboxKinds(t, fixture.db, fixture.outbox) }
 
 	resp := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{})
 	assertOpenResponse(t, resp, objects.body, map[string]string{
@@ -895,7 +951,7 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	if len(atEOF) != 0 {
 		t.Fatalf("outbox at EOF = %+v, want nothing before the body finished streaming", atEOF)
 	}
-	after := outboxKinds(t, fixture.outbox)
+	after := outboxKinds(t, fixture.db, fixture.outbox)
 	job, ok := after[events.KindDeleteOCIObject]
 	if !ok || job.ObjectKey != objects.opened[0] || job.Reason != events.ReasonConsumed {
 		t.Fatalf("outbox after open = %+v, want consumed object delete for %q", after, objects.opened[0])
@@ -931,7 +987,7 @@ func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 			if err := store.Finalize(ctx, created.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conn.Exec(`update secrets set storage_backend = ? where id = ?`, backend, created.ID); err != nil {
+			if _, err := conn.Exec(`update secrets set storage_backend = $1 where id = $2`, backend, created.ID); err != nil {
 				t.Fatal(err)
 			}
 
@@ -942,7 +998,7 @@ func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 			}
 
 			// Then: 삭제 작업이 같은 백엔드를 가리킨다
-			job, ok := outboxKinds(t, outbox)[events.KindDeleteOCIObject]
+			job, ok := outboxKinds(t, conn, outbox)[events.KindDeleteOCIObject]
 			if !ok || job.Backend != backend || job.ObjectKey != "managed/secrets/"+created.ID {
 				t.Fatalf("object delete job = %+v, want backend %q", job, backend)
 			}
@@ -961,7 +1017,7 @@ func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	if resp.Code != http.StatusOK || resp.Body.Len() != 2500 {
 		t.Fatalf("broken stream status = %d, body bytes = %d, want 200 and the first half", resp.Code, resp.Body.Len())
 	}
-	if job, ok := outboxKinds(t, fixture.outbox)[events.KindDeleteOCIObject]; !ok || job.ObjectKey != objects.opened[0] {
+	if job, ok := outboxKinds(t, fixture.db, fixture.outbox)[events.KindDeleteOCIObject]; !ok || job.ObjectKey != objects.opened[0] {
 		t.Fatalf("object delete after a broken stream = %+v, want one for %q", job, objects.opened[0])
 	}
 	if again := performJSON(t, fixture.router, http.MethodPost, "/api/secrets/"+id+"/open", map[string]any{}); again.Code != http.StatusNotFound {
@@ -986,7 +1042,7 @@ func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 			if resp.Code != http.StatusInternalServerError {
 				t.Fatalf("broken open status = %d, body = %s", resp.Code, resp.Body.String())
 			}
-			if kinds := outboxKinds(t, fixture.outbox); len(kinds) != 0 {
+			if kinds := outboxKinds(t, fixture.db, fixture.outbox); len(kinds) != 0 {
 				t.Fatalf("outbox after refused open = %+v, want empty", kinds)
 			}
 			if got := performJSON(t, fixture.router, http.MethodGet, "/api/secrets/"+id, nil); got.Code != http.StatusOK {

@@ -47,7 +47,9 @@ func main() {
 		}
 	}()
 
-	conn, err := db.OpenSQLite(ctx, cfg.APIDBPath)
+	// OpenPostgres fails fast on an empty DSN: the API owns the flick_api
+	// Postgres database and has no local fallback file.
+	conn, err := db.OpenPostgres(ctx, cfg.APIDatabaseURL)
 	if err != nil {
 		log.Fatalf("open api database: %v", err)
 	}

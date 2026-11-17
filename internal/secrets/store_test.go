@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
 func TestStoreCreateFileSecret(t *testing.T) {
@@ -103,7 +101,7 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 	}
 
 	var payloadCount int
-	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = $1`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads: %v", err)
 	}
 	if payloadCount != 0 {
@@ -171,7 +169,7 @@ func TestStoreOpenTxForgetsSecretAndPayload(t *testing.T) {
 	}
 
 	var payloadCount int
-	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = $1`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads: %v", err)
 	}
 	if payloadCount != 0 {
@@ -298,7 +296,7 @@ func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
 		}
 
 		var failedAccessCount int
-		if err := conn.QueryRowContext(ctx, `select failed_access_count from secrets where id = ?`, created.ID).Scan(&failedAccessCount); err != nil {
+		if err := conn.QueryRowContext(ctx, `select failed_access_count from secrets where id = $1`, created.ID).Scan(&failedAccessCount); err != nil {
 			t.Fatalf("load failed access count after attempt %d: %v", attempt, err)
 		}
 		if failedAccessCount != attempt {
@@ -311,7 +309,7 @@ func TestStoreOpenTxDeletesPayloadAfterFiveInvalidProofs(t *testing.T) {
 	}
 
 	var payloadCount int
-	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = ?`, created.ID).Scan(&payloadCount); err != nil {
+	if err := conn.QueryRowContext(ctx, `select count(*) from secret_payloads where secret_id = $1`, created.ID).Scan(&payloadCount); err != nil {
 		t.Fatalf("count payloads after failed access limit: %v", err)
 	}
 	if payloadCount != 0 {
@@ -336,22 +334,6 @@ func TestCountPendingUploads(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("pending upload count = %d, want 2", n)
 	}
-}
-
-func openTestDB(t *testing.T, ctx context.Context) *sql.DB {
-	t.Helper()
-
-	conn, err := db.OpenSQLite(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-	if err := db.MigrateAPI(ctx, conn); err != nil {
-		t.Fatalf("migrate api: %v", err)
-	}
-	return conn
 }
 
 func newTestStore(t *testing.T, conn *sql.DB) *Store {

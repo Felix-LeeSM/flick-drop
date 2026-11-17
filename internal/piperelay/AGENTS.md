@@ -51,7 +51,7 @@ secret transfer between devices.
 - Bounded concurrency governed by `FLICK_PIPE_MAX_CONCURRENT` (default 100).
 - Transfers bytes between sender request bodies and receiver response streams
   using Go `io.Pipe()`, maintaining a bounded 64 KiB buffer (`sync.Pool`).
-- Stores zero bytes to SQLite (`internal/db`) or Object Storage (`internal/storage`).
+- Stores zero bytes to PostgreSQL (`internal/db`) or Object Storage (`internal/storage`).
 
 ## Hard Boundaries
 

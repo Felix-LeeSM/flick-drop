@@ -26,10 +26,10 @@ A secret moves through these states:
   `grace_until` (`openObjectGrace`, `age.go`); `reconciliation.go:protectObjectTx`
   honors it and `management.go:purgeManagementTx` deletes it after the deadline.
 
-Small payloads (≤ inline threshold) write a SQLite BLOB inline
-(`store.go:Store.Create`, backend `store.go:StorageSQLite` = `sqlite_blob`);
-large payloads write an object-storage object (`store.go:Store.CreateLarge`,
-backend `s3_object` or `r2_object` from
+Small payloads (≤ inline threshold) write an inline `secret_payloads.ciphertext`
+bytea row (`store.go:Store.Create`, backend `store.go:StorageSQLite` =
+`sqlite_blob`); large payloads write an object-storage object
+(`store.go:Store.CreateLarge`, backend `s3_object` or `r2_object` from
 `internal/storage/registry.go:ChooseBackend`). Both paths share the same
 `secrets` row shape, differing only in `storage_backend`. Core types live in
 `store.go`: `KDFParams`, `CreateInput`, `CreateLargeInput`,
@@ -43,16 +43,23 @@ atomically via `reaper.go:claimReclaimableSQL`: an `active` row past
 `expires_at` (active expiry) or a `pending_upload` row at the earlier of
 `expires_at` and `created_at + PendingTTL` (`store.go:Store.PendingTTL`;
 orphan reclaim — uploads that never called `/finalize`). The
-claim sets `reclaim_enqueued_at` so multiple instances do not double-claim; rows
+claim takes `FOR UPDATE SKIP LOCKED` row locks and sets `reclaim_enqueued_at` so
+concurrent API replicas claim disjoint batches and never double-claim; rows
 are ordered by a unified "reclaimable-since" timestamp so orphans are not starved
 by an active-expiry backlog. Reaped secrets are hard-deleted (ciphertext +
 metadata); for object-storage rows (`s3_object`, `r2_object`) an outbox event
-is enqueued for object-storage cleanup (SQLite-backed rows need no object cleanup).
+is enqueued for object-storage cleanup (inline `sqlite_blob` rows need no object cleanup).
 
 ## Access attempts
 
 Invalid access-proof attempts increment a server-side counter without storing
-passphrases or decrypt keys. After `store.go:maxFailedAccessAttempts` (5)
+passphrases or decrypt keys. The increment and lockout run as one atomic
+`UPDATE ... RETURNING` (`store.go:recordFailedAccessTx`), so concurrent final
+attempts cannot double-record the lockout or its usage counter. When that
+update matches 0 rows, `recordFailedAccessTx` returns `ErrNotFound` if a
+concurrent open or revoke deleted the row and `ErrConsumed` if a concurrent
+final attempt locked it. After
+`store.go:maxFailedAccessAttempts` (5)
 the secret is marked consumed and its payload removed.
 
 Directory structure:
@@ -67,8 +74,15 @@ Directory structure:
   unchanged. Opened secrets keep no outcome: the management record is deleted
   at open, and `opened` is never written.
 - `management.go:Revoke` authenticates and commits cancellation with payload
-  deletion and the required object-delete outbox record. A failed commit must
-  roll back on the exclusively owned SQLite connection before releasing it.
+  deletion and the required object-delete outbox record. A failed COMMIT aborts
+  the server-side transaction and database/sql returns the connection to the
+  pool, so no manual rollback runs. When a concurrent open, lockout, or revoke
+  commits mid-transaction (the storage read finds no row or the conditional
+  delete matches 0 rows), `Revoke` re-reads the outcome through
+  `management.go:Store.management` and answers as if that winner committed
+  first: opened → `management.go:ErrManagementUnavailable` (the unknown-ID
+  404), locked → `management.go:ErrNotCancellable`, cancelled → the idempotent
+  cancelled status (`contracts/sender-management-v1.md`).
 - `reconciliation.go:Reaper.ReconcileOnce` scans only `managed/secrets/`
   (`management.go:managedObjectPrefix`) on each configured backend, keeping a
   cursor per backend, protects live rows, and commits the generation-fenced cursor with per-key pending jobs.
@@ -80,9 +94,13 @@ Rules:
 - The domain must assume the server never knows plaintext, passphrases, or
   derived keys.
 - Share links expose only secret IDs.
-- `Finalize` must guard the pending→active flip against the reaper race: 0
-  affected rows means the row was reaped, so treat the upload as reaped, not
-  finalized (`store.go:Store.activateSecretTx`).
+- `Finalize` must guard the pending→active flip against the reaper race: the
+  flip requires `reclaim_enqueued_at is null`, and 0 affected rows means the
+  row was reaped or claimed for reclaim, or another replica already finalized
+  it, so `store.go:Store.activateSecretTx` re-reads the row and treats
+  already-active as idempotent success (no byte recount) and a missing row as
+  `errors.go:ErrNotFound`. Neither `OpenTx` nor `Finalize` holds a row lock
+  (`FOR UPDATE`) while its object `Open`/`Head` runs.
 - Deletion semantics must match the documented residual-risk model.
 - Storage, events, and database details should enter through explicit
   dependencies (`store.go:Store` holds `*sql.DB`, a `*storage.Registry`, and an

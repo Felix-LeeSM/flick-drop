@@ -72,7 +72,7 @@ but the ordering keeps them out of normal operation. The JSON schema is
 
 The API publishes through an outbox table:
 
-1. Commit the domain change and `outbox_events` row in one `api.db`
+1. Commit the domain change and `outbox_events` row in one `flick_api`
    transaction.
 2. A publisher loop reads pending rows.
 3. Publish to NATS JetStream and wait for ack.
@@ -123,7 +123,7 @@ Message disposition:
 
 Invalid payloads are not retried because they cannot become valid without a new
 producer write. Dead-lettered jobs are not retried because the worker already
-recorded the terminal state in `worker.db`.
+recorded the terminal state in the `flick_worker` database.
 
 ## Worker Semantics
 
@@ -146,11 +146,12 @@ letters are not replayed; after the dead-letter acknowledgement releases the
 API claim, reconciliation re-lists a surviving managed object and queues a
 fresh job. A dead-lettered `delete_secret` still stores its `secret_id`.
 
-The worker owns `worker.db` and records receipts, attempts, and dead letters.
+The worker owns the `flick_worker` PostgreSQL database and records receipts,
+attempts, and dead letters there (`internal/db/migrations_worker.go:MigrateWorker`).
 The worker calls internal API endpoints for API-owned mutations.
 
 Inline [request links](request-links.md) need no worker event: open/revoke
-remove their BLOB and encrypted metadata in the same API SQLite transaction,
+remove their bytea payload and encrypted metadata in the same API transaction,
 and the API reaper cascades payload deletion when purging expired requests.
 No request capability, public key, envelope, or ciphertext enters the outbox.
 Large requests reuse `delete_oci_object` and the existing reasons. Request

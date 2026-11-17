@@ -3,9 +3,13 @@
 - `store.go` owns API-only request creation, authorization, inline submission,
   one-time retrieval, and owner cancellation. `large.go` owns object reservation,
   verified finalize, and generation-fenced abandon. The API alone writes the
-  `requests` and `request_payloads` tables.
-- `internal/db/requests.go:dropRSARequests` drops RSA-era request tables (those
-  without `consumed_at`); request links are age-only.
+  `requests` and `request_payloads` tables in the `flick_api` PostgreSQL
+  database.
+- Every statement is Postgres dialect only: `$n` bindings, native `timestamptz`
+  comparisons, `bytea` payloads. `cleanup.go:PurgeExpiredTx` claims its two
+  bounded batches with `for update skip locked` so concurrent API replicas reap
+  disjoint rows; the reconciliation scan keeps its conditional cursor-generation
+  UPDATE fence and takes no row locks across listing I/O.
 - `validation.go` enforces `docs/architecture/request-links.md`: a canonical
   hybrid age recipient, independent 32-byte capabilities, the version 2
   envelope, and age header magic on every body and filename. `size_bytes` is
@@ -23,10 +27,8 @@
   required object jobs with metadata removal or reservation invalidation.
   `Store.ReconcileOnce` scans only `managed/requests/`, protects live request
   references, and owns the per-backend `request_reconciliation_cursor_v2` and
-  `request_reconciliation_pending_v2` tables (`backend` + object key; the legacy
-  single-row `request_reconciliation_cursor`/`..._pending` tables remain only
-  for pre-dual-backend rows and are no longer written). Sender scans remain in
-  `internal/secrets`.
+  `request_reconciliation_pending_v2` tables (`backend` + object key). Sender
+  scans remain in `internal/secrets`.
 - `Store.AcknowledgeObjectCleanup` clears only matching request key/job-ID claims.
   Every worker must acknowledge both managed namespaces before the API scanner
   is deployed; `docs/architecture/event-contract.md` defines rollout order.

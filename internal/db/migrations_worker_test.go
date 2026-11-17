@@ -44,15 +44,63 @@ func openTestWorkerDatabase(t *testing.T) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	conn, err := sql.Open("pgx", scoped.String())
+	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
+	// settings.
+	conn, err := OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
 		t.Fatalf("open postgres test pool: %v", err)
 	}
-	if err := conn.PingContext(ctx); err != nil {
+
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_, _ = admin.ExecContext(context.Background(), fmt.Sprintf("drop schema %s cascade", schema))
+		_ = admin.Close()
+	})
+
+	return conn
+}
+
+// openTestAPIDatabase is openTestWorkerDatabase for the API schema: it runs
+// MigrateAPI in a fresh per-test Postgres schema and drops the schema when the
+// test ends.
+func openTestAPIDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+
+	baseURL := os.Getenv("FLICK_TEST_POSTGRES_URL")
+	if baseURL == "" {
+		t.Skip("FLICK_TEST_POSTGRES_URL is not set; Postgres-backed api migration tests run only against the compose/CI service")
+	}
+
+	schema := fmt.Sprintf("flick_api_db_test_%d", time.Now().UnixNano())
+	admin, err := sql.Open("pgx", baseURL)
+	if err != nil {
+		t.Fatalf("open postgres admin pool: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, fmt.Sprintf("create schema %s", schema)); err != nil {
+		_ = admin.Close()
+		t.Fatalf("create test schema %s: %v", schema, err)
+	}
+
+	scoped, err := url.Parse(baseURL)
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("parse FLICK_TEST_POSTGRES_URL: %v", err)
+	}
+	query := scoped.Query()
+	query.Set("search_path", schema)
+	scoped.RawQuery = query.Encode()
+
+	conn, err := OpenPostgres(ctx, scoped.String())
+	if err != nil {
+		_ = admin.Close()
+		t.Fatalf("open postgres test pool: %v", err)
+	}
+	if err := MigrateAPI(ctx, conn); err != nil {
 		_ = conn.Close()
 		_ = admin.Close()
-		t.Fatalf("ping postgres test pool: %v", err)
+		t.Fatalf("migrate api schema %s: %v", schema, err)
 	}
 
 	t.Cleanup(func() {

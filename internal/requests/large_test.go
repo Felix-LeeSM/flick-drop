@@ -129,7 +129,7 @@ func reserve(t *testing.T, f fixture, o *requestObjects, c Created, in UploadInp
 		t.Fatal(err)
 	}
 	var upload, final string
-	if err := f.db.QueryRow(`select upload_key, final_key from requests where id=?`, c.ID).Scan(&upload, &final); err != nil {
+	if err := f.db.QueryRow(`select upload_key, final_key from requests where id=$1`, c.ID).Scan(&upload, &final); err != nil {
 		t.Fatal(err)
 	}
 	if upload == final || !strings.HasPrefix(upload, ObjectPrefix) || !strings.HasPrefix(final, ObjectPrefix) || strings.Contains(result.Upload.URL, final) {
@@ -139,13 +139,16 @@ func reserve(t *testing.T, f fixture, o *requestObjects, c Created, in UploadInp
 	return upload, final, result
 }
 func attemptInput(in UploadInput) AttemptInput { return AttemptInput{in.Generation, in.AttemptToken} }
+
+// reopenLarge returns a fresh pool over the shared test schema, the Postgres
+// analogue of reopening the same database file after an API restart.
 func reopenLarge(t *testing.T, f fixture) *Store {
 	t.Helper()
-	conn, err := db.OpenSQLite(context.Background(), f.path)
+	conn, err := db.OpenPostgres(context.Background(), f.url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	store, err := NewStore(conn, f.store.opts)
 	if err != nil {
 		t.Fatal(err)
@@ -224,8 +227,9 @@ func TestLargeReservationFinalizeAndOneTimeOpen(t *testing.T) {
 	}
 	// While the body streams, the consumed row keeps its final key and no
 	// delete is queued for it.
-	var key, consumedAt sql.NullString
-	if err := f.db.QueryRow(`select final_key, consumed_at from requests where id=?`, c.ID).Scan(&key, &consumedAt); err != nil || key.String != final || !consumedAt.Valid {
+	var key sql.NullString
+	var consumedAt sql.NullTime
+	if err := f.db.QueryRow(`select final_key, consumed_at from requests where id=$1`, c.ID).Scan(&key, &consumedAt); err != nil || key.String != final || !consumedAt.Valid {
 		t.Fatal("streaming object lost its protection", key, consumedAt, err)
 	}
 	if jobs := outboxKeys(t, f.db); len(jobs) != 1 || jobs[0].ObjectKey != upload {
@@ -240,7 +244,7 @@ func TestLargeReservationFinalizeAndOneTimeOpen(t *testing.T) {
 	if len(jobs) != 2 || jobs[1].ObjectKey != final || jobs[1].Reason != events.ReasonConsumed {
 		t.Fatal("finished open did not queue the final object once", jobs)
 	}
-	if err := f.db.QueryRow(`select final_key from requests where id=?`, c.ID).Scan(&key); err != nil || key.Valid {
+	if err := f.db.QueryRow(`select final_key from requests where id=$1`, c.ID).Scan(&key); err != nil || key.Valid {
 		t.Fatal("finished open kept the final key", err)
 	}
 	if !bytes.Equal(o.body(final), data) {
@@ -292,7 +296,7 @@ func TestLargeReservationGenerationFencesAndExhaustion(t *testing.T) {
 	_, err = f.store.Instructions(ctx, c.ID, c.SubmissionToken)
 	requireError(t, err, ErrUnavailable)
 	var generation int
-	if err := f.db.QueryRow(`select generation from requests where id=?`, c.ID).Scan(&generation); err != nil || generation != 16 {
+	if err := f.db.QueryRow(`select generation from requests where id=$1`, c.ID).Scan(&generation); err != nil || generation != 16 {
 		t.Fatal(generation, err)
 	}
 }
@@ -340,7 +344,7 @@ func TestLargeValidationAndStorageFailureDoesNotAccept(t *testing.T) {
 				if _, err := f.store.ReconcileOnce(ctx, 10); err != nil {
 					t.Fatal(err)
 				}
-				if count(t, f.db, "request_reconciliation_pending") != 0 {
+				if count(t, f.db, "request_reconciliation_pending_v2") != 0 {
 					t.Fatal("reserved final key not protected")
 				}
 				if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
@@ -560,7 +564,7 @@ func TestLargeReservationReaperInvalidatesGenerationAtomically(t *testing.T) {
 	}
 	var state string
 	var generation int
-	if err := f.db.QueryRow(`select state,generation from requests where id=?`, c.ID).Scan(&state, &generation); err != nil {
+	if err := f.db.QueryRow(`select state,generation from requests where id=$1`, c.ID).Scan(&state, &generation); err != nil {
 		t.Fatal(err)
 	}
 	if state != "waiting" || generation != 2 || count(t, f.db, "outbox_events") != 2 {
@@ -841,7 +845,7 @@ func dualFixture(t *testing.T, ceilings map[string]int64) (fixture, *requestObje
 func reservedBackend(t *testing.T, f fixture, id string) string {
 	t.Helper()
 	var backend string
-	if err := f.db.QueryRow(`select storage_backend from requests where id = ?`, id).Scan(&backend); err != nil {
+	if err := f.db.QueryRow(`select storage_backend from requests where id = $1`, id).Scan(&backend); err != nil {
 		t.Fatal(err)
 	}
 	return backend
@@ -889,7 +893,7 @@ func TestReserveRejectsWhenEveryBackendIsFull(t *testing.T) {
 		t.Fatalf("err = %v, want ErrStorageFull", err)
 	}
 	var backend string
-	if err := f.db.QueryRow(`select storage_backend from requests where id = ?`, c.ID).Scan(&backend); err != nil {
+	if err := f.db.QueryRow(`select storage_backend from requests where id = $1`, c.ID).Scan(&backend); err != nil {
 		t.Fatal(err)
 	}
 	if backend != "sqlite_blob" {

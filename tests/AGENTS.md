@@ -5,7 +5,7 @@ SvelteKit package directories.
 
 Expected areas:
 
-- `integration/`: API, worker, SQLite, and NATS integration tests.
+- `integration/`: API, worker, PostgreSQL, and NATS integration tests.
 - `e2e/`: browser-driven secret create/open/consume flows.
 - `fixtures/`: non-secret test payloads and schema fixtures.
 
@@ -25,8 +25,9 @@ Test principles:
 - The main browser flow is create, share ID-only link, enter passphrase, decrypt
   once, and verify consumed or expired behavior.
 - Integration tests should prove service ownership boundaries: API owns
-  `api.db`, worker owns `worker.db`, and worker mutations go through internal
-  API calls.
+  the `flick_api` PostgreSQL database (`FLICK_DATABASE_URL`), worker owns the
+  `flick_worker` database (`FLICK_WORKER_DATABASE_URL`), and worker mutations
+  go through internal API calls.
 - OCI tests must be opt-in through environment variables and safe against
   accidental production buckets.
 - Prefer small deterministic fixtures. Use dummy ciphertext when encrypted

@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
@@ -109,8 +107,18 @@ func TestRevokeRollsBackOutboxAndCommitFailures(t *testing.T) {
 			if failure == "outbox" {
 				store.outbox = &fakeOutbox{err: errors.New("enqueue failed")}
 			} else {
-				_, err = conn.Exec(`create table fail_commit (secret_id text references secrets(id) deferrable initially deferred); create trigger fail_cancellation after delete on secrets begin insert into fail_commit values (old.id); end;`)
-				if err != nil {
+				// A deferred constraint trigger fires at COMMIT, so the DELETE
+				// succeeds and only the commit fails — the same boundary the
+				// SQLite deferred-FK probe used to hit.
+				if _, err = conn.Exec(`create function fail_cancellation() returns trigger language plpgsql as $fn$
+					begin
+						raise exception 'injected cancellation commit failure';
+					end;
+					$fn$`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = conn.Exec(`create constraint trigger fail_cancellation after delete on secrets
+					deferrable initially deferred for each row execute function fail_cancellation()`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -161,22 +169,13 @@ func (o blockingObjects) Head(ctx context.Context, key string) (storage.ObjectIn
 func TestRevokeWinsAgainstInFlightObjectRead(t *testing.T) {
 	for _, operation := range []string{"open", "finalize"} {
 		t.Run(operation, func(t *testing.T) {
+			// Two pools over the same schema stand in for two API replicas: the
+			// revoker must win while the other replica's object I/O is in flight.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			path := filepath.Join(t.TempDir(), "api.db")
-			first, err := db.OpenSQLite(ctx, path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer first.Close()
-			if err := db.MigrateAPI(ctx, first); err != nil {
-				t.Fatal(err)
-			}
-			second, err := db.OpenSQLite(ctx, path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer second.Close()
+			database := openTestAPIDatabase(t)
+			first := database.openPool(t)
+			second := database.openPool(t)
 			objects := newMockObjectStore()
 			store := newLargeTestStore(t, first, objects)
 			revoker := newLargeTestStore(t, second, objects)

@@ -160,7 +160,7 @@ contracts become too wide or streaming RPC becomes useful.
 
 Use the outbox pattern for API-published jobs:
 
-1. API commits the domain change and an `outbox_events` row in `api.db`.
+1. API commits the domain change and an `outbox_events` row in the `flick_api` database.
 2. API outbox publisher sends the event to NATS JetStream.
 3. API marks the outbox row as sent after publish ack.
 4. Worker consumes the job and performs idempotent work.

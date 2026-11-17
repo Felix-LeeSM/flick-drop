@@ -52,7 +52,7 @@ type objectAttempt struct {
 
 func objectAttemptTx(ctx context.Context, tx *sql.Tx, id string) (objectAttempt, error) {
 	var a objectAttempt
-	err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash, ciphertext_sha256, storage_backend, upload_key, final_key, size_bytes from requests where id = ?`, id).Scan(&a.attempt, &a.bodyHash, &a.checksum, &a.backend, &a.uploadKey, &a.finalKey, &a.size)
+	err := tx.QueryRowContext(ctx, `select attempt_token_hash, attempt_body_hash, ciphertext_sha256, storage_backend, upload_key, final_key, size_bytes from requests where id = $1`, id).Scan(&a.attempt, &a.bodyHash, &a.checksum, &a.backend, &a.uploadKey, &a.finalKey, &a.size)
 	return a, err
 }
 
@@ -132,10 +132,10 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 			return UploadResult{}, err
 		}
 		// Placement: primary first; the secondary takes objects the primary's
-		// ceiling cannot fit. The aggregate joins the reservation's own
-		// connection (RowQueryer) because the pool is single-conn — a separate
-		// read would wait on this transaction and deadlock. No row is written
-		// before the backend passes its ceiling.
+		// ceiling cannot fit. The aggregate rides the reservation transaction
+		// (RowQueryer), so the ceiling check and the row it guards share one
+		// connection and one commit scope. No row is written before the backend
+		// passes its ceiling.
 		usage, err := db.StorageObjectBytes(ctx, tx.Tx, s.now().UTC())
 		if err != nil {
 			return UploadResult{}, ErrStorage
@@ -151,7 +151,7 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if row.expires.Before(deadline) {
 			deadline = row.expires
 		}
-		result, err := tx.ExecContext(ctx, `update requests set state = 'uploading', storage_backend = ?, attempt_token_hash = ?, attempt_body_hash = ?, kind = 'file', size_bytes = ?, envelope_json = ?, ciphertext_sha256 = ?, upload_key = ?, final_key = ?, reservation_expires_at = ? where id = ? and state = 'waiting' and generation = ?`, backend, attempt, digest[:], in.SizeBytes, string(envelope), checksum, uploadKey, finalKey, deadline.Format(timeFormat), id, in.Generation)
+		result, err := tx.ExecContext(ctx, `update requests set state = 'uploading', storage_backend = $1, attempt_token_hash = $2, attempt_body_hash = $3, kind = 'file', size_bytes = $4, envelope_json = $5, ciphertext_sha256 = $6, upload_key = $7, final_key = $8, reservation_expires_at = $9 where id = $10 and state = 'waiting' and generation = $11`, backend, attempt, digest[:], in.SizeBytes, string(envelope), checksum, uploadKey, finalKey, deadline, id, in.Generation)
 		if err != nil {
 			return UploadResult{}, err
 		}
@@ -285,7 +285,7 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 	if current.finalKey != a.finalKey || !bytes.Equal(current.checksum, a.checksum) {
 		return Receipt{}, ErrConflict
 	}
-	result, err := tx.ExecContext(ctx, `update requests set state = 'submitted', upload_key = null, reservation_expires_at = null where id = ? and state = 'uploading' and generation = ? and final_key = ?`, id, in.Generation, a.finalKey.String)
+	result, err := tx.ExecContext(ctx, `update requests set state = 'submitted', upload_key = null, reservation_expires_at = null where id = $1 and state = 'uploading' and generation = $2 and final_key = $3`, id, in.Generation, a.finalKey.String)
 	if err != nil {
 		return Receipt{}, err
 	}

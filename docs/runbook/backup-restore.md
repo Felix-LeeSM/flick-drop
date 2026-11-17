@@ -1,5 +1,10 @@
 # Backup And Restore
 
+> **Pre-M15 layout.** This runbook describes the SQLite deployment that
+> `deploy/base` still runs until the M15 cutover (issue #425) rewrites it for
+> PostgreSQL. `internal/db/sqlite.go`, cited below, was removed by M15 PR 3
+> (issue #422); the commands target the SQLite files still on the volume.
+
 This runbook describes how to back up and restore Flick state. It is public-safe
 and intentionally contains no real tenancy values, kubeconfig, bucket names, or
 database contents.

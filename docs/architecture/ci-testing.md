@@ -107,14 +107,14 @@ Expected coverage:
 
 - `internal/config`: env parsing and validation.
 - `internal/secrets`: secret lifecycle and verified open invariants.
-- `internal/storage`: SQLite BLOB threshold and large-payload S3 routing behavior.
+- `internal/storage`: inline payload threshold and large-payload S3 routing behavior.
 - `internal/events`: NATS payload validation and outbox publish behavior.
 - `internal/worker`: idempotent job execution and retry decisions.
 
 Integration tests should use isolated databases and a real NATS instance
-when testing worker delivery paths. After the M15 cutover (issues #421,
+when testing worker delivery paths. Since the M15 cutover (issues #421,
 #422) the database-backed tests create and drop an isolated Postgres schema
-from `FLICK_TEST_POSTGRES_URL`; before it they use temporary SQLite files.
+from `FLICK_TEST_POSTGRES_URL` and skip when it is unset.
 
 ## Web Tests
 
@@ -240,16 +240,18 @@ database with a three-second test request enabled; never run against production:
 
 ```sh
 # Terminal 1: local NATS plus a disposable API database (no S3/worker needed).
-docker compose up -d nats
-request_test_dir=$(mktemp -d)
-FLICK_API_DB_PATH="$request_test_dir/api.db" \
+docker compose up -d nats postgres
+request_test_schema="request_test_$(date +%s)"
+docker compose exec -T postgres psql -U postgres -c "create schema $request_test_schema"
+FLICK_DATABASE_URL="postgres://postgres:flick@127.0.0.1:5432/postgres?sslmode=disable&search_path=$request_test_schema" \
 FLICK_API_ADDR=127.0.0.1:8080 \
 FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
 FLICK_STORAGE_LARGE_BACKEND=disabled \
 FLICK_MIN_TTL_SECONDS=1 \
 FLICK_CREATE_RATE_PER_MIN=1000 FLICK_OPEN_RATE_PER_MIN=1000 \
 go run ./cmd/flick-api
-# After stopping this test API, remove only its temporary directory.
+# After stopping this test API, drop only its temporary schema:
+# docker compose exec -T postgres psql -U postgres -c "drop schema $request_test_schema cascade"
 
 # Terminal 2: use the API above, preserving the normal browser TTL choices.
 PUBLIC_FLICK_API_BASE_URL=http://127.0.0.1:8080 \
@@ -286,8 +288,9 @@ inline request recipe, but use a dedicated local MinIO bucket and these override
 # With local NATS and MinIO running; provision a dedicated synthetic bucket.
 mc alias set flick-request-tests http://127.0.0.1:9000 minioadmin minioadmin
 mc mb --ignore-existing flick-request-tests/flick-request-tests
-request_storage_dir=$(mktemp -d)
-FLICK_API_DB_PATH="$request_storage_dir/api.db" \
+request_storage_schema="request_storage_$(date +%s)"
+docker compose exec -T postgres psql -U postgres -c "create schema $request_storage_schema"
+FLICK_DATABASE_URL="postgres://postgres:flick@127.0.0.1:5432/postgres?sslmode=disable&search_path=$request_storage_schema" \
 FLICK_API_ADDR=127.0.0.1:8080 \
 FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
 FLICK_MIN_TTL_SECONDS=1 \
