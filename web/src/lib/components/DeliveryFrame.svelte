@@ -8,15 +8,13 @@ let {
 	link,
 	showEnterCode = false,
 	receiveModalOpen = $bindable(false),
-	onCodeReceived,
-	onHomeClick
+	onCodeReceived
 }: {
 	children: Snippet;
 	link?: HeaderLink;
 	showEnterCode?: boolean;
 	receiveModalOpen?: boolean;
 	onCodeReceived?: (payload: ReceivedPipePayload) => void;
-	onHomeClick?: () => void;
 } = $props();
 </script>
 
@@ -27,7 +25,6 @@ let {
 			{showEnterCode}
 			bind:receiveModalOpen
 			{onCodeReceived}
-			{onHomeClick}
 		/>
 		<div class="grid grid-cols-[minmax(0,1fr)] gap-7">{@render children()}</div>
 	</div>

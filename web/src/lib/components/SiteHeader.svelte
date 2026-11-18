@@ -21,14 +21,12 @@ let {
 	link,
 	showEnterCode = false,
 	receiveModalOpen = $bindable(false),
-	onCodeReceived,
-	onHomeClick
+	onCodeReceived
 }: {
 	link?: HeaderLink;
 	showEnterCode?: boolean;
 	receiveModalOpen?: boolean;
 	onCodeReceived?: (payload: ReceivedPipePayload) => void;
-	onHomeClick?: () => void;
 } = $props();
 let initialReceiveCode = $state('');
 
@@ -64,9 +62,6 @@ onMount(() => {
 	<a
 		class="flex items-center gap-2.5 rounded-sm focus-visible:outline-2"
 		href={resolve('/')}
-		onclick={() => {
-			onHomeClick?.();
-		}}
 	>
 		<span class="grid size-8 place-items-center rounded-[9px] bg-primary text-primary-foreground">
 			<LockKeyholeIcon class="size-[1.0625rem]" aria-hidden="true" />
