@@ -743,9 +743,6 @@ function typePanelId(type: CreateMode): string {
 		}
 		receivedPipeSecret = secret;
 	}}
-	onHomeClick={() => {
-		receivedPipeSecret = null;
-	}}
 >
 	{#if receivedPipeSecret !== null}
 		{#key receivedPipeSecret}

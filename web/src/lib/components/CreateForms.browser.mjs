@@ -1018,3 +1018,32 @@ test('delivery tabs swap the heading and slide their underline', async () => {
 		await page.close();
 	}
 });
+
+test('the logo on the home page clears the draft and returns to the first tabs', async () => {
+	const page = await browser.newPage();
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		const message = page.getByLabel('Message', { exact: true });
+		await message.fill('Synthetic draft');
+		await page
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Live transfer' })
+			.click();
+		await page.getByRole('link', { name: 'Flick' }).click();
+		const linkTab = page
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Create link' });
+		await page.waitForFunction(
+			() =>
+				document
+					.querySelector('[aria-label="Delivery method"] button')
+					?.getAttribute('aria-pressed') === 'true'
+		);
+		assert.equal(await linkTab.getAttribute('aria-pressed'), 'true');
+		assert.equal(await message.inputValue(), '');
+		assert.equal(new URL(page.url()).pathname, '/');
+	} finally {
+		await page.close();
+	}
+});
