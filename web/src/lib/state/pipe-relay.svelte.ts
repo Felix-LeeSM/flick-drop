@@ -290,9 +290,9 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		failed = false;
 	}
 
-	onDestroy(() => {
-		abortController?.abort();
-	});
+	// Leaving the page (the logo, another route) burns a waiting session too, so
+	// receivers learn at once instead of waiting out the code's expiry.
+	onDestroy(cancel);
 
 	return {
 		get activeCode() {

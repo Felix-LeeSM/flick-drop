@@ -1347,3 +1347,33 @@ test('Received live credential copies formatted text at 360px and receiving canc
 		}
 	);
 });
+
+test('Sender: the logo on the home page cancels a waiting live transfer on the server', async () => {
+	const relay = createRelayMock();
+	const context = await browser.newContext();
+	try {
+		const sender = await context.newPage();
+		await routeApi(sender, (path, route) => relay.handle(sender, path, route));
+		await sender.goto(`${baseUrl}/`);
+		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await sender.getByLabel('Message', { exact: true }).fill('Synthetic logo cancel');
+		await sender
+			.getByRole('group', { name: 'Delivery method' })
+			.getByRole('button', { name: 'Live transfer' })
+			.click();
+		await sender.getByRole('button', { name: 'Start live transfer' }).click();
+		await sender.getByLabel('Transfer code 741-928').waitFor();
+
+		await sender.getByRole('link', { name: 'Flick' }).click();
+
+		await sender.getByLabel('Message', { exact: true }).waitFor();
+		assert.equal(await sender.getByLabel('Transfer code 741-928').count(), 0);
+		// The cancel request is fire-and-forget, so give it a moment to reach the mock.
+		for (let i = 0; i < 50 && relay.getCancelCalls() === 0; i++) {
+			await sender.waitForTimeout(100);
+		}
+		assert.equal(relay.getCancelCalls(), 1);
+	} finally {
+		await context.close();
+	}
+});
