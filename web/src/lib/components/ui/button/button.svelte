@@ -11,7 +11,7 @@ export const buttonVariants = tv({
 			default:
 				'bg-primary text-primary-foreground hover:bg-primary/80 disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
 			outline:
-				'border-border bg-background hover:bg-muted hover:text-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 aria-expanded:bg-muted aria-expanded:text-foreground shadow-xs',
+				'border-border bg-background hover:bg-muted hover:text-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 aria-expanded:bg-muted aria-expanded:text-foreground',
 			secondary:
 				'bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground',
 			ghost:
@@ -39,7 +39,7 @@ export const buttonVariants = tv({
 			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
 			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs',
 			// With enlarged text on a narrow screen, a long label wraps inside the button instead of overflowing it.
-			cta: 'min-h-12 w-full gap-2 whitespace-normal rounded-[10px] px-4 py-2 text-center text-[0.9375rem] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.14),0_10px_22px_-12px_color-mix(in_srgb,var(--primary)_75%,transparent)] disabled:shadow-none'
+			cta: 'min-h-12 w-full gap-2 whitespace-normal rounded-[10px] px-4 py-2 text-center text-[0.9375rem]'
 		}
 	},
 	defaultVariants: {
