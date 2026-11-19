@@ -50,7 +50,7 @@ const sections = [
 			<p>Handing over something sensitive once: a temporary password, a Wi-Fi key, an API token, a contract, a log file. You get a link that opens one time and then stops working. Flick is not a password manager or a file library; nothing stays around after the handoff.</p>
 
 			<h3>Can the people running Flick read what I send?</h3>
-			<p>No. Your browser encrypts the content before anything leaves your device, and the key to decrypt it never reaches the server. The server stores locked bytes it cannot open. <a href="#privacy">The developer section</a> explains how.</p>
+			<p>Not with the code Flick publishes. Your browser encrypts the content before anything leaves your device, and the key to decrypt it never reaches the server. The server stores locked bytes it cannot open. <a href="#privacy">The developer section</a> explains how, and where that promise ends.</p>
 
 			<h3>How do I send something?</h3>
 			<ol>
@@ -73,14 +73,14 @@ const sections = [
 			<p><strong>Live transfer</strong> moves content while both devices are open. The sender gets a 6-digit code, and the recipient types it into <strong>Enter Code</strong> within 3 minutes. Each waiting device shows a 3-digit number; the recipient reads it out so the sender picks the right device. Nothing is written to the database or file storage: the content passes through the server only while it streams.</p>
 
 			<h3>Can I ask someone to send something to me?</h3>
-			<p>Yes. <a href={resolve('/request')}>Request a secret</a> creates two links: one you give to the other person to submit a note, a file, or a login, and a private one you keep to open their answer once. The first submission wins.</p>
+			<p>Yes. <a href={resolve('/request')}>Request a secret</a> creates two links: one you give to the other person to submit a note, a file, or credentials, and a private one you keep to open their answer once. The first submission wins.</p>
 
 			<h3>What if the link leaks?</h3>
-			<p>Anyone holding the complete link can open it once. If your recipient finds it already opened, treat the content as exposed and change it. The sender can also revoke an unopened delivery from its private management link.</p>
+			<p>Anyone holding the complete link can open it once. If your recipient finds it already opened, treat the content as exposed and change it. The sender can also cancel an unopened delivery from its private management link.</p>
 
 			<h2 id="limits">What Flick cannot do</h2>
 			<p>Flick cannot take back what the recipient already saw. They can copy it, screenshot it, or keep the file. A one-time link does not make a password one-time: change temporary credentials when their job is done.</p>
-			<p>Flick also does not prove who opened a link, and it cannot protect content on a device that is already compromised. Copies can also remain in chat histories, the clipboard, or browser history.</p>
+			<p>Flick also does not prove who opened a link, and it cannot protect content on a device that is already compromised. The page that encrypts your content comes from the Flick server you use, so use an instance whose operator you trust, or <a href="#self-host">run your own</a>. Copies can also remain in chat histories, the clipboard, or browser history.</p>
 
 			<p class="guide-divider">For developers and operators</p>
 
@@ -129,7 +129,7 @@ flick open 'https://flick.example/s/…#key=…'</code></pre>
 .guide-copy :global(ol) { list-style: decimal; padding-left: 1.4rem; }
 .guide-copy :global(ul) { list-style: disc; padding-left: 1.4rem; }
 .guide-copy :global(li) { padding-left: 0.4rem; margin: 0.5rem 0; }
-.guide-copy :global(a) { text-decoration: underline; text-underline-offset: 4px; }
+.guide-copy :global(a) { text-decoration: underline; text-underline-offset: 4px; overflow-wrap: anywhere; }
 .guide-copy :global(aside) { margin: 1.75rem 0; border-left: 3px solid var(--primary); padding: 0.2rem 0 0.2rem 1.25rem; }
 .guide-copy :global(code) { overflow-wrap: anywhere; font-size: 0.9em; }
 .guide-copy :global(pre) { margin: 1rem 0; overflow-x: auto; border-radius: 0.5rem; background: var(--muted); padding: 1rem; font-size: 0.875rem; line-height: 1.6; }

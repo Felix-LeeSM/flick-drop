@@ -64,7 +64,7 @@ in any configuration field. No environment variable or remote service supplies
 the creative; the operator owns review of the public copy and destination.
 Set `SPONSOR` back to `null`, rebuild, and deploy to disable it.
 
-`SponsorSlot.svelte` appears only after the article in `GuidePage.svelte`,
+`SponsorSlot.svelte` appears only after the article in `web/src/routes/guides/+page.svelte`,
 separated from its tool CTA and navigation. The placement is present at the
 initial render when enabled, so no asynchronous creative changes the layout.
 It opens the literal destination in a new tab without a referrer or opener.

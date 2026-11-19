@@ -22,8 +22,8 @@ sender sequence. Open Graph remains the existing
 brand-only preview from `app.html`, with no user content or link identifiers.
 
 The canonical link uses the fixed path `/guides/` with its trailing slash; SvelteKit's base
-path resolves them against the serving self-hosted origin. They never read query strings or
-fragments, and do not bake the demo or a staging origin into a shared image.
+path resolves it against the serving self-hosted origin. It never reads query strings or
+fragments, and does not bake the demo or a staging origin into a shared image.
 No XML sitemap is shipped for this internally linked page; this is a
 deliberate small-site choice, not a dynamic enumeration of delivery URLs.
 An operator adding an absolute-origin sitemap must list only the homepage and
