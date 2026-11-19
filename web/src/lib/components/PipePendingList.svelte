@@ -3,6 +3,7 @@ import { ChevronDownIcon, UsersIcon, XIcon } from '@lucide/svelte';
 import { tick } from 'svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import VerifyDigits from '#lib/components/VerifyDigits.svelte';
+import { deviceLabelText } from '#lib/i18n/device.js';
 import { t } from '#lib/i18n/index.js';
 import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
 import { cn } from '#lib/utils.js';
@@ -93,7 +94,7 @@ function ago(joinedAt: number): string {
 						<p class="truncate text-sm font-semibold text-foreground">{t().live.pending.connection(receiver.index)}</p>
 						<!-- The device label truncates on its own so the time never gets cut off. -->
 						<p class="flex min-w-0 gap-1 text-[11px] text-muted-foreground">
-							<span class="truncate">{receiver.device}</span>
+							<span class="truncate">{deviceLabelText(receiver.device, t())}</span>
 							<span class="shrink-0" aria-hidden="true">·</span>
 							<span class="shrink-0 tabular-nums">{ago(receiver.joinedAt)}</span>
 						</p>

@@ -462,6 +462,8 @@ function clientErrorMessage(code: string, status: number): string {
 		case 'unauthorized':
 		case 'not_ready':
 			return t().errors.notReady;
+		case 'rate_limited':
+			return t().errors.rateLimited;
 		default:
 			if (status >= 500) {
 				return t().errors.serverFailed;
