@@ -33,9 +33,6 @@ const requestsTableSchema = `create table if not exists requests (
 			check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
 		)`
 
-// normalizeRequestsSchema creates the request indexes and per-backend
-// reconciliation tables. Every statement is idempotent; the schema itself is
-// complete from requestsTableSchema, so there is nothing to detect or repair.
 func normalizeRequestsSchema(ctx context.Context, conn *sql.Conn) (err error) {
 	for _, statement := range []string{
 		`create index if not exists idx_requests_expires_at on requests(expires_at, id)`,

@@ -15,8 +15,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// SetupTracing with no endpoint must stay fully off: a usable no-op shutdown and
-// no error, so a deployment without a collector starts and stops cleanly.
 func TestSetupTracingDisabledByDefault(t *testing.T) {
 	shutdown, err := SetupTracing(context.Background(), TracingOptions{ServiceName: "flick-test"})
 	if err != nil {
@@ -103,9 +101,6 @@ func TestSetupTracingRejectsMalformedEndpoint(t *testing.T) {
 	}
 }
 
-// EndSpan must mark the span Error (and record the exception) only when an error
-// is passed, leaving successful spans Unset. Uses a local provider so the global
-// tracer state is untouched.
 func TestEndSpanRecordsError(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))

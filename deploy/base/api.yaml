@@ -3,12 +3,8 @@ kind: Deployment
 metadata:
   name: flick-api
 spec:
-  # Two replicas share every piece of state through Postgres, NATS, and Valkey
-  # (docs/architecture/deployment-target.md, "Scaling Boundaries").
   replicas: 2
-  # maxSurge 0: a rollout stops one old pod before it starts a new one, so the
-  # namespace never runs more than two API pods. Which node a pod lands on is
-  # up to the soft spread below and the deployment's own node pinning.
+  # maxSurge 0: never more than two API pods during a rollout.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -23,12 +19,9 @@ spec:
         app.kubernetes.io/name: flick-api
     spec:
       automountServiceAccountToken: false
-      # Shutdown budget: 5-second preStop, then SIGTERM and up to the
-      # 50-second shutdownTimeout in cmd/flick-api/main.go for /send,
-      # /receive, and pod-to-pod stream hops still running.
+      # 5 s preStop + up to the 50 s shutdownTimeout in cmd/flick-api/main.go for live streams.
       terminationGracePeriodSeconds: 60
-      # Prefer one replica per node. A private overlay adds node affinity for
-      # a specific cluster; the base stays node-agnostic.
+      # The base stays node-agnostic; a private overlay adds node affinity.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -60,8 +53,6 @@ spec:
                   key: password
             - name: FLICK_DATABASE_URL
               value: "postgres://flick_api:$(FLICK_API_DB_PASSWORD)@postgres:5432/flick_api?sslmode=disable"
-            # The address this replica advertises to the others for
-            # live-transfer stream hops (internal/piperelay/stream.go).
             - name: FLICK_POD_IP
               valueFrom:
                 fieldRef:
@@ -72,8 +63,7 @@ spec:
             - name: stream
               containerPort: 8081
           lifecycle:
-            # Endpoints drop this pod before SIGTERM arrives, so no new
-            # request lands on a replica that is shutting down.
+            # Endpoints drop this pod before SIGTERM arrives.
             preStop:
               exec:
                 command: ["sleep", "5"]
@@ -83,9 +73,7 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20
-            # On a loaded 1-vCPU node the default 1s timeout expires before the
-            # handler responds; the kubelet then SIGTERMs a healthy pod into a
-            # crashloop (observed in prod). 5s tolerates transient CPU steal.
+            # The default 1s expires on a loaded 1-vCPU node and crashloops healthy pods (observed in prod).
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
@@ -108,9 +96,7 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            # Request finalize spools (internal/requests maxCopies: two objects
-            # of about 256 MiB each) live here, not on the node's root layer.
-            # Keep sizeLimit >= 2 x the age size of FLICK_MAX_FILE_BYTES.
+            # Request finalize spools (two ~256 MiB objects); keep sizeLimit >= 2 x age size of FLICK_MAX_FILE_BYTES.
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -123,8 +109,6 @@ kind: Service
 metadata:
   name: flick-api
   annotations:
-    # No keep-alive reuse and a 2 s dial timeout from Traefik to these pods
-    # (deploy/base/traefik.yaml).
     traefik.ingress.kubernetes.io/service.serverstransport: flick-flick-backends@kubernetescrd
 spec:
   selector:
@@ -134,10 +118,7 @@ spec:
       port: 8080
       targetPort: http
 ---
-# Headless twin of flick-api: its A record returns every API pod IP, so
-# VictoriaMetrics scrapes each replica's /metrics through dns_sd_configs
-# (deploy/base/monitoring/vmsingle.yaml) instead of one random pod behind the
-# ClusterIP. Cluster-internal only, like flick-api.
+# Headless: VictoriaMetrics scrapes each replica via dns_sd_configs, not one random pod.
 apiVersion: v1
 kind: Service
 metadata:
@@ -153,8 +134,7 @@ spec:
       port: 8080
       targetPort: http
 ---
-# The live-transfer stream listener (port 8081) accepts only other flick-api
-# pods; the public API port stays open to the ingress and the scraper.
+# The stream listener (8081) accepts only other flick-api pods.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

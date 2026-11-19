@@ -13,14 +13,9 @@ export FLICK_API_ADDR="${FLICK_API_ADDR:-:8080}"
 export FLICK_NATS_URL="${FLICK_NATS_URL:-nats://127.0.0.1:4222}"
 export FLICK_NATS_STREAM="${FLICK_NATS_STREAM:-FLICK_JOBS}"
 export FLICK_NATS_JOB_SUBJECT="${FLICK_NATS_JOB_SUBJECT:-flick.jobs}"
-# M15: the API and worker each own their PostgreSQL logical database.
-# compose.yaml + scripts/dev/postgres-init.sql create the local roles and
-# databases; both entrypoints fail fast when their DSN is empty.
 export FLICK_DATABASE_URL="${FLICK_DATABASE_URL:-postgres://flick_api:flick_api@127.0.0.1:5432/flick_api?sslmode=disable}"
 export FLICK_WORKER_DATABASE_URL="${FLICK_WORKER_DATABASE_URL:-postgres://flick_worker:flick_worker@127.0.0.1:5432/flick_worker?sslmode=disable}"
-# Live transfer (/api/pipe/*) keeps its waiting rooms in Valkey and the rate
-# limiter shares buckets there; without FLICK_VALKEY_ADDR the API answers
-# /api/pipe/* with 503. FLICK_DEV_SKIP_VALKEY=1 runs without it.
+# Without FLICK_VALKEY_ADDR the API answers /api/pipe/* with 503; FLICK_DEV_SKIP_VALKEY=1 runs without it.
 export FLICK_VALKEY_ADDR="${FLICK_VALKEY_ADDR-127.0.0.1:6379}"
 export FLICK_RATELIMIT_KEY_SALT="${FLICK_RATELIMIT_KEY_SALT:-change-me-ratelimit-local}"
 export FLICK_PAYLOAD_INLINE_MAX_BYTES="${FLICK_PAYLOAD_INLINE_MAX_BYTES:-1048576}"
@@ -31,11 +26,7 @@ export FLICK_MAX_TTL_SECONDS="${FLICK_MAX_TTL_SECONDS:-604800}"
 export FLICK_OPEN_RATE_PER_MIN="${FLICK_OPEN_RATE_PER_MIN:-10}"
 export FLICK_TRUSTED_PROXIES="${FLICK_TRUSTED_PROXIES:-}"
 export FLICK_CREATE_RATE_PER_MIN="${FLICK_CREATE_RATE_PER_MIN:-5}"
-# M3: dev turns on S3-compatible storage against local MinIO. Set
-# FLICK_DEV_SKIP_MINIO=1 to keep storage disabled (CI/test without docker).
-# This is the only place the backend is defaulted — an earlier
-# "${...:-disabled}" export here made this ":-s3" unreachable and quietly kept
-# large uploads off in local dev.
+# The only place the backend is defaulted; FLICK_DEV_SKIP_MINIO=1 keeps storage disabled.
 export FLICK_STORAGE_BACKENDS="${FLICK_STORAGE_BACKENDS-minio}"
 export FLICK_STORAGE_MINIO_ENDPOINT="${FLICK_STORAGE_MINIO_ENDPOINT:-http://localhost:9000}"
 export FLICK_STORAGE_MINIO_REGION="${FLICK_STORAGE_MINIO_REGION:-us-east-1}"

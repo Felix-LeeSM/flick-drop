@@ -1,8 +1,4 @@
-# Loki single-binary: stores container access logs (traefik, nginx, app pods)
-# collected by Alloy, queried from Grafana. ClusterIP only — never exposed
-# outside the cluster; Grafana is the only reader. Retention is deliberately
-# short (7 days) and the PVC small, because this node is a free-tier box and
-# the logs' only job is recent access-log search.
+# ClusterIP only; Grafana is the only reader. Retention is deliberately short (7 days) on a free-tier node.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -58,8 +54,7 @@ metadata:
   name: loki
 spec:
   replicas: 1
-  # RWO PVC: a rolling update schedules the new pod on the other node where the
-  # volume cannot mount, and the rollout wedges. Same fix as vmsingle.
+  # RWO PVC: a rolling update can schedule the new pod on the other node and wedge.
   strategy:
     type: Recreate
   selector:

@@ -13,9 +13,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
-// testWorkerDatabase owns one isolated Postgres schema per test. Tests that
-// simulate worker restarts open several pools over the same schema; the
-// schema is dropped when the test finishes.
 type testWorkerDatabase struct {
 	url string
 }
@@ -41,8 +38,7 @@ func openTestWorkerDatabase(t *testing.T) *testWorkerDatabase {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	// pgx v5 passes unknown URL query parameters to the server as runtime
-	// parameters, so every pooled connection lands in the test schema.
+	// pgx v5 forwards unknown URL query params as runtime parameters (search_path).
 	scoped, err := url.Parse(baseURL)
 	if err != nil {
 		_ = admin.Close()
@@ -77,8 +73,6 @@ func openTestWorkerDatabase(t *testing.T) *testWorkerDatabase {
 	return &testWorkerDatabase{url: scoped.String()}
 }
 
-// openRecoveryStore returns a fresh pool over the shared test schema, the
-// Postgres analogue of reopening the same SQLite file after a worker restart.
 func openRecoveryStore(t *testing.T, database *testWorkerDatabase) *ReceiptStore {
 	t.Helper()
 

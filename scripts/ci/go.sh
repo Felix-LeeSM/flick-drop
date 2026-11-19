@@ -18,8 +18,5 @@ if [ -n "$go_files" ]; then
 fi
 
 go vet ./...
-# Integration tests read FLICK_TEST_POSTGRES_URL (Postgres DSN) and
-# FLICK_TEST_VALKEY_ADDR (host:port) when set; unset means those tests skip,
-# so a plain local run without the compose services still passes. The Repo
-# checks workflow exports both against its service containers.
+# Postgres/Valkey integration tests skip unless FLICK_TEST_POSTGRES_URL / FLICK_TEST_VALKEY_ADDR are set.
 go test ./...

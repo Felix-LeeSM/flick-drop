@@ -121,8 +121,7 @@ if [ -d internal ]; then
   done < <(find internal -mindepth 1 -maxdepth 1 -type d | sort)
 fi
 
-# Valkey must stay memory-only (docs/architecture/security-model.md): no RDB
-# snapshot and no append-only file.
+# Valkey must stay memory-only (docs/architecture/security-model.md).
 if [ -f deploy/base/valkey.yaml ]; then
   if ! grep -Eq -- '- --save$' deploy/base/valkey.yaml ||
     ! grep -Fq -- '- --appendonly' deploy/base/valkey.yaml ||
@@ -132,8 +131,7 @@ if [ -f deploy/base/valkey.yaml ]; then
   fi
 fi
 
-# flick-api and flick-worker run more than one replica on any node, so they
-# must not mount a ReadWriteOnce data volume again (deploy/base/pvc.yaml).
+# Multiple replicas per node: no ReadWriteOnce data volume.
 if grep -Eq 'claimName: flick-(api|worker)-data' deploy/base/*.yaml; then
   echo "repo-structure: flick-api and flick-worker must not mount a data PVC; their state lives in PostgreSQL" >&2
   failed=1

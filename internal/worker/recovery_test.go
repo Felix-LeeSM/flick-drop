@@ -107,8 +107,6 @@ func TestProcessorActiveDuplicateAcrossConnectionsRetries(t *testing.T) {
 	if duplicateCalls != 0 {
 		t.Fatal("active duplicate executed the handler")
 	}
-	// A cancelled shutdown leaves a recoverable lease, even if the handler
-	// finished its side effect just before observing cancellation.
 	cancel()
 	release <- struct{}{}
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -171,8 +169,7 @@ func TestProcessorRecoversPersistedFailureLimit(t *testing.T) {
 			now := time.Now().UTC()
 			store.SetNowForTest(func() time.Time { return now })
 			payload := string(testJobPayload(t, "job_final_failure"))
-			// A larger limit recreates the rows an older split transition left:
-			// three committed failures with no terminal receipt or dead letter.
+			// Recreates the rows an older split transition left: three failures, no terminal receipt.
 			for range DefaultMaxAttempts {
 				started, err := store.Start(ctx, "job_final_failure", events.KindDeleteSecret, payload, 4)
 				if err != nil {
@@ -246,9 +243,7 @@ func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 			}
 		}
 	}
-	// Postgres analogue of the old SQLite abort trigger: a BEFORE INSERT
-	// trigger that raises, so the dead-letter write fails inside the same
-	// transaction and the terminal receipt must roll back with it.
+	// The trigger fails the dead-letter write inside the transaction; the terminal receipt must roll back.
 	if _, err := store.db.ExecContext(ctx, `create function reject_dead_letter() returns trigger
 		language plpgsql as $fn$
 		begin
@@ -277,8 +272,6 @@ func TestFinalFailureCommitsAtomicallyBeforeAnotherStart(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `drop function reject_dead_letter`); err != nil {
 		t.Fatal(err)
 	}
-	// Another connection must see either the active lease or the committed dead
-	// receipt, never a retryable receipt with its third failure committed.
 	duplicateDone := make(chan error, 1)
 	go func() {
 		_, err := duplicate.Start(ctx, "job_atomic", events.KindDeleteSecret, payload, DefaultMaxAttempts)

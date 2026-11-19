@@ -29,9 +29,6 @@ RUN apk add --no-cache ca-certificates tzdata \
 WORKDIR /app
 COPY --from=build /out/flick-worker /usr/local/bin/flick-worker
 
-# State lives in PostgreSQL (FLICK_WORKER_DATABASE_URL, required at boot); the
-# image carries no data volume.
-
 USER flick
 
 ENTRYPOINT ["/usr/local/bin/flick-worker"]

@@ -20,10 +20,6 @@ const (
 	JobTimeout         = 30 * time.Second
 )
 
-// tracer instruments job processing. With tracing off (no OTLP endpoint) it is
-// OTel's no-op, so tracer.Start costs nothing. The worker.Process span continues
-// the producer's trace via the job payload's trace context (see Process and
-// events.ContextWithTrace), so a job is followed end to end across the NATS hop.
 var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/worker")
 
 type JobHandler interface {
@@ -88,22 +84,17 @@ func NewProcessor(store *ReceiptStore, handler JobHandler, opts ProcessorOptions
 func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result ProcessResult, err error) {
 	event, decodeErr := events.DecodeJobEvent(payloadJSON)
 	if decodeErr != nil {
-		// Malformed message: no kind or trace context to attach. Return pre-span
-		// (the consumer terminates it) rather than emit an orphan worker span.
+		// Malformed: return pre-span (the consumer terminates it) rather than emit an orphan span.
 		return ProcessResult{}, decodeErr
 	}
 
-	// Continue the producer's trace across the async NATS hop (#133): a child of
-	// the enqueuing span when the job carries a trace context, else a root.
-	// SpanKindConsumer marks the receive side of the messaging link.
 	ctx = events.ContextWithTrace(ctx, event)
 	ctx, span := tracer.Start(ctx, "worker.Process",
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(attribute.String("job.kind", event.Kind)),
 	)
 	defer func() { telemetry.EndSpan(span, err) }()
-	// A terminal receipt must outlive API outages and worker crashes. Repeat the
-	// acknowledgement on terminal redelivery, without executing the delete again.
+	// A terminal receipt must outlive API outages: repeat the ack on terminal redelivery, never the delete.
 	defer func() {
 		if err != nil || (!result.Succeeded && !result.DeadLettered) || event.Kind != events.KindDeleteOCIObject || !requiresObjectAcknowledgement(event.ObjectKey) {
 			return
@@ -145,8 +136,7 @@ func (p *Processor) Process(ctx context.Context, payloadJSON []byte) (result Pro
 	defer cancel()
 	jobErr := p.handler.HandleJob(jobCtx, event)
 	if ctx.Err() != nil {
-		// Shutdown is an interruption, not a handler failure. Leave the lease
-		// for redelivery; a cancelled context cannot commit receipt state.
+		// Shutdown is not a handler failure: leave the lease for redelivery.
 		return result, ctx.Err()
 	}
 	if jobErr != nil {
@@ -177,12 +167,8 @@ func (p *Processor) ProcessMessage(ctx context.Context, payloadJSON []byte) (eve
 	return events.MessageAck, nil
 }
 
-// deadLetterPayloadJSON validates the event and returns the payload a dead
-// letter stores. An object delete drops its object_key: the key
-// (managed/secrets/{id}) names a secret, dead_letters is never pruned, and no
-// one replays a dead letter (a dead receipt is terminal). The live job keeps
-// its key for every attempt, and after the dead-letter acknowledgement the API
-// reconciliation scan re-finds a surviving object with a fresh job.
+// Drops object_key: it names a secret and dead_letters is never pruned; reconciliation
+// re-finds a surviving object with a fresh job.
 func deadLetterPayloadJSON(event events.JobEvent) (string, error) {
 	payload, err := event.JSON()
 	if err != nil {
@@ -212,11 +198,6 @@ func (p *Processor) finishFailed(
 	if err != nil {
 		return result, err
 	}
-	// Operator-facing record: the receipt row and metric carry the retry
-	// state, but this Error line is what puts the failure in Loki with a
-	// stack (the telemetry stackHandler decorates Error records). It fires
-	// per attempt, so a retrying job shows its retry pattern in the error
-	// panels.
 	slog.Error("worker job failed",
 		"kind", event.Kind,
 		"attempt", attempt.Attempt,

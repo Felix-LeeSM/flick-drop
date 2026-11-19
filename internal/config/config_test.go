@@ -159,14 +159,10 @@ func clearFlickEnv(t *testing.T) {
 	}
 }
 
-// TestLoadEnvOverrides pins each int/int64 env var to a distinct in-range value
-// and asserts it lands in the right field. A copy-paste env-name typo in Load
-// (or a missing mapping) makes at least one assertion flip.
 func TestLoadEnvOverrides(t *testing.T) {
 	clearFlickEnv(t)
 	t.Setenv("FLICK_PAYLOAD_INLINE_MAX_BYTES", "8192")
 	t.Setenv("FLICK_MAX_FILE_BYTES", "4096")
-	// TTLs satisfy cross-validation: min <= default <= max.
 	t.Setenv("FLICK_MIN_TTL_SECONDS", "60")
 	t.Setenv("FLICK_DEFAULT_TTL_SECONDS", "120")
 	t.Setenv("FLICK_MAX_TTL_SECONDS", "600")
@@ -201,9 +197,6 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 }
 
-// TestEffectiveMaxFileBytes pins the advertised ceiling to what the server can
-// actually store: the inline threshold while large-object storage is off, the
-// configured limit once it is on.
 func TestEffectiveMaxFileBytes(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -212,9 +205,7 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 		max     int64
 		want    int64
 	}{
-		// The clamp leaves room for the age overhead: a 1 MiB age file holds
-		// at most 1 MiB minus the 4096-byte header allowance, the 16-byte
-		// payload nonce, and sixteen 16-byte chunk tags.
+		// 1 MiB minus 4096-byte header allowance, 16-byte nonce, sixteen 16-byte chunk tags.
 		{"large storage off clamps below the inline threshold", false, 1048576, 268435456, 1044208},
 		{"large storage on keeps the configured limit", true, 1048576, 268435456, 268435456},
 		{"limit already below the clamp is left alone", false, 1048576, 4096, 4096},
@@ -234,9 +225,6 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 	}
 }
 
-// TestLoadInlineThresholdFitsEmptyAgeFile pins the lower bound: the inline
-// threshold must hold at least an empty age file, and at exactly that size the
-// advertised inline plaintext is zero bytes.
 func TestLoadInlineThresholdFitsEmptyAgeFile(t *testing.T) {
 	empty := secrets.MaxCiphertextBytes(0)
 	for _, threshold := range []int64{empty - 1, empty, empty + 1} {
@@ -297,7 +285,6 @@ func TestLoadPipeRelayConfig(t *testing.T) {
 		}
 	})
 
-	// 쿠버네티스 밖(단일 호스트)에서는 스트림 리스너를 127.0.0.1:8081로 광고한다.
 	t.Run("stream listener defaults", func(t *testing.T) {
 		clearFlickEnv(t)
 
@@ -324,7 +311,6 @@ func TestLoadPipeRelayConfig(t *testing.T) {
 		}
 	})
 
-	// 피어 레플리카가 이 값을 그대로 다이얼하므로 호스트 이름이나 범위 밖 포트는 기동에서 막는다.
 	for name, env := range map[string][2]string{
 		"pod IP host name": {"FLICK_POD_IP", "api.internal"},
 		"port over 65535":  {"FLICK_INTERNAL_HTTP_PORT", "70000"},
@@ -347,7 +333,6 @@ func storageIf(enabled bool) []StorageBackend {
 	return []StorageBackend{{Name: "minio"}}
 }
 
-// storageEnv sets one backend's required FLICK_STORAGE_<NAME>_* values.
 func storageEnv(t *testing.T, name, bucket string) {
 	t.Helper()
 	prefix := "FLICK_STORAGE_" + strings.ToUpper(name) + "_"
@@ -358,7 +343,6 @@ func storageEnv(t *testing.T, name, bucket string) {
 
 // 이름 목록 순서대로 백엔드별 env를 읽고, 생략한 값은 기본값을 쓴다.
 func TestLoadStorageBackendsReadsEachNamedBackend(t *testing.T) {
-	// Given: 백엔드 둘과 각자의 설정
 	clearFlickEnv(t)
 	t.Setenv("FLICK_STORAGE_BACKENDS", " oci , r2 ")
 	storageEnv(t, "oci", "flick-oci")
@@ -370,13 +354,11 @@ func TestLoadStorageBackendsReadsEachNamedBackend(t *testing.T) {
 	t.Setenv("FLICK_STORAGE_R2_PATH_STYLE", "false")
 	t.Setenv("FLICK_STORAGE_R2_MAX_TOTAL_BYTES", "9000000000")
 
-	// When
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 
-	// Then: 순서·이름·버킷·키·엔드포인트·리전·경로 방식·상한이 백엔드마다 맞다
 	if len(cfg.StorageBackends) != 2 {
 		t.Fatalf("StorageBackends = %+v, want two", cfg.StorageBackends)
 	}
@@ -427,7 +409,6 @@ func TestLoadStorageBackendsRejectsBadValues(t *testing.T) {
 		{"missing keys", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b"}, "FLICK_STORAGE_OCI_ACCESS_KEY_ID"},
 		{"malformed path style", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_PATH_STYLE": "flase"}, "FLICK_STORAGE_OCI_PATH_STYLE"},
 		{"negative ceiling", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES": "-1"}, "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES"},
-		// 옛 변수만 남은 배포가 저장소 없이 조용히 뜨지 않는다.
 		{"legacy primary variable", map[string]string{"FLICK_S3_BUCKET": "b"}, "FLICK_S3_BUCKET is no longer read"},
 		{"legacy secondary variable", map[string]string{"FLICK_R2_ENABLED": "true"}, "FLICK_R2_ENABLED is no longer read"},
 		{"legacy backend switch", map[string]string{"FLICK_STORAGE_LARGE_BACKEND": "disabled"}, "FLICK_STORAGE_LARGE_BACKEND is no longer read"},

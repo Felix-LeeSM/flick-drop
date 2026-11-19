@@ -89,9 +89,7 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		// *url.Error prints the request URL, which carries the secret ID; this
-		// text reaches the worker log and job tables, so keep only the operation
-		// and the cause.
+		// *url.Error prints the request URL, which carries the secret ID; keep only op and cause.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return CleanupResponse{}, fmt.Errorf("call cleanup endpoint (%s): %w", urlErr.Op, urlErr.Err)
@@ -125,8 +123,6 @@ func (c *CleanupClient) CleanupSecret(ctx context.Context, req CleanupRequest) (
 	return CleanupResponse{Cleaned: decoded.Cleaned}, nil
 }
 
-// AcknowledgeObjectCleanup fences API-owned bookkeeping by backend, key, and
-// job ID.
 func (c *CleanupClient) AcknowledgeObjectCleanup(ctx context.Context, event events.JobEvent) error {
 	if event.Kind != events.KindDeleteOCIObject || event.JobID == "" || !requiresObjectAcknowledgement(event.ObjectKey) {
 		return fmt.Errorf("%w: invalid object cleanup acknowledgement", ErrInvalidJob)
@@ -157,23 +153,17 @@ func (c *CleanupClient) AcknowledgeObjectCleanup(ctx context.Context, event even
 	return nil
 }
 
-// ObjectDeleter deletes a stored object. storage.ObjectStore implements it.
 type ObjectDeleter interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// CleanupHandler deletes objects from whichever configured backend the delete
-// job names. An unknown backend name fails the job permanently — deleting from
-// the wrong bucket silently would leak the real object.
+// An unknown backend fails the job permanently: a silent wrong-bucket delete leaks the real object.
 type CleanupHandler struct {
 	api      CleanupAPI
 	backends map[string]ObjectDeleter
 }
 
-// NewCleanupHandler takes one deleter per FLICK_STORAGE_BACKENDS name. An
-// empty map means object storage is disabled for this deployment: a delete for
-// a managed key fails (and is retried) because it needs storage, and any other
-// stray delete event is acknowledged as a no-op.
+// Empty map = storage disabled: a managed-key delete fails (retried), any other stray delete is a no-op.
 func NewCleanupHandler(api CleanupAPI, backends map[string]ObjectDeleter) (*CleanupHandler, error) {
 	if api == nil {
 		return nil, fmt.Errorf("cleanup api is required")
@@ -207,9 +197,7 @@ func (h *CleanupHandler) HandleJob(ctx context.Context, event events.JobEvent) e
 	return nil
 }
 
-// handleObjectDelete deletes a stored object directly rather than via the
-// internal API, which owns only DB state. Object deletion is independent of DB
-// cleanup so either can retry without blocking the other. Idempotent.
+// Deletes directly, not via the API, so object and DB cleanup retry independently. Idempotent.
 func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.JobEvent) error {
 	if strings.TrimSpace(event.ObjectKey) == "" {
 		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
@@ -218,7 +206,6 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 		if requiresObjectAcknowledgement(event.ObjectKey) {
 			return errors.New("managed object deletion requires object storage")
 		}
-		// Object storage is disabled — a stray delete event has no target.
 		return nil
 	}
 	objects, ok := h.backends[event.Backend]
@@ -231,12 +218,8 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 	return nil
 }
 
-// objectDeleteError names a failed delete by job ID, reason, and backend. The
-// object key (managed/secrets/{id}) carries a secret ID, and this text lands
-// in job_receipts, job_attempts, dead_letters, and the worker error log, none
-// of which are pruned; the bucket SDK's own message can embed the key in a
-// request URL, so the key and its URL-escaped forms are masked there too.
-// Unwrap keeps the cause for errors.Is.
+// The key carries a secret ID and lands in never-pruned job tables and logs, so the key and
+// its URL-escaped forms are masked out of the SDK message too.
 type objectDeleteError struct {
 	event events.JobEvent
 	err   error

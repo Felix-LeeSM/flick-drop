@@ -3,8 +3,6 @@ kind: Ingress
 metadata:
   name: flick
   annotations:
-    # Retries a request that never reached a backend on the other replica
-    # (deploy/base/traefik.yaml).
     traefik.ingress.kubernetes.io/router.middlewares: flick-flick-retry@kubernetescrd
 spec:
   ingressClassName: traefik

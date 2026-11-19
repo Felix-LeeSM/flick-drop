@@ -1,24 +1,6 @@
-# Ingress-side failover for the two flick-api and flick-web replicas, using
-# the Traefik bundled with k3s (traefik.io/v1alpha1 CRDs).
-#
-# When a node dies, its pods stay in the Service endpoints until Kubernetes
-# marks the node NotReady (about 50 seconds). Packets to those pods are dropped,
-# not refused, so without these settings every request Traefik sends there
-# hangs: on a reused keep-alive connection until the client gives up, on a new
-# connection for the default 30 s dial timeout.
-#
-# - ServersTransport/flick-backends opens a fresh connection per request
-#   (maxIdleConnsPerHost: -1; an in-cluster connect takes about 1 ms) and gives
-#   up dialing after 2 s.
-# - Middleware/flick-retry then sends the request to the other replica. Traefik
-#   retries only when no request header reached the backend, so a POST, an
-#   open-once request, or a streaming live-transfer body is never replayed.
-#   Three attempts, because under concurrent traffic the round-robin can hand
-#   the second attempt to the dead pod again.
-#
-# Ingress and Service annotations reference these as
-# "flick-<name>@kubernetescrd" (namespace "flick" from
-# deploy/base/kustomization.yaml).
+# A dead node's pods stay in endpoints ~50 s and drop packets, so: fresh connection per request with a
+# 2 s dial timeout, then retry on the other replica. Traefik retries only when no request header reached
+# the backend (no replay of POST, open-once, or streams); three attempts since round-robin may repeat the dead pod.
 apiVersion: traefik.io/v1alpha1
 kind: ServersTransport
 metadata:

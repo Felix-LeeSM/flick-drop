@@ -1,19 +1,6 @@
-# Grafana Alloy DaemonSet that scrapes each node's kubelet cAdvisor endpoint
-# (per-container memory working set and CPU usage) and remote-writes the two
-# kept series to vmsingle. Separate from the log-shipping alloy DaemonSet in
-# alloy.yaml because this one needs hostNetwork.
-#
-# Why hostNetwork: the node host firewall drops pod-network traffic to the
-# kubelet port, so a pod-network pod gets no answer from $HOST_IP:10250
-# (measured 2026-11-11: curl 000 from a pod, 401 from a hostNetwork pod). The
-# API-server proxy path (/api/v1/nodes/<node>/proxy/metrics/cadvisor) would
-# work without hostNetwork but needs nodes/proxy, which also reaches kubelet
-# exec; this DaemonSet holds only nodes/metrics get.
-#
-# The HTTP server stays on 127.0.0.1 so hostNetwork does not publish alloy's
-# debug UI on the node IP; that is also why there is no HTTP readiness or
-# liveness probe. A wedged collector shows up as a gap in the cluster
-# dashboard's per-container panels, not as a restart.
+# hostNetwork: the node firewall drops pod-network traffic to kubelet :10250 (measured 2026-11-11), and
+# the API-server proxy path needs nodes/proxy, which also allows kubelet exec. HTTP stays on 127.0.0.1
+# so the debug UI is not published on the node IP; hence no HTTP probes.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -24,8 +11,7 @@ kind: ClusterRole
 metadata:
   name: alloy-cadvisor
 rules:
-  # Read-only kubelet metrics (/metrics, /metrics/cadvisor); unlike nodes/proxy
-  # it does not authorize exec, logs, or pod listings on the kubelet.
+  # Unlike nodes/proxy, nodes/metrics does not authorize exec, logs, or pod listings.
   - apiGroups: [""]
     resources: ["nodes/metrics"]
     verbs: ["get"]
@@ -107,8 +93,7 @@ spec:
     spec:
       serviceAccountName: alloy-cadvisor
       hostNetwork: true
-      # hostNetwork pods default to the node's resolv.conf; this keeps cluster
-      # DNS so the vmsingle Service name resolves.
+      # hostNetwork defaults to the node's resolv.conf; keep cluster DNS for the vmsingle Service.
       dnsPolicy: ClusterFirstWithHostNet
       securityContext:
         runAsNonRoot: true
@@ -125,8 +110,7 @@ spec:
             - run
             - /etc/alloy/config.alloy
             - --storage.path=/var/lib/alloy/data
-            # Loopback only: see the header comment. 12346 avoids any clash with
-            # a future hostNetwork use of alloy's default 12345.
+            # 12346 avoids clashing with a future hostNetwork use of alloy's default 12345.
             - --server.http.listen-addr=127.0.0.1:12346
           env:
             - name: HOST_IP
@@ -137,8 +121,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          # Measured 39-96Mi working set per node right after start (WAL replay
-          # included, 2026-11-11); the limit leaves headroom over that peak.
+          # Measured 39-96Mi working set per node after start (WAL replay, 2026-11-11).
           resources:
             requests:
               cpu: 10m

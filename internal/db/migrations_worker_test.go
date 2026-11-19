@@ -10,10 +10,7 @@ import (
 	"time"
 )
 
-// openTestWorkerDatabase opens an isolated Postgres schema for one test and
-// runs MigrateWorker in it. Without FLICK_TEST_POSTGRES_URL the test skips:
-// the compose/CI service provides the URL (scripts/dev/postgres-init.sql,
-// .github/workflows/ci.yml).
+// Skips without FLICK_TEST_POSTGRES_URL.
 func openTestWorkerDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
@@ -33,8 +30,7 @@ func openTestWorkerDatabase(t *testing.T) *sql.DB {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	// pgx v5 passes unknown URL query parameters to the server as runtime
-	// parameters, so every pooled connection lands in the test schema.
+	// pgx v5 forwards unknown URL query params as runtime parameters (search_path).
 	scoped, err := url.Parse(baseURL)
 	if err != nil {
 		_ = admin.Close()
@@ -44,8 +40,6 @@ func openTestWorkerDatabase(t *testing.T) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
 	conn, err := OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -61,9 +55,6 @@ func openTestWorkerDatabase(t *testing.T) *sql.DB {
 	return conn
 }
 
-// openTestAPIDatabase is openTestWorkerDatabase for the API schema: it runs
-// MigrateAPI in a fresh per-test Postgres schema and drops the schema when the
-// test ends.
 func openTestAPIDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
@@ -112,9 +103,6 @@ func openTestAPIDatabase(t *testing.T) *sql.DB {
 	return conn
 }
 
-// TestMigrateWorkerCreatesJobReceipts proves the worker schema accepts the
-// three write shapes the store relies on: an identity-backed job_attempts
-// insert, the receipt foreign key, and the dead-letter upsert conflict target.
 func TestMigrateWorkerCreatesJobReceipts(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestWorkerDatabase(t)

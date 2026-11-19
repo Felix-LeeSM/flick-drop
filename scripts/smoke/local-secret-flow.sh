@@ -19,8 +19,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The API checks only the age magic line and lengths, so a fixed age-shaped
-# body exercises create and the streamed open without a real encryption.
+# The API checks only the age magic line and lengths, so a fixed age-shaped body suffices.
 printf 'age-encryption.org/v1\nlocal-body' >"$tmpdir/body.age"
 jq -n \
 	--arg ciphertext "$(base64 <"$tmpdir/body.age" | tr -d '\n')" \

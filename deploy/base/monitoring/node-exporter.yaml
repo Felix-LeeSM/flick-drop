@@ -1,16 +1,5 @@
-# node-exporter exposes host-level metrics (CPU, memory, filesystem, disk,
-# network) on :9100/metrics for every node, so instance health is visible
-# alongside the pod-status metrics from kube-state-metrics.
-#
-# The series reflect the node, not the pod sandbox, because it reads the
-# read-only host /proc, /sys, and / mounts (--path.* below) — including
-# /host/proc/net/dev for host interface stats. It reads only world-readable
-# host files and never touches the API server, so it needs no RBAC.
-#
-# Deliberately NOT hostNetwork: this cluster's nodes block port 9100 between
-# node IPs (OCI security list), so a host-network pod is unreachable cross-node.
-# On the pod (flannel overlay) network the scrape target is the pod IP, which is
-# reachable from any node. Opt-in: applied with the rest of deploy/base/monitoring.
+# Deliberately NOT hostNetwork: OCI security lists block 9100 between node IPs, while the pod
+# overlay IP is reachable from any node. Reads only world-readable host files, so no RBAC.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -36,7 +25,6 @@ spec:
           type: RuntimeDefault
       containers:
         - name: node-exporter
-          # Pinned for reproducible rollouts; bump deliberately.
           image: quay.io/prometheus/node-exporter:v1.8.2
           imagePullPolicy: IfNotPresent
           args:
@@ -95,9 +83,7 @@ spec:
           hostPath:
             path: /
 ---
-# Headless so each node-exporter instance is individually addressable (the
-# future VictoriaMetrics scrape targets every endpoint, not one load-balanced
-# pick). The endpoint addresses are the pod overlay IPs.
+# Headless so the scrape targets every instance, not one load-balanced pick.
 apiVersion: v1
 kind: Service
 metadata:
