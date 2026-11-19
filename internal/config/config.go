@@ -214,10 +214,27 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// legacyStorageEnv lists every storage variable the release before
+// FLICK_STORAGE_BACKENDS read.
+var legacyStorageEnv = []string{
+	"FLICK_STORAGE_LARGE_BACKEND",
+	"FLICK_S3_ENDPOINT", "FLICK_S3_REGION", "FLICK_S3_BUCKET", "FLICK_S3_ACCESS_KEY_ID",
+	"FLICK_S3_SECRET_ACCESS_KEY", "FLICK_S3_PATH_STYLE", "FLICK_S3_MAX_TOTAL_BYTES",
+	"FLICK_R2_ENABLED", "FLICK_R2_ENDPOINT", "FLICK_R2_REGION", "FLICK_R2_BUCKET", "FLICK_R2_ACCESS_KEY_ID",
+	"FLICK_R2_SECRET_ACCESS_KEY", "FLICK_R2_PATH_STYLE", "FLICK_R2_MAX_TOTAL_BYTES",
+}
+
 // loadStorageBackends reads FLICK_STORAGE_BACKENDS (comma-separated names) and
 // each named backend's FLICK_STORAGE_<NAME>_* settings. A name must satisfy
 // storage.ValidBackendName because it is stored in rows and delete events.
 func loadStorageBackends() ([]StorageBackend, error) {
+	// A leftover legacy variable means an unmigrated deployment; refuse to start
+	// rather than boot with object storage silently disabled.
+	for _, key := range legacyStorageEnv {
+		if os.Getenv(key) != "" {
+			return nil, fmt.Errorf("%s is no longer read; move it to FLICK_STORAGE_BACKENDS and FLICK_STORAGE_<NAME>_* (docs/runbook/storage-backend-rename.md)", key)
+		}
+	}
 	raw := strings.TrimSpace(os.Getenv("FLICK_STORAGE_BACKENDS"))
 	if raw == "" {
 		return nil, nil

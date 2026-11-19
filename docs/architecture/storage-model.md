@@ -114,10 +114,12 @@ backend's first reconciliation pass) and pending claims
 (`*_reconciliation_pending_v2`) keep the buckets independent.
 
 Databases created before `FLICK_STORAGE_BACKENDS` stored the fixed identifiers
-`s3_object` and `r2_object`. The API migration refuses to start while any row,
-pending claim, or unpublished delete event still carries them; rename them to
-configured backend names first with the
-[storage backend rename runbook](../runbook/storage-backend-rename.md).
+`s3_object` and `r2_object`. The API migration refuses to start while any row
+or unpublished delete event still carries them; rename them to configured
+backend names first with the
+[storage backend rename runbook](../runbook/storage-backend-rename.md). Legacy
+cursors and pending claims are dropped by the migration itself, and
+reconciliation re-finds any surviving orphan under its new name.
 
 Object Storage receives client-encrypted age files only. Uploads are presigned
 PUTs signed at the exact age file length. Downloads never use a presigned GET:

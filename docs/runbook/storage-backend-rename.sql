@@ -37,17 +37,25 @@ update secrets s set storage_backend = m.new_name
 	from storage_backend_rename m where s.storage_backend = m.old_name;
 update requests r set storage_backend = m.new_name
 	from storage_backend_rename m where r.storage_backend = m.old_name;
-update object_reconciliation_pending_v2 p set backend = m.new_name
-	from storage_backend_rename m where p.backend = m.old_name;
-update request_reconciliation_pending_v2 p set backend = m.new_name
-	from storage_backend_rename m where p.backend = m.old_name;
 -- Unpublished delete events carry the backend inside their JSON payload.
 update outbox_events o
 	set payload_json = replace(o.payload_json, '"backend":"' || m.old_name || '"', '"backend":"' || m.new_name || '"')
 	from storage_backend_rename m
 	where o.state <> 'published' and o.payload_json like '%"backend":"' || m.old_name || '"%';
+-- An unpublished object delete with no backend predates named backends; no
+-- current worker accepts it. Drop it: reconciliation re-finds the object.
+delete from outbox_events
+	where state <> 'published'
+		and payload_json like '%"kind":"delete_oci_object"%' and payload_json not like '%"backend":%';
 -- Cursors are scan positions only; the API reseeds them under the new names.
+-- A pending claim only fences a queued delete that may still name the old
+-- identifier. Renaming it would let that delete's acknowledgement miss it and
+-- block reconciliation for the key forever, so drop it: the next pass re-finds
+-- a surviving orphan under the new name, and live rows keep their keys
+-- protected.
 delete from object_reconciliation_cursor_v2 where backend in (select old_name from storage_backend_rename);
 delete from request_reconciliation_cursor_v2 where backend in (select old_name from storage_backend_rename);
+delete from object_reconciliation_pending_v2 where backend in (select old_name from storage_backend_rename);
+delete from request_reconciliation_pending_v2 where backend in (select old_name from storage_backend_rename);
 
 commit;

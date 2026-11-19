@@ -27,26 +27,29 @@ var namedStorageBackendChecks = []struct{ table, name, check string }{
 
 // retireLegacyStorageBackendChecks moves a database created before
 // FLICK_STORAGE_BACKENDS onto backend-name checks. The old schema allowed only
-// the fixed identifiers 's3_object' and 'r2_object'; rows, claims, and pending
-// delete events still carrying them must be renamed to configured backend
-// names first (legacyStorageBackendRunbook), so this refuses to run while any
-// remain. Reconciliation cursors are only scan positions, so legacy cursor rows
-// are dropped and reseeded under the new names. A fresh or already-upgraded
-// database passes through as a no-op.
+// the fixed identifiers 's3_object' and 'r2_object'; rows and pending delete
+// events still carrying them must be renamed to configured backend names first
+// (legacyStorageBackendRunbook), so this refuses to run while any remain. An
+// unpublished object delete with no backend at all predates named backends and
+// is refused the same way. Reconciliation cursors are only scan positions and
+// pending claims only fence a queued delete, so legacy cursor and claim rows
+// are dropped: the next reconciliation pass re-finds a surviving orphan under
+// its new backend name and queues a fresh delete, while a key any live row
+// holds stays protected. A fresh or already-upgraded database passes through
+// as a no-op.
 func retireLegacyStorageBackendChecks(ctx context.Context, conn *sql.Conn) error {
 	var legacy bool
 	err := conn.QueryRowContext(ctx, `select
 		exists (select 1 from secrets where storage_backend in ('s3_object', 'r2_object'))
 		or exists (select 1 from requests where storage_backend in ('s3_object', 'r2_object'))
-		or exists (select 1 from object_reconciliation_pending_v2 where backend in ('s3_object', 'r2_object'))
-		or exists (select 1 from request_reconciliation_pending_v2 where backend in ('s3_object', 'r2_object'))
 		or exists (select 1 from outbox_events where state <> 'published'
-			and (payload_json like '%"backend":"s3_object"%' or payload_json like '%"backend":"r2_object"%'))`).Scan(&legacy)
+			and (payload_json like '%"backend":"s3_object"%' or payload_json like '%"backend":"r2_object"%'
+				or (payload_json like '%"kind":"delete_oci_object"%' and payload_json not like '%"backend":%')))`).Scan(&legacy)
 	if err != nil {
 		return fmt.Errorf("check legacy storage backend names: %w", err)
 	}
 	if legacy {
-		return fmt.Errorf("the database still names object backends 's3_object' or 'r2_object'; rename them to FLICK_STORAGE_BACKENDS names first (%s)", legacyStorageBackendRunbook)
+		return fmt.Errorf("the database still names object backends 's3_object' or 'r2_object'; or an object delete without a backend; rename them to FLICK_STORAGE_BACKENDS names first (%s)", legacyStorageBackendRunbook)
 	}
 
 	tx, err := conn.BeginTx(ctx, nil)
@@ -57,6 +60,8 @@ func retireLegacyStorageBackendChecks(ctx context.Context, conn *sql.Conn) error
 	for _, statement := range []string{
 		`delete from object_reconciliation_cursor_v2 where backend in ('s3_object', 'r2_object')`,
 		`delete from request_reconciliation_cursor_v2 where backend in ('s3_object', 'r2_object')`,
+		`delete from object_reconciliation_pending_v2 where backend in ('s3_object', 'r2_object')`,
+		`delete from request_reconciliation_pending_v2 where backend in ('s3_object', 'r2_object')`,
 		dropLegacyStorageBackendChecks,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {

@@ -277,15 +277,20 @@ identifiers `s3_object` and `r2_object` in unnamed checks. After
 `internal/db/storage_backends.go:retireLegacyStorageBackendChecks`:
 
 1. It refuses to migrate, and the API fails startup, while any `secrets` or
-   `requests` row, `*_reconciliation_pending_v2` claim, or unpublished
-   `outbox_events` delete job still names `s3_object` or `r2_object`. The error
-   points to the [storage backend rename runbook](../runbook/storage-backend-rename.md),
+   `requests` row or unpublished `outbox_events` delete job still names
+   `s3_object` or `r2_object`, or an unpublished `delete_oci_object` job has no
+   `backend`. The error points to the
+   [storage backend rename runbook](../runbook/storage-backend-rename.md),
    which renames them to configured backend names
    (`docs/runbook/storage-backend-rename.sql`).
 2. Otherwise, in one transaction, it deletes legacy cursor rows (scan positions
-   only; the reconciler reseeds them under the new names), drops every check
-   whose definition still mentions `s3_object`, and adds the named checks that
-   are missing.
+   only; the reconciler reseeds them under the new names) and legacy
+   `*_reconciliation_pending_v2` claims, drops every check whose definition
+   still mentions `s3_object`, and adds the named checks that are missing. A
+   claim is removed only by an acknowledgement matching its backend, so a
+   renamed claim could block reconciliation of its key forever; a dropped one
+   lets the next pass re-find a surviving orphan under its new name, while a
+   key any live row holds stays protected.
 
 A fresh or already-upgraded database passes through as a no-op.
 

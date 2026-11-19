@@ -153,6 +153,7 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_TRUSTED_PROXIES",
 		"FLICK_STORAGE_BACKENDS",
 	}
+	keys = append(keys, legacyStorageEnv...)
 	for _, key := range keys {
 		t.Setenv(key, "")
 	}
@@ -426,6 +427,10 @@ func TestLoadStorageBackendsRejectsBadValues(t *testing.T) {
 		{"missing keys", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b"}, "FLICK_STORAGE_OCI_ACCESS_KEY_ID"},
 		{"malformed path style", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_PATH_STYLE": "flase"}, "FLICK_STORAGE_OCI_PATH_STYLE"},
 		{"negative ceiling", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES": "-1"}, "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES"},
+		// 옛 변수만 남은 배포가 저장소 없이 조용히 뜨지 않는다.
+		{"legacy primary variable", map[string]string{"FLICK_S3_BUCKET": "b"}, "FLICK_S3_BUCKET is no longer read"},
+		{"legacy secondary variable", map[string]string{"FLICK_R2_ENABLED": "true"}, "FLICK_R2_ENABLED is no longer read"},
+		{"legacy backend switch", map[string]string{"FLICK_STORAGE_LARGE_BACKEND": "disabled"}, "FLICK_STORAGE_LARGE_BACKEND is no longer read"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

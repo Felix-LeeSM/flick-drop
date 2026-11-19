@@ -68,8 +68,10 @@ Jobs written before `FLICK_STORAGE_BACKENDS` carried the fixed identifiers
 `s3_object`/`r2_object` or no `backend` at all; current workers reject both as
 invalid, and workers from that era reject the new names. The
 [storage backend rename runbook](../runbook/storage-backend-rename.md) covers
-the upgrade. Reconciliation re-lists a managed object whose delete job was
-lost this way and queues a fresh job once the old pending claim lapses. The JSON schema is
+the upgrade. The upgrade drops legacy pending claims
+(`internal/db/storage_backends.go:retireLegacyStorageBackendChecks`), so
+reconciliation re-lists a managed object whose delete job was lost this way
+and queues a fresh job under the new backend name. The JSON schema is
 `contracts/events/job.schema.json`.
 
 ## Outbox

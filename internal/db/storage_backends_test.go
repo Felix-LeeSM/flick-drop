@@ -38,8 +38,10 @@ func legacyStorageBackendSchema(t *testing.T, ctx context.Context, exec func(str
 	exec(`insert into requests (id, public_key, fingerprint, submission_token_hash, retrieval_token_hash, storage_backend, expires_at)
 		values ('r', 'synthetic-public-key', 'synthetic-fingerprint', $1, $1, 'r2_object', $2)`, make([]byte, 32), now)
 	exec(`insert into outbox_events (id, subject, payload_json, next_attempt_at, created_at, updated_at)
-		values ('pending-delete', 'flick.jobs', '{"job_id":"j","kind":"delete_object","object_key":"managed/secrets/a","backend":"s3_object"}', $1, $1, $1),
-			('published-delete', 'flick.jobs', '{"job_id":"k","kind":"delete_object","object_key":"managed/secrets/z","backend":"s3_object"}', $1, $1, $1)`, now)
+		values ('pending-delete', 'flick.jobs', '{"job_id":"j","kind":"delete_oci_object","object_key":"managed/secrets/a","backend":"s3_object"}', $1, $1, $1),
+			('unnamed-delete', 'flick.jobs', '{"job_id":"u","kind":"delete_oci_object","object_key":"managed/secrets/u"}', $1, $1, $1),
+			('pending-secret-delete', 'flick.jobs', '{"job_id":"s","kind":"delete_secret","secret_id":"gone"}', $1, $1, $1),
+			('published-delete', 'flick.jobs', '{"job_id":"k","kind":"delete_oci_object","object_key":"managed/secrets/z","backend":"s3_object"}', $1, $1, $1)`, now)
 	exec(`update outbox_events set state = 'published' where id = 'published-delete'`)
 }
 
@@ -89,18 +91,20 @@ func TestLegacyStorageBackendNamesNeedTheRunbookBeforeMigrating(t *testing.T) {
 		t.Fatalf("MigrateAPI after the runbook: %v", err)
 	}
 
-	// Then: 행·청구·대기 이벤트가 새 이름을 쓰고, 발행된 이벤트와 인라인 행은 그대로다
+	// Then: 행과 대기 이벤트가 새 이름을 쓰고, 발행된 이벤트와 인라인 행은 그대로다
 	if got := scalar(`select string_agg(id || '=' || storage_backend, ',' order by id) from secrets`); got != "a=oci,b=r2,c=sqlite_blob" {
 		t.Fatalf("secrets backends = %s", got)
 	}
 	if got := scalar(`select storage_backend from requests where id = 'r'`); got != "r2" {
 		t.Fatalf("request backend = %s, want r2", got)
 	}
-	if got := scalar(`select backend from object_reconciliation_pending_v2`); got != "r2" {
-		t.Fatalf("object claim backend = %s, want r2", got)
+	// Then: 옛 이름의 청구는 지워져 재조정이 새 이름으로 다시 청구할 수 있다
+	if got := scalar(`select (select count(*) from object_reconciliation_pending_v2) + (select count(*) from request_reconciliation_pending_v2)`); got != "0" {
+		t.Fatalf("legacy claims left = %s, want them dropped", got)
 	}
-	if got := scalar(`select backend from request_reconciliation_pending_v2`); got != "oci" {
-		t.Fatalf("request claim backend = %s, want oci", got)
+	// Then: backend 없는 옛 객체 삭제는 지워지고 다른 대기 작업은 남는다
+	if got := scalar(`select string_agg(id, ',' order by id) from outbox_events`); got != "pending-delete,pending-secret-delete,published-delete" {
+		t.Fatalf("outbox events = %s, want only the backend-less object delete dropped", got)
 	}
 	if got := scalar(`select payload_json from outbox_events where id = 'pending-delete'`); !strings.Contains(got, `"backend":"oci"`) {
 		t.Fatalf("pending event payload = %s, want backend oci", got)
@@ -122,6 +126,39 @@ func TestLegacyStorageBackendNamesNeedTheRunbookBeforeMigrating(t *testing.T) {
 	}
 	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_cursor_v2 (backend) values ('r2_object')`); err == nil {
 		t.Fatal("a legacy cursor name was accepted after the migration")
+	}
+}
+
+// 옛 이름이 청구와 커서에만 남은 DB는 런북 없이 넘어가고 그 행들은 지워진다.
+func TestLegacyClaimsAloneMigrateWithoutTheRunbook(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestAPIDatabase(t)
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	// Given: 행은 없고 옛 이름의 청구만 남았다(청구 테이블엔 이름 제약이 없다)
+	for _, statement := range []string{
+		`insert into object_reconciliation_pending_v2 (backend, object_key, job_id) values ('s3_object', 'managed/secrets/b', 'job-pending')`,
+		`insert into request_reconciliation_pending_v2 (backend, object_key, job_id) values ('r2_object', 'managed/requests/x/final', 'job-request-pending')`,
+		`insert into object_reconciliation_pending_v2 (backend, object_key, job_id) values ('oci', 'managed/secrets/c', 'job-current')`,
+	} {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	// When: 새 API가 마이그레이션한다
+	if err := MigrateAPI(ctx, conn); err != nil {
+		t.Fatalf("MigrateAPI with only legacy claims: %v", err)
+	}
+
+	// Then: 옛 이름의 청구만 지워진다
+	var left string
+	if err := conn.QueryRowContext(ctx, `select string_agg(backend || ':' || object_key, ',') from (select backend, object_key from object_reconciliation_pending_v2 union all select backend, object_key from request_reconciliation_pending_v2) c`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != "oci:managed/secrets/c" {
+		t.Fatalf("claims left = %s, want only the current-name claim", left)
 	}
 }
 

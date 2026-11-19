@@ -148,6 +148,13 @@ objects exist on that backend. Removing a name that still holds objects makes
 opens, cleanup, and reconciliation of those objects fail instead of reaching the
 wrong bucket.
 
+The variables of releases before `FLICK_STORAGE_BACKENDS`
+(`FLICK_STORAGE_LARGE_BACKEND`, `FLICK_S3_*`, `FLICK_R2_*`) are rejected: flick-api
+and flick-worker refuse to start while any of them is set to a non-empty value
+(`internal/config/config.go:legacyStorageEnv`). The
+[storage backend rename runbook](../runbook/storage-backend-rename.md) maps each
+one to its replacement.
+
 Every backend's credentials need the same permissions. The API signs browser
 PUTs, needs GetObject (finalize copy of the staging key, opens) and PutObject
 (server-only finalize write of the verified bytes), and `ListObjectsV2` on the
