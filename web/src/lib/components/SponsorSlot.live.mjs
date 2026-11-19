@@ -24,7 +24,7 @@ for (const width of [375, 1280]) {
 			}
 		});
 		try {
-			await page.goto(`${baseUrl}/guides/password-sharing/?synthetic=context#manage=not-a-token`);
+			await page.goto(`${baseUrl}/guides/?synthetic=context#manage=not-a-token`);
 			const slot = page.getByRole('complementary', { name: 'Sponsored' });
 			assert.equal(await slot.count(), enabled ? 1 : 0);
 			assert.deepEqual(remoteRequests, []);

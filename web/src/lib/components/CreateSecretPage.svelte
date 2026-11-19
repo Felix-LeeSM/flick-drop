@@ -1227,26 +1227,17 @@ function typePanelId(type: CreateMode): string {
 	{/if}
 
 	{#if receivedPipeSecret === null}
-		<!-- Y1: guides open in a new tab so the in-progress form survives. -->
+		<!-- Y1: the guide opens in a new tab so the in-progress form survives. -->
 		<nav
-			aria-label="Sharing guides"
+			aria-label="Guide"
 			class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
 		>
 			<a
 				target="_blank"
 				rel="noopener noreferrer"
-				href={resolve('guides/password-sharing/')}
+				href={resolve('guides/')}
 				class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
-			>How password sharing works
-				<ArrowUpRightIcon class="size-3" aria-hidden="true" />
-			</a>
-
-			<a
-				target="_blank"
-				rel="noopener noreferrer"
-				href={resolve('guides/temporary-file-sharing/')}
-				class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
-			>How temporary file sharing works
+			>How Flick works
 				<ArrowUpRightIcon class="size-3" aria-hidden="true" />
 			</a>
 		</nav>
