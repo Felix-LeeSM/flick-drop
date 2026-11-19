@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/flickcli Guide
+description: CLI HTTP client, share-link parsing, send/open parity with web, and destructive-open ordering rules.
+tags: [agent-guide, go, cli]
+---
+
 # `internal/flickcli/` Guide
 
 The `flick` command-line client's behavior: API calls, share links, and the

@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: Storage Backend Rename
+description: One-time upgrade from legacy s3_object/r2_object identifiers and env vars to FLICK_STORAGE_BACKENDS named backends.
+tags: [runbook, storage, migration]
+status: stable
+---
+
 # Storage Backend Rename
 
 This runbook moves an installation that used large-object storage before

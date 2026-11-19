@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Implementation Choices
+description: Implementation defaults for SvelteKit, i18n, Go HTTP/chi, PostgreSQL 17, Valkey, AWS SDK v2 S3-compatible storage, containers, IDs, and age/PBKDF2 crypto.
+tags: [architecture, choices, stack]
+status: stable
+---
+
 # Implementation Choices
 
 These are the implementation defaults every Flick service follows, recorded so

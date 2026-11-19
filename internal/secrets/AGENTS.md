@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/secrets Guide
+description: Secret lifecycle states, expiration reaper, atomic access-attempt lockout, sender management revocation, and object reconciliation rules.
+tags: [agent-guide, go, secrets]
+---
+
 # `internal/secrets/` Guide
 
 This package owns the secret lifecycle domain: create (inline and large),

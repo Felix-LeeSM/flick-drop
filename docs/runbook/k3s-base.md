@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: k3s Base Manifests
+description: Validation, image/secret overrides, persistence, and worker-first reconciliation upgrade procedure for deploy/base/.
+tags: [runbook, k3s, manifests]
+status: stable
+---
+
 # k3s Base Manifests
 
 `deploy/base/` contains public-safe k3s-compatible manifests for the default

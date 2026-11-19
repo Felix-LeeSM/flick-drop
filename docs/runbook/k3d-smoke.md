@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: k3d Smoke
+description: Running the disposable two-node k3d multi-replica smoke test covering cross-pod secrets, live transfer, NetworkPolicies, and rolling restarts.
+tags: [runbook, k3d, smoke]
+status: stable
+---
+
 # k3d Smoke
 
 `mise run smoke-k3d` exercises the Kubernetes manifests in a disposable local

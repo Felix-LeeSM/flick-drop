@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: cmd/flick-api Guide
+description: Process bootstrap order, database ownership, and directory rules for the flick-api HTTP server entrypoint.
+tags: [agent-guide, go, api]
+---
+
 # `cmd/flick-api/` Guide
 
 This directory is the `flick-api` process entrypoint.

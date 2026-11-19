@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Advertising Experiment
+description: Trust boundaries, static sponsor slot contract, publisher policy checks, and aggregate measurement rules for M10.
+tags: [architecture, advertising, sponsor]
+status: stable
+---
+
 # Advertising experiment
 
 Status: M10 (#208–#210) is implemented — the public guides (#209) and the

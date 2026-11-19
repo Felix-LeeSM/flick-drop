@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/db Guide
+description: PostgreSQL connection setup, advisory-locked idempotent migrations, UTC timestamptz scanning, and read-only storage usage aggregation.
+tags: [agent-guide, go, postgres, db]
+---
+
 # `internal/db/` Guide
 
 This package owns database connection setup, migrations, and low-level

@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/requests Guide
+description: One-time request lifecycle, envelope validation, immutable large-object finalize, and request-prefix reconciliation rules.
+tags: [agent-guide, go, requests]
+---
+
 # `internal/requests/` Guide
 
 - `store.go` owns API-only request creation, authorization, inline submission,

@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: deploy Guide
+description: Generic k3s manifests, multi-replica rollout rules, opt-in monitoring, resource budgets, and public-safe deployment boundaries.
+tags: [agent-guide, deploy, k3s]
+---
+
 # `deploy/` Guide
 
 Deployment manifests are for generic k3s-compatible self-hosting.

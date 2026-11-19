@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: cmd Guide
+description: Rules for executable entrypoints under cmd/, keeping main.go thin and delegating domain logic to internal packages.
+tags: [agent-guide, go, cmd]
+---
+
 # `cmd/` Guide
 
 Each subdirectory is an executable entrypoint.

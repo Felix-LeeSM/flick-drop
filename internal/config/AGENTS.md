@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/config Guide
+description: Environment variable parsing and validation boundaries without side effects for internal/config.
+tags: [agent-guide, go, config]
+---
+
 # `internal/config/` Guide
 
 This package owns environment parsing and validation.

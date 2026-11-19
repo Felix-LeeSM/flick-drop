@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: Worker Cleanup Recovery
+description: Requeueing previously stranded worker cleanup jobs from flick_api outbox_events within PublishedRetention while preserving idempotency.
+tags: [runbook, worker, recovery]
+status: stable
+---
+
 # Worker Cleanup Recovery
 
 Current workers retry interrupted cleanup after the one-minute receipt lease

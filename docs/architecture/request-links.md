@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: One-Time Request Links
+description: Authority model, key custody, age encryption format, HTTP contract, large-upload reservations, and cleanup semantics for M9 request links.
+tags: [architecture, requests, crypto, storage]
+status: stable
+---
+
 # One-time request links
 
 Status: request links use the age format (M13). #288 moved the API, schema and

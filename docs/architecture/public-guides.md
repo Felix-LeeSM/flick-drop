@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Public Guide
+description: Structure, canonical URL, crawler directives, 301 redirects, and sponsor boundary for the /guides/ page.
+tags: [architecture, web, guides]
+status: stable
+---
+
 # Public guide
 
 `/guides/` is one prerendered, first-party page in

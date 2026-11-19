@@ -1,3 +1,11 @@
+---
+type: Work Guide
+title: Work Notes Guide
+description: Structure and lifecycle rules for active, done, and tmp work notes under docs/work/.
+tags: [docs, work-notes]
+status: stable
+---
+
 # Work Notes
 
 This directory replaces sprint artifacts for Flick.

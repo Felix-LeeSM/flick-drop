@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: .github Guide
+description: GitHub Actions workflow boundaries, branch protection, synthetic canary budget, and metadata-only review gate policy.
+tags: [agent-guide, github, ci]
+---
+
 # `.github/` Guide
 
 GitHub Actions should call `scripts/ci/*` instead of duplicating check logic.

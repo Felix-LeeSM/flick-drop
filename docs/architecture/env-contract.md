@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Environment Contract
+description: Public contract for all runtime, build-time, CLI, PostgreSQL, Valkey, NATS, and named S3-compatible storage environment variables.
+tags: [architecture, env, config]
+status: stable
+---
+
 # Environment Contract
 
 All runtime configuration is supplied by environment variables.
