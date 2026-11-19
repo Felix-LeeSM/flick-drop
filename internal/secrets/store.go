@@ -32,20 +32,23 @@ var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/secrets")
 const (
 	KindText                = "text"
 	KindFile                = "file"
-	StorageSQLite           = "sqlite_blob"
-	StorageS3               = "s3_object"
+	StorageSQLite           = db.StorageInline
 	KDFPBKDF2SHA256         = "PBKDF2-SHA-256"
 	maxFailedAccessAttempts = 5
 )
 
-// Pre-register every kind/storage combination the store emits so the
-// flick_secret_created_total children exist at 0 from process start. A
-// CounterVec child materializes only at its first Inc, so after every api
-// restart the series vanishes until the next delivery and the usage dashboard
-// reads "No data" (#374).
-func init() {
+// registerCreatedSeries pre-registers every kind/storage combination the store
+// can emit so the flick_secret_created_total children exist at 0 from process
+// start. A CounterVec child materializes only at its first Inc, so after every
+// api restart the series vanishes until the next delivery and the usage
+// dashboard reads "No data" (#374).
+func registerCreatedSeries(objects *storage.Registry) {
+	backends := []string{StorageSQLite}
+	if objects != nil {
+		backends = append(backends, objects.Names()...)
+	}
 	for _, kind := range []string{KindText, KindFile} {
-		for _, backend := range []string{StorageSQLite, StorageS3, storage.SecondaryBackend} {
+		for _, backend := range backends {
 			telemetry.SecretCreated.WithLabelValues(kind, backend)
 		}
 	}
@@ -131,7 +134,6 @@ type Store struct {
 	now                   func() time.Time
 	payloadInlineMaxBytes int64
 	maxObjectBytes        int64
-	maxTotalBytes         map[string]int64
 	presignTTL            time.Duration
 	pendingTTL            time.Duration
 	minTTL                int
@@ -143,15 +145,11 @@ type Store struct {
 type StoreOptions struct {
 	PayloadInlineMaxBytes int64
 	MaxObjectBytes        int64
-	// MaxTotalBytes caps each backend's cumulative staged+active object bytes;
-	// a zero or missing entry means unlimited. Read in CreateLarge before any
-	// row is written (see storage.ChooseBackend).
-	MaxTotalBytes map[string]int64
-	PresignTTL    time.Duration
-	PendingTTL    time.Duration
-	MinTTLSeconds int
-	MaxTTLSeconds int
-	Objects       *storage.Registry
+	PresignTTL            time.Duration
+	PendingTTL            time.Duration
+	MinTTLSeconds         int
+	MaxTTLSeconds         int
+	Objects               *storage.Registry
 	// Outbox, when set, enqueues the lockout object-delete in the access tx
 	// instead of calling the object store inline. Optional: a Store built
 	// without one (e.g. in tests) falls back to a best-effort inline delete.
@@ -184,12 +182,12 @@ func NewStore(db *sql.DB, opts StoreOptions) (*Store, error) {
 		pendingTTL = 15 * time.Minute
 	}
 
+	registerCreatedSeries(opts.Objects)
 	return &Store{
 		db:                    db,
 		now:                   func() time.Time { return time.Now().UTC() },
 		payloadInlineMaxBytes: opts.PayloadInlineMaxBytes,
 		maxObjectBytes:        opts.MaxObjectBytes,
-		maxTotalBytes:         opts.MaxTotalBytes,
 		presignTTL:            presignTTL,
 		pendingTTL:            pendingTTL,
 		minTTL:                opts.MinTTLSeconds,
@@ -337,17 +335,17 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		return CreateLargeResult{}, err
 	}
 
-	// Placement: primary first, then whichever backend's ceiling still fits
-	// (see storage.ChooseBackend). The usage read happens before any write, so
+	// Placement: a random backend weighted by remaining space among those
+	// whose ceiling still fits (storage.Registry.Choose). The usage read happens before any write, so
 	// a rejection inserts no row and presigns nothing. The read runs outside a
 	// transaction (the write tx opens below), so concurrent placements can
 	// transiently overshoot a ceiling — the documented soft cap (storage-model.md).
 	// The chosen backend flows into the presign, the row, and the metric label.
-	backendUsage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC())
+	backendUsage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC(), s.objects.Names())
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
 	}
-	backend := storage.ChooseBackend(s.objects, backendUsage, s.maxTotalBytes, input.SizeBytes)
+	backend := s.objects.Choose(backendUsage, input.SizeBytes)
 	if backend == "" {
 		return CreateLargeResult{}, ErrStorageFull
 	}
@@ -415,9 +413,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 // The HEAD runs inside the transaction but the SELECT takes no row lock, so a
 // concurrent Revoke or open is never blocked by the bucket round-trip.
 func (s *Store) Finalize(ctx context.Context, id string) (err error) {
-	ctx, span := tracer.Start(ctx, "secrets.Finalize", trace.WithAttributes(
-		attribute.String("storage.backend", StorageS3),
-	))
+	ctx, span := tracer.Start(ctx, "secrets.Finalize")
 	defer func() { telemetry.EndSpan(span, err) }()
 
 	if s.objects == nil {
@@ -441,6 +437,7 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if err != nil {
 		return fmt.Errorf("load pending secret: %w", err)
 	}
+	span.SetAttributes(attribute.String("storage.backend", storageBackend))
 	if state == "active" {
 		return nil
 	}
@@ -581,7 +578,7 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 	err := s.db.QueryRowContext(ctx, `select
 			s.id, s.kind, s.access_kdf_params_json, s.size_bytes, s.expires_at, s.consumed_at
 		from secrets s
-		where s.id = $1 and (s.storage_backend in ('s3_object', 'r2_object')
+		where s.id = $1 and (s.storage_backend <> 'sqlite_blob'
 			or exists (select 1 from secret_payloads p where p.secret_id = s.id))`,
 		id,
 	).Scan(
@@ -650,7 +647,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		}
 	}
 
-	// Start the object read (for s3_object secrets) before marking consumed, so
+	// Start the object read (for object-backend secrets) before marking consumed, so
 	// a bucket that cannot serve the body leaves the secret reopenable rather
 	// than consumed-but-unreadable. Only a failure after the first byte, while
 	// the caller streams, loses the secret.
@@ -706,7 +703,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 // length /finalize checked, because the caller announces that length before
 // streaming.
 func (s *Store) openBody(ctx context.Context, secret *Secret) error {
-	if secret.StorageBackend != StorageS3 && secret.StorageBackend != storage.SecondaryBackend {
+	if secret.StorageBackend == StorageSQLite {
 		return nil
 	}
 	if s.objects == nil {
@@ -919,7 +916,7 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	secret.StorageKey = storageKey.String
 	// Inline (sqlite_blob) secrets carry ciphertext in their secret_payloads
 	// bytea row; S3-backed secrets fetch it on demand from the object store, so
-	// an empty blob here is expected for pending/active s3_object rows.
+	// an empty blob here is expected for pending/active object-backend rows.
 	if secret.StorageBackend == StorageSQLite && len(ciphertext) == 0 && !consumedAt.Valid {
 		return Secret{}, sql.NullTime{}, ErrNotFound
 	}

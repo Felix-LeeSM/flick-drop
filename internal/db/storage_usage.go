@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"time"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
+
+// StorageInline is the storage_backend value of a row whose ciphertext lives in
+// the database (secret_payloads / request_payloads). Every other value names a
+// configured object backend (storage.ValidBackendName).
+const StorageInline = "sqlite_blob"
 
 // objectGrace mirrors the open-stream grace both domains keep
 // (requests.openObjectGrace, secrets openObjectGrace: a 30-minute stream plus
@@ -36,11 +39,12 @@ type RowQueryer interface {
 // bucket usage can differ from this sum by a couple of objects in either
 // direction. The read-only aggregation stays documented in
 // internal/db/AGENTS.md as a boundary exception.
-func StorageObjectBytes(ctx context.Context, conn RowQueryer, now time.Time) (map[string]int64, error) {
-	usage := map[string]int64{
-		storage.PrimaryBackend:   0,
-		storage.SecondaryBackend: 0,
-	}
+//
+// backends names the configured object backends (storage.Registry.Names); the
+// result has exactly those keys, so a stray column value never reaches a
+// caller or a metric label.
+func StorageObjectBytes(ctx context.Context, conn RowQueryer, now time.Time, backends []string) (map[string]int64, error) {
+	usage := make(map[string]int64, len(backends))
 	// consumed_at compares natively as timestamptz.
 	const secretsSQL = `select coalesce(sum(size_bytes), 0) from secrets
 		where storage_backend = $1
@@ -58,7 +62,7 @@ func StorageObjectBytes(ctx context.Context, conn RowQueryer, now time.Time) (ma
 		from requests
 		where storage_backend = $1 and (upload_key is not null or final_key is not null)`
 	grace := now.UTC().Add(-objectGrace)
-	for _, backend := range []string{storage.PrimaryBackend, storage.SecondaryBackend} {
+	for _, backend := range backends {
 		var total int64
 		if err := conn.QueryRowContext(ctx, secretsSQL, backend, grace).Scan(&total); err != nil {
 			return nil, err

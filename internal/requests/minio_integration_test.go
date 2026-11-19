@@ -19,11 +19,11 @@ import (
 func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 	ctx := context.Background()
 	f, _ := largeFixture(t)
-	objectStore, err := storage.New(storage.Config{Enabled: true, Endpoint: os.Getenv("FLICK_S3_ENDPOINT"), Region: os.Getenv("FLICK_S3_REGION"), Bucket: os.Getenv("FLICK_S3_BUCKET"), AccessKeyID: os.Getenv("FLICK_S3_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("FLICK_S3_SECRET_ACCESS_KEY"), PathStyle: true})
+	objectStore, err := storage.New(storage.Config{Enabled: true, Endpoint: os.Getenv("FLICK_STORAGE_MINIO_ENDPOINT"), Region: os.Getenv("FLICK_STORAGE_MINIO_REGION"), Bucket: os.Getenv("FLICK_STORAGE_MINIO_BUCKET"), AccessKeyID: os.Getenv("FLICK_STORAGE_MINIO_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY"), PathStyle: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := storage.NewRegistry(objectStore, nil)
+	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: objectStore})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 			t.Fatal(err)
 		}
 		var n int
-		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending_v2 where backend=$1 and object_key=$2`, storage.PrimaryBackend, upload).Scan(&n); err != nil {
+		if err := f.db.QueryRow(`select count(*) from request_reconciliation_pending_v2 where backend=$1 and object_key=$2`, testBackend, upload).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n == 1 {

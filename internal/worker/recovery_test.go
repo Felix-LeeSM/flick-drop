@@ -21,7 +21,7 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 			store := openRecoveryStore(t, database)
 			now := time.Now().UTC()
 			store.SetNowForTest(func() time.Time { return now })
-			event := events.JobEvent{JobID: "job_reopen", Kind: events.KindDeleteOCIObject,
+			event := events.JobEvent{JobID: "job_reopen", Kind: events.KindDeleteOCIObject, Backend: testBackend,
 				ObjectKey: "object-reopen", Reason: events.ReasonExpired, RequestedAt: now}
 			payload, err := event.JSON()
 			if err != nil {
@@ -32,7 +32,7 @@ func TestProcessorRecoversAfterDatabaseReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			objects := &fakeObjectDeleter{}
-			handler, err := NewCleanupHandler(&fakeCleanupAPI{}, objects, nil)
+			handler, err := NewCleanupHandler(&fakeCleanupAPI{}, map[string]ObjectDeleter{testBackend: objects})
 			if err != nil {
 				t.Fatal(err)
 			}

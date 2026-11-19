@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/db"
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
@@ -58,12 +59,7 @@ type Options struct {
 	PayloadInlineMaxBytes int64
 	// MaxObjectBytes caps an uploaded age file: the largest one a
 	// FLICK_MAX_FILE_BYTES input produces (secrets.MaxCiphertextBytes).
-	MaxObjectBytes int64
-	// MaxTotalBytes bounds the cumulative stored bytes per backend
-	// (backend -> ceiling). A backend missing from the map is unlimited; a
-	// ceiling of 0 means unlimited. Reserves prefer the primary and fall to
-	// whichever backend still has headroom.
-	MaxTotalBytes     map[string]int64
+	MaxObjectBytes    int64
 	MinTTLSeconds     int
 	DefaultTTLSeconds int
 	MaxTTLSeconds     int
@@ -488,7 +484,7 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 	if err := json.Unmarshal([]byte(envelope), &opened.Envelope); err != nil {
 		return Opened{}, err
 	}
-	if backend != storage.PrimaryBackend && backend != storage.SecondaryBackend {
+	if backend == db.StorageInline {
 		if int64(len(ciphertext)) != opened.SizeBytes {
 			return Opened{}, ErrStorage
 		}
@@ -580,13 +576,9 @@ func (s *Store) FinishOpen(ctx context.Context, id, key string) error {
 	}
 	tx := &writeTx{Tx: transaction, conn: conn}
 	defer tx.close()
-	var backend sql.NullString
+	var backend string
 	if err := tx.QueryRowContext(ctx, `select storage_backend from requests where id = $1`, id).Scan(&backend); err != nil {
 		return err
-	}
-	placedBackend := storage.PrimaryBackend
-	if backend.Valid && backend.String != "" {
-		placedBackend = backend.String
 	}
 	changed, err := tx.ExecContext(ctx, `update requests set final_key = null where id = $1 and state = 'consumed' and final_key = $2`, id, key)
 	if err != nil {
@@ -595,7 +587,7 @@ func (s *Store) FinishOpen(ctx context.Context, id, key string) error {
 	if n, err := changed.RowsAffected(); err != nil || n == 0 {
 		return err
 	}
-	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, placedBackend, key, events.ReasonConsumed, s.now().UTC()); err != nil {
+	if err := enqueueObjectTx(ctx, tx.Tx, s.opts.Outbox, backend, key, events.ReasonConsumed, s.now().UTC()); err != nil {
 		return err
 	}
 	return s.commit(tx, time.Time{})

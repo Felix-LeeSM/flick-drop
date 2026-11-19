@@ -55,7 +55,7 @@ func TestTerminalObjectAcknowledgementRecoversAfterRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload, err := (events.JobEvent{JobID: "cleanup", Kind: events.KindDeleteOCIObject, ObjectKey: "managed/secrets/late", RequestedAt: time.Now().UTC()}).JSON()
+			payload, err := (events.JobEvent{JobID: "cleanup", Kind: events.KindDeleteOCIObject, Backend: testBackend, ObjectKey: "managed/secrets/late", RequestedAt: time.Now().UTC()}).JSON()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +109,7 @@ func TestCleanupClientAcknowledgementContract(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
 			}
-			if len(payload) != 2 || payload["job_id"] != "job" || payload["object_key"] != "managed/secrets/key" {
+			if len(payload) != 3 || payload["backend"] != testBackend || payload["job_id"] != "job" || payload["object_key"] != "managed/secrets/key" {
 				t.Fatalf("unexpected acknowledgement payload: %v", payload)
 			}
 			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
@@ -117,16 +117,16 @@ func TestCleanupClientAcknowledgementContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = client.AcknowledgeObjectCleanup(context.Background(), events.JobEvent{JobID: "job", Kind: events.KindDeleteOCIObject, ObjectKey: "managed/secrets/key"})
+		err = client.AcknowledgeObjectCleanup(context.Background(), events.JobEvent{JobID: "job", Kind: events.KindDeleteOCIObject, Backend: testBackend, ObjectKey: "managed/secrets/key"})
 		if (err == nil) != (status == http.StatusNoContent) {
 			t.Fatalf("status %d error %v", status, err)
 		}
 	}
-	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, nil, nil)
+	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.HandleJob(context.Background(), events.JobEvent{Kind: events.KindDeleteOCIObject, ObjectKey: "managed/secrets/key"}); err == nil {
+	if err := handler.HandleJob(context.Background(), events.JobEvent{Kind: events.KindDeleteOCIObject, Backend: testBackend, ObjectKey: "managed/secrets/key"}); err == nil {
 		t.Fatal("disabled storage reported successful managed deletion")
 	}
 }
@@ -167,7 +167,7 @@ func TestRequestObjectTerminalAcknowledgementRetainsNATSOnFailure(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload, err := (events.JobEvent{JobID: "request-job", Kind: events.KindDeleteOCIObject, ObjectKey: "managed/requests/final", RequestedAt: time.Now().UTC()}).JSON()
+			payload, err := (events.JobEvent{JobID: "request-job", Kind: events.KindDeleteOCIObject, Backend: testBackend, ObjectKey: "managed/requests/final", RequestedAt: time.Now().UTC()}).JSON()
 			if err != nil {
 				t.Fatal(err)
 			}

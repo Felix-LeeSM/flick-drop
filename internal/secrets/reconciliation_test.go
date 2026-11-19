@@ -35,7 +35,7 @@ func TestReconciliationResumesPaginationAndProtectsLiveObjects(t *testing.T) {
 		{id: "d-abandoned", state: "pending_upload", expiresAt: now.Add(time.Hour), createdAt: now.Add(-15 * time.Minute)},
 	}
 	for _, f := range fixtures {
-		f.storageBackend = StorageS3
+		f.storageBackend = testBackend
 		f.storageKey = managedObjectPrefix + f.id
 		insertSecret(t, ctx, conn, f)
 		objects.objects[f.storageKey] = []byte("ciphertext")
@@ -108,13 +108,13 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("late object missed: %d %v", n, err)
 	}
 	var firstJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&firstJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 'oci' and object_key = $1`, key).Scan(&firstJob); err != nil {
 		t.Fatal(err)
 	}
 	if firstJob == immediate.JobID {
 		t.Fatal("reused completed immediate job")
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, immediate.JobID, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, testBackend, immediate.JobID, key); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := reaper.ReconcileOnce(ctx); err != nil || n != 0 {
@@ -124,7 +124,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, firstJob, key); err != nil {
+		if err := store.AcknowledgeObjectCleanup(ctx, testBackend, firstJob, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -133,23 +133,23 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 		t.Fatalf("second late object missed: %d %v", n, err)
 	}
 	var secondJob string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&secondJob); err != nil {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 'oci' and object_key = $1`, key).Scan(&secondJob); err != nil {
 		t.Fatal(err)
 	}
 	if secondJob == firstJob {
 		t.Fatal("reused terminal reconciliation job")
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, firstJob, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, testBackend, firstJob, key); err != nil {
 		t.Fatal(err)
 	}
 	var remaining string
-	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 's3_object' and object_key = $1`, key).Scan(&remaining); err != nil || remaining != secondJob {
+	if err := conn.QueryRow(`select job_id from object_reconciliation_pending_v2 where backend = 'oci' and object_key = $1`, key).Scan(&remaining); err != nil || remaining != secondJob {
 		t.Fatalf("stale ack removed new job: %s %v", remaining, err)
 	}
 	if err := objects.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, secondJob, key); err != nil {
+	if err := store.AcknowledgeObjectCleanup(ctx, testBackend, secondJob, key); err != nil {
 		t.Fatal(err)
 	}
 	if len(objects.objects) != 0 {
@@ -165,13 +165,13 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			objects := newMockObjectStore()
 			store := newLargeTestStore(t, conn, objects)
 			reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 1)
-			if _, err := conn.Exec(`update object_reconciliation_cursor_v2 set continuation_token = 'old' where backend = 's3_object'`); err != nil {
+			if _, err := conn.Exec(`insert into object_reconciliation_cursor_v2 (backend, continuation_token) values ('oci', 'old')`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conn.Exec(`insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/existing','existing-job')`); err != nil {
+			if _, err := conn.Exec(`insert into object_reconciliation_pending_v2 values ('oci','managed/secrets/existing','existing-job')`); err != nil {
 				t.Fatal(err)
 			}
-			wrapped, wrapErr := storage.NewRegistry(listingObjects{objects, func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+			wrapped, wrapErr := storage.NewRegistry(storage.Backend{Name: testBackend, Store: listingObjects{objects, func(_ context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
 				if prefix != managedObjectPrefix || cursor != "old" || limit != 1 {
 					t.Fatal("listing escaped its bounds")
 				}
@@ -186,7 +186,7 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 					key = "managed/requests/foreign"
 				}
 				return storage.ObjectPage{Keys: []string{key}, NextCursor: "next"}, nil
-			}}, nil)
+			}}})
 			if wrapErr != nil {
 				t.Fatal(wrapErr)
 			}
@@ -221,7 +221,7 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			}
 			var cursor string
 			var generation int
-			if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor, &generation); err != nil {
+			if err := conn.QueryRow(`select continuation_token,generation from object_reconciliation_cursor_v2 where backend = 'oci'`).Scan(&cursor, &generation); err != nil {
 				t.Fatal(err)
 			}
 			want := "old"
@@ -238,7 +238,7 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 				t.Fatalf("cursor advanced despite failure: %q %d", cursor, generation)
 			}
 			var pending int
-			if err := conn.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&pending); err != nil || pending != 1 {
+			if err := conn.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 'oci'`).Scan(&pending); err != nil || pending != 1 {
 				t.Fatalf("pending claims changed: %d %v", pending, err)
 			}
 			if len(readOutboxEvents(t, ctx, conn)) != 0 {
@@ -269,12 +269,12 @@ func TestReconciliationRunsAlongsideExpiryBacklogAndFencesStalePages(t *testing.
 		t.Fatal("expiry backlog starved listing pages")
 	}
 	// A second instance commits while the first page listing is in flight.
-	wrapped, wrapErr := storage.NewRegistry(listingObjects{objects, func(ctx context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
-		if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = 'newer',generation=generation+1 where backend = 's3_object'`); err != nil {
+	wrapped, wrapErr := storage.NewRegistry(storage.Backend{Name: testBackend, Store: listingObjects{objects, func(ctx context.Context, prefix, cursor string, limit int) (storage.ObjectPage, error) {
+		if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = 'newer',generation=generation+1 where backend = 'oci'`); err != nil {
 			t.Fatal(err)
 		}
 		return storage.ObjectPage{Keys: []string{managedObjectPrefix + "stale"}, NextCursor: "stale"}, nil
-	}}, nil)
+	}}})
 	if wrapErr != nil {
 		t.Fatal(wrapErr)
 	}
@@ -283,7 +283,7 @@ func TestReconciliationRunsAlongsideExpiryBacklogAndFencesStalePages(t *testing.
 		t.Fatalf("stale listing committed: %d %v", n, err)
 	}
 	var cursor string
-	if err := conn.QueryRow(`select continuation_token from object_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor); err != nil || cursor != "newer" {
+	if err := conn.QueryRow(`select continuation_token from object_reconciliation_cursor_v2 where backend = 'oci'`).Scan(&cursor); err != nil || cursor != "newer" {
 		t.Fatalf("newer cursor lost: %s %v", cursor, err)
 	}
 }
@@ -366,7 +366,7 @@ func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
 			objects := newMockObjectStore()
 			store := newLargeTestStore(t, conn, objects)
 			f := secretFixture{
-				id: "opened", storageBackend: StorageS3, storageKey: managedObjectPrefix + "opened",
+				id: "opened", storageBackend: testBackend, storageKey: managedObjectPrefix + "opened",
 				expiresAt: now.Add(time.Hour), consumedAt: tc.consumedAt, createdAt: now.Add(-time.Hour),
 			}
 			insertSecret(t, ctx, conn, f)
@@ -459,9 +459,9 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 }
 
 // requestTestRegistry wraps a requests-side test double as a single-backend
-// storage registry. The error is unreachable for a non-nil primary.
+// storage registry. The error is unreachable for a non-nil store.
 func requestTestRegistry(primary storage.ObjectStore) *storage.Registry {
-	registry, err := storage.NewRegistry(primary, nil)
+	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: primary})
 	if err != nil {
 		panic(err)
 	}

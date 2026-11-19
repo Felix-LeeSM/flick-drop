@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// Test-local aliases for the storage_backend column values.
+// Test-local storage_backend column values: two configured backend names and
+// the inline value.
 const (
-	s3Backend     = "s3_object"
-	r2Backend     = "r2_object"
-	sqliteBackend = "sqlite_blob"
+	s3Backend     = "oci"
+	r2Backend     = "r2"
+	sqliteBackend = StorageInline
 )
 
 // seedUsageRows inserts one row per scenario. Backend is the storage_backend
@@ -138,17 +139,22 @@ func TestStorageObjectBytesPerBackend(t *testing.T) {
 		{sqliteBackend, "waiting", 0, "", ""},
 	})
 
-	usage, err := StorageObjectBytes(ctx, conn, now)
+	usage, err := StorageObjectBytes(ctx, conn, now, []string{s3Backend, r2Backend, "unused"})
 	if err != nil {
 		t.Fatalf("StorageObjectBytes: %v", err)
+	}
+	// A configured backend with no rows reports zero, and only configured
+	// names appear.
+	if got, ok := usage["unused"]; !ok || got != 0 || len(usage) != 3 {
+		t.Fatalf("usage = %v, want exactly the three configured names", usage)
 	}
 	// Secrets: 100 + 200 (grace) + 80 (pending) = 380.
 	// Requests: 10*2 (uploading, both keys) + 20 (submitted) = 40.
 	if got, want := usage[s3Backend], int64(420); got != want {
-		t.Fatalf("s3_object usage = %d, want %d", got, want)
+		t.Fatalf("oci usage = %d, want %d", got, want)
 	}
 	// Secrets: 50. Requests: 30.
 	if got, want := usage[r2Backend], int64(80); got != want {
-		t.Fatalf("r2_object usage = %d, want %d", got, want)
+		t.Fatalf("r2 usage = %d, want %d", got, want)
 	}
 }

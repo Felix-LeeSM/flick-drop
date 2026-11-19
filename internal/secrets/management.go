@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 // Expiry comparisons are native timestamptz comparisons; values are pinned to
@@ -162,7 +161,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if err := recordManagementOutcomeTx(ctx, tx, id, "cancelled"); err != nil {
 		return ManagementStatus{}, err
 	}
-	if backend == StorageS3 || backend == storage.SecondaryBackend {
+	if backend != StorageSQLite {
 		if s.outbox == nil {
 			return ManagementStatus{}, fmt.Errorf("cancellation outbox is required")
 		}

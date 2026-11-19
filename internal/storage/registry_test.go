@@ -1,100 +1,129 @@
 package storage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// stubStore satisfies ObjectStore without implementing anything: ChooseBackend
+// stubStore satisfies ObjectStore without implementing anything: placement
 // only resolves backends through the registry, never calling store methods.
 type stubStore struct{ ObjectStore }
 
-func TestChooseBackendPrefersPrimaryWhileItFits(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, stubStore{})
+func threeBackends(t *testing.T) *Registry {
+	t.Helper()
+	r, err := NewRegistry(
+		Backend{Name: "oci", Store: stubStore{}, MaxTotalBytes: 1000},
+		Backend{Name: "r2", Store: stubStore{}, MaxTotalBytes: 1000},
+		Backend{Name: "minio", Store: stubStore{}, MaxTotalBytes: 1000},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return r
+}
 
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 100, SecondaryBackend: 900},
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		500)
-	if backend != PrimaryBackend {
-		t.Fatalf("backend = %q, want primary while the primary has headroom", backend)
+// 무작위 값이 [0, n)의 각 구간에 떨어질 때 남은 용량 비례 구간이 그대로 선택된다.
+func TestChooseWeightsByRemainingSpace(t *testing.T) {
+	// Given: 남은 용량 oci 700, r2 100, minio 200 (합 1000)
+	r := threeBackends(t)
+	usage := map[string]int64{"oci": 300, "r2": 900, "minio": 800}
+
+	cases := []struct {
+		roll int64
+		want string
+	}{
+		{0, "oci"}, {699, "oci"}, {700, "r2"}, {799, "r2"}, {800, "minio"}, {999, "minio"},
+	}
+	for _, c := range cases {
+		// When: 무작위 값이 roll로 고정된다
+		var gotN int64
+		got := r.chooseWith(usage, 50, func(n int64) int64 { gotN = n; return c.roll })
+		// Then: 구간 [0,700)은 oci, [700,800)은 r2, [800,1000)은 minio
+		if gotN != 1000 {
+			t.Fatalf("roll range = %d, want the summed free space 1000", gotN)
+		}
+		if got != c.want {
+			t.Fatalf("roll %d: backend = %q, want %q", c.roll, got, c.want)
+		}
 	}
 }
 
-func TestChooseBackendSpillsToSecondary(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, stubStore{})
-	if err != nil {
-		t.Fatal(err)
-	}
+// 객체가 들어가지 않는 백엔드는 가중치 합에서도 빠진다.
+func TestChooseSkipsBackendsWithoutRoom(t *testing.T) {
+	// Given: r2는 남은 용량 100이라 200바이트 객체가 안 들어간다
+	r := threeBackends(t)
+	usage := map[string]int64{"oci": 500, "r2": 900, "minio": 800}
 
-	// The primary is at ceiling; the next object lands on the secondary even
-	// though the secondary is already more loaded.
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 900},
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		1)
-	if backend != SecondaryBackend {
-		t.Fatalf("backend = %q, want secondary once the primary is at ceiling", backend)
-	}
-}
+	// When: 가장 큰 무작위 값을 고른다
+	var gotN int64
+	got := r.chooseWith(usage, 200, func(n int64) int64 { gotN = n; return n - 1 })
 
-func TestChooseBackendBoundaryAcceptsExactFit(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, stubStore{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// usage+size == ceiling still fits; strictly greater does not.
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		0)
-	if backend != PrimaryBackend {
-		t.Fatalf("backend = %q, want primary at an exact-fit boundary", backend)
+	// Then: 후보는 oci(500)와 minio(200)뿐이고 마지막 구간은 minio다
+	if gotN != 700 || got != "minio" {
+		t.Fatalf("range %d, backend %q; want 700 and minio", gotN, got)
 	}
 }
 
-func TestChooseBackendZeroCeilingMeansUnlimited(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, stubStore{})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestChooseReportsFull(t *testing.T) {
+	r := threeBackends(t)
+	usage := map[string]int64{"oci": 1000, "r2": 999, "minio": 1000}
 
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 1 << 40},
-		map[string]int64{PrimaryBackend: 0},
-		1<<30)
-	if backend != PrimaryBackend {
-		t.Fatalf("backend = %q, want primary when its ceiling is zero (unlimited)", backend)
+	if got := r.Choose(usage, 2); got != "" {
+		t.Fatalf("backend = %q, want empty when no backend fits the object", got)
 	}
 }
 
-func TestChooseBackendSkipsUnconfiguredSecondary(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, nil) // primary only
+// 백엔드가 하나면 상한 0은 무제한이다.
+func TestChooseSingleBackendZeroCeilingIsUnlimited(t *testing.T) {
+	r, err := NewRegistry(Backend{Name: "minio", Store: stubStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 0},
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		1)
-	if backend != "" {
-		t.Fatalf("backend = %q, want empty when only the primary is configured and full", backend)
+	if got := r.Choose(map[string]int64{"minio": 1 << 40}, 1<<30); got != "minio" {
+		t.Fatalf("backend = %q, want minio when its ceiling is zero (unlimited)", got)
 	}
 }
 
-func TestChooseBackendReportsFull(t *testing.T) {
-	r, err := NewRegistry(stubStore{}, stubStore{})
+func TestChooseSingleBackendRespectsCeiling(t *testing.T) {
+	r, err := NewRegistry(Backend{Name: "minio", Store: stubStore{}, MaxTotalBytes: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := r.Choose(map[string]int64{"minio": 90}, 11); got != "" {
+		t.Fatalf("backend = %q, want empty past the only backend's ceiling", got)
+	}
+}
 
-	backend := ChooseBackend(r,
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		map[string]int64{PrimaryBackend: 1000, SecondaryBackend: 1000},
-		1)
-	if backend != "" {
-		t.Fatalf("backend = %q, want empty when every backend is at ceiling", backend)
+func TestNewRegistryRejectsBadConfigurations(t *testing.T) {
+	cases := map[string][]Backend{
+		"none":                       nil,
+		"upper-case name":            {{Name: "OCI", Store: stubStore{}}},
+		"underscore name":            {{Name: "s3_object", Store: stubStore{}}},
+		"duplicate name":             {{Name: "oci", Store: stubStore{}, MaxTotalBytes: 1}, {Name: "oci", Store: stubStore{}, MaxTotalBytes: 1}},
+		"missing store":              {{Name: "oci"}},
+		"uncapped among several":     {{Name: "oci", Store: stubStore{}, MaxTotalBytes: 1}, {Name: "r2", Store: stubStore{}}},
+		"negative ceiling":           {{Name: "oci", Store: stubStore{}, MaxTotalBytes: -1}},
+		"name longer than 16 chars":  {{Name: strings.Repeat("a", 17), Store: stubStore{}}},
+		"name starting with a digit": {{Name: "2r", Store: stubStore{}}},
+	}
+	for name, backends := range cases {
+		if _, err := NewRegistry(backends...); err == nil {
+			t.Errorf("%s: NewRegistry accepted %+v", name, backends)
+		}
+	}
+}
+
+func TestForResolvesOnlyConfiguredNames(t *testing.T) {
+	r := threeBackends(t)
+	if _, err := r.For("r2"); err != nil {
+		t.Fatalf("For(r2): %v", err)
+	}
+	for _, name := range []string{"", "s3_object", "sqlite_blob", "gcs"} {
+		if _, err := r.For(name); err == nil {
+			t.Errorf("For(%q) resolved an unconfigured backend", name)
+		}
+	}
+	if got := strings.Join(r.Names(), ","); got != "oci,r2,minio" {
+		t.Fatalf("Names = %s, want configuration order", got)
 	}
 }

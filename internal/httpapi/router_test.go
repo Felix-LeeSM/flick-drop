@@ -958,16 +958,19 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	}
 }
 
-// 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 백엔드가
-// 비면 워커가 기본(primary) 버킷에서 지우므로 R2 객체는 재조정 유예가 지날 때까지 남는다.
+// 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 워커는
+// 작업에 적힌 백엔드에서만 지우므로, 다른 이름이 담기면 객체는 재조정 유예가 지날 때까지 남는다.
 func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
-	for _, backend := range []string{storage.PrimaryBackend, storage.SecondaryBackend} {
+	for _, backend := range []string{testBackend, otherTestBackend} {
 		t.Run(backend, func(t *testing.T) {
 			// Given: 두 버킷이 설정되고 시크릿이 backend에 놓였다
 			ctx := context.Background()
 			conn := openHTTPTestDB(t, ctx)
 			objects := &streamObjects{body: ageBody(5000)}
-			registry, err := storage.NewRegistry(objects, objects)
+			registry, err := storage.NewRegistry(
+				storage.Backend{Name: testBackend, Store: objects, MaxTotalBytes: 1 << 30},
+				storage.Backend{Name: otherTestBackend, Store: objects, MaxTotalBytes: 1 << 30},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1056,14 +1059,21 @@ func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 	}
 }
 
-// newTestRegistry wraps a test double as a single-backend storage registry.
-// Constructing a registry cannot fail for a non-nil primary, so a panic is
-// unreachable in practice.
-func newTestRegistry(primary storage.ObjectStore) *storage.Registry {
-	if primary == nil {
+// testBackend and otherTestBackend name the object backends test registries
+// configure; any name matching storage.ValidBackendName works.
+const (
+	testBackend      = "oci"
+	otherTestBackend = "r2"
+)
+
+// newTestRegistry wraps a test double as a single uncapped backend named
+// testBackend. Constructing a registry cannot fail for a non-nil store, so a
+// panic is unreachable in practice.
+func newTestRegistry(objects storage.ObjectStore) *storage.Registry {
+	if objects == nil {
 		return nil // nil registry = object storage disabled, same as production wiring
 	}
-	registry, err := storage.NewRegistry(primary, nil)
+	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: objects})
 	if err != nil {
 		panic(err)
 	}

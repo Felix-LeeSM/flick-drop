@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
@@ -74,8 +75,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.PipeMaxConcurrent != 100 {
 		t.Fatalf("PipeMaxConcurrent = %d, want 100", cfg.PipeMaxConcurrent)
 	}
-	if cfg.S3.Enabled {
-		t.Fatalf("S3.Enabled = true, want false by default")
+	if len(cfg.StorageBackends) != 0 {
+		t.Fatalf("StorageBackends = %v, want none by default", cfg.StorageBackends)
 	}
 	if len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("TrustedProxies = %v, want empty by default", cfg.TrustedProxies)
@@ -150,57 +151,10 @@ func clearFlickEnv(t *testing.T) {
 		"FLICK_PIPE_RELAY_ENABLED",
 		"FLICK_PIPE_MAX_CONCURRENT",
 		"FLICK_TRUSTED_PROXIES",
-		"FLICK_STORAGE_LARGE_BACKEND",
-		"FLICK_S3_ENDPOINT",
-		"FLICK_S3_REGION",
-		"FLICK_S3_BUCKET",
-		"FLICK_S3_ACCESS_KEY_ID",
-		"FLICK_S3_SECRET_ACCESS_KEY",
-		"FLICK_S3_PATH_STYLE",
+		"FLICK_STORAGE_BACKENDS",
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")
-	}
-}
-
-func TestLoadS3PathStyle(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", true},
-		{"true", true},
-		{"True", true},
-		{"TRUE", true},
-		{"  true ", true},
-		{"false", false},
-		{"False", false},
-		{"FALSE", false},
-		{"  false ", false},
-	}
-	for _, c := range cases {
-		t.Run(c.in, func(t *testing.T) {
-			clearFlickEnv(t)
-			if c.in != "" {
-				t.Setenv("FLICK_S3_PATH_STYLE", c.in)
-			}
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("FLICK_S3_PATH_STYLE=%q: %v", c.in, err)
-			}
-			if cfg.S3.PathStyle != c.want {
-				t.Fatalf("FLICK_S3_PATH_STYLE=%q: PathStyle=%v, want %v", c.in, cfg.S3.PathStyle, c.want)
-			}
-		})
-	}
-}
-
-func TestLoadS3PathStyleRejectsGarbage(t *testing.T) {
-	clearFlickEnv(t)
-	t.Setenv("FLICK_S3_PATH_STYLE", "flase")
-
-	if _, err := Load(); err == nil {
-		t.Fatal("expected config load error for malformed FLICK_S3_PATH_STYLE")
 	}
 }
 
@@ -270,7 +224,7 @@ func TestEffectiveMaxFileBytes(t *testing.T) {
 			cfg := Config{
 				PayloadInlineMaxBytes: c.inline,
 				MaxFileBytes:          c.max,
-				S3:                    S3Config{Enabled: c.enabled},
+				StorageBackends:       storageIf(c.enabled),
 			}
 			if got := cfg.EffectiveMaxFileBytes(); got != c.want {
 				t.Fatalf("EffectiveMaxFileBytes() = %d, want %d", got, c.want)
@@ -385,135 +339,104 @@ func TestLoadPipeRelayConfig(t *testing.T) {
 	}
 }
 
-func TestLoadR2DefaultsOff(t *testing.T) {
-	clearFlickEnv(t)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+func storageIf(enabled bool) []StorageBackend {
+	if !enabled {
+		return nil
 	}
-	if cfg.R2.Enabled {
-		t.Fatalf("R2.Enabled = true, want false by default")
-	}
-	if cfg.R2.Endpoint != "" {
-		t.Fatalf("R2.Endpoint = %q, want empty default", cfg.R2.Endpoint)
-	}
-	if cfg.R2.Region != "auto" {
-		t.Fatalf("R2.Region = %q, want auto", cfg.R2.Region)
-	}
-	if cfg.R2MaxTotalBytes != defaultR2MaxTotalBytes {
-		t.Fatalf("R2MaxTotalBytes = %d, want %d", cfg.R2MaxTotalBytes, defaultR2MaxTotalBytes)
-	}
-	if cfg.S3MaxTotalBytes != defaultS3MaxTotalBytes {
-		t.Fatalf("S3MaxTotalBytes = %d, want %d", cfg.S3MaxTotalBytes, defaultS3MaxTotalBytes)
-	}
+	return []StorageBackend{{Name: "minio"}}
 }
 
-func s3PrimaryEnv(t *testing.T) {
+// storageEnv sets one backend's required FLICK_STORAGE_<NAME>_* values.
+func storageEnv(t *testing.T, name, bucket string) {
 	t.Helper()
-	t.Setenv("FLICK_STORAGE_LARGE_BACKEND", "s3")
-	t.Setenv("FLICK_S3_BUCKET", "flick-primary")
-	t.Setenv("FLICK_S3_REGION", "us-east-1")
-	t.Setenv("FLICK_S3_ACCESS_KEY_ID", "key")
-	t.Setenv("FLICK_S3_SECRET_ACCESS_KEY", "secret")
+	prefix := "FLICK_STORAGE_" + strings.ToUpper(name) + "_"
+	t.Setenv(prefix+"BUCKET", bucket)
+	t.Setenv(prefix+"ACCESS_KEY_ID", name+"-key")
+	t.Setenv(prefix+"SECRET_ACCESS_KEY", name+"-secret")
 }
 
-func r2SecondaryEnv(t *testing.T) {
-	t.Helper()
-	s3PrimaryEnv(t)
-	t.Setenv("FLICK_R2_ENABLED", "true")
-	t.Setenv("FLICK_R2_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
-	t.Setenv("FLICK_R2_BUCKET", "flick-secondary")
-	t.Setenv("FLICK_R2_ACCESS_KEY_ID", "r2key")
-	t.Setenv("FLICK_R2_SECRET_ACCESS_KEY", "r2secret")
-}
-
-func TestLoadR2EnabledRequiresS3(t *testing.T) {
+// 이름 목록 순서대로 백엔드별 env를 읽고, 생략한 값은 기본값을 쓴다.
+func TestLoadStorageBackendsReadsEachNamedBackend(t *testing.T) {
+	// Given: 백엔드 둘과 각자의 설정
 	clearFlickEnv(t)
-	t.Setenv("FLICK_R2_ENABLED", "true")
-	t.Setenv("FLICK_R2_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
-	t.Setenv("FLICK_R2_BUCKET", "flick-secondary")
-	t.Setenv("FLICK_R2_ACCESS_KEY_ID", "r2key")
-	t.Setenv("FLICK_R2_SECRET_ACCESS_KEY", "r2secret")
+	t.Setenv("FLICK_STORAGE_BACKENDS", " oci , r2 ")
+	storageEnv(t, "oci", "flick-oci")
+	storageEnv(t, "r2", "flick-r2")
+	t.Setenv("FLICK_STORAGE_OCI_ENDPOINT", "https://ns.compat.objectstorage.example")
+	t.Setenv("FLICK_STORAGE_OCI_MAX_TOTAL_BYTES", "18000000000")
+	t.Setenv("FLICK_STORAGE_R2_ENDPOINT", "https://acct.r2.example")
+	t.Setenv("FLICK_STORAGE_R2_REGION", "auto")
+	t.Setenv("FLICK_STORAGE_R2_PATH_STYLE", "false")
+	t.Setenv("FLICK_STORAGE_R2_MAX_TOTAL_BYTES", "9000000000")
 
-	if _, err := Load(); err == nil {
-		t.Fatalf("load config: want error when R2 is enabled without the primary backend")
-	}
-}
-
-func TestLoadR2EnabledRequiresFields(t *testing.T) {
-	clearFlickEnv(t)
-	s3PrimaryEnv(t)
-	t.Setenv("FLICK_R2_ENABLED", "true")
-	// Endpoint and bucket deliberately absent.
-
-	if _, err := Load(); err == nil {
-		t.Fatalf("load config: want error when R2 lacks endpoint and bucket")
-	}
-}
-
-func TestLoadR2EnabledFull(t *testing.T) {
-	clearFlickEnv(t)
-	r2SecondaryEnv(t)
-
+	// When
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if !cfg.R2.Enabled {
-		t.Fatalf("R2.Enabled = false, want true")
-	}
-	if cfg.R2.Endpoint != "https://acct.r2.cloudflarestorage.com" {
-		t.Fatalf("R2.Endpoint = %q", cfg.R2.Endpoint)
-	}
-	if cfg.R2.Bucket != "flick-secondary" {
-		t.Fatalf("R2.Bucket = %q, want flick-secondary", cfg.R2.Bucket)
-	}
-	if cfg.R2.Region != "auto" {
-		t.Fatalf("R2.Region = %q, want auto default", cfg.R2.Region)
-	}
-	if !cfg.R2.PathStyle {
-		t.Fatalf("R2.PathStyle = false, want true default")
-	}
 
-	t.Setenv("FLICK_R2_PATH_STYLE", "false")
-	t.Setenv("FLICK_R2_REGION", "apac")
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+	// Then: 순서·이름·버킷·키·엔드포인트·리전·경로 방식·상한이 백엔드마다 맞다
+	if len(cfg.StorageBackends) != 2 {
+		t.Fatalf("StorageBackends = %+v, want two", cfg.StorageBackends)
 	}
-	if cfg.R2.PathStyle {
-		t.Fatalf("R2.PathStyle = true, want false after override")
+	oci, r2 := cfg.StorageBackends[0], cfg.StorageBackends[1]
+	if oci.Name != "oci" || oci.S3.Bucket != "flick-oci" || oci.S3.AccessKeyID != "oci-key" || oci.S3.SecretAccessKey != "oci-secret" ||
+		oci.S3.Endpoint != "https://ns.compat.objectstorage.example" || oci.S3.Region != "us-east-1" || !oci.S3.PathStyle || oci.MaxTotalBytes != 18000000000 {
+		t.Fatalf("oci backend = %+v", oci)
 	}
-	if cfg.R2.Region != "apac" {
-		t.Fatalf("R2.Region = %q, want apac", cfg.R2.Region)
+	if r2.Name != "r2" || r2.S3.Bucket != "flick-r2" || r2.S3.Endpoint != "https://acct.r2.example" || r2.S3.Region != "auto" ||
+		r2.S3.PathStyle || r2.MaxTotalBytes != 9000000000 {
+		t.Fatalf("r2 backend = %+v", r2)
 	}
 }
 
-func TestLoadMaxTotalBytesOverrides(t *testing.T) {
+// 백엔드가 하나면 상한을 생략해도 되고(무제한), 여러 개면 모두 상한이 있어야 한다.
+func TestLoadStorageBackendsCeilingRule(t *testing.T) {
 	clearFlickEnv(t)
-	// 0 means unlimited for a backend.
-	t.Setenv("FLICK_S3_MAX_TOTAL_BYTES", "0")
-	t.Setenv("FLICK_R2_MAX_TOTAL_BYTES", "5000")
-
+	t.Setenv("FLICK_STORAGE_BACKENDS", "minio")
+	storageEnv(t, "minio", "flick-dev")
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("single uncapped backend: %v", err)
 	}
-	if cfg.S3MaxTotalBytes != 0 {
-		t.Fatalf("S3MaxTotalBytes = %d, want 0 (unlimited)", cfg.S3MaxTotalBytes)
+	if cfg.StorageBackends[0].MaxTotalBytes != 0 {
+		t.Fatalf("MaxTotalBytes = %d, want 0 (unlimited)", cfg.StorageBackends[0].MaxTotalBytes)
 	}
-	if cfg.R2MaxTotalBytes != 5000 {
-		t.Fatalf("R2MaxTotalBytes = %d, want 5000", cfg.R2MaxTotalBytes)
+
+	t.Setenv("FLICK_STORAGE_BACKENDS", "minio,spare")
+	storageEnv(t, "spare", "flick-spare")
+	t.Setenv("FLICK_STORAGE_MINIO_MAX_TOTAL_BYTES", "1000")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "FLICK_STORAGE_SPARE_MAX_TOTAL_BYTES") {
+		t.Fatalf("two backends, one uncapped: err = %v, want it to name FLICK_STORAGE_SPARE_MAX_TOTAL_BYTES", err)
 	}
 }
 
-func TestLoadRejectsNegativeMaxTotalBytes(t *testing.T) {
-	clearFlickEnv(t)
-	t.Setenv("FLICK_R2_MAX_TOTAL_BYTES", "-1")
-
-	_, err := Load()
-	if err == nil || err.Error() != "FLICK_R2_MAX_TOTAL_BYTES must be a non-negative integer" {
-		t.Fatalf("load config error = %v, want non-negative integer message", err)
+func TestLoadStorageBackendsRejectsBadValues(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"legacy underscore name", map[string]string{"FLICK_STORAGE_BACKENDS": "s3_object"}, "not a backend name"},
+		{"upper-case name", map[string]string{"FLICK_STORAGE_BACKENDS": "OCI"}, "not a backend name"},
+		{"empty entry", map[string]string{"FLICK_STORAGE_BACKENDS": "oci,"}, "not a backend name"},
+		{"duplicate name", map[string]string{"FLICK_STORAGE_BACKENDS": "oci,oci"}, "twice"},
+		{"missing bucket", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s"}, "FLICK_STORAGE_OCI_BUCKET"},
+		{"missing keys", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b"}, "FLICK_STORAGE_OCI_ACCESS_KEY_ID"},
+		{"malformed path style", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_PATH_STYLE": "flase"}, "FLICK_STORAGE_OCI_PATH_STYLE"},
+		{"negative ceiling", map[string]string{"FLICK_STORAGE_BACKENDS": "oci", "FLICK_STORAGE_OCI_BUCKET": "b", "FLICK_STORAGE_OCI_ACCESS_KEY_ID": "k", "FLICK_STORAGE_OCI_SECRET_ACCESS_KEY": "s", "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES": "-1"}, "FLICK_STORAGE_OCI_MAX_TOTAL_BYTES"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearFlickEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, c.want)
+			}
+		})
 	}
 }

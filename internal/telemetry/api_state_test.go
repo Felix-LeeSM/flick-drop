@@ -10,15 +10,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// 스크랩할 때마다 DB 질의 결과를 그대로 게이지로 내보내고, 알려진 두 객체 백엔드만
-// 라벨로 만든다.
+// 스크랩할 때마다 DB 질의 결과를 그대로 게이지로 내보낸다. 라벨은 설정된 백엔드
+// 이름뿐이다(키를 설정 이름으로 제한하는 일은 db.StorageObjectBytes가 맡는다).
 func TestAPIStateCollectorReportsDatabaseValues(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(apiStateCollector{queries: APIStateQueries{
 		PendingUploads: func(context.Context) (int, error) { return 3, nil },
 		OutboxPending:  func(context.Context) (int, error) { return 7, nil },
 		StorageBytesUsed: func(context.Context) (map[string]int64, error) {
-			return map[string]int64{"s3_object": 4096, "r2_object": 0, "sqlite_blob": 99}, nil
+			return map[string]int64{"oci": 4096, "r2": 0}, nil
 		},
 	}})
 
@@ -31,8 +31,8 @@ flick_active_uploads 3
 flick_outbox_pending 7
 # HELP flick_storage_bytes_used Object bytes per backend, aggregated from the flick_api database at scrape time.
 # TYPE flick_storage_bytes_used gauge
-flick_storage_bytes_used{storage="r2_object"} 0
-flick_storage_bytes_used{storage="s3_object"} 4096
+flick_storage_bytes_used{storage="oci"} 4096
+flick_storage_bytes_used{storage="r2"} 0
 `
 	if err := testutil.GatherAndCompare(registry, strings.NewReader(want)); err != nil {
 		t.Fatal(err)

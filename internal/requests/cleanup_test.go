@@ -60,20 +60,20 @@ func TestRequestReconciliationRestartsAndFindsLatePUTAfterMetadataPurge(t *testi
 		t.Fatal("duplicate pending jobs", n, err)
 	}
 	var previousJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=$1`, upload).Scan(&previousJob); err != nil {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 'oci' and object_key=$1`, upload).Scan(&previousJob); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, previousJob, upload); err != nil {
+	if err := restarted.AcknowledgeObjectCleanup(ctx, testBackend, previousJob, upload); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := restarted.ReconcileOnce(ctx, 10); err != nil || n != 1 {
 		t.Fatal("terminal ACK did not allow a new job", n, err)
 	}
-	if err := restarted.AcknowledgeObjectCleanup(ctx, storage.PrimaryBackend, previousJob, upload); err != nil {
+	if err := restarted.AcknowledgeObjectCleanup(ctx, testBackend, previousJob, upload); err != nil {
 		t.Fatal(err)
 	}
 	var currentJob string
-	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 's3_object' and object_key=$1`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
+	if err := f.db.QueryRow(`select job_id from request_reconciliation_pending_v2 where backend = 'oci' and object_key=$1`, upload).Scan(&currentJob); err != nil || previousJob == currentJob {
 		t.Fatal("stale ACK erased/reused claim", err)
 	}
 	for _, event := range outboxKeys(t, f.db) {
@@ -89,7 +89,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 			ctx := context.Background()
 			f, o := largeFixture(t)
 			o.write(ObjectPrefix+"orphan", []byte{1})
-			if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set continuation_token='prior' where backend = 's3_object'`); err != nil {
+			if _, err := f.db.Exec(`insert into request_reconciliation_cursor_v2 (backend, continuation_token) values ('oci', 'prior')`); err != nil {
 				t.Fatal(err)
 			}
 			o.listHook = func(prefix, cursor string, limit int) (storage.ObjectPage, error) {
@@ -103,7 +103,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 					return storage.ObjectPage{}, storage.ErrInvalidCursor
 				}
 				if failure == "stale_page" {
-					if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set generation=generation+1, continuation_token='winner' where backend = 's3_object'`); err != nil {
+					if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set generation=generation+1, continuation_token='winner' where backend = 'oci'`); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -132,7 +132,7 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 				t.Fatal("failed scan committed claim/outbox")
 			}
 			var cursor string
-			if err := f.db.QueryRow(`select continuation_token from request_reconciliation_cursor_v2 where backend = 's3_object'`).Scan(&cursor); err != nil {
+			if err := f.db.QueryRow(`select continuation_token from request_reconciliation_cursor_v2 where backend = 'oci'`).Scan(&cursor); err != nil {
 				t.Fatal(err)
 			}
 			want := "prior"
@@ -308,14 +308,14 @@ func TestReconciliationReleasesUnfinishedOpenAfterGrace(t *testing.T) {
 	}
 	later := f.now.Add(openObjectGrace)
 	f.store.now = func() time.Time { return later }
-	if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set continuation_token = '' where backend = 's3_object'`); err != nil {
+	if _, err := f.db.Exec(`update request_reconciliation_cursor_v2 set continuation_token = '' where backend = 'oci'`); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := f.store.ReconcileOnce(ctx, 10); err != nil || n != 1 {
 		t.Fatal("unfinished open never released", n, err)
 	}
 	var claimed string
-	if err := f.db.QueryRow(`select object_key from request_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&claimed); err != nil || claimed != final {
+	if err := f.db.QueryRow(`select object_key from request_reconciliation_pending_v2 where backend = 'oci'`).Scan(&claimed); err != nil || claimed != final {
 		t.Fatal(claimed, err)
 	}
 }

@@ -278,8 +278,8 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if got.Ciphertext != nil || got.Body != nil {
 		t.Fatalf("Get returned an S3 body (%d inline bytes)", len(got.Ciphertext))
 	}
-	if got.StorageBackend != StorageS3 {
-		t.Fatalf("backend = %q, want s3_object", got.StorageBackend)
+	if got.StorageBackend != testBackend {
+		t.Fatalf("backend = %q, want %q", got.StorageBackend, testBackend)
 	}
 	if status, err := store.Management(ctx, res.ID, res.ManagementToken); err != nil || status.Status != "active" {
 		t.Fatalf("finalized management: %+v %v", status, err)
@@ -405,7 +405,7 @@ func TestActivateSecretTxRefusesReaperClaimedRow(t *testing.T) {
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_claimed",
 		kind:           "file",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_claimed",
 		state:          "pending_upload",
 		expiresAt:      now.Add(1 * time.Hour),
@@ -441,7 +441,7 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_pending",
 		kind:           "file",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_pending",
 		state:          "pending_upload",
 		expiresAt:      now.Add(1 * time.Hour),
@@ -477,7 +477,7 @@ func TestActivateSecretTxIsIdempotentWhenAlreadyActive(t *testing.T) {
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_activated",
 		kind:           "file",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_activated",
 		state:          "pending_upload",
 		expiresAt:      now.Add(1 * time.Hour),
@@ -720,30 +720,40 @@ func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
 	}
 }
 
-// testRegistry wraps a test double as a single-backend storage registry. The
-// error is unreachable for a non-nil primary.
-func testRegistry(primary storage.ObjectStore) *storage.Registry {
-	registry, err := storage.NewRegistry(primary, nil)
+// testBackend and otherTestBackend name the object backends test registries
+// configure; any name matching storage.ValidBackendName works.
+const (
+	testBackend      = "oci"
+	otherTestBackend = "r2"
+)
+
+// testRegistry wraps a test double as a single uncapped backend named
+// testBackend. The error is unreachable for a non-nil store.
+func testRegistry(objects storage.ObjectStore) *storage.Registry {
+	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: objects})
 	if err != nil {
 		panic(err)
 	}
 	return registry
 }
 
-// dualLargeTestStore builds a two-backend store over two independent mocks, so
-// a test can tell which backend a secret was placed on.
-func dualLargeTestStore(t *testing.T, conn *sql.DB, ceilings map[string]int64) (*Store, *mockObjectStore, *mockObjectStore) {
+// dualLargeTestStore builds a store over testBackend and otherTestBackend,
+// each an independent mock with its own byte ceiling, so a test can tell which
+// backend a secret was placed on.
+func dualLargeTestStore(t *testing.T, conn *sql.DB, testCeiling, otherCeiling int64) (*Store, *mockObjectStore, *mockObjectStore) {
 	t.Helper()
-	primary := newMockObjectStore()
-	secondary := newMockObjectStore()
-	registry, err := storage.NewRegistry(primary, secondary)
+	first := newMockObjectStore()
+	other := newMockObjectStore()
+	registry, err := storage.NewRegistry(
+		storage.Backend{Name: testBackend, Store: first, MaxTotalBytes: testCeiling},
+		storage.Backend{Name: otherTestBackend, Store: other, MaxTotalBytes: otherCeiling},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStore(conn, StoreOptions{
 		PayloadInlineMaxBytes: 1024,
 		MaxObjectBytes:        4096,
-		MaxTotalBytes:         ceilings,
 		PresignTTL:            5 * time.Minute,
 		PendingTTL:            15 * time.Minute,
 		MinTTLSeconds:         300,
@@ -753,7 +763,7 @@ func dualLargeTestStore(t *testing.T, conn *sql.DB, ceilings map[string]int64) (
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	return store, primary, secondary
+	return store, first, other
 }
 
 func secretBackend(t *testing.T, ctx context.Context, conn *sql.DB, id string) string {
@@ -774,50 +784,41 @@ func largeCreateInput() CreateLargeInput {
 	}
 }
 
-func TestCreateLargeRoutesPrimaryWhileItFits(t *testing.T) {
-	ctx := context.Background()
-	conn := openTestDB(t, ctx)
-	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
-		storage.PrimaryBackend:   4096,
-		storage.SecondaryBackend: 4096,
-	})
+// Placement is random among backends with room, so each test leaves exactly
+// one candidate to keep the outcome deterministic.
+func TestCreateLargeRoutesToTheOnlyBackendThatFits(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		testCeiling, otherCeiling int64
+		want                      string
+	}{
+		{"first configured fits", 4096, 999, testBackend},
+		{"second configured fits", 999, 4096, otherTestBackend}, // 999 is below the 1000-byte body
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := openTestDB(t, ctx)
+			store, first, other := dualLargeTestStore(t, conn, tc.testCeiling, tc.otherCeiling)
 
-	res, err := store.CreateLarge(ctx, largeCreateInput())
-	if err != nil {
-		t.Fatalf("create large: %v", err)
-	}
-	if got := secretBackend(t, ctx, conn, res.ID); got != storage.PrimaryBackend {
-		t.Fatalf("storage_backend = %q, want primary while it has headroom", got)
-	}
-}
-
-func TestCreateLargeSpillsToSecondaryWhenPrimaryIsFull(t *testing.T) {
-	ctx := context.Background()
-	conn := openTestDB(t, ctx)
-	store, _, secondary := dualLargeTestStore(t, conn, map[string]int64{
-		storage.PrimaryBackend:   999, // below the 1000-byte body
-		storage.SecondaryBackend: 4096,
-	})
-
-	res, err := store.CreateLarge(ctx, largeCreateInput())
-	if err != nil {
-		t.Fatalf("create large: %v", err)
-	}
-	if got := secretBackend(t, ctx, conn, res.ID); got != storage.SecondaryBackend {
-		t.Fatalf("storage_backend = %q, want secondary once the primary is over ceiling", got)
-	}
-	if secondary.presignedSize != 1000 {
-		t.Fatalf("secondary presigned size = %d, want 1000", secondary.presignedSize)
+			res, err := store.CreateLarge(ctx, largeCreateInput())
+			if err != nil {
+				t.Fatalf("create large: %v", err)
+			}
+			if got := secretBackend(t, ctx, conn, res.ID); got != tc.want {
+				t.Fatalf("storage_backend = %q, want %q, the only backend whose ceiling fits", got, tc.want)
+			}
+			presigned := map[string]*mockObjectStore{testBackend: first, otherTestBackend: other}[tc.want]
+			if presigned.presignedSize != 1000 {
+				t.Fatalf("%s presigned size = %d, want 1000", tc.want, presigned.presignedSize)
+			}
+		})
 	}
 }
 
 func TestCreateLargeRejectsWhenEveryBackendIsFull(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
-	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
-		storage.PrimaryBackend:   100,
-		storage.SecondaryBackend: 100,
-	})
+	store, _, _ := dualLargeTestStore(t, conn, 100, 100)
 
 	if _, err := store.CreateLarge(ctx, largeCreateInput()); !errors.Is(err, ErrStorageFull) {
 		t.Fatalf("err = %v, want ErrStorageFull", err)
@@ -831,19 +832,18 @@ func TestCreateLargeRejectsWhenEveryBackendIsFull(t *testing.T) {
 	}
 }
 
-func TestCreateLargeZeroCeilingMeansUnlimited(t *testing.T) {
+func TestCreateLargeSingleUncappedBackendAlwaysFits(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
-	store, _, _ := dualLargeTestStore(t, conn, map[string]int64{
-		storage.PrimaryBackend:   0,
-		storage.SecondaryBackend: 4096,
-	})
+	store := newLargeTestStore(t, conn, newMockObjectStore()) // MaxTotalBytes 0 = unlimited
 
-	res, err := store.CreateLarge(ctx, largeCreateInput())
-	if err != nil {
-		t.Fatalf("create large: %v", err)
-	}
-	if got := secretBackend(t, ctx, conn, res.ID); got != storage.PrimaryBackend {
-		t.Fatalf("storage_backend = %q, want primary when its ceiling is zero (unlimited)", got)
+	for range 3 {
+		res, err := store.CreateLarge(ctx, largeCreateInput())
+		if err != nil {
+			t.Fatalf("create large: %v", err)
+		}
+		if got := secretBackend(t, ctx, conn, res.ID); got != testBackend {
+			t.Fatalf("storage_backend = %q, want %q", got, testBackend)
+		}
 	}
 }
