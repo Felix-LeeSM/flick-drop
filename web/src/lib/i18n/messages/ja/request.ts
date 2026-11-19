@@ -136,8 +136,8 @@ export const request: typeof source = {
 			'内容は届きましたが、開けませんでした。もう一度開くことはできないため、新しいリクエストを作成して送り直してもらってください。',
 		decryptedSecret: '受け取った内容',
 		download: (filename: string) => `${filename}をダウンロード`,
-		working: '開いています…',
-		open: '内容を開く',
+		working: '処理中…',
+		open: '1回だけ開く',
 		shareHeading: '相手に渡すリンク',
 		shareHint:
 			'このリンクを知っている人なら誰でも1回だけ送れます。このリンクでは、届いた内容を開くこともリクエストをキャンセルすることもできません。',

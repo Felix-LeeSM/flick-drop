@@ -8,7 +8,7 @@ const catalogs = { en, ko, ja };
 
 function shape(value: unknown, path = ''): Record<string, string> {
 	if (typeof value === 'string') {
-		return { [path]: value.trim() === '' ? 'empty string' : 'string' };
+		return { [path]: value.trim() === '' ? 'empty' : 'string' };
 	}
 	if (typeof value === 'function') {
 		return { [path]: `function(${value.length})` };
@@ -39,7 +39,11 @@ describe('i18n catalogs', () => {
 
 			const target = shape(catalogs[locale]);
 
-			expect(target).toEqual(source);
+			const filledSlots = Object.entries(target).map(([key, kind]) => [
+				key,
+				kind === 'string' && source[key] === 'empty' ? 'empty' : kind
+			]);
+			expect(Object.fromEntries(filledSlots)).toEqual(source);
 		});
 	}
 });

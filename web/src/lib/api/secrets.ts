@@ -465,6 +465,9 @@ function clientErrorMessage(code: string, status: number): string {
 		case 'rate_limited':
 			return t().errors.rateLimited;
 		default:
+			if (status === 429) {
+				return t().errors.rateLimited;
+			}
 			if (status >= 500) {
 				return t().errors.serverFailed;
 			}

@@ -251,7 +251,7 @@ describe('secret API client', () => {
 	});
 
 	it('maps API errors to client-safe messages', async () => {
-		expect.assertions(12);
+		expect.assertions(14);
 
 		const cases = [
 			{
@@ -281,6 +281,12 @@ describe('secret API client', () => {
 			{
 				code: 'rate_limited',
 				message: 'too many requests, slow down',
+				status: 429,
+				expected: en.errors.rateLimited
+			},
+			{
+				code: 'proxy_limit',
+				message: 'rate limited before the API',
 				status: 429,
 				expected: en.errors.rateLimited
 			},

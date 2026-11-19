@@ -870,8 +870,19 @@ test('header language menu switches the page and remembers the choice on a 320px
 	try {
 		await fixture(page);
 		await openForm(page, forms[0]);
-		await page.locator('[data-language-toggle]').click();
-		await page.locator('[role="menuitemradio"][lang="ko"]').click();
+		const toggle = page.locator('[data-language-toggle]');
+		const korean = page.locator('header button[lang="ko"]');
+		await toggle.click();
+		await page.keyboard.press('Escape');
+		await korean.waitFor({ state: 'detached' });
+		assert.equal(await toggle.evaluate((el) => el === document.activeElement), true);
+		await toggle.click();
+		await page.mouse.click(10, 650);
+		await korean.waitFor({ state: 'detached' });
+		await toggle.click();
+		await korean.click();
+		await korean.waitFor({ state: 'detached' });
+		assert.equal(await toggle.evaluate((el) => el === document.activeElement), true);
 		await page.reload();
 		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		const title = await page.evaluate(
