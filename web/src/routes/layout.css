@@ -230,8 +230,15 @@
 	}
 	/* The mono micro-label spaces out capitals; CJK text needs neither the spacing nor
 	   the monospace fallback. */
+	:is(:lang(ko), :lang(ja)) .page-title {
+		line-height: 1.22;
+		letter-spacing: 0;
+	}
 	:is(:lang(ko), :lang(ja)) .micro {
 		font-family: inherit;
-		letter-spacing: 0;
+		font-size: 0.75rem;
+		line-height: 1.125rem;
+		letter-spacing: 0.01em;
+		text-transform: none;
 	}
 }

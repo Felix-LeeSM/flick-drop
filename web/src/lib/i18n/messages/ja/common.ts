@@ -1,12 +1,13 @@
 import type { common as source } from '../en/common';
 
 export const common: typeof source = {
-	enterCode: 'Enter Code',
+	enterCode: 'コード入力',
 	siteNav: 'サイト',
 	languageRow: '言語',
+	languageButton: (current: string) => `言語を切り替え（現在: ${current}）`,
 	deliveryMethod: '送り方',
-	tabLink: 'Link',
-	tabLive: 'Live Transfer',
+	tabLink: 'リンク',
+	tabLive: 'リアルタイム転送',
 	theme: {
 		useLight: 'ライトモードにする',
 		useDark: 'ダークモードにする'

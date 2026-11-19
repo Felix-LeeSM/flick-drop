@@ -31,7 +31,7 @@ export const manage: typeof source = {
 	noLongerCancellable: '이 링크는 더 이상 취소할 수 없어요.',
 	privateSenderPage: '보낸 사람 전용 페이지',
 	titleCreated: '링크를 만들었어요',
-	titleManage: 'Manage delivery',
+	titleManage: '링크 관리',
 	intro: '링크가 열렸는지 확인하고, 열리기 전이면 취소할 수 있어요.',
 	expired: '관리 링크가 만료됐어요.',
 	statusRegion: '링크 상태',

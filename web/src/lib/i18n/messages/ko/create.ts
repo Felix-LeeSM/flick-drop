@@ -2,9 +2,9 @@ import type { create as source } from '../en/create';
 
 export const create: typeof source = {
 	headTitle: '링크 만들기 - Flick',
-	tagline: '종단간 암호화 · 열면 사라져요',
-	titleLink: 'Create a secret',
-	titleCode: 'Send a secret',
+	tagline: '기기에서 암호화 · 열면 바로 사라져요',
+	titleLink: '링크로 보내기',
+	titleCode: '코드로 보내기',
 	receivedCode: '6자리 코드를 받았나요?',
 	enterItHere: '여기에 입력',
 	needOne: '다른 사람에게서 받아야 하나요?',
@@ -50,9 +50,9 @@ export const create: typeof source = {
 	expiresAfter: '만료 시간',
 	lifetimeGroup: '만료 시간',
 	cta: {
-		creating: 'Creating',
-		createLink: 'Create Link',
-		startLive: 'Start Live Transfer'
+		creating: '만드는 중',
+		createLink: '링크 만들기',
+		startLive: '실시간 전송 시작'
 	},
 	linkCaption: '한 번 열면 사라져요',
 	liveCaption: '서버에 저장하지 않아요',

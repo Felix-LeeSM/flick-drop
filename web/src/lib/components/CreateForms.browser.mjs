@@ -781,7 +781,10 @@ for (const width of [320, 375]) {
 					return {
 						brand: box(root.querySelector('a')),
 						link: box(root.querySelector('nav a')),
-						code: box(root.querySelector('button:not([aria-label$=" theme"])')),
+						code: box(
+							root.querySelector('button:not([aria-label$=" theme"]):not([data-language-toggle])')
+						),
+						language: box(root.querySelector('[data-language-toggle]')),
 						toggle: box(root.querySelector('button[aria-label$=" theme"]'))
 					};
 				});
@@ -790,10 +793,10 @@ for (const width of [320, 375]) {
 				} else {
 					assert.ok(header.link, form.path);
 				}
-				// The home header shows brand, "Enter Code", and theme toggle; the request page
-				// shows brand, "Send a secret", and theme toggle. Each text-sized action either
-				// fits beside the wordmark or wraps below it, and none crosses the viewport edge.
-				for (const action of [header.link, header.code, header.toggle].filter(Boolean)) {
+				assert.ok(header.language, form.path);
+				for (const action of [header.link, header.code, header.language, header.toggle].filter(
+					Boolean
+				)) {
 					assert.ok(action.right <= width, form.path);
 					assert.ok(
 						action.left >= header.brand.right || action.top >= header.brand.bottom,
@@ -819,7 +822,10 @@ test('320px shared header stays one row beside the theme toggle without overflow
 				return {
 					brand: box(root.querySelector('a')),
 					link: box(root.querySelector('nav a')),
-					code: box(root.querySelector('button:not([aria-label$=" theme"])')),
+					code: box(
+						root.querySelector('button:not([aria-label$=" theme"]):not([data-language-toggle])')
+					),
+					language: box(root.querySelector('[data-language-toggle]')),
 					toggle: box(root.querySelector('button[aria-label$=" theme"]')),
 					overflow: document.documentElement.scrollWidth > innerWidth
 				};
@@ -830,18 +836,23 @@ test('320px shared header stays one row beside the theme toggle without overflow
 			} else {
 				assert.ok(header.link, form.path);
 			}
-			// One row at the narrowest supported width: brand and toggle share the
-			// wordmark's vertical center, and the navigation action sits between them.
+			assert.ok(header.language, form.path);
 			const navAction = header.link ?? header.code;
-			const first = navAction ?? header.toggle;
+			const first = navAction ?? header.language;
 			assert.ok(header.brand.right < first.left, form.path);
 			assert.equal(
 				Math.round(first.top + first.height / 2),
 				Math.round(header.brand.top + header.brand.height / 2),
 				form.path
 			);
+			assert.ok(header.language.right <= header.toggle.left, form.path);
+			assert.equal(
+				Math.round(header.language.top + header.language.height / 2),
+				Math.round(header.toggle.top + header.toggle.height / 2),
+				form.path
+			);
 			if (navAction) {
-				assert.ok(navAction.right <= header.toggle.left, form.path);
+				assert.ok(navAction.right <= header.language.left, form.path);
 				assert.equal(
 					Math.round(navAction.top + navAction.height / 2),
 					Math.round(header.toggle.top + header.toggle.height / 2),
@@ -849,6 +860,52 @@ test('320px shared header stays one row beside the theme toggle without overflow
 				);
 			}
 		}
+	} finally {
+		await page.close();
+	}
+});
+
+test('header language menu switches the page and remembers the choice on a 320px header', async () => {
+	const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+	try {
+		await fixture(page);
+		await openForm(page, forms[0]);
+		const toggle = page.locator('[data-language-toggle]');
+		const korean = page.locator('header button[lang="ko"]');
+		await toggle.click();
+		await page.keyboard.press('Tab');
+		await page.keyboard.press('Escape');
+		await korean.waitFor({ state: 'detached' });
+		assert.equal(await toggle.evaluate((el) => el === document.activeElement), true);
+		await toggle.click();
+		await page.mouse.click(10, 650);
+		await korean.waitFor({ state: 'detached' });
+		await toggle.click();
+		await korean.click();
+		await korean.waitFor({ state: 'detached' });
+		assert.equal(await toggle.evaluate((el) => el === document.activeElement), true);
+		await page.reload();
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		const title = await page.evaluate(
+			async () => (await import('/src/lib/i18n/messages/ko/index.ts')).ko.create.titleLink
+		);
+		await page.getByRole('heading', { level: 1, name: title, exact: true }).waitFor();
+		const header = await page.evaluate(() => {
+			const box = (element) => element.getBoundingClientRect().toJSON();
+			const root = document.querySelector('header');
+			return {
+				lang: document.documentElement.lang,
+				brand: box(root.querySelector('a')),
+				language: box(root.querySelector('[data-language-toggle]')),
+				overflow: document.documentElement.scrollWidth > innerWidth
+			};
+		});
+		assert.equal(header.lang, 'ko');
+		assert.equal(header.overflow, false);
+		assert.equal(
+			Math.round(header.language.top + header.language.height / 2),
+			Math.round(header.brand.top + header.brand.height / 2)
+		);
 	} finally {
 		await page.close();
 	}

@@ -2,13 +2,13 @@ import type { create as source } from '../en/create';
 
 export const create: typeof source = {
 	headTitle: 'リンクを作成 - Flick',
-	tagline: 'エンドツーエンド暗号化 · 開くと消えます',
-	titleLink: 'Create a secret',
-	titleCode: 'Send a secret',
+	tagline: '端末で暗号化 · 開くと消えます',
+	titleLink: 'リンクで送る',
+	titleCode: 'コードで送る',
 	receivedCode: '6桁のコードを受け取りましたか？',
 	enterItHere: 'こちらで入力',
 	needOne: '相手から受け取りたいときは',
-	requestSecret: 'リクエストする',
+	requestSecret: 'リクエスト',
 	typeTablist: '送る内容の種類',
 	types: {
 		text: 'メモ',
@@ -50,9 +50,9 @@ export const create: typeof source = {
 	expiresAfter: '有効時間',
 	lifetimeGroup: '有効時間の選択',
 	cta: {
-		creating: 'Creating',
-		createLink: 'Create Link',
-		startLive: 'Start Live Transfer'
+		creating: '作成中',
+		createLink: 'リンクを作成',
+		startLive: 'リアルタイム転送を開始'
 	},
 	linkCaption: '一度開くと消えます',
 	liveCaption: 'サーバーには保存されません',

@@ -41,8 +41,9 @@ same shape, so a missing key fails `pnpm check`) and the current language
 screen area need only typed objects and the browser's `Intl`.
 
 - The language never appears in a URL, so a shared link opens in the recipient's
-  own language. A manual choice from the language row at the foot of every page
-  (`web/src/lib/components/LanguageRow.svelte`) is stored in `localStorage`
+  own language. A manual choice from the header globe menu beside the theme
+  toggle (`web/src/lib/components/LanguageRow.svelte` in
+  `web/src/lib/components/SiteHeader.svelte`) is stored in `localStorage`
   (`flick-locale`); otherwise the first supported browser language wins, then
   English.
 - Pages are prerendered in English. The language is applied after hydration
@@ -55,7 +56,14 @@ screen area need only typed objects and the browser's `Intl`.
   `unicode-range`, so English pages download none of them.
 - Server error messages are not shown; the web client maps error codes to its own
   catalog text (`web/src/lib/api/secrets.ts`). The API, worker, and `flick` CLI stay
-  English.
+  English; the one server string the web shows, the waiting device's name ("Safari on
+  iPhone" from `internal/httpapi/pipedevice.go:pipeDeviceLabel`), is reworded per
+  language by `web/src/lib/i18n/device.ts:deviceLabelText`.
+- The `/guides/` prose is one component per language
+  (`web/src/routes/guides/Guide{En,Ko,Ja}.svelte`); its headings, table of contents,
+  and page title come from `messages/*/guides.ts` so they stay in step.
+- Tests compare wording by catalog key; only `web/src/lib/i18n/catalogs.test.ts`
+  walks every language, checking that each has every `en` key with the same shape.
 
 ## Backend HTTP
 

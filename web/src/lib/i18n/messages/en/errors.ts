@@ -9,6 +9,7 @@ export const errors = {
 	notReady: 'Flick is not ready. Try again shortly.',
 	serverFailed: 'Flick could not complete the request. Try again.',
 	requestFailed: 'Could not complete the request. Check the input and try again.',
+	rateLimited: 'Too many tries in a short time. Wait a moment and try again.',
 	largeUploadStartFailed: 'Could not start the large upload. Try again.',
 	uploadSizeMismatch: 'Upload size mismatch. Try again.',
 	uploadCancelled: 'Upload cancelled.',

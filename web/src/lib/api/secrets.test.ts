@@ -7,6 +7,7 @@ import {
 } from '#lib/crypto/access.js';
 import { generateSecretIdentity } from '#lib/crypto/age.js';
 import type { SealedFile } from '#lib/crypto/secret.js';
+import { en } from '#lib/i18n/messages/en/index.js';
 import {
 	createSecretApiClient,
 	createShareUrl,
@@ -250,38 +251,50 @@ describe('secret API client', () => {
 	});
 
 	it('maps API errors to client-safe messages', async () => {
-		expect.assertions(10);
+		expect.assertions(14);
 
 		const cases = [
 			{
 				code: 'payload_too_large',
 				message: 'encrypted payload is too large',
 				status: 413,
-				expected: 'This file is too large.'
+				expected: en.errors.fileTooLarge
 			},
 			{
 				code: 'storage_full',
 				message: 'object storage is at capacity; try again later',
 				status: 503,
-				expected: 'Object storage is at capacity. Try again later.'
+				expected: en.errors.storageFull
 			},
 			{
 				code: 'invalid_access',
 				message: 'access proof is invalid',
 				status: 403,
-				expected: 'Passphrase is invalid.'
+				expected: en.errors.invalidPassphrase
 			},
 			{
 				code: 'expired',
 				message: 'secret has expired',
 				status: 410,
-				expected: 'This secret is no longer available.'
+				expected: en.errors.noLongerAvailable
+			},
+			{
+				code: 'rate_limited',
+				message: 'too many requests, slow down',
+				status: 429,
+				expected: en.errors.rateLimited
+			},
+			{
+				code: 'proxy_limit',
+				message: 'rate limited before the API',
+				status: 429,
+				expected: en.errors.rateLimited
 			},
 			{
 				code: 'invalid_json',
 				message: 'request body does not match the create secret contract',
 				status: 400,
-				expected: 'Could not complete the request. Check the input and try again.'
+				expected: en.errors.requestFailed
 			}
 		];
 
