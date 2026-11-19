@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: Flick Agent Guide
+description: Root guide for Flick project shape, directory principles, required reading, hard security rules, and development standards.
+tags: [agent-guide, root]
+---
+
 # Flick Agent Guide
 
 Read this file first, then read the nearest `AGENTS.md` for the directory you
@@ -60,10 +67,14 @@ by the commands in `cmd/`.
   `docs/architecture/service-topology.md`.
 - Env var, secret, deploy config, or local setup change:
   `docs/architecture/env-contract.md`.
+- Live transfer (`/api/pipe/*`) or Valkey rendezvous change:
+  `docs/architecture/live-relay.md`.
+- Logging, Prometheus metrics, or OpenTelemetry tracing change:
+  `docs/architecture/telemetry.md`.
 - CI, test, smoke, or GitHub Actions change:
   `docs/architecture/ci-testing.md`.
-- Agent workflow or planning artifact change:
-  `docs/architecture/agent-workflow.md`.
+- Agent workflow, OKF format, or planning artifact change:
+  `docs/architecture/agent-workflow.md` (browse all governed docs from the repository-root `index.md`; its `docs/index.md` entry lists `docs/architecture/index.md` and `docs/runbook/index.md`).
 - Scope or milestone change: `docs/ROADMAP.md`.
 
 If `docs/work/active/*.md` exists and matches the current task, read it before

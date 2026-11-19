@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: Local Development Runbook
+description: Local bootstrap, full dev stack startup, MinIO object storage defaults, mock API cassettes, and parallel worktree stack isolation.
+tags: [runbook, local-dev, minio, mock-api]
+status: stable
+---
+
 # Local Development Runbook
 
 ## Bootstrap
@@ -49,17 +57,40 @@ stopped on exit only when the same task also started NATS, because the cleanup
 runs `docker compose down` for the whole `flick-dev` Compose project in that
 case.
 
+CI's MinIO storage integration (`scripts/ci/storage-integration.sh`) layers a
+temporary Compose file over the root `compose.yaml` that swaps in the image
+built from `scripts/ci/Dockerfile.minio` and keeps its own
+`entrypoint: ["minio"]` and `command: ["server", "/data"]`, because the root
+`minio` service (`bitnamilegacy/minio:latest`) sets neither and the CI image
+would otherwise start with no arguments and exit. When you change the root
+MinIO service, keep that overlay self-contained.
+
 Set `FLICK_DEV_SKIP_MINIO=1` to skip MinIO; the task then empties
 `FLICK_STORAGE_BACKENDS`, so only payloads up to
 `FLICK_PAYLOAD_INLINE_MAX_BYTES` (1 MiB by default) can be created.
 
 Keep `FLICK_STORAGE_BACKENDS` out of `.env.local` unless you mean to
 override the MinIO default: a value set there, including an empty one, wins
-over the `minio` default in `scripts/dev/up.sh`. `scripts/dev/up.sh` always starts or reuses the local MinIO
-and `FLICK_DEV_SKIP_MINIO=1` forces storage off, so the task cannot point at
+over the `minio` default in `scripts/dev/up.sh`. Also ensure no legacy storage
+variables (`FLICK_S3_*`, `FLICK_R2_*`, `FLICK_STORAGE_LARGE_BACKEND`) remain
+exported in your shell or `.env.local`: `internal/config/config.go:loadStorageBackends`
+refuses to boot `flick-api` and `flick-worker` while any legacy variable is
+non-empty.
+
+`scripts/dev/up.sh` always starts or reuses the local MinIO and
+`FLICK_DEV_SKIP_MINIO=1` forces storage off, so the task cannot point at
 another store. To test a different S3-compatible store, run `go run ./cmd/flick-api`
 yourself with `FLICK_STORAGE_BACKENDS` and that backend's
 `FLICK_STORAGE_<NAME>_*` values set.
+
+When running live browser suites repeatedly against `scripts/dev/up.sh`, the
+default `FLICK_CREATE_RATE_PER_MIN=5` can trigger `429` timeouts on the second
+run. Start the stack with higher limits (and `FLICK_MIN_TTL_SECONDS=1` for
+request expiry tests):
+
+```sh
+FLICK_CREATE_RATE_PER_MIN=100 FLICK_OPEN_RATE_PER_MIN=100 FLICK_MIN_TTL_SECONDS=1 ./scripts/dev/up.sh
+```
 
 ## Mock API for Prototypes
 
@@ -150,6 +181,29 @@ replays as recorded.
 trip against a stub upstream, the timestamp shift, the storage rewrite, the
 live relay re-encryption, the long-poll order, and that logs omit the link key.
 
+## Prototype Folders
+
+UI prototypes live in git-excluded folders under `web/src/routes/prototype/`
+(listed in `.git/info/exclude`), so they never reach CI or the repository.
+
+- The local index `http://localhost:5173/prototype/` comes from the
+  git-excluded `web/src/routes/prototype/+page.ts`, which lists each
+  `prototype/<slug>/` from its `README.md`: the `# ` title, the first plain
+  paragraph before the first `## ` as the summary, and the first
+  `/prototype/<slug>?…` address as the start link. Give every new prototype
+  README those three.
+- Tailwind v4 source detection skips git-excluded paths, so a class used only
+  in a prototype folder produces no CSS. Add a temporary
+  `@source "./prototype/<slug>/**";` to `web/src/routes/layout.css` (remove it
+  with the folder) or use scoped `<style>`; `web/AGENTS.md` lists the class-name
+  collisions to avoid.
+- Draw focus outlines for text inputs on the padded, rounded outer box with
+  `:has(input:focus-visible)`, and exclude inputs from a root `:focus-visible`
+  outline rule, so an outline never hugs the typed text.
+- A `position: relative` card with a large `box-shadow` paints over a
+  following unpositioned sibling (a button row turns grey); give that sibling
+  `position: relative` too.
+
 ## Container Images
 
 Build API, worker, and web images locally:
@@ -213,3 +267,26 @@ curl -fsS http://localhost:8080/readyz
 Local state lives in the compose PostgreSQL instance (docker volumes, not the
 working tree). `scripts/dev/up.sh` starts it and pins the two DSNs, so no
 database files appear under `./var` any more.
+
+## Running a Second Stack in a Worktree
+
+When another session already holds the primary checkout (ports `8080` and
+`5173`), never kill its processes. Use `git worktree add` and isolate every
+endpoint and backing resource:
+
+- **Single CORS origin:** `cmd/flick-api/main.go` allows only
+  `FLICK_PUBLIC_BASE_URL` (default `http://localhost:5173`). `localhost` and
+  `127.0.0.1` are distinct origins. If the second web dev server uses another
+  port (for example `http://127.0.0.1:5199`), start a second `flick-api` with
+  `FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5199` and pass its address via
+  `PUBLIC_FLICK_API_BASE_URL`.
+- **NATS is required at API boot:** `flick-api` exits if `FLICK_NATS_URL` is
+  unreachable. Either reuse the running NATS or start a separate container on
+  another port with `--jetstream`.
+- **Isolated database and storage:** Point `FLICK_DATABASE_URL` at a dedicated
+  PostgreSQL schema (`search_path=...`). A second `flick-worker` also needs its
+  own `FLICK_WORKER_DATABASE_URL`: `scripts/dev/up.sh` defaults it to the shared
+  `flick_worker` database, and `cmd/flick-worker/main.go` runs
+  `db.MigrateWorker` on that database at boot. Set `FLICK_STORAGE_BACKENDS=` when
+  testing inline-only flows without MinIO. Clean up only the containers and
+  schema created by the worktree session.
