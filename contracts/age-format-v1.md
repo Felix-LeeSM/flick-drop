@@ -1,3 +1,11 @@
+---
+type: Contract
+title: age Format v1
+description: Client-side hybrid age encryption format, Model A passphrase wrapping, Model B fragment keys, interop vectors, and API/live-relay wire mapping.
+tags: [contract, crypto, age]
+status: stable
+---
+
 # age Format v1
 
 Status: current payload format for every Flick client. `internal/clientcrypto/age.go`
@@ -175,7 +183,7 @@ The live relay (`/api/pipe/*`, `internal/piperelay`) streams one age file from
 a sending browser to a receiving browser through API memory. Nothing is stored
 in PostgreSQL or object storage, and the 6-digit code only routes requests; it is
 not key material. The full threat model is in
-`docs/architecture/security-model.md`, section "Live Relay (Live Transfer)".
+`docs/architecture/live-relay.md`.
 
 - **Receiver identity.** For each receive attempt the receiving browser
   generates a fresh hybrid identity (`AGE-SECRET-KEY-PQ-1...`, the same type as
