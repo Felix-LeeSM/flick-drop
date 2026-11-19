@@ -149,7 +149,7 @@ export const live: typeof source = {
 		joinFailed: '연결하지 못했어요',
 		statusFailed: '상태를 확인하지 못했어요',
 		waitFailed: '연결을 기다리지 못했어요',
-		actionFailed: () => '서버와 통신하지 못했어요',
+		actionFailed: () => '서버가 이 단계를 처리하지 못했어요',
 		sendFailed: '보내지 못했어요',
 		receiveFailed: '받지 못했어요',
 		emptyBody: '서버에서 받은 내용이 없어요'

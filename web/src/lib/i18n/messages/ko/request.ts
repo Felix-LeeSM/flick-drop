@@ -63,9 +63,9 @@ export const request: typeof source = {
 		progress: {
 			cancelling: '올리기 취소 중…',
 			reserving: '파일을 올릴 준비 중…',
-			verifying: '도착했는지 확인하는 중…',
+			verifying: '도착했는지 확인하는 중… 아직 도착을 확인하지 못했어요.',
 			uploadingBytes: (loaded: string, total: string, percent: number) =>
-				`암호화한 파일을 올리는 중: ${total}바이트 중 ${loaded}바이트 (${percent}%)`,
+				`암호화한 파일을 올리는 중: ${total}바이트 중 ${loaded}바이트 (${percent}%). 도착했는지는 다 올린 뒤 확인해요.`,
 			uploading: '암호화한 파일을 올리는 중…',
 			submitting: '암호화한 내용을 보내는 중…'
 		},

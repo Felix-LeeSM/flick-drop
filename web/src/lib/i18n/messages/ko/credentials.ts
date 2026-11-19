@@ -5,13 +5,13 @@ export const credentials: typeof source = {
 	templates: {
 		login: {
 			name: '로그인',
-			description: '아이디, 비밀번호, 주소, OTP 키를 담아요.',
+			description: '아이디, 비밀번호, 주소, 2단계 인증 설정 키를 담아요.',
 			titlePlaceholder: '운영 데이터베이스',
 			fields: {
 				username: { label: '아이디', placeholder: 'alice@example.com' },
 				password: { label: '비밀번호' },
 				url: { label: '주소', placeholder: 'https://example.com' },
-				totp: { label: 'OTP 키' }
+				totp: { label: '2단계 인증 설정 키' }
 			}
 		},
 		card: {

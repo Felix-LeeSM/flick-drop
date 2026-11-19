@@ -9,7 +9,7 @@ export const open = {
 	transportDropped:
 		"The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again.",
 	decryptFailed:
-		"This secret couldn't be opened. It can't be opened again. Ask the sender to send it again.",
+		"This secret arrived but couldn't be read. It has been used up and can't be opened again. Ask the sender to send it again.",
 	alreadyOpened: 'Already opened in this tab',
 	statusOpening: 'Opening',
 	openFailed: 'Could not open this secret.',

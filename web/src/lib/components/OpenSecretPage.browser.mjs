@@ -312,7 +312,7 @@ test('a body that fails to authenticate after the open is final and shows nothin
 			.getByRole('alert')
 			.filter({
 				hasText:
-					"This secret couldn't be opened. It can't be opened again. Ask the sender to send it again."
+					"This secret arrived but couldn't be read. It has been used up and can't be opened again. Ask the sender to send it again."
 			})
 			.waitFor();
 		assert.equal(await open.isEnabled(), false);

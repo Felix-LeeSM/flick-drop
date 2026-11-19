@@ -151,7 +151,7 @@ export const live: typeof source = {
 		joinFailed: '接続できませんでした',
 		statusFailed: '状態を確認できませんでした',
 		waitFailed: '接続を待てませんでした',
-		actionFailed: () => 'サーバーと通信できませんでした',
+		actionFailed: () => 'サーバーがこの手順を完了できませんでした',
 		sendFailed: '送れませんでした',
 		receiveFailed: '受け取れませんでした',
 		emptyBody: 'サーバーから何も届きませんでした'

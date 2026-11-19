@@ -156,7 +156,7 @@ export const live = {
 		joinFailed: 'Join failed',
 		statusFailed: 'Status check failed',
 		waitFailed: 'Wait failed',
-		actionFailed: (_path: string) => 'Could not reach the server',
+		actionFailed: (_path: string) => 'The server could not complete this step',
 		sendFailed: 'Send failed',
 		receiveFailed: 'Receive failed',
 		emptyBody: 'Server response body is empty'

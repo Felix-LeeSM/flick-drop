@@ -10,12 +10,12 @@ export const open: typeof source = {
 	transportDropped:
 		'내용을 받는 중에 연결이 끊겼어요. 다시 열 수 없으니 보낸 사람에게 다시 보내 달라고 해 주세요.',
 	decryptFailed:
-		'내용을 열지 못했어요. 다시 열 수 없으니 보낸 사람에게 다시 보내 달라고 해 주세요.',
+		'내용은 받았지만 읽지 못했어요. 이미 한 번 열린 링크라 다시 열 수 없으니 보낸 사람에게 다시 보내 달라고 해 주세요.',
 	alreadyOpened: '이 탭에서 이미 열었어요',
 	statusOpening: '여는 중',
 	openFailed: '내용을 열지 못했어요.',
 	copyFailed: '내용을 복사하지 못했어요.',
-	decryptedBadge: '이 기기에서 열었어요 · 서버에서는 지워졌어요',
+	decryptedBadge: '이 기기에서 열었어요 · 다시 열 수 없어요',
 	resultTitle: 'Secret',
 	copyAll: '모두 복사',
 	copied: '복사했어요',

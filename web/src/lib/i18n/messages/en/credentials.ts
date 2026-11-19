@@ -6,13 +6,13 @@ export const credentials = {
 	templates: {
 		login: {
 			name: 'Login',
-			description: 'Username, password, URL, and one-time code seed.',
+			description: 'Username, password, URL, and 2FA setup key.',
 			titlePlaceholder: 'Production database',
 			fields: {
 				username: { label: 'Username', placeholder: 'alice@example.com' },
 				password: { label: 'Password' },
 				url: { label: 'URL', placeholder: 'https://example.com' },
-				totp: { label: 'One-time code key' }
+				totp: { label: '2FA setup key' }
 			}
 		},
 		card: {

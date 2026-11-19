@@ -5,13 +5,13 @@ export const credentials: typeof source = {
 	templates: {
 		login: {
 			name: 'ログイン',
-			description: 'ユーザー名、パスワード、URL、ワンタイムコードの鍵を入れられます。',
+			description: 'ユーザー名、パスワード、URL、2段階認証のセットアップキーを入れられます。',
 			titlePlaceholder: '本番データベース',
 			fields: {
 				username: { label: 'ユーザー名', placeholder: 'alice@example.com' },
 				password: { label: 'パスワード' },
 				url: { label: 'URL', placeholder: 'https://example.com' },
-				totp: { label: 'ワンタイムコードの鍵' }
+				totp: { label: '2段階認証のセットアップキー' }
 			}
 		},
 		card: {

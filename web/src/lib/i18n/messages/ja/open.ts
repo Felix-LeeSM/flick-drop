@@ -10,12 +10,12 @@ export const open: typeof source = {
 	transportDropped:
 		'内容を受け取っている途中で接続が切れました。もう一度開くことはできません。送った人に送り直してもらってください。',
 	decryptFailed:
-		'内容を開けませんでした。もう一度開くことはできません。送った人に送り直してもらってください。',
+		'内容は届きましたが、読み取れませんでした。一度開いたリンクのため、もう一度開くことはできません。送った人に送り直してもらってください。',
 	alreadyOpened: 'このタブで開封済みです',
 	statusOpening: '開いています',
 	openFailed: '内容を開けませんでした。',
 	copyFailed: '内容をコピーできませんでした。',
-	decryptedBadge: 'この端末で開きました · サーバーからは消えました',
+	decryptedBadge: 'この端末で開きました · もう一度開くことはできません',
 	resultTitle: 'Secret',
 	copyAll: 'すべてコピー',
 	copied: 'コピーしました',
