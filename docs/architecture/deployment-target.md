@@ -168,14 +168,14 @@ larger node to free memory on the smaller one.
 The service still avoids a managed database dependency: one PostgreSQL 17 pod
 on a Kubernetes persistent volume holds both logical databases, and larger
 encrypted files live in S3-compatible object storage (for example, OCI Object
-Storage in S3-compatibility mode). An optional second S3-compatible backend
-(for example Cloudflare R2) can run in parallel with the primary to pool
+Storage in S3-compatibility mode). Several S3-compatible backends (for example OCI
+and Cloudflare R2, `FLICK_STORAGE_BACKENDS=oci,r2`) can run in parallel to pool
 provider free tiers; see `docs/architecture/storage-model.md` and
 `env-contract.md`. Valkey runs memory-only and adds no persistence cost.
 
 Operators must verify current OCI tenancy limits, Object Storage quota, request
 limits, and available block volume capacity before production use, plus the
-corresponding free-tier limits for any secondary backend.
+corresponding free-tier limits for every other configured backend.
 
 ## Scaling Boundaries
 

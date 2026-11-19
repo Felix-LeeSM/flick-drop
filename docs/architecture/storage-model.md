@@ -73,28 +73,51 @@ Large-object storage speaks the S3 API via the AWS SDK for Go v2
 S3-compatibility prod, AWS S3, Cloudflare R2 — and MinIO is the integration-test
 double (`minio_integration_test.go`).
 
-A deployment can run a primary and an optional secondary backend in parallel
-(`storage.Registry`) to pool provider free tiers: the primary is OCI S3-compat
-(`s3_object`) and the secondary is Cloudflare R2 (`r2_object`), enabled by
-`FLICK_R2_ENABLED=true`. New objects land on the primary first and spill to the
-secondary once the primary's remaining ceiling cannot fit the object
-(`storage.ChooseBackend`); existing objects never move, and the row's
-`storage_backend` column (default `s3_object`, widened to accept `r2_object`)
-records the choice so opens, finalize copies, deletes, and reconciliation all
-resolve the same bucket. Each backend carries its own cumulative byte ceiling
-(`FLICK_S3_MAX_TOTAL_BYTES`, `FLICK_R2_MAX_TOTAL_BYTES`, default 90 percent of
-the provider free tier, `0` = unlimited) enforced against the `flick_api` aggregate
-`db.StorageObjectBytes` at placement time; when no configured backend has room,
-placement fails with `503 storage_full`. The ceiling is a soft cap: the usage
-read is check-then-act, so concurrent placements can transiently overshoot
-(`requests.Reserve` reads and writes inside one transaction, `secrets`
-`CreateLarge` reads before its transaction), and asynchronous deletes let the
-aggregate drift from true bucket usage. Both directions are bounded by the
-90-percent margin and the delete sweep, which is why the ceilings target free
-tiers rather than exact accounting. Deletion jobs record the backend in the
-event `backend` field, and per-backend reconciliation cursors
-(`*_reconciliation_cursor_v2`, `*_reconciliation_pending_v2`) keep the buckets
-independent.
+A deployment names its object backends in `FLICK_STORAGE_BACKENDS`
+(comma-separated, for example `oci,r2`); each name `<name>` reads its endpoint,
+bucket, and keys from `FLICK_STORAGE_<NAME>_*`
+(`internal/config/config.go:loadStorageBackends`, see `env-contract.md`). An
+empty list disables object storage and keeps every payload inline. Several
+backends run in parallel through `storage.Registry`, for example to pool
+provider free tiers; no backend is primary.
+
+A name is a lower-case letter followed by up to 15 lower-case letters or digits
+(`storage.ValidBackendName`, `^[a-z][a-z0-9]{0,15}$`). The row's
+`storage_backend` column stores that name (or `sqlite_blob` for inline
+ciphertext, `db.StorageInline`) and records the placement, so opens, finalize
+copies, deletes, and reconciliation all resolve the same bucket. Existing
+objects never move. A name is therefore permanent while rows, pending claims,
+or queued delete jobs still carry it: renaming or removing a backend that still
+holds objects makes `Registry.For` fail for those rows instead of silently
+reading from or deleting in another bucket.
+
+Each backend carries its own cumulative byte ceiling
+(`FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES`). `0` means unlimited and is allowed
+only when exactly one backend is configured; with several, every ceiling must be
+positive because placement weighs remaining space. At placement time
+`storage.Registry.Choose` reads the `flick_api` aggregate
+`db.StorageObjectBytes` for the configured names, keeps the backends whose
+remaining space (ceiling minus usage) still fits the object, and picks one at
+random weighted by that remaining space, so fuller buckets receive
+proportionally fewer new objects. When no backend has room, placement fails
+with `503 storage_full`.
+
+The ceiling is a soft cap: the usage read is check-then-act, so concurrent
+placements can transiently overshoot (`requests.Reserve` reads and writes
+inside one transaction, `secrets` `CreateLarge` reads before its transaction),
+and asynchronous deletes let the aggregate drift from true bucket usage.
+Operators should set each ceiling below the provider's hard limit (for example
+90 percent of a free tier) so the margin absorbs the drift and the delete
+sweep's lag. Deletion jobs record the backend in the event `backend` field, and
+per-backend reconciliation cursors (`*_reconciliation_cursor_v2`, created on a
+backend's first reconciliation pass) and pending claims
+(`*_reconciliation_pending_v2`) keep the buckets independent.
+
+Databases created before `FLICK_STORAGE_BACKENDS` stored the fixed identifiers
+`s3_object` and `r2_object`. The API migration refuses to start while any row,
+pending claim, or unpublished delete event still carries them; rename them to
+configured backend names first with the
+[storage backend rename runbook](../runbook/storage-backend-rename.md).
 
 Object Storage receives client-encrypted age files only. Uploads are presigned
 PUTs signed at the exact age file length. Downloads never use a presigned GET:

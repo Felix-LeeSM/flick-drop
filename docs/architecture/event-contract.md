@@ -38,10 +38,10 @@ Example:
 ```json
 {
   "job_id": "job_01hxy",
-  "kind": "delete_secret",
-  "secret_id": "sec_01hxx",
-  "reason": "expired",
-  "backend": "s3_object",
+  "kind": "delete_oci_object",
+  "object_key": "managed/secrets/sec_01hxx",
+  "reason": "consumed",
+  "backend": "oci",
   "requested_at": "2026-06-16T03:00:00Z",
   "trace_context": {
     "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -54,18 +54,22 @@ Example:
 the producer's trace (`internal/events/job.go:JobEvent.TraceContext`). It
 carries telemetry IDs only and is absent when tracing is disabled.
 
-`backend` names the object-storage bucket the object lives on
-(`s3_object` primary, `r2_object` secondary; absent = primary, where every
-pre-multi-backend object lives). It is bounded enum metadata, never a private
-bucket name. Workers hold both backends' delete credentials and resolve the
-target by this field; an unknown value is a permanent job failure. Rolling
-deployments must roll **workers first, API second**: an API that outpaces its
-workers would emit `r2_object` deletes that pre-dual workers would aim at the
-primary bucket — and pre-dual workers permanently fail `backend`-carrying
-payloads outright, because payload decoding disallows unknown fields
-(`events.decodeJobEvent`), so a mixed-version window loses deletes until
-reconciliation sweeps them. Reconciliation sweeps self-heal both leak paths,
-but the ordering keeps them out of normal operation. The JSON schema is
+`backend` names the configured object backend the object lives on: one of the
+operator-chosen names in `FLICK_STORAGE_BACKENDS` (for example `oci` or `r2`),
+matching `^[a-z][a-z0-9]{0,15}$` (`storage.ValidBackendName`). It is required
+for `delete_oci_object` and is never a private bucket name
+(`internal/events/job.go:JobEvent.Validate`). Workers hold every backend's
+delete credentials and resolve the target by this field
+(`internal/worker/cleanup.go:CleanupHandler`); a name the worker has not
+configured is a permanent job failure, never a delete against another bucket.
+API and worker must therefore run the same `FLICK_STORAGE_BACKENDS` list.
+
+Jobs written before `FLICK_STORAGE_BACKENDS` carried the fixed identifiers
+`s3_object`/`r2_object` or no `backend` at all; current workers reject both as
+invalid, and workers from that era reject the new names. The
+[storage backend rename runbook](../runbook/storage-backend-rename.md) covers
+the upgrade. Reconciliation re-lists a managed object whose delete job was
+lost this way and queues a fresh job once the old pending claim lapses. The JSON schema is
 `contracts/events/job.schema.json`.
 
 ## Outbox

@@ -29,8 +29,8 @@ A secret moves through these states:
 Small payloads (≤ inline threshold) write an inline `secret_payloads.ciphertext`
 bytea row (`store.go:Store.Create`, backend `store.go:StorageSQLite` =
 `sqlite_blob`); large payloads write an object-storage object
-(`store.go:Store.CreateLarge`, backend `s3_object` or `r2_object` from
-`internal/storage/registry.go:ChooseBackend`). Both paths share the same
+(`store.go:Store.CreateLarge`, backend = the `FLICK_STORAGE_BACKENDS` name
+chosen by `internal/storage/registry.go:Registry.Choose`). Both paths share the same
 `secrets` row shape, differing only in `storage_backend`. Core types live in
 `store.go`: `KDFParams`, `CreateInput`, `CreateLargeInput`,
 `CreateLargeResult`, `Secret`, and `Metadata`.
@@ -47,7 +47,8 @@ claim takes `FOR UPDATE SKIP LOCKED` row locks and sets `reclaim_enqueued_at` so
 concurrent API replicas claim disjoint batches and never double-claim; rows
 are ordered by a unified "reclaimable-since" timestamp so orphans are not starved
 by an active-expiry backlog. Reaped secrets are hard-deleted (ciphertext +
-metadata); for object-storage rows (`s3_object`, `r2_object`) an outbox event
+metadata); for object-storage rows (any `storage_backend` other than
+`sqlite_blob`, i.e. a configured backend name) an outbox event
 is enqueued for object-storage cleanup (inline `sqlite_blob` rows need no object cleanup).
 
 ## Access attempts

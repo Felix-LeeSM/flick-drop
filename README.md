@@ -30,8 +30,8 @@ and removed.
 - Stores small encrypted payloads inline in PostgreSQL, larger files in
   S3-compatible object storage.
 - Supports S3-compatible object storage for larger encrypted files when enabled.
-- Can run a second S3-compatible backend (for example Cloudflare R2) in parallel
-  with the primary to pool provider free tiers, with per-backend byte ceilings.
+- Can run several named S3-compatible backends in parallel (for example OCI and
+  Cloudflare R2) to pool provider free tiers, with per-backend byte ceilings.
 
 Example links:
 
@@ -120,8 +120,8 @@ The intended production shape is:
 - PostgreSQL 17 for metadata, small ciphertext payloads, and worker state
   (two logical databases: `flick_api`, `flick_worker`).
 - S3-compatible object storage bucket (MinIO dev, OCI S3-compatibility prod)
-  for larger encrypted files, optionally plus a second S3-compatible bucket
-  (Cloudflare R2) running in parallel with per-backend byte ceilings.
+  for larger encrypted files, optionally several named buckets (for example
+  OCI plus Cloudflare R2) running in parallel with per-backend byte ceilings.
 
 The service avoids a managed database requirement. That keeps the baseline small
 enough for an OCI Free Tier-style deployment, using compute, block volume/PVC,
