@@ -32,11 +32,11 @@ func TestNormalizeCode(t *testing.T) {
 		{" 123 - 456 ", "123456", false},
 		{"000000", "000000", false},
 		{"999999", "999999", false},
-		{"12345", "", true},   // too short
-		{"1234567", "", true}, // too long
-		{"123-45a", "", true}, // non-numeric
-		{"", "", true},        // empty
-		{"abcdef", "", true},  // letters
+		{"12345", "", true},
+		{"1234567", "", true},
+		{"123-45a", "", true},
+		{"", "", true},
+		{"abcdef", "", true},
 		{"12 34 56", "123456", false},
 	}
 
@@ -69,14 +69,12 @@ func TestGenerateCode(t *testing.T) {
 	}
 }
 
-// receiveResult는 Receive 한 번의 결과다: 받은 바이트 또는 오류.
 type receiveResult struct {
 	body []byte
 	meta SessionMetadata
 	err  error
 }
 
-// startReceive는 connID로 Receive를 열고 결과를 채널로 돌려준다.
 func startReceive(ctx context.Context, coord *Coordinator, code, connID string) <-chan receiveResult {
 	out := make(chan receiveResult, 1)
 	go func() {
@@ -104,19 +102,14 @@ func clientNetwork(n byte) ClientNetwork {
 	return k
 }
 
-// recipientOf는 n번 기기가 브라우저에서 만든 것으로 치는 age 수신자 문자열이다.
-// 코디네이터는 모양을 검사하지 않고 저장해 송신자에게 건네기만 한다.
 func recipientOf(n byte) string {
 	return fmt.Sprintf("age1pq1recipient%d", n)
 }
 
-// client는 n번 기기를 나타낸다: 기기마다 클라이언트 키, 네트워크, 수신자가 따로다.
 func client(n byte) JoinClient {
 	return JoinClient{Device: "d", Recipient: recipientOf(n), Key: clientKey(n), Network: clientNetwork(n)}
 }
 
-// openTestValkey는 FLICK_TEST_VALKEY_ADDR의 Valkey에 붙는다. 없으면 건너뛴다
-// (CI와 compose가 주소를 준다).
 func openTestValkey(t *testing.T) *redis.Client {
 	t.Helper()
 	addr := os.Getenv("FLICK_TEST_VALKEY_ADDR")
@@ -137,9 +130,7 @@ func randomHex(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// podNetwork는 API 레플리카 여러 개가 사는 가짜 클러스터 네트워크다. 레플리카마다
-// 192.0.2.N(문서용 주소) 하나를 광고하고, 스트림 전송은 그 주소:8081을 실제 테스트
-// 리스너로 이어 준다. 그래서 IP 리터럴 + 고정 포트 다이얼 경로를 그대로 지난다.
+// 레플리카마다 192.0.2.N:8081을 실제 리스너로 이어 IP 리터럴 + 고정 포트 다이얼 경로를 그대로 지난다.
 type podNetwork struct {
 	t         *testing.T
 	valkey    *redis.Client
@@ -181,7 +172,6 @@ func (n *podNetwork) transport() http.RoundTripper {
 	}
 }
 
-// startPod는 레플리카 하나(코디네이터 + 스트림 리스너)를 띄운다.
 func (n *podNetwork) startPod(opts CoordinatorOptions) *Coordinator {
 	n.t.Helper()
 	n.mu.Lock()
@@ -221,7 +211,6 @@ func newTestCoordinator(t *testing.T, opts CoordinatorOptions) *Coordinator {
 	return newPodNetwork(t).startPod(opts)
 }
 
-// active는 모든 레플리카를 통틀어 살아 있는 세션 수다.
 func active(t *testing.T, coord *Coordinator) int {
 	t.Helper()
 	n, err := coord.ActiveSessions(context.Background())
@@ -231,7 +220,6 @@ func active(t *testing.T, coord *Coordinator) int {
 	return n
 }
 
-// waitUntil은 송신자 Wait를 반복해 done이 참인 스냅숏을 돌려준다.
 func waitUntil(t *testing.T, coord *Coordinator, init InitResult, done func(WaitSnapshot) bool) WaitSnapshot {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -265,8 +253,6 @@ func recv(t *testing.T, ch <-chan receiveResult) receiveResult {
 	}
 }
 
-// pollUntilDecided는 대기 중인 수신자처럼 Status를 maxWait씩 계속 다시 연다.
-// 선택되면 nil, 거절·미선택·세션 종료면 그 오류를 채널로 돌려준다.
 func pollUntilDecided(ctx context.Context, coord *Coordinator, code, connID string, maxWait time.Duration) <-chan error {
 	out := make(chan error, 1)
 	go func() {
@@ -325,7 +311,7 @@ func TestCoordinator_Lifecycle(t *testing.T) {
 		t.Fatalf("ready snapshot recipient = %q, want the selected receiver's %q", ready.Recipient, recipientOf(1))
 	}
 
-	payload := bytes.Repeat([]byte("Flick live relay streaming data chunk! 1234567890\n"), 4096) // ~200 KiB
+	payload := bytes.Repeat([]byte("Flick live relay streaming data chunk! 1234567890\n"), 4096)
 	if _, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{Kind: "file", EncryptedFilename: "dGVzdC50eHQ="}, bytes.NewReader(payload)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -371,7 +357,6 @@ func TestCoordinator_TTL_Expiry(t *testing.T) {
 }
 
 func TestCoordinator_JoinAndSelectAfterExpiryAreRejected(t *testing.T) {
-	// 청소기가 돌기 전(만료 직후)에도 창이 닫힌 세션에는 들어가거나 고를 수 없다.
 	coord := newTestCoordinator(t, CoordinatorOptions{TTL: 50 * time.Millisecond, CleanInterval: time.Hour})
 	init, _ := coord.Init(context.Background())
 	join, err := coord.Join(context.Background(), init.Code, client(1))
@@ -394,7 +379,6 @@ func TestCoordinator_SenderTokenRequired(t *testing.T) {
 	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(context.Background(), init.Code, client(1))
 
-	// 6자리 코드만 아는 사람은 송신자 행동을 할 수 없고, 응답은 없는 코드와 같다.
 	if _, err := coord.Wait(ctx, init.Code, "forged", 0, time.Millisecond); err != ErrNotFound {
 		t.Fatalf("Wait with forged token: %v", err)
 	}
@@ -478,7 +462,6 @@ func TestCoordinator_SelectStreamsToChosenConnectionOnly(t *testing.T) {
 		if err := decided(t, polls[i]); err != ErrNotSelected {
 			t.Fatalf("receiver %d status: %v, want ErrNotSelected", i, err)
 		}
-		// 고르지 않은 연결은 /receive를 열어도 아무것도 받지 못한다.
 		if got := recv(t, startReceive(ctx, coord, init.Code, joins[i].ConnectionID)); got.err != ErrNotSelected || len(got.body) != 0 {
 			t.Fatalf("receiver %d: err=%v body=%q, want ErrNotSelected and nothing", i, got.err, got.body)
 		}
@@ -500,7 +483,6 @@ func TestCoordinator_ReceiveBeforeSelectionIsRejected(t *testing.T) {
 	init, _ := coord.Init(ctx)
 	join, _ := coord.Join(context.Background(), init.Code, client(1))
 
-	// 대기 중인 연결은 /receive를 붙잡아 둘 수 없다: 선택될 때까지 Status로 기다린다.
 	if got := recv(t, startReceive(ctx, coord, init.Code, join.ConnectionID)); got.err != ErrAwaitingDecision {
 		t.Fatalf("Receive before Select: %v, want ErrAwaitingDecision", got.err)
 	}
@@ -510,8 +492,7 @@ func TestCoordinator_ReceiveBeforeSelectionIsRejected(t *testing.T) {
 }
 
 func TestCoordinator_PollingReceiverOutlastsTheProxyIdleLimit(t *testing.T) {
-	// 시간 축을 줄인 재현: Cloudflare 100초 대신 presence 100ms, Status 한 번은 30ms만 붙든다.
-	// 수신자가 presence 시간의 다섯 배 동안 Status만 반복해도 목록에 남아 선택된다.
+	// Cloudflare 100초 대신 presence 100ms, Status 한 번 30ms로 줄인 재현.
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -554,7 +535,6 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 		t.Fatalf("join into a full room: %v, want ErrRoomFull", err)
 	}
 
-	// 아무도 Status를 열지 않았으니 presence 시간이 지나면 자리가 비고, 세션은 그대로다.
 	time.Sleep(150 * time.Millisecond)
 	fresh, err := coord.Join(context.Background(), init.Code, client(51))
 	if err != nil {
@@ -567,7 +547,6 @@ func TestCoordinator_JoinedConnectionThatNeverPollsIsDroppedAndFreesItsSlot(t *t
 	if err := coord.Select(context.Background(), init.Code, init.SenderToken, ghosts[0].ConnectionID); err != ErrNotPending {
 		t.Fatalf("Select a dropped connection: %v, want ErrNotPending", err)
 	}
-	// 떨어진 연결은 거절이 아니다: 같은 기기가 다시 들어올 수 있다.
 	if _, err := coord.Join(context.Background(), init.Code, client(0)); err != nil {
 		t.Fatalf("a dropped client rejoining: %v", err)
 	}
@@ -594,7 +573,7 @@ func TestCoordinator_ChosenConnectionThatNeverReceivesEndsTheSession(t *testing.
 }
 
 func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *testing.T) {
-	// 청소기는 사실상 돌지 않는다(1시간). Send 쪽 대기가 직접 35초(여기서는 100ms) 기한을 지켜야 한다.
+	// 청소기가 사실상 돌지 않으므로 Send 쪽 대기가 직접 presence 기한을 지켜야 한다.
 	for _, sendFirst := range []bool{false, true} {
 		coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 100 * time.Millisecond, CleanInterval: time.Hour})
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -610,7 +589,6 @@ func TestCoordinator_SendEndsAtThePresenceDeadlineWhenTheChosenNeverReceives(t *
 			}()
 		}
 		if sendFirst {
-			// Select보다 먼저 기다리기 시작한 Send도 선택 뒤의 기한을 다시 읽는다.
 			send()
 			time.Sleep(30 * time.Millisecond)
 		}
@@ -655,7 +633,6 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	// 한 연결 ID로 롱폴을 더 쌓을 수 없다. 거절은 연결도 세션도 건드리지 않는다.
 	if _, err := coord.Status(ctx, init.Code, join.ConnectionID, time.Second); err != ErrPollInProgress {
 		t.Fatalf("status poll over the cap: %v, want ErrPollInProgress", err)
 	}
@@ -672,9 +649,7 @@ func TestCoordinator_StatusPollsPerConnectionAreCapped(t *testing.T) {
 	}
 }
 
-// 롱폴 도중 죽은 레플리카의 poll은 연결이 다른 레플리카로 계속 폴링해도 제 수명이
-// 지나면 더는 세지 않는다. 그러지 않으면 그 연결은 롱폴을 하나만 열 수 있고, 끊긴
-// 소켓을 다시 여는 순간 409 poll_in_progress로 수신이 실패한다.
+// 죽은 레플리카의 poll이 제 수명 뒤에도 세지면 끊긴 롱폴을 다시 열 때 409 poll_in_progress가 난다.
 func TestCoordinator_DeadReplicaPollStopsCounting(t *testing.T) {
 	const presence = 300 * time.Millisecond
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: presence})
@@ -684,14 +659,12 @@ func TestCoordinator_DeadReplicaPollStopsCounting(t *testing.T) {
 	join, _ := coord.Join(ctx, init.Code, client(1))
 	id, _ := coord.roomIDFor(init.Code)
 
-	// Given: 다른 레플리카가 poll을 연 채로 죽었다(해제 없음). 수명은 hold 50ms + presence.
 	leaseKeys := []string{coord.leaseKey(id, join.ConnectionID), coord.pollsKey(id, join.ConnectionID)}
 	if err := acquireLeaseScript.Run(ctx, coord.valkey, leaseKeys, MaxStatusPollsPerConnection,
 		presence.Milliseconds(), "dead-replica-poll", (50*time.Millisecond + presence).Milliseconds()).Err(); err != nil {
 		t.Fatalf("acquire the dead poll: %v", err)
 	}
 
-	// When: 수신자는 그 수명보다 오래 짧은 롱폴을 이어 간다(존재 키는 계속 살아 있다).
 	until := time.Now().Add(3 * presence)
 	for time.Now().Before(until) {
 		if _, err := coord.Status(ctx, init.Code, join.ConnectionID, 50*time.Millisecond); err != nil {
@@ -699,7 +672,6 @@ func TestCoordinator_DeadReplicaPollStopsCounting(t *testing.T) {
 		}
 	}
 
-	// Then: 두 롱폴을 동시에 열 수 있다.
 	held := make(chan error, MaxStatusPollsPerConnection)
 	for i := 0; i < MaxStatusPollsPerConnection; i++ {
 		go func() {
@@ -737,7 +709,6 @@ func TestCoordinator_PerNetworkCapHolds(t *testing.T) {
 	if _, err := coord.Join(context.Background(), init.Code, client(20)); err != nil {
 		t.Fatalf("join from another network: %v", err)
 	}
-	// 같은 네트워크의 한 자리가 비면 그 네트워크가 다시 들어온다. 세션은 그대로다.
 	if err := coord.Decline(context.Background(), init.Code, init.SenderToken, first.ConnectionID); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
@@ -827,7 +798,6 @@ func TestCoordinator_RoomFullRejectsWithoutBurning(t *testing.T) {
 		t.Fatal("room-full rejections burned the session")
 	}
 
-	// 세션은 그대로 살아 있어 전송까지 끝난다.
 	if err := coord.Select(context.Background(), init.Code, init.SenderToken, last.ConnectionID); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
@@ -857,7 +827,6 @@ func TestCoordinator_SelectedLocksOutLateJoinersWithoutBurning(t *testing.T) {
 	if got := recv(t, startReceive(ctx, coord, init.Code, second.ConnectionID)); got.err != ErrNotSelected {
 		t.Fatalf("second receiver: %v, want ErrNotSelected", got.err)
 	}
-	// 예전에는 늦은 연결 3번이 세션을 태웠다. 이제 몇 번이 와도 세션과 전송은 그대로다.
 	for i := 0; i < 5; i++ {
 		if _, err := coord.Join(context.Background(), init.Code, client(byte(10+i))); err != ErrAlreadyConnected {
 			t.Fatalf("late join %d: %v", i, err)
@@ -915,7 +884,6 @@ func TestCoordinator_BurnsNeverCutAnActiveStream(t *testing.T) {
 		t.Fatalf("write first chunk: %v", err)
 	}
 
-	// 스트리밍 도중: TTL(100ms)이 지나 청소기가 여러 번 돌고, 늦은 연결과 취소가 들어온다.
 	time.Sleep(300 * time.Millisecond)
 	for i := 0; i < 5; i++ {
 		_, _ = coord.Join(context.Background(), init.Code, client(byte(20+i)))
@@ -937,8 +905,6 @@ func TestCoordinator_BurnsNeverCutAnActiveStream(t *testing.T) {
 }
 
 func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
-	// Cancel과 Send가 동시에 오면 둘 중 하나만 이긴다: 취소가 이기면 스트림은 시작조차 하지
-	// 않고, 스트림이 먼저 시작하면 취소는 ErrStreaming이고 수신자는 전부 받는다.
 	coord := newTestCoordinator(t, CoordinatorOptions{MaxConcurrent: 1000})
 	payload := bytes.Repeat([]byte("x"), 256*1024)
 	cancelWon, streamWon := 0, 0
@@ -957,8 +923,7 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 			_, err := coord.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, bytes.NewReader(payload))
 			sendDone <- err
 		}()
-		// Cancel이 Send의 여러 지점(송신 점유 전·스트리밍 표시 직전·복사 중)에 걸리도록
-		// 0~3.9ms 사이로 늦춘다. Send는 Valkey 왕복이 여럿이라 늦추지 않으면 취소만 이긴다.
+		// Send는 Valkey 왕복이 여럿이라 늦추지 않으면 취소만 이긴다.
 		time.Sleep(time.Duration(i%40) * 100 * time.Microsecond)
 		cancelErr := coord.Cancel(context.Background(), init.Code, init.SenderToken)
 		sendErr := <-sendDone
@@ -968,7 +933,7 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 		switch {
 		case cancelErr == nil:
 			cancelWon++
-			// Send는 시작 전에 취소를 본다(세션이 이미 지워졌으면 ErrNotFound).
+			// 세션이 이미 지워졌으면 ErrNotFound.
 			if (sendErr != ErrCancelled && sendErr != ErrNotFound) || len(got.body) != 0 {
 				t.Fatalf("iteration %d: cancel won but send=%v and receiver got %d bytes", i, sendErr, len(got.body))
 			}
@@ -978,7 +943,6 @@ func TestCoordinator_CancelRacingSendNeverCutsAStream(t *testing.T) {
 				t.Fatalf("iteration %d: stream started but was cut: send=%v received %d of %d bytes", i, sendErr, len(got.body), len(payload))
 			}
 		case cancelErr == ErrNotFound:
-			// 스트림이 Cancel보다 먼저 끝나 세션이 이미 사라졌다.
 			streamWon++
 			if sendErr != nil || !bytes.Equal(got.body, payload) {
 				t.Fatalf("iteration %d: finished stream incomplete: send=%v received %d bytes", i, sendErr, len(got.body))
@@ -1001,8 +965,7 @@ func TestCoordinator_CancelEndsWaitingReceivers(t *testing.T) {
 	join, _ := coord.Join(context.Background(), init.Code, client(1))
 	waiting := pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 200*time.Millisecond)
 	waitPending(t, coord, init, 1)
-	// Join은 Status보다 먼저 목록에 오르므로, Status가 열릴 시간을 준다
-	// (세션이 사라진 뒤에 열면 ErrNotFound를 받는다).
+	// Join은 Status보다 먼저 목록에 오르므로 Status가 열릴 시간을 준다.
 	time.Sleep(50 * time.Millisecond)
 
 	if err := coord.Cancel(context.Background(), init.Code, init.SenderToken); err != nil {

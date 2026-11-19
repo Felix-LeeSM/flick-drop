@@ -60,8 +60,6 @@ func TestParseShareLinkBareID(t *testing.T) {
 	}
 }
 
-// A deployment reachable under a path prefix still has to resolve to the right
-// API base, since /api sits beside /s on the same origin.
 func TestParseShareLinkKeepsPathPrefix(t *testing.T) {
 	link, err := ParseShareLink("https://example.com/flick/s/abc123")
 	if err != nil {

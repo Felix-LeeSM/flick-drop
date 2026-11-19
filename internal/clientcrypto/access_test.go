@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// The access_proof vector is shared with web/src/lib/crypto/access.test.ts. If
-// either side's constants move, one of the two suites fails here instead of
-// Model A links created by one client refusing the other's proof.
+// Shared with web/src/lib/crypto/access.test.ts; constant drift on either side fails a suite.
 const vectorsPath = "../../tests/fixtures/client-crypto-vectors.json"
 
 type vectors struct {
@@ -126,8 +124,7 @@ func TestDecodeKeyFragmentRejectsBadInput(t *testing.T) {
 		"lowercase":    "#key=" + strings.ToLower(valid),
 		"old raw key":  "#key=" + strings.Repeat("A", 43),
 		"bad checksum": "#key=" + valid[:len(valid)-1] + map[bool]string{true: "Q", false: "P"}[valid[len(valid)-1] == 'P'],
-		// Bounded before parsing so a huge fragment cannot force large work (#89).
-		"oversized": "#key=" + IdentityPrefix + strings.Repeat("Q", maxKeyFragmentChars),
+		"oversized":    "#key=" + IdentityPrefix + strings.Repeat("Q", maxKeyFragmentChars),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeKeyFragment(fragment); err == nil {

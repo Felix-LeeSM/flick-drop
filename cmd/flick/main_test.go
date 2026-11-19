@@ -13,8 +13,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
 
-// newOpenFlags mirrors the flag set runOpen builds, so the hoisting tests
-// exercise the same bool/value mix the real command has.
 func newOpenFlags() *flag.FlagSet {
 	flags := flag.NewFlagSet("flick open", flag.ContinueOnError)
 	flags.String("output", "", "")
@@ -33,8 +31,6 @@ func newSendFlags() *flag.FlagSet {
 	return flags
 }
 
-// Go's flag package stops at the first non-flag argument, so flags written
-// after the link were silently swallowed and reported as extra arguments.
 func TestHoistFlagsMovesFlagsAheadOfPositionalArguments(t *testing.T) {
 	flags := newOpenFlags()
 	args := []string{"https://example.com/s/abc#key=x", "-output-dir", "out"}
@@ -56,8 +52,6 @@ func TestHoistFlagsMovesFlagsAheadOfPositionalArguments(t *testing.T) {
 	}
 }
 
-// A bool flag consumes no following token; treating it as if it did would eat
-// the positional argument after it.
 func TestHoistFlagsKeepsBoolFlagsSeparateFromTheirNeighbour(t *testing.T) {
 	flags := newSendFlags()
 
@@ -93,8 +87,6 @@ func TestHoistFlagsHandlesInlineValues(t *testing.T) {
 	}
 }
 
-// A generated password can begin with a dash, and "--" is the only way to send
-// one as an argument. Dropping the terminator while hoisting made it useless.
 func TestHoistFlagsPreservesTheDoubleDashTerminator(t *testing.T) {
 	flags := newSendFlags()
 
@@ -138,8 +130,6 @@ func TestReadTextRejectsMultipleArguments(t *testing.T) {
 }
 
 func TestReadTextReadsPipedStdin(t *testing.T) {
-	// A trailing newline belongs to the shell, not the secret: an API key
-	// echoed through a pipe must not arrive with one attached.
 	withStdin(t, "sk-live-piped\n", func() {
 		text, err := readText(nil, 0)
 		if err != nil {
@@ -160,7 +150,6 @@ func TestReadTextRejectsEmptyStdin(t *testing.T) {
 }
 
 func TestReadTextEnforcesInlineLimit(t *testing.T) {
-	// Argument at limit
 	text, err := readText([]string{strings.Repeat("a", 10)}, 10)
 	if err != nil {
 		t.Fatalf("readText at limit: %v", err)
@@ -169,12 +158,10 @@ func TestReadTextEnforcesInlineLimit(t *testing.T) {
 		t.Errorf("len(text) = %d, want 10", len(text))
 	}
 
-	// Argument 1 byte over limit
 	if _, err := readText([]string{strings.Repeat("a", 11)}, 10); err == nil {
 		t.Error("accepted argument text over limit")
 	}
 
-	// Piped stdin at limit
 	withStdin(t, strings.Repeat("b", 10), func() {
 		text, err := readText(nil, 10)
 		if err != nil {
@@ -185,7 +172,6 @@ func TestReadTextEnforcesInlineLimit(t *testing.T) {
 		}
 	})
 
-	// Piped stdin 1 byte over limit (fails fast)
 	withStdin(t, strings.Repeat("b", 11), func() {
 		if _, err := readText(nil, 10); err == nil {
 			t.Error("accepted stdin text over limit")
@@ -206,8 +192,6 @@ func TestFileNameOfKeepsOnlyTheBaseName(t *testing.T) {
 	}
 }
 
-// A passphrase must never be readable from the process table, so the only
-// non-interactive route is the environment.
 func TestPassphraseReadersUseTheEnvironmentInsteadOfPrompting(t *testing.T) {
 	t.Setenv("FLICK_PASSPHRASE", "from the environment")
 
@@ -257,8 +241,6 @@ func TestRunRejectsAnUnknownCommand(t *testing.T) {
 }
 
 func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
-	// A release build stamps `version`; a `go install` build leaves it empty and
-	// falls back. Neither may report nothing at all.
 	if got := clientVersion(); got == "" {
 		t.Error("clientVersion returned an empty string")
 	}
@@ -279,9 +261,6 @@ func TestUsageNamesBothCommands(t *testing.T) {
 	}
 }
 
-// Running `flick send` with nothing to send used to be a usage error. It now
-// asks, and Enter must keep the default lifetime so the common case stays one
-// keystroke.
 func TestPromptTTLTakesTheDefaultOnAnEmptyLine(t *testing.T) {
 	withStdin(t, "\n", func() {
 		_, _, err := captureOutput(t, func() error {
@@ -322,8 +301,6 @@ func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
 	})
 }
 
-// The secret has already been typed at a prompt that does not echo it, so a
-// mistyped lifetime must be asked again rather than throw the send away.
 func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
 	withStdin(t, "tomorrow\n999h\n24h\n", func() {
 		_, stderr, err := captureOutput(t, func() error {
@@ -339,16 +316,12 @@ func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
 		if !strings.Contains(stderr, "not a duration") {
 			t.Errorf("stderr did not explain the bad duration: %q", stderr)
 		}
-		// 999h parses but exceeds the contract's ceiling. Catching it here
-		// keeps the passphrase prompt from running before the rejection.
 		if !strings.Contains(stderr, "A secret lives between") {
 			t.Errorf("stderr did not reject an out-of-range lifetime: %q", stderr)
 		}
 	})
 }
 
-// Ctrl-D at a prompt means stop. Reading it as an empty line would take the
-// default and send a secret the user was trying not to send.
 func TestPromptsTreatEndOfInputAsACancel(t *testing.T) {
 	withStdin(t, "", func() {
 		_, _, err := captureOutput(t, func() error {
@@ -393,8 +366,6 @@ func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
 	}
 }
 
-// readLine must consume exactly one line: the next reader on this terminal is
-// often the passphrase prompt, and a buffered reader would have swallowed it.
 func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
 	withStdin(t, "24h\nthe next answer\n", func() {
 		first, err := readLine()
@@ -411,7 +382,6 @@ func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
 	})
 }
 
-// A flag that was actually typed must not be asked about again.
 func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
 	flags := newSendFlags()
 	if err := flags.Parse([]string{"-ttl", "1h"}); err != nil {
@@ -425,9 +395,6 @@ func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
 	}
 }
 
-// salvage is the last stop for a secret the server has already destroyed: if it
-// does not reach the user here, nothing else will. Text goes to stdout so a
-// redirect still catches it.
 func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
 	dir := t.TempDir()
 	cause := errors.New("disk full")
@@ -454,9 +421,6 @@ func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
 	}
 }
 
-// Raw file bytes on a terminal are unrecoverable, so a file secret's rescue is
-// the decrypted staging file Open left beside the requested output, named on
-// stderr.
 func TestSalvageNamesTheRescuedFile(t *testing.T) {
 	rescued := filepath.Join(t.TempDir(), ".flick-partial-1")
 	if err := os.WriteFile(rescued, []byte("binary payload"), 0o600); err != nil {
@@ -481,8 +445,6 @@ func TestSalvageNamesTheRescuedFile(t *testing.T) {
 	}
 }
 
-// A file whose write failed mid-stream has no complete copy anywhere; salvage
-// must say so instead of pointing at a partial file.
 func TestSalvageReportsALostFile(t *testing.T) {
 	stdout, stderr, err := captureOutput(t, func() error {
 		return salvage(flickcli.OpenResult{Kind: "file"}, errors.New("disk full"))
@@ -499,8 +461,6 @@ func TestSalvageReportsALostFile(t *testing.T) {
 	}
 }
 
-// rescuedPath reads back the path salvage announced on stderr, which is the
-// only way the user learns where their secret went.
 func rescuedPath(t *testing.T, stderr string) string {
 	t.Helper()
 	_, after, found := strings.Cut(stderr, "Payload written to ")
@@ -514,8 +474,6 @@ func rescuedPath(t *testing.T, stderr string) string {
 	return path
 }
 
-// captureOutput redirects os.Stdout and os.Stderr into files for the duration
-// of body, so the payload salvage prints can be asserted on.
 func captureOutput(t *testing.T, body func() error) (stdout, stderr string, err error) {
 	t.Helper()
 	dir := t.TempDir()
@@ -544,8 +502,6 @@ func readFile(t *testing.T, path string) string {
 	return string(content)
 }
 
-// withStdin swaps os.Stdin for a pipe holding the given content, so readText
-// takes its non-terminal branch.
 func withStdin(t *testing.T, content string, body func()) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "stdin")

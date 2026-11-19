@@ -11,12 +11,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// The producer's trace context must survive the whole async hop: injected at
-// enqueue, serialized into the outbox payload, decoded after the NATS publish,
-// then extracted so a consumer span continues the same trace. Exercised here
-// without a DB or NATS by serializing + decoding in place.
 func TestTraceContextRoundTrip(t *testing.T) {
-	// Mutates global otel state (provider + propagator); do not t.Parallel.
+	// Mutates global otel state; do not t.Parallel.
 	prevProp := otel.GetTextMapPropagator()
 	prevTP := otel.GetTracerProvider()
 	otel.SetTextMapPropagator(propagation.TraceContext{})
@@ -63,9 +59,6 @@ func TestTraceContextRoundTrip(t *testing.T) {
 	}
 }
 
-// With tracing off (no-op propagator) an enqueue carries no trace_context and
-// extraction is a no-op, so an untraced deployment pays nothing and emits no
-// field.
 func TestTraceContextOffIsNoop(t *testing.T) {
 	prev := otel.GetTextMapPropagator()
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())

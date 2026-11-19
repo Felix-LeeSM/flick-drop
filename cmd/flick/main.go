@@ -1,10 +1,4 @@
-// Command flick is the Flick command-line client: it creates and opens
-// one-time secrets against a Flick deployment.
-//
-// Like the browser, it encrypts and decrypts locally with age — the
-// passphrase, the secret's identity, and the plaintext never leave this
-// process. See
-// docs/architecture/security-model.md.
+// The passphrase, the secret's identity, and the plaintext never leave this process.
 package main
 
 import (
@@ -27,13 +21,10 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
 
-// version is stamped at release time with -ldflags "-X main.version=...".
-// A `go install` build leaves it empty and falls back to the module version
-// embedded by the toolchain.
+// Stamped with -ldflags "-X main.version=..."; empty for `go install`, which falls back to the module version.
 var version string
 
-// defaultAPIURL matches web/src/lib/api/secrets.ts DEFAULT_API_BASE_URL so a
-// local dev stack works with no flags.
+// Matches DEFAULT_API_BASE_URL in web/src/lib/api/secrets.ts.
 const defaultAPIURL = "http://localhost:8080"
 
 const usage = `flick — one-time encrypted secret links
@@ -76,8 +67,6 @@ func run(args []string) error {
 		return errors.New("no command given")
 	}
 
-	// Ctrl-C during a long upload should stop the request, not leave the
-	// terminal hanging on a 10-minute HTTP timeout.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -132,10 +121,6 @@ func runSend(ctx context.Context, args []string) error {
 		opts.File = file
 		opts.FileName = fileNameOf(*filePath)
 	case flags.NArg() == 0 && term.IsTerminal(int(os.Stdin.Fd())):
-		// Nothing to send and a human at the terminal: ask for the parts the
-		// command line left out, one at a time, instead of failing with a
-		// usage error. A pipe or an argument means the caller already knows
-		// what they want, so nothing is asked there.
 		text, err := promptSecretText()
 		if err != nil {
 			return err
@@ -211,8 +196,7 @@ func runOpen(ctx context.Context, args []string) error {
 
 	base := *apiURL
 	if base == "" {
-		// A deployed Flick serves /api and /s on the same origin
-		// (deploy/base/ingress.yaml), so the link itself names the API.
+		// A deployed Flick serves /api and /s on one origin (deploy/base/ingress.yaml).
 		base = link.Origin
 	}
 	if base == "" {
@@ -234,9 +218,6 @@ func runOpen(ctx context.Context, args []string) error {
 
 	if result.WrittenPath != "" {
 		if result.FilenameUnreadable {
-			// The payload is separately authenticated, so its content is
-			// sound; only the name failed. Saying so is the recipient's one
-			// hint that the metadata was corrupted or tampered with.
 			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
 		}
 		fmt.Fprintf(os.Stderr, "Saved %s\n", result.WrittenPath)
@@ -244,22 +225,14 @@ func runOpen(ctx context.Context, args []string) error {
 	}
 	_, err = os.Stdout.Write(result.Plaintext)
 	if err == nil && !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
-		// Keep piped output byte-exact; only a human at a terminal gets the
-		// trailing newline that stops the shell prompt from running into it.
+		// Keep piped output byte-exact.
 		fmt.Println()
 	}
 	return err
 }
 
-// salvage handles the one case where the secret no longer exists anywhere but
-// this process: the server consumed it and the local write failed afterwards.
-// Losing the payload here would make the client the reason a secret ceased to
-// exist, so it is put somewhere the user can still reach.
-//
-// Text goes to stdout. A file secret does not: raw bytes written to a terminal
-// are effectively unrecoverable, and it was streamed to disk instead of held in
-// memory, so what survives is the decrypted staging file beside the
-// destination the user asked for, whose path is named on stderr.
+// salvage rescues a secret the server already consumed when the local write failed afterwards.
+// A file secret is never written to a terminal; its decrypted staging file path goes to stderr.
 func salvage(result flickcli.OpenResult, cause error) error {
 	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
 
@@ -274,16 +247,11 @@ func salvage(result flickcli.OpenResult, cause error) error {
 			return fmt.Errorf("%w (and the payload could not be printed: %w)", cause, err)
 		}
 	default:
-		// The write failed while the file was still streaming, so no complete
-		// copy exists anywhere.
 		fmt.Fprintln(os.Stderr, "The secret is gone from the server, and the file could not be saved while it was decrypted.")
 	}
 	return cause
 }
 
-// readText takes the payload from the argument, or from stdin when none is
-// given. Reading from stdin is what makes `... | flick send` work. A terminal
-// with no argument never reaches here; runSend asks for the text instead.
 func readText(args []string, limit int64) (string, error) {
 	if len(args) > 1 {
 		return "", errors.New("give the text as one argument, or pipe it on stdin")
@@ -305,8 +273,6 @@ func readText(args []string, limit int64) (string, error) {
 	if limit > 0 && int64(len(piped)) > limit {
 		return "", fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(piped), limit)
 	}
-	// A trailing newline is the shell's, not the secret's — an API key echoed
-	// through a pipe should not arrive with one attached.
 	text := strings.TrimRight(string(piped), "\r\n")
 	if text == "" {
 		return "", errors.New("stdin was empty")
@@ -317,17 +283,11 @@ func readText(args []string, limit int64) (string, error) {
 	return text, nil
 }
 
-// errCancelled is Ctrl-D at a prompt: the user asked to stop, so the send is
-// abandoned without an error message that reads like a failure.
 var errCancelled = errors.New("cancelled")
 
-// promptSecretText asks for the payload when `flick send` was run with nothing
-// to send. It is read without echo, like a passphrase: the point of typing a
-// secret at a prompt instead of passing it as an argument is that it stays out
-// of the shell history, and leaving it on screen gives half of that back.
+// Read without echo, like a passphrase, so the secret stays off screen and out of shell history.
 func promptSecretText() (string, error) {
-	// One line, and said so: the reader stops at the first newline, so a pasted
-	// PEM key would leave its remaining lines to be eaten by the next prompt.
+	// The reader stops at the first newline, so a pasted multi-line key would leak into the next prompt.
 	fmt.Fprintln(os.Stderr,
 		"Type or paste the secret on one line and press Enter. It is not echoed.")
 	fmt.Fprintln(os.Stderr, "For anything multi-line, use -file or pipe it in instead.")
@@ -341,14 +301,8 @@ func promptSecretText() (string, error) {
 	return text, nil
 }
 
-// promptTTL asks how long the secret should live. Enter takes the default, so
-// the common case stays one keystroke.
-//
-// A bad answer is asked again rather than returned as an error: the secret has
-// already been typed at a prompt that does not echo it, and aborting here would
-// make the user type it all over again. The contract bounds are checked here
-// too, not left to flickcli.Send, so "999h" is caught before the passphrase
-// prompt rather than after it.
+// A bad answer is asked again: the secret was already typed without echo. Contract bounds are checked
+// here so "999h" fails before the passphrase prompt.
 func promptTTL(fallback time.Duration) (time.Duration, error) {
 	for {
 		fmt.Fprintf(os.Stderr, "Expires in [%s]: ", fallback)
@@ -381,13 +335,8 @@ func promptYesNo(label string) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-// readLine reads one line from stdin a byte at a time. A bufio.Reader would
-// pull whatever follows into a buffer this function then throws away, and what
-// follows a prompt here is often the passphrase reader taking the terminal
-// directly.
-//
-// Ctrl-D on an empty line is a cancel, not an empty answer: reading it as
-// "take the default" would send a secret the user was trying not to send.
+// Byte at a time: a bufio.Reader would swallow input meant for the passphrase reader that follows.
+// Ctrl-D on an empty line is a cancel, never "take the default".
 func readLine() (string, error) {
 	line := make([]byte, 0, 32)
 	buf := make([]byte, 1)
@@ -412,9 +361,6 @@ func readLine() (string, error) {
 	return strings.TrimRight(string(line), "\r"), nil
 }
 
-// flagGiven reports whether a flag was actually written on the command line,
-// as opposed to holding its default. An interactive send asks only about what
-// the caller left out.
 func flagGiven(flags *flag.FlagSet, name string) bool {
 	given := false
 	flags.Visit(func(f *flag.Flag) {
@@ -425,11 +371,7 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 	return given
 }
 
-// readNewPassphrase prompts twice so a typo does not produce a secret nobody
-// can open. FLICK_PASSPHRASE skips the prompt for scripted use.
-//
-// The passphrase is never accepted as a command-line flag: arguments are
-// visible to every process on the machine through ps and land in shell history.
+// Never accept the passphrase as a flag: arguments show up in ps and shell history.
 func readNewPassphrase() (string, error) {
 	if fromEnv, ok := os.LookupEnv("FLICK_PASSPHRASE"); ok {
 		if fromEnv == "" {
@@ -471,15 +413,12 @@ func promptHidden(label string) (string, error) {
 			"a passphrase is needed but stdin is not a terminal; set FLICK_PASSPHRASE instead",
 		)
 	}
-	// The prompt goes to stderr so `flick open ... > secret.txt` writes only
-	// the payload.
+	// stderr, so `flick open ... > secret.txt` writes only the payload.
 	fmt.Fprint(os.Stderr, label)
 	typed, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
 	if errors.Is(err, io.EOF) {
-		// Ctrl-D here means the same thing it means at every other prompt.
-		// ReadPassword reports it as a read error, which would otherwise
-		// surface as a failure the user did not have.
+		// ReadPassword reports Ctrl-D as a read error; treat it as a cancel like every other prompt.
 		return "", errCancelled
 	}
 	if err != nil {
@@ -488,13 +427,7 @@ func promptHidden(label string) (string, error) {
 	return string(typed), nil
 }
 
-// hoistFlags moves flags ahead of positional arguments so that
-// `flick open <link> -output-dir out` works. Go's flag package stops parsing at
-// the first non-flag argument, which would otherwise read "-output-dir" and
-// "out" as two more positional arguments and fail with a confusing count error.
-//
-// Whether a flag consumes the next token is asked of the FlagSet rather than
-// guessed: a bool flag stands alone, every other flag takes a value.
+// Go's flag package stops at the first non-flag argument, so `flick open <link> -output-dir out` needs hoisting.
 func hoistFlags(flags *flag.FlagSet, args []string) []string {
 	hoisted := make([]string, 0, len(args))
 	positional := make([]string, 0, len(args))
@@ -502,11 +435,7 @@ func hoistFlags(flags *flag.FlagSet, args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			// Everything after "--" is positional by convention, including
-			// text that begins with a dash. The terminator itself is re-emitted
-			// ahead of those arguments so the flag package still honours it —
-			// dropping it would hand "-my-secret" back to Parse as a flag,
-			// which is exactly what the escape hatch exists to prevent.
+			// Re-emit "--" so Parse still treats a dash-leading secret as positional.
 			positional = append(positional, args[i:]...)
 			break
 		}
@@ -529,12 +458,10 @@ func hoistFlags(flags *flag.FlagSet, args []string) []string {
 	return append(hoisted, positional...)
 }
 
-// takesNoValue reports whether a flag is boolean, which the flag package
-// signals through an unexported interface on the flag's value.
+// The flag package signals bool flags through an unexported interface on the value.
 func takesNoValue(flags *flag.FlagSet, name string) bool {
 	found := flags.Lookup(name)
 	if found == nil {
-		// Unknown flags are left for Parse to reject with its own message.
 		return true
 	}
 	asBool, ok := found.Value.(interface{ IsBoolFlag() bool })
@@ -548,8 +475,7 @@ func defaultURL() string {
 	return defaultAPIURL
 }
 
-// fileNameOf keeps only the base name. The full path is local context the
-// recipient has no use for and the sender may not want to disclose.
+// The full path is local context the sender may not want to disclose.
 func fileNameOf(path string) string {
 	base := filepath.Base(path)
 	if base == "." || base == string(filepath.Separator) {

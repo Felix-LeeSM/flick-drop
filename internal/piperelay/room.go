@@ -15,9 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// roomID names one rendezvous in Valkey: the hex HMAC-SHA-256 of the 6-digit
-// code under CoordinatorOptions.KeySalt. A Valkey key dump therefore never
-// reveals a code (a bare SHA-256 of 900,000 possible codes would).
+// Hex HMAC-SHA-256 of the code under KeySalt: a bare SHA-256 of 900,000 codes would reveal the code in a key dump.
 type roomID string
 
 func validRoomID(raw string) bool {
@@ -28,46 +26,38 @@ func validRoomID(raw string) bool {
 	return err == nil
 }
 
-// Connection results stored in roomConn.Result.
 const (
 	resultSelected    = "selected"
 	resultDeclined    = "declined"
 	resultNotSelected = "not_selected"
 )
 
-// End causes stored in room.EndCause.
 const (
 	causeCancelled = "cancelled"
 	causeExpired   = "expired"
 	causeClosed    = "closed"
 )
 
-// room is the whole state of one rendezvous, stored as JSON in the
-// "state" field of the Valkey hash {Namespace}room:{roomID}. It never holds
-// ciphertext, the plaintext code, the sender token, or the stream secret:
-// only their hashes.
+// Never holds ciphertext, the plaintext code, the sender token, or the stream secret: only their hashes.
 type room struct {
 	SenderTokenHash string    `json:"sender_token_hash"`
 	ExpiresAt       time.Time `json:"expires_at"`
-	// Version is what the sender's Wait long-poll compares; it moves only on
-	// changes the sender sees (joins, decisions, receiver ready, pruning).
+	// Moves only on changes the sender sees (joins, decisions, receiver ready, pruning).
 	Version     uint64     `json:"version"`
 	NextIndex   int        `json:"next_index"`
 	Connections []roomConn `json:"connections"`
-	// DeclinedClients holds the HMAC'd client keys the sender declined.
+	// HMAC'd client keys.
 	DeclinedClients []string  `json:"declined_clients"`
 	Selected        string    `json:"selected,omitempty"`
 	SelectedAt      time.Time `json:"selected_at,omitzero"`
 	SenderClaimed   bool      `json:"sender_claimed,omitempty"`
-	// ReceiverIP is the IP literal of the pod holding the chosen receiver's
-	// /receive; the sender's pod dials it on CoordinatorOptions.InternalPort.
+	// The sender's pod dials it on CoordinatorOptions.InternalPort.
 	ReceiverIP       string    `json:"receiver_ip,omitempty"`
 	StreamSecretHash string    `json:"stream_secret_hash,omitempty"`
 	StreamStartedAt  time.Time `json:"stream_started_at,omitzero"`
 	EndCause         string    `json:"end_cause,omitempty"`
 }
 
-// roomConn is one receiver that entered the right code.
 type roomConn struct {
 	ID         string    `json:"id"`
 	Index      int       `json:"index"`
@@ -78,14 +68,14 @@ type roomConn struct {
 	Network    string    `json:"network"`
 	JoinedAt   time.Time `json:"joined_at"`
 	Attached   bool      `json:"attached,omitempty"`
-	// Result is empty while the connection waits for the sender's pick.
+	// Empty while the connection waits for the sender's pick.
 	Result string `json:"result,omitempty"`
 }
 
 func (r *room) ended() bool     { return r.EndCause != "" }
 func (r *room) streaming() bool { return !r.StreamStartedAt.IsZero() }
 
-// end marks the room ended with cause; the first cause wins.
+// The first cause wins.
 func (r *room) end(cause string) {
 	if r.EndCause == "" {
 		r.EndCause = cause
@@ -115,8 +105,6 @@ func (r *room) conn(id string) *roomConn {
 	return nil
 }
 
-// pending lists undecided connections in join order (Connections is kept in
-// join order).
 func (r *room) pending() []*roomConn {
 	out := make([]*roomConn, 0, len(r.Connections))
 	for i := range r.Connections {
@@ -127,14 +115,11 @@ func (r *room) pending() []*roomConn {
 	return out
 }
 
-// receiverReady reports whether the chosen receiver has opened Receive.
 func (r *room) receiverReady() bool {
 	sel := r.conn(r.Selected)
 	return sel != nil && sel.Attached
 }
 
-// loserResult is the answer a connection the sender already settled keeps,
-// even after the room ends.
 func (c *roomConn) loserResult() error {
 	switch c.Result {
 	case resultDeclined:
@@ -180,27 +165,18 @@ func (c *Coordinator) roomKey(id roomID) string      { return c.namespace + "roo
 func (c *Coordinator) roomsKey() string              { return c.namespace + "rooms" }
 func (c *Coordinator) eventChannel(id roomID) string { return c.namespace + "ev:" + string(id) }
 
-// leaseKey marks one connection as present. Its TTL is the presence timeout,
-// refreshed when a Status poll starts and ends, so the key exists exactly
-// while the connection counts as present.
+// TTL is the presence timeout, refreshed when a Status poll starts and ends.
 func (c *Coordinator) leaseKey(id roomID, connID string) string {
 	return c.namespace + "poll:" + string(id) + ":" + sha256Hex(connID)[:32]
 }
 
-// pollsKey holds one member per open Status poll of a connection, scored by
-// the time after which the poll no longer counts (its hold plus the presence
-// timeout). A replica that dies mid-poll never removes its member, so the
-// member's own score frees the slot even while the connection keeps polling
-// through other replicas and keeps the key alive.
+// Members scored by when the poll stops counting, so a replica that dies mid-poll still frees the slot.
 func (c *Coordinator) pollsKey(id roomID, connID string) string {
 	return c.namespace + "polls:" + string(id) + ":" + sha256Hex(connID)[:32]
 }
 
-// createRoomScript adds a room unless the concurrent-room cap is reached
-// (-1) or the code is taken, including by an ended room's tombstone (0).
-//
-// KEYS: room, rooms. ARGV: roomID, now ms, max rooms, state, key TTL ms,
-// rooms score (expiry ms).
+// Returns -1 at the room cap, 0 when the code is taken (tombstones included).
+// KEYS: room, rooms. ARGV: roomID, now ms, max rooms, state, key TTL ms, rooms score (expiry ms).
 var createRoomScript = redis.NewScript(`
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[2])
 if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[3]) then return -1 end
@@ -211,12 +187,8 @@ redis.call('ZADD', KEYS[2], ARGV[6], ARGV[1])
 return 1
 `)
 
-// casRoomScript replaces the room state only if its rev is unchanged, then
-// announces the change on the room's Pub/Sub channel in the same atomic step.
-// A score of "-" removes the room from the live set; "" leaves the score.
-//
-// KEYS: room, rooms, event channel. ARGV: expected rev, state, key TTL ms,
-// roomID, rooms score.
+// Writes only if rev is unchanged and publishes in the same atomic step. Score "-" removes from the live set; "" keeps it.
+// KEYS: room, rooms, event channel. ARGV: expected rev, state, key TTL ms, roomID, rooms score.
 var casRoomScript = redis.NewScript(`
 if redis.call('HGET', KEYS[1], 'rev') ~= ARGV[1] then return 0 end
 local rev = tonumber(ARGV[1]) + 1
@@ -231,12 +203,8 @@ redis.call('PUBLISH', KEYS[3], rev)
 return 1
 `)
 
-// acquireLeaseScript opens one Status poll: 0 when the connection already has
-// ARGV[1] polls that still count. It reads Valkey's clock, so replicas with
-// skewed clocks agree on when a poll stops counting.
-//
-// KEYS: lease, polls. ARGV: max polls, presence TTL ms, poll member, poll
-// lifetime ms.
+// Returns 0 when ARGV[1] polls still count. Uses Valkey's clock so skewed replicas agree.
+// KEYS: lease, polls. ARGV: max polls, presence TTL ms, poll member, poll lifetime ms.
 var acquireLeaseScript = redis.NewScript(`
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
@@ -248,7 +216,6 @@ redis.call('SET', KEYS[1], 1, 'PX', ARGV[2])
 return 1
 `)
 
-// releaseLeaseScript closes one Status poll and restarts the presence TTL.
 // KEYS: lease, polls. ARGV: presence TTL ms, poll member.
 var releaseLeaseScript = redis.NewScript(`
 redis.call('ZREM', KEYS[2], ARGV[2])
@@ -260,7 +227,6 @@ func unavailable(err error) error {
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
-// load reads the room and its rev. A missing key is ErrNotFound.
 func (c *Coordinator) load(ctx context.Context, id roomID) (room, string, error) {
 	values, err := c.valkey.HMGet(ctx, c.roomKey(id), "rev", "state").Result()
 	if err != nil {
@@ -278,15 +244,10 @@ func (c *Coordinator) load(ctx context.Context, id roomID) (room, string, error)
 	return r, rev, nil
 }
 
-// maxCASAttempts bounds the optimistic retries of one update. Ten waiting
-// receivers and a sender touch one room, so a few retries always settle.
+// Ten receivers and a sender touch one room, so a few retries always settle.
 const maxCASAttempts = 32
 
-// update reads the room, applies the rules that end it lazily (settle), runs
-// fn, and writes the result back with a compare-and-set when settle or fn
-// changed it. fn returns whether it changed the room and the caller's answer;
-// the answer is returned after the write. A lost race re-reads and runs fn
-// again on the fresh state.
+// A lost compare-and-set race re-reads and reruns fn; the answer is returned after the write.
 func (c *Coordinator) update(ctx context.Context, id roomID, fn func(r *room, now time.Time) (bool, error)) (room, error) {
 	for range maxCASAttempts {
 		r, rev, err := c.load(ctx, id)
@@ -310,21 +271,12 @@ func (c *Coordinator) update(ctx context.Context, id roomID, fn func(r *room, no
 	return room{}, fmt.Errorf("%w: room update kept losing the compare-and-set race", ErrUnavailable)
 }
 
-// view reads the room with its lazy end rules applied.
 func (c *Coordinator) view(ctx context.Context, id roomID) (room, error) {
 	return c.update(ctx, id, func(*room, time.Time) (bool, error) { return false, nil })
 }
 
-// settle ends a room whose time ran out, the same rules the in-process
-// cleaner applies, so every reader sees the end at once instead of up to one
-// cleaner interval later:
-//   - before streaming, the 3-minute rendezvous window closing ends it
-//     (ErrExpired), and a chosen connection that has not opened Receive
-//     within the presence timeout ends it (ErrSessionClosed);
-//   - a streaming room is exempt from the rendezvous window and ends only
-//     past MaxTransferDuration (ErrExpired).
-//
-// It reports whether it changed the room.
+// Same rules as the cleaner, so readers see the end at once. Before streaming: the 3-minute window
+// (ErrExpired) or a chosen connection idle past the presence timeout (ErrSessionClosed); streaming: MaxTransferDuration.
 func (c *Coordinator) settle(r *room, now time.Time) bool {
 	switch {
 	case r.ended():
@@ -350,10 +302,6 @@ func (c *Coordinator) chosenAbandoned(r *room, now time.Time) bool {
 	return sel != nil && !sel.Attached && now.After(r.SelectedAt.Add(c.presenceTimeout))
 }
 
-// compareAndSet writes r if the stored rev is still rev. The key outlives the
-// state's own deadline by endedRetention, and an ended room stays as a
-// tombstone for endedRetention so a caller already in the session learns how
-// it ended.
 func (c *Coordinator) compareAndSet(ctx context.Context, id roomID, rev string, r room, now time.Time) (bool, error) {
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -382,8 +330,7 @@ func (c *Coordinator) compareAndSet(ctx context.Context, id roomID, rev string, 
 	return n == 1, nil
 }
 
-// endRoom ends the room with cause unless it already ended. It runs on a
-// short context detached from the caller's (often already cancelled) one.
+// Runs on a short context detached from the caller's, which is often already cancelled.
 func (c *Coordinator) endRoom(ctx context.Context, id roomID, cause string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endRoomTimeout)
 	defer cancel()
@@ -396,10 +343,7 @@ func (c *Coordinator) endRoom(ctx context.Context, id roomID, cause string) {
 	})
 }
 
-// pruneIdle drops every waiting connection whose poll lease expired, so a
-// joiner that never polls (or stopped) frees its slot. Dropping is not a
-// decision: nothing is blocked and nothing ends. It returns the room as it
-// is after pruning.
+// Dropping is not a decision: nothing is blocked and nothing ends.
 func (c *Coordinator) pruneIdle(ctx context.Context, id roomID, r room) (room, error) {
 	if r.ended() || r.Selected != "" {
 		return r, nil
@@ -442,9 +386,7 @@ func (c *Coordinator) pruneIdle(ctx context.Context, id roomID, r room) (room, e
 	})
 }
 
-// roomHub fans the one Pub/Sub subscription of this process out to the local
-// callers waiting on a room. A waiter registers before it reads the room, so
-// a change between its read and its wait still wakes it.
+// A waiter registers before it reads the room, so a change between read and wait still wakes it.
 type roomHub struct {
 	mu      sync.Mutex
 	waiters map[roomID]map[chan struct{}]struct{}

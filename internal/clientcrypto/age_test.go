@@ -14,10 +14,7 @@ import (
 	"filippo.io/age"
 )
 
-// tests/fixtures/age/vectors.json holds one block made by this package and one
-// made by web/src/lib/crypto/age.ts. Both suites open both blocks, so a format
-// choice that moves on one side (identity type, work factor, how the identity
-// is wrapped) fails here or in web/src/lib/crypto/age.test.ts.
+// One block made here, one by web/src/lib/crypto/age.ts; both suites open both.
 const ageFixtures = "../../tests/fixtures/age"
 
 type ageSide struct {
@@ -84,9 +81,7 @@ func b64(t *testing.T, s string) []byte {
 	return b
 }
 
-// ciphertextSize is the age payload arithmetic in contracts/age-format-v1.md:
-// header, 16-byte nonce, plaintext, and one 16-byte tag per 64 KiB chunk (at
-// least one chunk, even for an empty file).
+// contracts/age-format-v1.md: header, 16-byte nonce, plaintext, 16-byte tag per 64 KiB chunk (min one chunk).
 func ciphertextSize(header, plaintext int) int {
 	chunks := max(1, (plaintext+65535)/65536)
 	return header + 16 + plaintext + 16*chunks
@@ -106,7 +101,6 @@ func TestAgeVectorsOpenFromBothClients(t *testing.T) {
 	v := loadAgeVectors(t)
 	for name, side := range map[string]ageSide{"go": v.Go, "web": v.Web} {
 		t.Run(name, func(t *testing.T) {
-			// Model A path: the passphrase recovers the identity.
 			id, err := UnwrapIdentity(b64(t, side.WrappedIdentity), v.Passphrase)
 			if err != nil {
 				t.Fatalf("unwrap: %v", err)
@@ -114,7 +108,6 @@ func TestAgeVectorsOpenFromBothClients(t *testing.T) {
 			if id.String() != side.Identity {
 				t.Fatal("unwrapped identity differs from the fragment identity")
 			}
-			// Model B path: the fragment identity is used directly.
 			fragmentID, err := ParseIdentity(side.Identity)
 			if err != nil {
 				t.Fatalf("parse identity: %v", err)
@@ -187,7 +180,6 @@ func TestAgeFailsClosed(t *testing.T) {
 		t.Fatal("a non-hybrid identity was accepted")
 	}
 
-	// A truncated body must error, not return a short plaintext.
 	file, _ := os.ReadFile(filepath.Join(ageFixtures, v.Go.File))
 	id, _ := ParseIdentity(v.Go.Identity)
 	r, err := DecryptWith(bytes.NewReader(file[:len(file)-100]), id)
@@ -198,7 +190,6 @@ func TestAgeFailsClosed(t *testing.T) {
 		t.Fatal("a truncated file decrypted")
 	}
 
-	// An unwrapped file larger than an identity is refused, not truncated.
 	cheap, _ := age.NewScryptRecipient(v.Passphrase)
 	cheap.SetWorkFactor(10)
 	var big bytes.Buffer
@@ -209,9 +200,7 @@ func TestAgeFailsClosed(t *testing.T) {
 		t.Fatalf("oversized identity: err = %v, want too large", err)
 	}
 
-	// A wrapped identity whose stanza asks for more than the cap is refused
-	// before scrypt runs. Editing the stanza breaks the header MAC, but the
-	// work factor is checked first, which is the point.
+	// Editing the stanza breaks the header MAC, but the work factor is checked first.
 	heavy := bytes.Replace(wrapped, []byte(" 18\n"), []byte(" 21\n"), 1)
 	if bytes.Equal(heavy, wrapped) {
 		t.Fatal("fixture stanza does not carry work factor 18")
