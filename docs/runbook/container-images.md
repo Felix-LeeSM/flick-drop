@@ -125,10 +125,9 @@ FLICK_CSP_CONNECT_SRC=
 The nginx base image's envsubst entrypoint renders
 `web/nginx-templates/csp.conf.template` into `/etc/nginx/snippets`, appending
 `FLICK_CSP_CONNECT_SRC` to the CSP `connect-src 'self'`. The empty default is
-correct while the large-object backend is disabled. A deployment with
-`FLICK_STORAGE_LARGE_BACKEND=s3` sets it to the `FLICK_S3_ENDPOINT` origin (and
-the R2 origin when `FLICK_R2_ENABLED=true`, space-separated) so the browser's
-direct presigned uploads are not blocked. `deploy/base/web.yaml` wires it from
+correct while `FLICK_STORAGE_BACKENDS` is empty. A deployment that enables
+object storage sets it to every `FLICK_STORAGE_<NAME>_ENDPOINT` origin
+(space-separated) so the browser's direct presigned uploads are not blocked. `deploy/base/web.yaml` wires it from
 `ConfigMap/flick-config`.
 
 ## Boundaries

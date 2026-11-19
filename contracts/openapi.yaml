@@ -118,7 +118,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: storage_full when a large-file reservation fits under no object storage backend's total-size ceiling. Nothing is created.
+          description: storage_full when a large-file reservation fits under no configured object storage backend's total-size ceiling (FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES). Nothing is created.
           content:
             application/json:
               schema:
@@ -1328,8 +1328,8 @@ components:
     RequestStorageUnavailable:
       description: >
         Temporary storage failure (storage_unavailable), or storage_full when a
-        large upload reservation fits under no object storage backend's
-        total-size ceiling. No transition was committed; retry the same
+        large upload reservation fits under no configured object storage
+        backend's total-size ceiling (FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES). No transition was committed; retry the same
         immutable submission only.
       headers:
         Cache-Control:
@@ -2004,11 +2004,12 @@ components:
     AcknowledgeObjectCleanupRequest:
       type: object
       additionalProperties: false
-      required: [job_id, object_key]
+      required: [backend, job_id, object_key]
       properties:
         backend:
           type: string
-          description: Bucket the delete ran against (s3_object primary, r2_object secondary). Absent or empty means the primary; the value is not validated against this list.
+          minLength: 1
+          description: Configured object backend (a FLICK_STORAGE_BACKENDS name such as oci or r2) the delete ran against. Empty returns 400; a name that matches no claim returns the same 204 as a missing claim.
         job_id:
           type: string
           minLength: 1

@@ -180,7 +180,7 @@ func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 	const secretID = "SYNTHsecretIDforLeakCheck"
 	key := "managed/secrets/" + secretID
 	bucket := &fakeObjectDeleter{err: errors.New(`Delete "https://bucket.example/` + key + `": dial tcp: connection refused`)}
-	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, bucket, nil)
+	handler, err := NewCleanupHandler(&fakeCleanupAPI{}, map[string]ObjectDeleter{testBackend: bucket})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload, err := (events.JobEvent{JobID: "job_opened_delete", Kind: events.KindDeleteOCIObject, ObjectKey: key,
-		Backend: "s3_object", Reason: events.ReasonConsumed, RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)}).JSON()
+		Backend: testBackend, Reason: events.ReasonConsumed, RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)}).JSON()
 	if err != nil {
 		t.Fatal(err)
 	}

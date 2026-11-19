@@ -125,11 +125,11 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if queued != 1 {
 		t.Fatal("open did not queue the final object", queued)
 	}
-	if _, err := conn.Exec(`insert into request_reconciliation_pending_v2(backend,object_key,job_id) values('s3_object',$1,$2)`, final, "current-job"); err != nil {
+	if _, err := conn.Exec(`insert into request_reconciliation_pending_v2(backend,object_key,job_id) values('oci',$1,$2)`, final, "current-job"); err != nil {
 		t.Fatal(err)
 	}
 	ack := func(job string, headers map[string]string) *httptest.ResponseRecorder {
-		return performJSON(t, router, "POST", "/internal/object-reconciliation/ack", map[string]string{"job_id": job, "object_key": final}, headers)
+		return performJSON(t, router, "POST", "/internal/object-reconciliation/ack", map[string]string{"backend": testBackend, "job_id": job, "object_key": final}, headers)
 	}
 	if ack("current-job", nil).Code != http.StatusUnauthorized {
 		t.Fatal("unauthenticated ACK")
@@ -163,18 +163,19 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 func TestRequestUploadReportsStorageFullWhenBothBackendsAreAtCeiling(t *testing.T) {
 	ctx := context.Background()
 	conn := openHTTPTestDB(t, ctx)
-	primary := &requestHTTPObjects{bodies: map[string][]byte{}}
-	secondary := &requestHTTPObjects{bodies: map[string][]byte{}}
 	outbox, err := events.NewOutboxStore(conn, "flick.jobs")
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := storage.NewRegistry(primary, secondary)
+	// Both ceilings sit below the 40-byte body, so placement has no room.
+	registry, err := storage.NewRegistry(
+		storage.Backend{Name: testBackend, Store: &requestHTTPObjects{bodies: map[string][]byte{}}, MaxTotalBytes: 10},
+		storage.Backend{Name: otherTestBackend, Store: &requestHTTPObjects{bodies: map[string][]byte{}}, MaxTotalBytes: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both ceilings sit below the 40-byte body, so placement has no room.
-	full, err := requests.NewStore(conn, requests.Options{Objects: registry, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MaxTotalBytes: map[string]int64{storage.PrimaryBackend: 10, storage.SecondaryBackend: 10}, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
+	full, err := requests.NewStore(conn, requests.Options{Objects: registry, Outbox: outbox, PayloadInlineMaxBytes: 32, MaxObjectBytes: 100, MinTTLSeconds: 300, DefaultTTLSeconds: 600, MaxTTLSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}

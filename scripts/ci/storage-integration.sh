@@ -11,7 +11,7 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 # Resolve the executable before exporting fixture settings: tool-manager shims
-# may reload .mise.toml and replace FLICK_S3_ENDPOINT when invoking Go.
+# may reload .mise.toml and replace FLICK_STORAGE_MINIO_ENDPOINT when invoking Go.
 go_binary="$(go env GOROOT)/bin/go"
 project="flick-storage-ci-$(date +%s)-$$"
 container="$project-minio"
@@ -56,15 +56,15 @@ docker build --tag "$image" - <scripts/ci/Dockerfile.minio
 address="$(docker port "$container" 9000/tcp)"
 
 # Never inherit a developer's real bucket or credentials for the CI fixture.
-export FLICK_S3_ENDPOINT="http://$address"
-export FLICK_S3_REGION=us-east-1
-export FLICK_S3_BUCKET=flick-dev
-export FLICK_S3_ACCESS_KEY_ID=minioadmin
-export FLICK_S3_SECRET_ACCESS_KEY=minioadmin
+export FLICK_STORAGE_MINIO_ENDPOINT="http://$address"
+export FLICK_STORAGE_MINIO_REGION=us-east-1
+export FLICK_STORAGE_MINIO_BUCKET=flick-dev
+export FLICK_STORAGE_MINIO_ACCESS_KEY_ID=minioadmin
+export FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY=minioadmin
 
 curl --fail --silent --show-error --output /dev/null --max-time 2 \
   --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
-  --retry-max-time 60 "$FLICK_S3_ENDPOINT/minio/health/ready"
+  --retry-max-time 60 "$FLICK_STORAGE_MINIO_ENDPOINT/minio/health/ready"
 
 # Fail on provisioning errors instead of the development service's retry loop.
 "${compose[@]}" run --rm --no-deps -T --entrypoint /bin/sh createbuckets -ec '

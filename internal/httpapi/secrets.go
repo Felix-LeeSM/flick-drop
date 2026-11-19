@@ -336,7 +336,7 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 	// the recipient sees as a truncated age file that will not decrypt. The log
 	// line carries no ID or error text (which names the client address).
 	if _, err := io.Copy(w, secret.Body); err != nil {
-		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secrets.StorageS3)
+		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secret.StorageBackend)
 	}
 	secret.Body.Close()
 	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageBackend, secret.StorageKey)
@@ -625,9 +625,9 @@ func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
 	decoder.DisallowUnknownFields()
 	var req struct {
-		// Backend names the bucket the finished delete ran against. Workers
-		// built before dual-backend support omit it; an empty value means the
-		// primary.
+		// Backend names the configured backend (FLICK_STORAGE_BACKENDS) the
+		// finished delete ran against. It is required; an empty value is
+		// rejected by the owning store.
 		Backend   string `json:"backend,omitempty"`
 		JobID     string `json:"job_id"`
 		ObjectKey string `json:"object_key"`

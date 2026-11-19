@@ -37,6 +37,10 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string) (int, error) {
 	var cursor string
 	var generation int64
+	// A backend added to FLICK_STORAGE_BACKENDS gets its cursor on first visit.
+	if _, err := r.db.ExecContext(ctx, `insert into object_reconciliation_cursor_v2 (backend) values ($1) on conflict do nothing`, backend); err != nil {
+		return 0, fmt.Errorf("seed object reconciliation cursor: %w", err)
+	}
 	if err := r.db.QueryRowContext(ctx, `select continuation_token, generation from object_reconciliation_cursor_v2 where backend = $1`, backend).Scan(&cursor, &generation); err != nil {
 		return 0, fmt.Errorf("read object reconciliation cursor: %w", err)
 	}
@@ -132,7 +136,7 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	var state string
 	var expiresAt, createdAt time.Time
 	var consumedAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend in ('s3_object', 'r2_object') and storage_key = $1 and reclaim_enqueued_at is null`, key).Scan(&state, &expiresAt, &createdAt, &consumedAt)
+	err = tx.QueryRowContext(ctx, `select state, expires_at, created_at, consumed_at from secrets where storage_backend <> 'sqlite_blob' and storage_key = $1 and reclaim_enqueued_at is null`, key).Scan(&state, &expiresAt, &createdAt, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -158,15 +162,10 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 }
 
 // AcknowledgeObjectCleanup removes only the claim for this completed worker job.
-// Old or duplicate acknowledgements cannot clear a newer job for a late PUT. An
-// empty backend is a worker predating dual-backend support: its claims live on
-// the primary.
+// Old or duplicate acknowledgements cannot clear a newer job for a late PUT.
 func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, key string) error {
-	if strings.TrimSpace(jobID) == "" || !strings.HasPrefix(key, managedObjectPrefix) || key == managedObjectPrefix {
+	if strings.TrimSpace(jobID) == "" || backend == "" || !strings.HasPrefix(key, managedObjectPrefix) || key == managedObjectPrefix {
 		return ErrInvalidInput
-	}
-	if backend == "" {
-		backend = storage.PrimaryBackend
 	}
 	_, err := s.db.ExecContext(ctx, `delete from object_reconciliation_pending_v2 where backend = $1 and object_key = $2 and job_id = $3`, backend, key, jobID)
 	if err != nil {

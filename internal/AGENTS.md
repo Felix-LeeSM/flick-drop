@@ -9,7 +9,7 @@ These packages are code boundaries, not service boundaries.
 - `requests`: API-owned request lifecycle, envelope validation, immutable large
   uploads, and request object reconciliation in `internal/requests/store.go`,
   `validation.go`, `large.go`, and `cleanup.go`.
-- `storage`: S3-compatible object storage for large payloads, with a primary (`s3_object`) and optional secondary (`r2_object`) backend in `internal/storage/registry.go` (inline ciphertext rows live in `internal/secrets`).
+- `storage`: S3-compatible object storage for large payloads; `internal/storage/registry.go:Registry` holds the operator-named backends from `FLICK_STORAGE_BACKENDS` (for example `oci`, `r2`, or `minio`) and places new objects among them (inline ciphertext rows live in `internal/secrets`).
 - `piperelay`: the live relay coordinator behind "Live transfer" (`/api/pipe/*`): waiting rooms in non-persistent Valkey (`internal/piperelay/room.go`), ciphertext streamed replica-to-replica over HTTP and never persisted (`internal/piperelay/stream.go`, `internal/piperelay/coordinator.go:Coordinator`).
 - `events`: NATS JetStream publishing and consuming contracts.
 - `worker`: worker job execution and retry/idempotency logic.

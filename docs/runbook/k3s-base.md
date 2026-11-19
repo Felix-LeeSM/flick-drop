@@ -85,17 +85,17 @@ For an end-to-end OCI Free Tier-style deployment checklist, use
   the live-transfer stream listener that flick-api replicas dial pod to pod)
 - NATS stream and subject names
 - TTL and size limits
-- storage backend selection (`FLICK_STORAGE_LARGE_BACKEND`, `disabled` in the
-  base)
+- object storage backend names (`FLICK_STORAGE_BACKENDS`, empty in the base,
+  which keeps every payload inline)
 - rate limit and proxy trust (`FLICK_OPEN_RATE_PER_MIN`,
   `FLICK_TRUSTED_PROXIES`)
 - `FLICK_CSP_CONNECT_SRC`, the extra CSP `connect-src` origins that the
   `flick-web` container renders into nginx at start
   (`web/nginx-templates/csp.conf.template`, wired in `deploy/base/web.yaml`).
-  The base value is empty, which is correct while the large-object backend is
-  disabled; a deployment that sets `FLICK_STORAGE_LARGE_BACKEND=s3` must set it
-  to the `FLICK_S3_ENDPOINT` origin (plus the R2 origin when
-  `FLICK_R2_ENABLED=true`) or the browser blocks direct presigned uploads.
+  The base value is empty, which is correct while `FLICK_STORAGE_BACKENDS` is
+  empty; a deployment that names backends there must list every
+  `FLICK_STORAGE_<NAME>_ENDPOINT` origin or the browser blocks direct presigned
+  uploads.
 
 The web image is static. Browser-visible `PUBLIC_` values are embedded when the
 image is built, not read from the runtime ConfigMap. The base expects web and
@@ -131,10 +131,10 @@ pods that read it.
 rooms; every flick-api replica must share the same value
 (`docs/architecture/env-contract.md`).
 
-The base has no object storage settings because the large-object backend is
-disabled. A deployment that enables it adds the `FLICK_S3_*` values (and the
-`FLICK_R2_*` values for the secondary backend) to the Secret in its private
-overlay; see [OCI Free Tier deployment](oci-free-tier.md#environment-values).
+The base has no object storage settings because `FLICK_STORAGE_BACKENDS` is
+empty. A deployment that enables object storage sets `FLICK_STORAGE_BACKENDS`
+and adds each backend's `FLICK_STORAGE_<NAME>_*` values (keys in the Secret) in
+its private overlay; see [OCI Free Tier deployment](oci-free-tier.md#environment-values).
 
 Replace every placeholder before production use. Public manifests must not
 contain real tokens, kubeconfig, object storage credentials, bucket names,

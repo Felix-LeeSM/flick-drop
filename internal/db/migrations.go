@@ -43,7 +43,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 		`create table if not exists secrets (
 			id text primary key,
 			kind text not null check (kind in ('text', 'file')),
-			storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
+			storage_backend text not null constraint secrets_storage_backend_name check (storage_backend = 'sqlite_blob' or storage_backend ~ '^[a-z][a-z0-9]{0,15}$'),
 			storage_key text not null,
 			access_kdf_params_json text,
 			access_proof_hash text,
@@ -73,15 +73,13 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at timestamptz not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
-		// Per-backend reconciliation state: both backends are seeded so scans
-		// start from the first page each.
+		// Per-backend reconciliation state. A configured backend's row is seeded
+		// on its first reconciliation pass (secrets.Reaper.reconcileBackend).
 		`create table if not exists object_reconciliation_cursor_v2 (
-			backend text primary key check (backend in ('s3_object', 'r2_object')),
+			backend text primary key constraint object_reconciliation_cursor_v2_backend_name check (backend ~ '^[a-z][a-z0-9]{0,15}$'),
 			continuation_token text not null default '',
 			generation integer not null default 0
 		)`,
-		`insert into object_reconciliation_cursor_v2 (backend) values ('s3_object') on conflict do nothing`,
-		`insert into object_reconciliation_cursor_v2 (backend) values ('r2_object') on conflict do nothing`,
 		`create table if not exists object_reconciliation_pending_v2 (
 			backend text not null,
 			object_key text not null,
@@ -150,5 +148,8 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			return fmt.Errorf("apply api migration: %w", err)
 		}
 	}
-	return normalizeRequestsSchema(ctx, pinned)
+	if err := normalizeRequestsSchema(ctx, pinned); err != nil {
+		return err
+	}
+	return retireLegacyStorageBackendChecks(ctx, pinned)
 }

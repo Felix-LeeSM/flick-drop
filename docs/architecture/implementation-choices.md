@@ -110,10 +110,12 @@ Rationale:
 - Large payloads are written through the S3 API directly via the AWS SDK for Go
   v2, so any S3-compatible provider works — MinIO dev, OCI S3-compatibility prod,
   AWS S3, Cloudflare R2. See `internal/storage/AGENTS.md` and `env-contract.md`.
-- Backends are named and parallel: the primary (`s3_object`) and an optional
-  secondary (`r2_object`) resolved through `storage.Registry`, so free-tier
-  capacity pools without moving existing objects. Placement honors per-backend
-  byte ceilings (`storage.ChooseBackend`); see `storage-model.md`.
+- Backends are operator-named and parallel (`FLICK_STORAGE_BACKENDS`, for
+  example `oci,r2`) and resolved by name through `storage.Registry`, so
+  free-tier capacity pools without moving existing objects. No backend is
+  primary: placement picks among backends whose byte ceiling still fits the
+  object, weighted by remaining space (`storage.Registry.Choose`); see
+  `storage-model.md`.
 - Browser uploads use a presigned PUT from the SDK's `PresignPutObject`
   (`internal/storage/presigned.go:PresignPUT`). The signature covers
   `Content-Length`, so the bucket rejects any body that is not exactly the

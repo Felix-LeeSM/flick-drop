@@ -9,34 +9,19 @@ import (
 	"strings"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/secrets"
+	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
-// S3Config configures the S3-compatible large-object store (MinIO dev, OCI
-// S3-compat prod). Enabled is driven by FLICK_STORAGE_LARGE_BACKEND=s3; auth is
-// always a static key pair because the AWS SDK cannot speak OCI instance
-// principal directly.
-type S3Config struct {
-	Enabled         bool
-	Endpoint        string
-	Region          string
-	Bucket          string
-	AccessKeyID     string
-	SecretAccessKey string
-	PathStyle       bool
-}
-
-// R2Config configures the optional secondary object backend (Cloudflare R2).
-// It is independent of FLICK_STORAGE_LARGE_BACKEND: enabling it adds a second
-// backend to route new objects onto alongside the primary, it never replaces
-// the primary. Auth is an R2 API token (static key pair).
-type R2Config struct {
-	Enabled         bool
-	Endpoint        string
-	Region          string
-	Bucket          string
-	AccessKeyID     string
-	SecretAccessKey string
-	PathStyle       bool
+// StorageBackend is one S3-compatible object backend named in
+// FLICK_STORAGE_BACKENDS. Its settings come from FLICK_STORAGE_<NAME>_* where
+// <NAME> is the upper-cased name. Auth is always a static key pair because the
+// AWS SDK cannot speak OCI instance principal directly.
+type StorageBackend struct {
+	Name string
+	S3   storage.Config
+	// MaxTotalBytes caps the cumulative object bytes placed on this backend
+	// (0 = unlimited, allowed only for a single backend); see storage-model.md.
+	MaxTotalBytes int64
 }
 
 type Config struct {
@@ -78,13 +63,9 @@ type Config struct {
 	NATSStream     string
 	NATSJobSubject string
 	// PayloadInlineMaxBytes bounds one encrypted secret; MaxFileBytes bounds the
-	// file the browser may pick. MaxTotalBytes bounds the cumulative stored
-	// bytes per backend (0 = unlimited) so multi-backend deployments stay inside
-	// the provider free tiers; see storage-model.md.
+	// file the browser may pick.
 	PayloadInlineMaxBytes int64
 	MaxFileBytes          int64
-	S3MaxTotalBytes       int64
-	R2MaxTotalBytes       int64
 	DefaultTTLSeconds     int
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
@@ -95,8 +76,9 @@ type Config struct {
 	PipeRelayEnabled      bool
 	PipeMaxConcurrent     int
 	TrustedProxies        []*net.IPNet
-	S3                    S3Config
-	R2                    R2Config
+	// StorageBackends lists the object backends in FLICK_STORAGE_BACKENDS
+	// order. Empty disables object storage: every payload stays inline.
+	StorageBackends []StorageBackend
 }
 
 func Load() (Config, error) {
@@ -122,8 +104,6 @@ func Load() (Config, error) {
 		NATSJobSubject:        getenv("FLICK_NATS_JOB_SUBJECT", "flick.jobs"),
 		PayloadInlineMaxBytes: defaultPayloadInlineMaxBytes,
 		MaxFileBytes:          defaultMaxFileBytes,
-		S3MaxTotalBytes:       defaultS3MaxTotalBytes,
-		R2MaxTotalBytes:       defaultR2MaxTotalBytes,
 		DefaultTTLSeconds:     defaultDefaultTTLSeconds,
 		// TTL is a continuous range (5 minutes .. 7 days) so the browser can
 		// offer an editable "custom" lifetime, not just fixed presets.
@@ -140,45 +120,13 @@ func Load() (Config, error) {
 		ReaperBatchSize:       defaultReaperBatchSize,
 		PipeRelayEnabled:      defaultPipeRelayEnabled,
 		PipeMaxConcurrent:     defaultPipeMaxConcurrent,
-		S3: S3Config{
-			Enabled:         getenv("FLICK_STORAGE_LARGE_BACKEND", "disabled") == "s3",
-			Endpoint:        getenv("FLICK_S3_ENDPOINT", ""),
-			Region:          getenv("FLICK_S3_REGION", "us-east-1"),
-			Bucket:          getenv("FLICK_S3_BUCKET", ""),
-			AccessKeyID:     getenv("FLICK_S3_ACCESS_KEY_ID", ""),
-			SecretAccessKey: getenv("FLICK_S3_SECRET_ACCESS_KEY", ""),
-			// MinIO and OCI S3-compat both use path-style addressing.
-			// PathStyle is resolved below from FLICK_S3_PATH_STYLE.
-			PathStyle: false,
-		},
-		R2: R2Config{
-			Enabled:         false,
-			Endpoint:        getenv("FLICK_R2_ENDPOINT", ""),
-			Region:          getenv("FLICK_R2_REGION", "auto"),
-			Bucket:          getenv("FLICK_R2_BUCKET", ""),
-			AccessKeyID:     getenv("FLICK_R2_ACCESS_KEY_ID", ""),
-			SecretAccessKey: getenv("FLICK_R2_SECRET_ACCESS_KEY", ""),
-			PathStyle:       false,
-		},
 	}
 
 	var err error
-	if cfg.S3.PathStyle, err = envBool("FLICK_S3_PATH_STYLE", true); err != nil {
-		return Config{}, err
-	}
-	if cfg.R2.PathStyle, err = envBool("FLICK_R2_PATH_STYLE", true); err != nil {
-		return Config{}, err
-	}
-	if cfg.R2.Enabled, err = envBool("FLICK_R2_ENABLED", cfg.R2.Enabled); err != nil {
+	if cfg.StorageBackends, err = loadStorageBackends(); err != nil {
 		return Config{}, err
 	}
 	if cfg.PayloadInlineMaxBytes, err = envPositiveInt64("FLICK_PAYLOAD_INLINE_MAX_BYTES", cfg.PayloadInlineMaxBytes); err != nil {
-		return Config{}, err
-	}
-	if cfg.S3MaxTotalBytes, err = envNonNegativeInt64("FLICK_S3_MAX_TOTAL_BYTES", cfg.S3MaxTotalBytes); err != nil {
-		return Config{}, err
-	}
-	if cfg.R2MaxTotalBytes, err = envNonNegativeInt64("FLICK_R2_MAX_TOTAL_BYTES", cfg.R2MaxTotalBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.PayloadInlineMaxBytes < secrets.MaxCiphertextBytes(0) {
@@ -263,27 +211,85 @@ func Load() (Config, error) {
 	if cfg.ValkeyAddr != "" && cfg.RateLimitKeySalt == "" {
 		return Config{}, fmt.Errorf("FLICK_RATELIMIT_KEY_SALT is required when FLICK_VALKEY_ADDR is set")
 	}
-	if cfg.S3.Enabled {
-		if cfg.S3.Bucket == "" || cfg.S3.Region == "" {
-			return Config{}, fmt.Errorf("FLICK_S3_BUCKET and FLICK_S3_REGION are required when FLICK_STORAGE_LARGE_BACKEND=s3")
-		}
-		if cfg.S3.AccessKeyID == "" || cfg.S3.SecretAccessKey == "" {
-			return Config{}, fmt.Errorf("FLICK_S3_ACCESS_KEY_ID and FLICK_S3_SECRET_ACCESS_KEY are required when FLICK_STORAGE_LARGE_BACKEND=s3")
-		}
-	}
-	if cfg.R2.Enabled {
-		if !cfg.S3.Enabled {
-			return Config{}, fmt.Errorf("FLICK_R2_ENABLED requires FLICK_STORAGE_LARGE_BACKEND=s3 (the secondary backend extends the primary)")
-		}
-		if cfg.R2.Bucket == "" || cfg.R2.Endpoint == "" {
-			return Config{}, fmt.Errorf("FLICK_R2_BUCKET and FLICK_R2_ENDPOINT are required when FLICK_R2_ENABLED=true")
-		}
-		if cfg.R2.AccessKeyID == "" || cfg.R2.SecretAccessKey == "" {
-			return Config{}, fmt.Errorf("FLICK_R2_ACCESS_KEY_ID and FLICK_R2_SECRET_ACCESS_KEY are required when FLICK_R2_ENABLED=true")
-		}
-	}
-
 	return cfg, nil
+}
+
+// legacyStorageEnv lists every storage variable the release before
+// FLICK_STORAGE_BACKENDS read.
+var legacyStorageEnv = []string{
+	"FLICK_STORAGE_LARGE_BACKEND",
+	"FLICK_S3_ENDPOINT", "FLICK_S3_REGION", "FLICK_S3_BUCKET", "FLICK_S3_ACCESS_KEY_ID",
+	"FLICK_S3_SECRET_ACCESS_KEY", "FLICK_S3_PATH_STYLE", "FLICK_S3_MAX_TOTAL_BYTES",
+	"FLICK_R2_ENABLED", "FLICK_R2_ENDPOINT", "FLICK_R2_REGION", "FLICK_R2_BUCKET", "FLICK_R2_ACCESS_KEY_ID",
+	"FLICK_R2_SECRET_ACCESS_KEY", "FLICK_R2_PATH_STYLE", "FLICK_R2_MAX_TOTAL_BYTES",
+}
+
+// loadStorageBackends reads FLICK_STORAGE_BACKENDS (comma-separated names) and
+// each named backend's FLICK_STORAGE_<NAME>_* settings. A name must satisfy
+// storage.ValidBackendName because it is stored in rows and delete events.
+func loadStorageBackends() ([]StorageBackend, error) {
+	// A leftover legacy variable means an unmigrated deployment; refuse to start
+	// rather than boot with object storage silently disabled.
+	for _, key := range legacyStorageEnv {
+		if os.Getenv(key) != "" {
+			return nil, fmt.Errorf("%s is no longer read; move it to FLICK_STORAGE_BACKENDS and FLICK_STORAGE_<NAME>_* (docs/runbook/storage-backend-rename.md)", key)
+		}
+	}
+	raw := strings.TrimSpace(os.Getenv("FLICK_STORAGE_BACKENDS"))
+	if raw == "" {
+		return nil, nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if !storage.ValidBackendName(name) {
+			return nil, fmt.Errorf("FLICK_STORAGE_BACKENDS: %q is not a backend name (lower-case letter, then up to 15 lower-case letters or digits)", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("FLICK_STORAGE_BACKENDS names %q twice", name)
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	var backends []StorageBackend
+	for _, name := range names {
+		prefix := "FLICK_STORAGE_" + strings.ToUpper(name) + "_"
+		b := StorageBackend{
+			Name: name,
+			S3: storage.Config{
+				Enabled:         true,
+				Endpoint:        getenv(prefix+"ENDPOINT", ""),
+				Region:          getenv(prefix+"REGION", "us-east-1"),
+				Bucket:          getenv(prefix+"BUCKET", ""),
+				AccessKeyID:     getenv(prefix+"ACCESS_KEY_ID", ""),
+				SecretAccessKey: getenv(prefix+"SECRET_ACCESS_KEY", ""),
+			},
+		}
+		var err error
+		// MinIO, OCI S3-compat, and R2 all accept path-style addressing.
+		if b.S3.PathStyle, err = envBool(prefix+"PATH_STYLE", true); err != nil {
+			return nil, err
+		}
+		if b.MaxTotalBytes, err = envNonNegativeInt64(prefix+"MAX_TOTAL_BYTES", 0); err != nil {
+			return nil, err
+		}
+		if b.S3.Bucket == "" {
+			return nil, fmt.Errorf("%sBUCKET is required for storage backend %q", prefix, name)
+		}
+		if b.S3.AccessKeyID == "" || b.S3.SecretAccessKey == "" {
+			return nil, fmt.Errorf("%sACCESS_KEY_ID and %sSECRET_ACCESS_KEY are required for storage backend %q", prefix, prefix, name)
+		}
+		backends = append(backends, b)
+	}
+	if len(backends) > 1 {
+		for _, b := range backends {
+			if b.MaxTotalBytes == 0 {
+				return nil, fmt.Errorf("FLICK_STORAGE_%s_MAX_TOTAL_BYTES must be positive when several storage backends are configured (placement weighs each backend's remaining space)", strings.ToUpper(b.Name))
+			}
+		}
+	}
+	return backends, nil
 }
 
 // EffectivePayloadInlineMaxBytes is the largest plaintext that still fits the
@@ -301,7 +307,7 @@ func (c Config) EffectivePayloadInlineMaxBytes() int64 {
 // With it enabled the configured limit stands, because the object cap is
 // derived from MaxFileBytes plus the same age overhead.
 func (c Config) EffectiveMaxFileBytes() int64 {
-	if inline := c.EffectivePayloadInlineMaxBytes(); !c.S3.Enabled && c.MaxFileBytes > inline {
+	if inline := c.EffectivePayloadInlineMaxBytes(); len(c.StorageBackends) == 0 && c.MaxFileBytes > inline {
 		return inline
 	}
 	return c.MaxFileBytes

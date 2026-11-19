@@ -37,14 +37,11 @@ Local development:
 | `FLICK_INTERNAL_HTTP_PORT` | Port of the API's live-transfer stream listener (`/internal/pipe/stream/{roomID}`, `internal/piperelay/stream.go`), the same on every replica: a sender's replica dials the receiver's replica on it. Default `8081`; must be 1..65535. The listener runs whenever live transfer is enabled (`cmd/flick-api/main.go`), also outside Kubernetes; it binds only the `FLICK_POD_IP` address (`127.0.0.1` outside Kubernetes), accepts only requests carrying `FLICK_INTERNAL_TOKEN` and a stream's one-time secret, and must stay unreachable from outside the cluster or host. |
 | `FLICK_POD_IP` | IP literal this replica advertises in Valkey for its stream listener, injected by the Kubernetes Downward API (`status.podIP`). Empty (one host outside Kubernetes) advertises `127.0.0.1`; a host name fails startup. |
 | `FLICK_PAYLOAD_INLINE_MAX_BYTES` | Max age file size stored inline as `secret_payloads.ciphertext` (`bytea`). Must be at least an empty age file (4128 bytes: `secrets.MaxCiphertextBytes(0)`); smaller values fail startup. `/api/config`, the browser fallback, and the CLI fallback advertise the largest input whose age file fits (`secrets.MaxPlaintextBytes`, 1044208 for the 1 MiB default). |
-| `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_LARGE_BACKEND=disabled` the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
+| `FLICK_MAX_FILE_BYTES` | Upload hard limit in bytes before encryption (the S3 object cap adds the age overhead: `secrets.MaxCiphertextBytes`). While `FLICK_STORAGE_BACKENDS` is empty the inline path is the only route, so `/api/config` advertises the inline plaintext limit instead of this value. Raising it also needs the API's `/tmp` `emptyDir` `sizeLimit` (`deploy/base/api.yaml`) to stay at least twice the age size, or a full spool evicts the pod. |
 | `FLICK_DEFAULT_TTL_SECONDS` | Default expiration. |
 | `FLICK_MIN_TTL_SECONDS` | Minimum secret TTL in seconds. |
 | `FLICK_MAX_TTL_SECONDS` | Maximum secret TTL in seconds. |
-| `FLICK_STORAGE_LARGE_BACKEND` | `disabled` or `s3`. |
-| `FLICK_S3_MAX_TOTAL_BYTES` | Cumulative object-bytes cap per backend for the primary backend (`s3_object`), aggregated from the `flick_api` database (`db.StorageObjectBytes`); `0` = unlimited. Default `18000000000` (18 GB = OCI Always Free 20 GB × 9/10). Requests and secrets over every backend's remaining headroom fail with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot a ceiling (soft cap; see storage-model.md). |
-| `FLICK_R2_MAX_TOTAL_BYTES` | Same cap for the secondary backend (`r2_object`). Default `9000000000` (9 GB = R2 free 10 GB × 9/10). |
-| `FLICK_R2_ENABLED` | `true` enables the secondary backend, used in parallel with the primary to pool free tiers. Independent of `FLICK_STORAGE_LARGE_BACKEND` (requires it to be `s3`; disabled storage disables both). |
+| `FLICK_STORAGE_BACKENDS` | Comma-separated object backend names, for example `oci,r2`. Empty (default) disables object storage: every payload stays inline. Each name is a lower-case letter followed by up to 15 lower-case letters or digits (`storage.ValidBackendName`) and is configured by the `FLICK_STORAGE_<NAME>_*` variables in [Object storage backends](#object-storage-backends). |
 | `FLICK_OPEN_RATE_PER_MIN` | Per-minute limit per client network (IPv4 address or IPv6 /64) for `/api/secrets/{id}/open` and sender management (one bucket per secret ID), for all request-link calls after creation (one bucket across IDs), and for `/api/pipe/join` (one bucket shared with `/api/v1/pipe/join`). |
 | `FLICK_CREATE_RATE_PER_MIN` | Per-minute limit per client network (IPv4 address or IPv6 /64) for `POST /api/secrets` (includes presigned upload issuance), `POST /api/requests`, and `/api/pipe/init`, each with its own bucket. |
 | `FLICK_REAPER_INTERVAL_SECONDS` | Seconds between expiration-reaper sweeps of expired/orphan secrets in the `flick_api` database. |
@@ -109,7 +106,7 @@ Runtime env for the nginx-served web container (distinct from the build-time
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when the large-file S3 backend is disabled. When `FLICK_STORAGE_LARGE_BACKEND=s3`, set the `FLICK_S3_ENDPOINT` origin (`scheme://host[:port]`); when `FLICK_R2_ENABLED=true` is also set, list both backend origins so the browser's direct presigned uploads pass CSP. Rendered into nginx by the envsubst entrypoint. |
+| `FLICK_CSP_CONNECT_SRC` | Extra space-separated origins appended to the web CSP `connect-src` (beyond `'self'`). Empty by default — correct when `FLICK_STORAGE_BACKENDS` is empty. When object storage is enabled, list every backend's `FLICK_STORAGE_<NAME>_ENDPOINT` origin (`scheme://host[:port]`) so the browser's direct presigned uploads pass CSP. Rendered into nginx by the envsubst entrypoint. |
 
 ## CLI
 
@@ -121,44 +118,52 @@ machine, not by any server process.
 | `FLICK_URL` | Deployment URL for `flick send`, and for `flick open` when it is given a bare secret ID. `flick open` with a full link uses that link's origin (`cmd/flick/main.go` `runOpen`). The `-url` flag overrides both; when neither is set the CLI uses its built-in default. |
 | `FLICK_PASSPHRASE` | Passphrase for non-interactive use instead of a terminal prompt. Set but empty is an error. The passphrase stays on the client and is never sent to the API. |
 
-## S3
+## Object storage backends
 
-Used only when `FLICK_STORAGE_LARGE_BACKEND=s3`. The server speaks the S3 API
-directly via the AWS SDK, so any S3-compatible provider works (MinIO dev, OCI
-S3-compat prod, AWS S3, R2). Auth is always a static key pair — OCI Customer
-Secret Key in prod — because the AWS SDK cannot speak OCI instance principal.
+Used only when `FLICK_STORAGE_BACKENDS` names at least one backend. The server
+speaks the S3 API directly via the AWS SDK, so any S3-compatible provider works
+(MinIO, OCI S3-compat, AWS S3, Cloudflare R2). Auth is always a static key pair
+— an OCI Customer Secret Key or an R2 API token — because the AWS SDK cannot
+speak OCI instance principal.
 
-| Variable | Purpose |
-| --- | --- |
-| `FLICK_S3_ENDPOINT` | S3-compatible endpoint. Empty = AWS default host. MinIO `http://localhost:9000`; OCI `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`. |
-| `FLICK_S3_REGION` | Region (`us-east-1` for MinIO; real region for OCI/AWS). |
-| `FLICK_S3_BUCKET` | Bucket name. |
-| `FLICK_S3_ACCESS_KEY_ID` | Static access key ID (MinIO `minioadmin`; OCI Customer Secret Key). |
-| `FLICK_S3_SECRET_ACCESS_KEY` | Static secret access key. |
-| `FLICK_S3_PATH_STYLE` | `true` (default) for MinIO/OCI path-style; `false` for virtual-host. |
-
-The API's existing S3 credentials also require `ListObjectsV2` permission for the
-exclusive `managed/secrets/` and `managed/requests/` prefixes. Request finalize
-requires API GET of the staging key and server-only PUT of the verified bytes to
-the final key; requester open requires GET of the final key. The API therefore
-needs GetObject/PutObject in addition to signed upload and listing permissions.
-The worker retains its existing object-delete
-permission. No new environment variable or startup permission probe is introduced:
-listing failures are reported by the reaper and retried without disabling existing
-S3 upload/open operation. Provider versions, retention locks, replicas, and backups
-remain operator-owned; listing only reconciles current objects.
-
-## R2 (secondary backend)
-
-Used only when `FLICK_R2_ENABLED=true` and the primary backend (`FLICK_STORAGE_LARGE_BACKEND=s3`) is enabled. New objects land on the primary first and spill to the secondary once the primary's remaining ceiling cannot fit (`storage.ChooseBackend`); existing objects never move. Auth is an R2 API token (static key pair); region stays `auto`.
+Each name `<name>` in `FLICK_STORAGE_BACKENDS` reads the variables below, with
+`<NAME>` the upper-cased name (`oci` reads `FLICK_STORAGE_OCI_BUCKET`, `minio`
+reads `FLICK_STORAGE_MINIO_BUCKET`). Parsing and validation live in
+`internal/config/config.go:loadStorageBackends`; a missing required value fails
+startup.
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_R2_ENDPOINT` | R2 S3 endpoint, `https://<account>.r2.cloudflarestorage.com`. |
-| `FLICK_R2_REGION` | Region literal; `auto` (default) is the R2 value. |
-| `FLICK_R2_BUCKET` | Secondary bucket name. |
-| `FLICK_R2_ACCESS_KEY_ID` | R2 API token access key. |
-| `FLICK_R2_SECRET_ACCESS_KEY` | R2 API token secret. |
-| `FLICK_R2_PATH_STYLE` | `true` (default) — R2 accepts path-style. |
+| `FLICK_STORAGE_<NAME>_ENDPOINT` | S3-compatible endpoint. Empty = AWS default host. MinIO `http://localhost:9000`; OCI `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`; R2 `https://<account>.r2.cloudflarestorage.com`. |
+| `FLICK_STORAGE_<NAME>_REGION` | Region. Default `us-east-1` (MinIO); the real region for OCI/AWS; `auto` for R2. |
+| `FLICK_STORAGE_<NAME>_BUCKET` | Bucket name. Required. |
+| `FLICK_STORAGE_<NAME>_ACCESS_KEY_ID` | Static access key ID (MinIO `minioadmin`; OCI Customer Secret Key; R2 API token). Required. |
+| `FLICK_STORAGE_<NAME>_SECRET_ACCESS_KEY` | Static secret access key. Required. |
+| `FLICK_STORAGE_<NAME>_PATH_STYLE` | `true` (default) for path-style addressing (MinIO, OCI, R2); `false` for virtual-host. |
+| `FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES` | Cumulative object-bytes ceiling for this backend, aggregated from the `flick_api` database (`db.StorageObjectBytes`). Default `0` = unlimited, allowed only when exactly one backend is configured; with several backends every ceiling must be positive. New objects go to a backend that still fits them, chosen at random weighted by remaining space (`storage.Registry.Choose`); when none fits, creation fails with `503 storage_full`. The check is check-then-act, so concurrent placements can transiently overshoot (soft cap; see `storage-model.md`). Set it below the provider's hard limit, for example `18000000000` (90 percent of OCI Always Free 20 GB) or `9000000000` (90 percent of R2 free 10 GB). |
 
-The secondary needs the same permission set as the primary (signed PUT for browser uploads, GET for finalize copy and opens, PUT for finalize, DELETE, ListObjectsV2 for reconciliation). Delete jobs carry the backend name in the `backend` field of the NATS payload (event-contract.md); the worker needs both backends' credentials. R2 has no hard spending cap (budget alerts are notification-only), which is why the code-side ceiling is the enforcement layer.
+The backend name is stored in every object row's `storage_backend` column and in
+delete jobs' `backend` field (`event-contract.md`), so it must stay stable while
+objects exist on that backend. Removing a name that still holds objects makes
+opens, cleanup, and reconciliation of those objects fail instead of reaching the
+wrong bucket.
+
+The variables of releases before `FLICK_STORAGE_BACKENDS`
+(`FLICK_STORAGE_LARGE_BACKEND`, `FLICK_S3_*`, `FLICK_R2_*`) are rejected: flick-api
+and flick-worker refuse to start while any of them is set to a non-empty value
+(`internal/config/config.go:legacyStorageEnv`). The
+[storage backend rename runbook](../runbook/storage-backend-rename.md) maps each
+one to its replacement.
+
+Every backend's credentials need the same permissions. The API signs browser
+PUTs, needs GetObject (finalize copy of the staging key, opens) and PutObject
+(server-only finalize write of the verified bytes), and `ListObjectsV2` on the
+exclusive `managed/secrets/` and `managed/requests/` prefixes for
+reconciliation. The worker needs DeleteObject on every backend, so it receives
+every backend's credentials. No startup permission probe is introduced: listing
+failures are reported by the reaper and retried without disabling upload/open.
+Provider versions, retention locks, replicas, and backups remain operator-owned;
+listing only reconciles current objects. Providers without a hard spending cap
+(R2 budget alerts are notification-only) rely on
+`FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES` as the enforcement layer.
+

@@ -161,14 +161,14 @@ func TestMigrateAPIConcurrentBootsSerialize(t *testing.T) {
 func TestMigrateAPIPreservesRequestReconciliationProgress(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestAPIDatabase(t)
-	var seeded int
-	if err := conn.QueryRowContext(ctx, `select count(*) from request_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
-		t.Fatalf("request cursor backends seeded: %d %v", seeded, err)
-	}
-	if _, err := conn.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token='page-three',generation=7 where backend='r2_object'`); err != nil {
+	// The reconciler seeds a backend's cursor on its first pass.
+	if _, err := conn.ExecContext(ctx, `insert into request_reconciliation_cursor_v2 (backend) values ('r2')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.ExecContext(ctx, `insert into request_reconciliation_pending_v2 values ('r2_object','managed/requests/key','req-job')`); err != nil {
+	if _, err := conn.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token='page-three',generation=7 where backend='r2'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `insert into request_reconciliation_pending_v2 values ('r2','managed/requests/key','req-job')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigrateAPI(ctx, conn); err != nil {
@@ -176,11 +176,11 @@ func TestMigrateAPIPreservesRequestReconciliationProgress(t *testing.T) {
 	}
 	var cursor string
 	var generation int
-	if err := conn.QueryRowContext(ctx, `select continuation_token,generation from request_reconciliation_cursor_v2 where backend='r2_object'`).Scan(&cursor, &generation); err != nil || cursor != "page-three" || generation != 7 {
+	if err := conn.QueryRowContext(ctx, `select continuation_token,generation from request_reconciliation_cursor_v2 where backend='r2'`).Scan(&cursor, &generation); err != nil || cursor != "page-three" || generation != 7 {
 		t.Fatalf("migration reset request cursor: %s %d %v", cursor, generation, err)
 	}
 	var job string
-	if err := conn.QueryRowContext(ctx, `select job_id from request_reconciliation_pending_v2 where backend='r2_object' and object_key='managed/requests/key'`).Scan(&job); err != nil || job != "req-job" {
+	if err := conn.QueryRowContext(ctx, `select job_id from request_reconciliation_pending_v2 where backend='r2' and object_key='managed/requests/key'`).Scan(&job); err != nil || job != "req-job" {
 		t.Fatalf("migration lost request pending claim: %s %v", job, err)
 	}
 }
@@ -197,14 +197,14 @@ func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
 	if err := MigrateAPI(ctx, conn); err != nil {
 		t.Fatal(err)
 	}
-	var seeded int
-	if err := conn.QueryRowContext(ctx, `select count(*) from object_reconciliation_cursor_v2`).Scan(&seeded); err != nil || seeded != 2 {
-		t.Fatalf("recreated cursor backends seeded: %d %v", seeded, err)
-	}
-	if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token='page-two',generation=4 where backend='s3_object'`); err != nil {
+	// The reconciler seeds a backend's cursor on its first pass.
+	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_cursor_v2 (backend) values ('oci')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/key','job')`); err != nil {
+	if _, err := conn.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token='page-two',generation=4 where backend='oci'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('oci','managed/secrets/key','job')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigrateAPI(ctx, conn); err != nil {
@@ -212,16 +212,16 @@ func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
 	}
 	var cursor string
 	var generation int
-	if err := conn.QueryRowContext(ctx, `select continuation_token,generation from object_reconciliation_cursor_v2 where backend='s3_object'`).Scan(&cursor, &generation); err != nil || cursor != "page-two" || generation != 4 {
+	if err := conn.QueryRowContext(ctx, `select continuation_token,generation from object_reconciliation_cursor_v2 where backend='oci'`).Scan(&cursor, &generation); err != nil || cursor != "page-two" || generation != 4 {
 		t.Fatalf("migration reset cursor: %s %d %v", cursor, generation, err)
 	}
-	if err := conn.QueryRowContext(ctx, `select job_id from object_reconciliation_pending_v2 where backend='s3_object' and object_key='managed/secrets/key'`).Scan(&cursor); err != nil || cursor != "job" {
+	if err := conn.QueryRowContext(ctx, `select job_id from object_reconciliation_pending_v2 where backend='oci' and object_key='managed/secrets/key'`).Scan(&cursor); err != nil || cursor != "job" {
 		t.Fatalf("migration lost pending claim: %s %v", cursor, err)
 	}
-	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/key','other')`); err == nil {
+	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('oci','managed/secrets/key','other')`); err == nil {
 		t.Fatal("duplicate pending key accepted")
 	}
-	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/other','job')`); err == nil {
+	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_pending_v2 values ('oci','managed/secrets/other','job')`); err == nil {
 		t.Fatal("duplicate job fence accepted")
 	}
 }

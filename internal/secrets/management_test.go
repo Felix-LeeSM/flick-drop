@@ -217,7 +217,7 @@ func TestManagementOpenCannotOutliveExpiryDuringObjectRead(t *testing.T) {
 	id := createFinalizedS3Secret(t, ctx, store, objects)
 	deadline := now.Add(600 * time.Second)
 	now = deadline.Add(-time.Second)
-	wrapped, wrapErr := storage.NewRegistry(clockAdvancingObjects{objects, func() { now = deadline }}, nil)
+	wrapped, wrapErr := storage.NewRegistry(storage.Backend{Name: testBackend, Store: clockAdvancingObjects{objects, func() { now = deadline }}})
 	if wrapErr != nil {
 		t.Fatal(wrapErr)
 	}
@@ -272,7 +272,7 @@ func TestManagementPendingUploadDeadlineAndReclaim(t *testing.T) {
 				deadline = created.ExpiresAt
 			}
 			now = deadline.Add(-time.Second)
-			wrapped, wrapErr := storage.NewRegistry(clockAdvancingObjects{objects, func() { now = deadline }}, nil)
+			wrapped, wrapErr := storage.NewRegistry(storage.Backend{Name: testBackend, Store: clockAdvancingObjects{objects, func() { now = deadline }}})
 			if wrapErr != nil {
 				t.Fatal(wrapErr)
 			}

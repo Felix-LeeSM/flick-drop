@@ -109,17 +109,23 @@ func TestRevokeSharesManagementRateLimit(t *testing.T) {
 
 func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.T) {
 	f := newTestRouterFixture(t, Options{InternalToken: "test-token"})
-	_, err := f.db.Exec(`insert into object_reconciliation_pending_v2 values ('s3_object','managed/secrets/key','new-job')`)
+	_, err := f.db.Exec(`insert into object_reconciliation_pending_v2 values ('oci','managed/secrets/key','new-job')`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := "/internal/object-reconciliation/ack"
-	body := map[string]string{"job_id": "new-job", "object_key": "managed/secrets/key"}
+	body := map[string]string{"backend": testBackend, "job_id": "new-job", "object_key": "managed/secrets/key"}
 	resp := performJSON(t, f.router, http.MethodPost, path, body)
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatal("missing internal token accepted")
 	}
 	headers := map[string]string{"X-Flick-Internal-Token": "test-token"}
+	// A claim is fenced by backend too, so an acknowledgement without one is
+	// malformed rather than "the primary".
+	noBackend := map[string]string{"job_id": "new-job", "object_key": "managed/secrets/key"}
+	if resp = performJSON(t, f.router, http.MethodPost, path, noBackend, headers); resp.Code != http.StatusBadRequest {
+		t.Fatalf("ack without backend: %d, want 400", resp.Code)
+	}
 	for _, job := range []string{"old-job", "new-job", "new-job"} {
 		body["job_id"] = job
 		resp = performJSON(t, f.router, http.MethodPost, path, body, headers)
@@ -127,7 +133,7 @@ func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.
 			t.Fatalf("ack: %d", resp.Code)
 		}
 		var pending int
-		if err := f.db.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 's3_object'`).Scan(&pending); err != nil {
+		if err := f.db.QueryRow(`select count(*) from object_reconciliation_pending_v2 where backend = 'oci'`).Scan(&pending); err != nil {
 			t.Fatal(err)
 		}
 		want := 0

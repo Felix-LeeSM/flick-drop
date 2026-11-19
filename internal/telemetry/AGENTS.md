@@ -26,8 +26,10 @@ on `DefaultRegistry` in `init()`:
 
 - `flick_secret_created_total` (counter, labels `kind`, `storage`) — incremented
   in `secrets.Store.Create` (`storage` `sqlite_blob`, the inline bytea row) and `CreateLarge`
-  (`storage` `s3_object` or `r2_object`, the backend chosen by
-  `internal/storage/registry.go:ChooseBackend`).
+  (`storage` = the `FLICK_STORAGE_BACKENDS` name chosen by
+  `internal/storage/registry.go:Registry.Choose`). `internal/secrets/store.go:registerCreatedSeries`
+  pre-registers `sqlite_blob` plus every configured backend name at store
+  construction so each series exists at 0 from process start.
 - `flick_secret_opened_total` (counter) — incremented in
   `internal/httpapi/secrets.go:Server.openAndCommit` after the `OpenTx`
   transaction commits a one-time open.
@@ -52,7 +54,8 @@ on `DefaultRegistry` in `init()`:
   judged by the in-process bucket because the shared Valkey bucket failed or is
   cooling down after a failure.
 - `flick_active_uploads`, `flick_outbox_pending`, and `flick_storage_bytes_used`
-  (gauges; the last has label `storage` `s3_object`|`r2_object`) — not stored
+  (gauges; the last has label `storage` = each configured `FLICK_STORAGE_BACKENDS`
+  name, so its cardinality is bounded by that list) — not stored
   in the process. `api_state.go:RegisterAPIStateCollector`, called only by
   `cmd/flick-api/main.go`, reads them from the `flick_api` database on every
   scrape (one 2-second timeout, `apiStateScrapeTimeout`) through

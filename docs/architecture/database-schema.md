@@ -35,7 +35,9 @@ API start, idempotently, holding one session-level `pg_advisory_lock`.
 create table secrets (
   id text primary key,
   kind text not null check (kind in ('text', 'file')),
-  storage_backend text not null check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
+  -- 'sqlite_blob' = inline payload; otherwise a FLICK_STORAGE_BACKENDS name.
+  storage_backend text not null constraint secrets_storage_backend_name
+    check (storage_backend = 'sqlite_blob' or storage_backend ~ '^[a-z][a-z0-9]{0,15}$'),
   storage_key text not null,
   access_kdf_params_json text,
   access_proof_hash text,
@@ -89,9 +91,11 @@ create table secret_open_grace (
 
 create index idx_secret_open_grace_until on secret_open_grace(grace_until);
 
--- Per-backend reconciliation state; MigrateAPI seeds one row per backend.
+-- Per-backend reconciliation state; the reconciler inserts a configured
+-- backend's row on its first pass.
 create table object_reconciliation_cursor_v2 (
-  backend text primary key check (backend in ('s3_object', 'r2_object')),
+  backend text primary key constraint object_reconciliation_cursor_v2_backend_name
+    check (backend ~ '^[a-z][a-z0-9]{0,15}$'),
   continuation_token text not null default '',
   generation integer not null default 0
 );
@@ -175,7 +179,8 @@ create table requests (
   kind text check (kind in ('text', 'file')),
   size_bytes bigint check (size_bytes >= 0),
   envelope_json text,
-  storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
+  storage_backend text not null default 'sqlite_blob' constraint requests_storage_backend_name
+    check (storage_backend = 'sqlite_blob' or storage_backend ~ '^[a-z][a-z0-9]{0,15}$'),
   upload_key text,
   final_key text,
   ciphertext_sha256 bytea check (length(ciphertext_sha256) = 32),
@@ -183,8 +188,8 @@ create table requests (
   consumed_at timestamptz,
   expires_at timestamptz not null,
   check ((attempt_token_hash is null) = (attempt_body_hash is null)),
-  check (state != 'uploading' or (storage_backend in ('s3_object', 'r2_object') and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
-  check (state != 'submitted' or storage_backend not in ('s3_object', 'r2_object') or (final_key is not null and ciphertext_sha256 is not null)),
+  constraint requests_uploading_object check (state != 'uploading' or (storage_backend <> 'sqlite_blob' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
+  constraint requests_submitted_object_keys check (state != 'submitted' or storage_backend = 'sqlite_blob' or (final_key is not null and ciphertext_sha256 is not null)),
   check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
 );
 
@@ -232,7 +237,8 @@ sender-secret cursors or claims:
 
 ```sql
 create table request_reconciliation_cursor_v2 (
-  backend text primary key check (backend in ('s3_object', 'r2_object')),
+  backend text primary key constraint request_reconciliation_cursor_v2_backend_name
+    check (backend ~ '^[a-z][a-z0-9]{0,15}$'),
   continuation_token text not null default '',
   generation integer not null default 0
 );
@@ -244,12 +250,49 @@ create table request_reconciliation_pending_v2 (
 );
 ```
 
-`normalizeRequestsSchema` seeds one cursor row per backend (`s3_object`,
-`r2_object`) idempotently. `internal/requests/cleanup.go` scans each backend
+No cursor row is seeded by migration: `internal/requests/cleanup.go` inserts a
+configured backend's cursor row (`on conflict do nothing`) on that backend's
+first reconciliation pass, so adding a name to `FLICK_STORAGE_BACKENDS` needs no
+schema change. `internal/requests/cleanup.go` scans each backend
 separately and commits that backend's cursor generation, claims, and outbox
 rows together. A worker terminal ACK removes only the matching
 backend/key/job-ID claim, so later PUTs can receive a new cleanup job after
 metadata is gone.
+
+### Object backend names
+
+The `storage_backend` and cursor `backend` checks accept any configured backend
+name (`storage.ValidBackendName`, `^[a-z][a-z0-9]{0,15}$`) rather than a fixed
+list, so operators add backends through `FLICK_STORAGE_BACKENDS` without a
+migration. The checks are named (`secrets_storage_backend_name`,
+`requests_storage_backend_name`, `requests_uploading_object`,
+`requests_submitted_object_keys`,
+`object_reconciliation_cursor_v2_backend_name`,
+`request_reconciliation_cursor_v2_backend_name`) so later migrations can
+address them directly.
+
+Databases created before `FLICK_STORAGE_BACKENDS` enumerated the fixed
+identifiers `s3_object` and `r2_object` in unnamed checks. After
+`normalizeRequestsSchema`, `MigrateAPI` runs
+`internal/db/storage_backends.go:retireLegacyStorageBackendChecks`:
+
+1. It refuses to migrate, and the API fails startup, while any `secrets` or
+   `requests` row or unpublished `outbox_events` delete job still names
+   `s3_object` or `r2_object`, or an unpublished `delete_oci_object` job has no
+   `backend`. The error points to the
+   [storage backend rename runbook](../runbook/storage-backend-rename.md),
+   which renames them to configured backend names
+   (`docs/runbook/storage-backend-rename.sql`).
+2. Otherwise, in one transaction, it deletes legacy cursor rows (scan positions
+   only; the reconciler reseeds them under the new names) and legacy
+   `*_reconciliation_pending_v2` claims, drops every check whose definition
+   still mentions `s3_object`, and adds the named checks that are missing. A
+   claim is removed only by an acknowledgement matching its backend, so a
+   renamed claim could block reconciliation of its key forever; a dropped one
+   lets the next pass re-find a surviving orphan under its new name, while a
+   key any live row holds stays protected.
+
+A fresh or already-upgraded database passes through as a no-op.
 
 ## `flick_worker` database
 
@@ -357,7 +400,7 @@ successful open deletes the `secrets` row (payload by cascade) and the
 `secret_management` row in the open transaction and writes no outcome; the
 CHECK still admits the retired `opened` value so rows carried over from a
 SQLite cutover database stay valid without a repair pass. For an
-`s3_object`/`r2_object` body the open transaction inserts `secret_open_grace`
+object-storage body (any `storage_backend` other than `sqlite_blob`) the open transaction inserts `secret_open_grace`
 (`object_key`, `grace_until` = open time + 35 minutes);
 `internal/secrets/reconciliation.go` protects that key until `grace_until`,
 and the reaper sweep deletes expired grace rows. Bounded reaper sweeps purge
@@ -365,8 +408,9 @@ expired management rows and their consumed (locked) secret metadata, without
 changing locked-row retention. Public management reads enforce
 the deadline even while cleanup is delayed. Cancellation deletes its live row and inline payload after committing the
 `cancelled` outcome and required object-delete outbox record in the same
-transaction. `object_reconciliation_cursor_v2` has one row per backend
-(`s3_object`, `r2_object`); each row's generation fences concurrent listing
+transaction. `object_reconciliation_cursor_v2` has one row per configured backend name,
+inserted by `internal/secrets/reconciliation.go` on that backend's first
+reconciliation pass; each row's generation fences concurrent listing
 results for that bucket, and its continuation token advances only with the
 page's outbox jobs (`internal/secrets/reconciliation.go`).
 `object_reconciliation_pending_v2` permits one outstanding job per backend and

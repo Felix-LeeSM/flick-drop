@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 // apiStateScrapeTimeout bounds the database reads one /metrics scrape runs
@@ -88,12 +86,9 @@ func (c apiStateCollector) Collect(ch chan<- prometheus.Metric) {
 		slog.Warn("metrics scrape could not read gauge", "metric", "flick_storage_bytes_used", "error", err)
 		return
 	}
+	// Keys are the configured backend names only (db.StorageObjectBytes), so
+	// label cardinality is bounded by FLICK_STORAGE_BACKENDS.
 	for backend, total := range usage {
-		// Keys are storage_backend column values; only the two object backends
-		// become series, so an unexpected value cannot mint label cardinality.
-		switch backend {
-		case storage.PrimaryBackend, storage.SecondaryBackend:
-			ch <- prometheus.MustNewConstMetric(storageBytesUsedDesc, prometheus.GaugeValue, float64(total), backend)
-		}
+		ch <- prometheus.MustNewConstMetric(storageBytesUsedDesc, prometheus.GaugeValue, float64(total), backend)
 	}
 }

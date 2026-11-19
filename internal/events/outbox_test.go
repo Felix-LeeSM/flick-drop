@@ -116,6 +116,19 @@ func TestJobEventRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
+// An object delete runs against the bucket its event names, so the backend is
+// required and must be a configured-name shape; the identifiers used before
+// FLICK_STORAGE_BACKENDS ('s3_object') no longer validate.
+func TestJobEventObjectDeleteRequiresBackendName(t *testing.T) {
+	for backend, wantErr := range map[string]bool{"": true, "s3_object": true, "oci": false} {
+		event := JobEvent{JobID: "job", Kind: KindDeleteOCIObject, Backend: backend, ObjectKey: "managed/secrets/key",
+			RequestedAt: time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)}
+		if err := event.Validate(); errors.Is(err, ErrInvalidEvent) != wantErr {
+			t.Fatalf("backend %q: validate error = %v, want invalid %v", backend, err, wantErr)
+		}
+	}
+}
+
 func TestOutboxStoreMarkMissingEvent(t *testing.T) {
 	ctx := context.Background()
 	store := newTestOutboxStore(t, openEventsTestDB(t, ctx))
