@@ -56,13 +56,10 @@ func objectAttemptTx(ctx context.Context, tx *sql.Tx, id string) (objectAttempt,
 	return a, err
 }
 
-// backendOf resolves the backend a reservation row was written to. Empty means
-// the row predates dual-backend support and lives on the primary.
+// backendOf names the backend a reservation row was written to. The column is
+// never null; an unconfigured name fails at Registry.For.
 func backendOf(a objectAttempt) string {
-	if a.backend.Valid && a.backend.String != "" {
-		return a.backend.String
-	}
-	return storage.PrimaryBackend
+	return a.backend.String
 }
 
 func validateAttempt(in AttemptInput) ([]byte, error) {
@@ -131,16 +128,16 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if _, err := rand.Read(random[:]); err != nil {
 			return UploadResult{}, err
 		}
-		// Placement: primary first; the secondary takes objects the primary's
-		// ceiling cannot fit. The aggregate rides the reservation transaction
+		// Placement: a random backend weighted by remaining space among those
+		// whose ceiling still fits (storage.Registry.Choose). The aggregate rides the reservation transaction
 		// (RowQueryer), so the ceiling check and the row it guards share one
 		// connection and one commit scope. No row is written before the backend
 		// passes its ceiling.
-		usage, err := db.StorageObjectBytes(ctx, tx.Tx, s.now().UTC())
+		usage, err := db.StorageObjectBytes(ctx, tx.Tx, s.now().UTC(), s.opts.Objects.Names())
 		if err != nil {
 			return UploadResult{}, ErrStorage
 		}
-		backend := storage.ChooseBackend(s.opts.Objects, usage, s.opts.MaxTotalBytes, in.SizeBytes)
+		backend := s.opts.Objects.Choose(usage, in.SizeBytes)
 		if backend == "" {
 			return UploadResult{}, ErrStorageFull
 		}

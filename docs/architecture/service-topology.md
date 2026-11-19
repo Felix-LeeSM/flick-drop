@@ -168,14 +168,14 @@ passing because it checks Postgres and NATS only.
   rendezvous; pod-to-pod live-transfer streams ride direct HTTP between
   `POD_IP` addresses on `FLICK_INTERNAL_HTTP_PORT` and never traverse Valkey.
 - API/worker to object storage: AWS SDK for Go v2 over S3-compatible endpoints
-  when enabled. The primary backend (`s3_object`, `FLICK_S3_*`) is MinIO in
-  development and OCI S3-compatibility in production. An optional secondary
-  backend (`r2_object`, `FLICK_R2_ENABLED=true` plus `FLICK_R2_*`;
-  `internal/config/config.go` rejects it unless
-  `FLICK_STORAGE_LARGE_BACKEND=s3`) such as Cloudflare R2 adds capacity and
-  never replaces the primary; the API places each new object on a backend with room, and the
-  worker resolves the delete target from the job event's `backend` field
-  ([event contract](event-contract.md)).
+  when enabled. `FLICK_STORAGE_BACKENDS` names one or more backends, each
+  configured by `FLICK_STORAGE_<NAME>_*` ([env contract](env-contract.md)):
+  one MinIO backend (`minio`) in development, and for example OCI
+  S3-compatibility (`oci`) plus Cloudflare R2 (`r2`) in production. The API
+  places each new object on a backend with room, weighted by remaining space,
+  and records the name on the row; the worker resolves the delete target from
+  the job event's `backend` field ([event contract](event-contract.md)). API
+  and worker must configure the same backend names.
 
 Do not add gRPC in the initial version. It is a future option if internal HTTP
 contracts become too wide or streaming RPC becomes useful.

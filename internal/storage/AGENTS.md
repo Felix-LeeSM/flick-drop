@@ -28,14 +28,23 @@ Rules:
   (`minio_integration_test.go`, build tag `integration`;
   `TestMinIORejectsOversized` proves the signed `Content-Length` is enforced by
   a real bucket).
-- `registry.go:Registry` holds up to two named backends:
-  `registry.go:PrimaryBackend` (`s3_object`) and the optional
-  `registry.go:SecondaryBackend` (`r2_object`). `Registry.For` resolves the
-  `storage_backend` column value of a row (empty means primary) and returns an
-  error for an unknown or unconfigured backend, so a delete never silently
-  targets the wrong bucket. `registry.go:ChooseBackend` places a new object on
-  the primary first and on the secondary only when the primary's byte ceiling
-  cannot fit it; it returns `""` when no backend has room.
+- `registry.go:Registry` holds one or more operator-named backends, built from
+  `FLICK_STORAGE_BACKENDS` (`internal/config/config.go:loadStorageBackends`).
+  A name must satisfy `registry.go:ValidBackendName` (`^[a-z][a-z0-9]{0,15}$`)
+  because it is stored in the `storage_backend` column and in delete events,
+  and it can never equal the inline value `sqlite_blob`. `registry.go:NewRegistry`
+  rejects duplicate names and, when several backends are configured, any
+  backend without a positive `MaxTotalBytes`.
+- `registry.go:Registry.For` resolves the `storage_backend` column value of a
+  row and returns an error for any name that is not configured (an empty name
+  included), so a read or delete never silently targets the wrong bucket.
+- `registry.go:Registry.Choose` places a new object: among backends whose
+  ceiling still fits it (`MaxTotalBytes` 0 = unlimited, allowed only for a
+  single backend), it picks at random weighted by remaining space
+  (`MaxTotalBytes` minus usage from `internal/db/storage_usage.go:StorageObjectBytes`).
+  No backend is primary. It returns `""` when no backend has room, which callers
+  map to `storage_full`. `registry_test.go` drives the weighting through
+  `registry.go:chooseWith` with an injected random source.
 - Auth is a static key pair (MinIO dev / OCI Customer Secret Key prod). Instance
   principal is deferred because the AWS SDK cannot speak it directly.
 - Cleanup operations must be idempotent (a missing object on DELETE is not an error).

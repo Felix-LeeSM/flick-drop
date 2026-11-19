@@ -550,19 +550,19 @@ CSP directives:
 | `script-src` | `'self' 'unsafe-inline'` | The SvelteKit hydration bootstrap is inline and its hash changes every build, so nginx cannot pin it; app modules load from `'self'`. `web/src/app.html` also carries a small inline unsupported-browser check that makes no requests. See the limitation below. |
 | `style-src` | `'self' 'unsafe-inline'` | Tailwind v4 injects runtime `<style>`; `app.html` uses an inline `style` attribute. |
 | `img-src` | `'self' data:` | A CSS background uses an inline `data:` SVG. |
-| `connect-src` | `'self' ${FLICK_CSP_CONNECT_SRC}` | API is same-origin; the object-store origin for direct large-file uploads is appended at runtime (empty when the S3 backend is disabled). |
+| `connect-src` | `'self' ${FLICK_CSP_CONNECT_SRC}` | API is same-origin; the object-store origin for direct large-file uploads is appended at runtime (empty when `FLICK_STORAGE_BACKENDS` is empty). |
 | `frame-ancestors` | `'none'` | Anti-clickjacking. |
 | `base-uri`, `form-action` | `'self'` | No base-tag hijack, no cross-origin form posts. |
 | `object-src` | `'none'` | No plugins. |
 
 `connect-src` is the load-bearing directive: even an injected script (which
 `'unsafe-inline'` does not stop) cannot exfiltrate the plaintext or passphrase to
-an arbitrary origin — it may only reach `'self'` and the configured object store.
-The S3 origin is deployment-specific and unknown at web build time (one shared
+an arbitrary origin — it may only reach `'self'` and the configured object stores.
+The object store origins are deployment-specific and unknown at web build time (one shared
 image), so the CSP is rendered by the nginx envsubst entrypoint from
 `FLICK_CSP_CONNECT_SRC` (see [env contract](env-contract.md)); enabling
-`FLICK_STORAGE_LARGE_BACKEND=s3` means setting it to the `FLICK_S3_ENDPOINT`
-origin.
+object storage (`FLICK_STORAGE_BACKENDS`) means setting it to every
+`FLICK_STORAGE_<NAME>_ENDPOINT` origin.
 
 Limitation and upgrade path: `script-src 'unsafe-inline'` is weaker than a
 hash/nonce policy. The HTML carries two inline scripts: the SvelteKit hydration

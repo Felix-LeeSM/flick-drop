@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 func TestCleanupClientSendsInternalCleanupRequest(t *testing.T) {
@@ -164,7 +163,7 @@ func TestCleanupClientRequiresConfiguration(t *testing.T) {
 
 func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil, nil)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -190,7 +189,7 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedJobKind(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil, nil)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -224,7 +223,7 @@ func (f *fakeObjectDeleter) Delete(_ context.Context, key string) error {
 func TestCleanupHandlerDeletesObject(t *testing.T) {
 	api := &fakeCleanupAPI{}
 	obj := &fakeObjectDeleter{}
-	handler, err := NewCleanupHandler(api, obj, nil)
+	handler, err := NewCleanupHandler(api, map[string]ObjectDeleter{testBackend: obj})
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -232,6 +231,7 @@ func TestCleanupHandlerDeletesObject(t *testing.T) {
 	err = handler.HandleJob(context.Background(), events.JobEvent{
 		JobID:       "job_oci",
 		Kind:        events.KindDeleteOCIObject,
+		Backend:     testBackend,
 		ObjectKey:   "obj-1",
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	})
@@ -248,7 +248,7 @@ func TestCleanupHandlerDeletesObject(t *testing.T) {
 
 func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil, nil)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestCleanupHandlerRejectsUnsupportedReason(t *testing.T) {
 func TestCleanupHandlerPropagatesClientError(t *testing.T) {
 	apiErr := errors.New("api unavailable")
 	api := &fakeCleanupAPI{err: apiErr}
-	handler, err := NewCleanupHandler(api, nil, nil)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestProcessorRunsCleanupHandler(t *testing.T) {
 	ctx := context.Background()
 	store := newTestReceiptStore(t, ctx)
 	api := &fakeCleanupAPI{}
-	handler, err := NewCleanupHandler(api, nil, nil)
+	handler, err := NewCleanupHandler(api, nil)
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -342,9 +342,9 @@ func (a *fakeCleanupAPI) CleanupSecret(_ context.Context, req CleanupRequest) (C
 
 func TestCleanupHandlerRoutesObjectDeleteByBackend(t *testing.T) {
 	api := &fakeCleanupAPI{}
-	primary := &fakeObjectDeleter{}
-	secondary := &fakeObjectDeleter{}
-	handler, err := NewCleanupHandler(api, primary, secondary)
+	first := &fakeObjectDeleter{}
+	other := &fakeObjectDeleter{}
+	handler, err := NewCleanupHandler(api, map[string]ObjectDeleter{testBackend: first, otherTestBackend: other})
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
@@ -352,39 +352,39 @@ func TestCleanupHandlerRoutesObjectDeleteByBackend(t *testing.T) {
 
 	if err := handler.HandleJob(context.Background(), events.JobEvent{
 		JobID: "job_r2", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-r2",
-		Backend: storage.SecondaryBackend, RequestedAt: at,
+		Backend: otherTestBackend, RequestedAt: at,
 	}); err != nil {
-		t.Fatalf("handle secondary delete: %v", err)
+		t.Fatalf("handle %s delete: %v", otherTestBackend, err)
 	}
-	if len(secondary.deleted) != 1 || secondary.deleted[0] != "obj-r2" {
-		t.Fatalf("secondary deleted = %v, want [obj-r2]", secondary.deleted)
+	if len(other.deleted) != 1 || other.deleted[0] != "obj-r2" {
+		t.Fatalf("%s deleted = %v, want [obj-r2]", otherTestBackend, other.deleted)
 	}
-	if len(primary.deleted) != 0 {
-		t.Fatalf("primary deleted = %v, want nothing for a secondary object", primary.deleted)
+	if len(first.deleted) != 0 {
+		t.Fatalf("%s deleted = %v, want nothing for an object on %s", testBackend, first.deleted, otherTestBackend)
 	}
 
 	if err := handler.HandleJob(context.Background(), events.JobEvent{
-		JobID: "job_s3", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-s3",
-		Backend: storage.PrimaryBackend, RequestedAt: at,
+		JobID: "job_oci", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-oci",
+		Backend: testBackend, RequestedAt: at,
 	}); err != nil {
-		t.Fatalf("handle primary delete: %v", err)
+		t.Fatalf("handle %s delete: %v", testBackend, err)
 	}
-	if len(primary.deleted) != 1 || primary.deleted[0] != "obj-s3" {
-		t.Fatalf("primary deleted = %v, want [obj-s3]", primary.deleted)
+	if len(first.deleted) != 1 || first.deleted[0] != "obj-oci" {
+		t.Fatalf("%s deleted = %v, want [obj-oci]", testBackend, first.deleted)
 	}
 }
 
 func TestCleanupHandlerFailsUnknownBackendPermanently(t *testing.T) {
 	api := &fakeCleanupAPI{}
 	primary := &fakeObjectDeleter{}
-	handler, err := NewCleanupHandler(api, primary, nil)
+	handler, err := NewCleanupHandler(api, map[string]ObjectDeleter{testBackend: primary})
 	if err != nil {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
 	err = handler.HandleJob(context.Background(), events.JobEvent{
 		JobID: "job_x", Kind: events.KindDeleteOCIObject, ObjectKey: "obj-x",
-		Backend:     "gcs_object",
+		Backend:     "gcs", // a valid name this worker does not configure
 		RequestedAt: time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	})
 	if !errors.Is(err, ErrInvalidJob) {
@@ -394,6 +394,13 @@ func TestCleanupHandlerFailsUnknownBackendPermanently(t *testing.T) {
 		t.Fatalf("primary deleted = %v, want nothing", primary.deleted)
 	}
 }
+
+// testBackend and otherTestBackend name the object backends test handlers
+// configure; any name matching storage.ValidBackendName works.
+const (
+	testBackend      = "oci"
+	otherTestBackend = "r2"
+)
 
 // 전송 실패 오류 문구에 시크릿 ID가 담긴 요청 URL이 들어가지 않는다(worker 로그·job 테이블로 감).
 func TestCleanupClientTransportErrorOmitsSecretID(t *testing.T) {

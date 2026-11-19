@@ -33,18 +33,14 @@ func enqueueObjectTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, bac
 }
 
 func enqueueRequestKeysTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, id, reason string, now time.Time) error {
-	var backend sql.NullString
+	var backend string
 	var upload, final sql.NullString
 	if err := tx.QueryRowContext(ctx, `select storage_backend, upload_key, final_key from requests where id = $1`, id).Scan(&backend, &upload, &final); err != nil {
 		return err
 	}
-	placedBackend := storage.PrimaryBackend
-	if backend.Valid && backend.String != "" {
-		placedBackend = backend.String
-	}
 	for _, key := range []sql.NullString{upload, final} {
 		if key.Valid {
-			if err := enqueueObjectTx(ctx, tx, outbox, placedBackend, key.String, reason, now); err != nil {
+			if err := enqueueObjectTx(ctx, tx, outbox, backend, key.String, reason, now); err != nil {
 				return err
 			}
 		}
@@ -172,6 +168,10 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string, limit int) (int, error) {
 	var cursor string
 	var generation int64
+	// A backend added to FLICK_STORAGE_BACKENDS gets its cursor on first visit.
+	if _, err := s.db.ExecContext(ctx, `insert into request_reconciliation_cursor_v2 (backend) values ($1) on conflict do nothing`, backend); err != nil {
+		return 0, err
+	}
 	if err := s.db.QueryRowContext(ctx, `select continuation_token, generation from request_reconciliation_cursor_v2 where backend = $1`, backend).Scan(&cursor, &generation); err != nil {
 		return 0, err
 	}
@@ -268,13 +268,8 @@ func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStor
 }
 
 func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, key string) error {
-	if strings.TrimSpace(jobID) == "" || !strings.HasPrefix(key, ObjectPrefix) || key == ObjectPrefix {
+	if strings.TrimSpace(jobID) == "" || backend == "" || !strings.HasPrefix(key, ObjectPrefix) || key == ObjectPrefix {
 		return ErrInvalid
-	}
-	if backend == "" {
-		// Workers built before dual-backend support never send a backend; their
-		// claims all live on the primary.
-		backend = storage.PrimaryBackend
 	}
 	_, err := s.db.ExecContext(ctx, `delete from request_reconciliation_pending_v2 where backend = $1 and object_key = $2 and job_id = $3`, backend, key, jobID)
 	return err

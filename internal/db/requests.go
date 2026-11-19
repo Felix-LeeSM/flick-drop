@@ -20,7 +20,7 @@ const requestsTableSchema = `create table if not exists requests (
 			kind text check (kind in ('text', 'file')),
 			size_bytes bigint check (size_bytes >= 0),
 			envelope_json text,
-			storage_backend text not null default 'sqlite_blob' check (storage_backend in ('sqlite_blob', 's3_object', 'r2_object')),
+			storage_backend text not null default 'sqlite_blob' constraint requests_storage_backend_name check (storage_backend = 'sqlite_blob' or storage_backend ~ '^[a-z][a-z0-9]{0,15}$'),
 			upload_key text,
 			final_key text,
 			ciphertext_sha256 bytea check (length(ciphertext_sha256) = 32),
@@ -28,8 +28,8 @@ const requestsTableSchema = `create table if not exists requests (
 			consumed_at timestamptz,
 			expires_at timestamptz not null,
 			check ((attempt_token_hash is null) = (attempt_body_hash is null)),
-			check (state != 'uploading' or (storage_backend in ('s3_object', 'r2_object') and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
-			check (state != 'submitted' or storage_backend not in ('s3_object', 'r2_object') or (final_key is not null and ciphertext_sha256 is not null)),
+			constraint requests_uploading_object check (state != 'uploading' or (storage_backend <> 'sqlite_blob' and upload_key is not null and final_key is not null and ciphertext_sha256 is not null and reservation_expires_at is not null and kind = 'file' and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null)),
+			constraint requests_submitted_object_keys check (state != 'submitted' or storage_backend = 'sqlite_blob' or (final_key is not null and ciphertext_sha256 is not null)),
 			check (state != 'submitted' or (kind is not null and size_bytes is not null and envelope_json is not null and attempt_token_hash is not null))
 		)`
 
@@ -43,12 +43,10 @@ func normalizeRequestsSchema(ctx context.Context, conn *sql.Conn) (err error) {
 		`create unique index if not exists idx_requests_upload_key on requests(upload_key) where upload_key is not null`,
 		`create unique index if not exists idx_requests_final_key on requests(final_key) where final_key is not null`,
 		`create table if not exists request_reconciliation_cursor_v2 (
-			backend text primary key check (backend in ('s3_object', 'r2_object')),
+			backend text primary key constraint request_reconciliation_cursor_v2_backend_name check (backend ~ '^[a-z][a-z0-9]{0,15}$'),
 			continuation_token text not null default '',
 			generation integer not null default 0
 		)`,
-		`insert into request_reconciliation_cursor_v2 (backend) values ('s3_object') on conflict do nothing`,
-		`insert into request_reconciliation_cursor_v2 (backend) values ('r2_object') on conflict do nothing`,
 		`create table if not exists request_reconciliation_pending_v2 (
 			backend text not null,
 			object_key text not null,

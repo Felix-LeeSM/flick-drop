@@ -37,11 +37,10 @@ type JobEvent struct {
 	SecretID  string `json:"secret_id,omitempty"`
 	ObjectKey string `json:"object_key,omitempty"`
 	Reason    string `json:"reason,omitempty"`
-	// Backend names the object-storage backend the object lives on (see
-	// storage.PrimaryBackend / storage.SecondaryBackend). Empty means the
-	// primary: jobs enqueued before multi-backend support delete from the
-	// primary bucket, which is where all pre-dual-backend objects live. A
-	// backend name is safe event metadata — never a private bucket name.
+	// Backend names the configured object backend the object lives on (a
+	// FLICK_STORAGE_BACKENDS name, storage.ValidBackendName). Required for
+	// object deletes. A backend name is safe event metadata — never a private
+	// bucket name.
 	Backend     string    `json:"backend,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
 	// TraceContext carries the W3C trace-context of the span that enqueued this
@@ -68,6 +67,9 @@ func (e JobEvent) Validate() error {
 		if strings.TrimSpace(e.ObjectKey) == "" {
 			return fmt.Errorf("%w: object_key is required for %s", ErrInvalidEvent, e.Kind)
 		}
+		if e.Backend == "" {
+			return fmt.Errorf("%w: backend is required for %s", ErrInvalidEvent, e.Kind)
+		}
 	default:
 		return fmt.Errorf("%w: unsupported kind %q", ErrInvalidEvent, e.Kind)
 	}
@@ -75,9 +77,7 @@ func (e JobEvent) Validate() error {
 	if e.Reason != "" && !validReason(e.Reason) {
 		return fmt.Errorf("%w: unsupported reason %q", ErrInvalidEvent, e.Reason)
 	}
-	switch e.Backend {
-	case "", storage.PrimaryBackend, storage.SecondaryBackend:
-	default:
+	if e.Backend != "" && !storage.ValidBackendName(e.Backend) {
 		return fmt.Errorf("%w: unsupported backend %q", ErrInvalidEvent, e.Backend)
 	}
 	return nil

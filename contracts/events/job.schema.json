@@ -5,6 +5,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["job_id", "kind", "requested_at"],
+  "if": {
+    "properties": { "kind": { "const": "delete_oci_object" } }
+  },
+  "then": {
+    "required": ["object_key", "backend"]
+  },
   "properties": {
     "job_id": {
       "type": "string",
@@ -31,8 +37,8 @@
     },
     "backend": {
       "type": "string",
-      "description": "Object-storage backend the object lives on ('s3_object' primary or 'r2_object' secondary). Absent means the primary: jobs enqueued before multi-backend support delete from the primary bucket.",
-      "enum": ["s3_object", "r2_object"]
+      "description": "Configured object backend the object lives on: an operator-chosen FLICK_STORAGE_BACKENDS name (for example 'oci' or 'r2'), never a bucket name. Required for delete_oci_object.",
+      "pattern": "^[a-z][a-z0-9]{0,15}$"
     },
     "requested_at": {
       "type": "string",

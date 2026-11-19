@@ -48,7 +48,9 @@ Rules:
 
 `storage_usage.go:StorageObjectBytes` is the one deliberate exception to the
 "no domain repositories" rule: it aggregates `size_bytes` across the `secrets`
-and `requests` tables per `storage_backend` (`s3_object`, `r2_object`) for the
+and `requests` tables for each configured backend name passed in its `backends`
+argument (`internal/storage/registry.go:Registry.Names`, the
+`FLICK_STORAGE_BACKENDS` names; the result map has exactly those keys) for the
 per-backend placement ceilings enforced in `requests.Store.Reserve` and
 `secrets.Store.CreateLarge` (see docs/architecture/storage-model.md). It only
 reads; the secrets and requests stores remain the sole writers of their tables.

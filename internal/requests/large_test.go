@@ -96,6 +96,14 @@ func (o *requestObjects) List(_ context.Context, prefix, cursor string, limit in
 	}
 	return page, nil
 }
+
+// testBackend and otherTestBackend name the object backends test registries
+// configure; any name matching storage.ValidBackendName works.
+const (
+	testBackend      = "oci"
+	otherTestBackend = "r2"
+)
+
 func largeFixture(t *testing.T) (fixture, *requestObjects) {
 	t.Helper()
 	f := newFixture(t)
@@ -104,7 +112,7 @@ func largeFixture(t *testing.T) (fixture, *requestObjects) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := storage.NewRegistry(o, nil)
+	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: o})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,25 +829,29 @@ func TestLargeConcurrentFinalizeDifferentRequestsCopyInParallel(t *testing.T) {
 	}
 }
 
-func dualFixture(t *testing.T, ceilings map[string]int64) (fixture, *requestObjects, *requestObjects) {
+// dualFixture configures testBackend and otherTestBackend, each an independent
+// mock with its own byte ceiling, so a test can tell where a reserve landed.
+func dualFixture(t *testing.T, testCeiling, otherCeiling int64) (fixture, *requestObjects, *requestObjects) {
 	t.Helper()
 	f := newFixture(t)
-	primary := &requestObjects{bodies: map[string][]byte{}}
-	secondary := &requestObjects{bodies: map[string][]byte{}}
+	first := &requestObjects{bodies: map[string][]byte{}}
+	other := &requestObjects{bodies: map[string][]byte{}}
 	outbox, err := events.NewOutboxStore(f.db, "flick.jobs")
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := storage.NewRegistry(primary, secondary)
+	registry, err := storage.NewRegistry(
+		storage.Backend{Name: testBackend, Store: first, MaxTotalBytes: testCeiling},
+		storage.Backend{Name: otherTestBackend, Store: other, MaxTotalBytes: otherCeiling},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.store.opts.PayloadInlineMaxBytes = 64
 	f.store.opts.MaxObjectBytes = 1000000
-	f.store.opts.MaxTotalBytes = ceilings
 	f.store.opts.Objects = registry
 	f.store.opts.Outbox = outbox
-	return f, primary, secondary
+	return f, first, other
 }
 
 func reservedBackend(t *testing.T, f fixture, id string) string {
@@ -851,40 +863,33 @@ func reservedBackend(t *testing.T, f fixture, id string) string {
 	return backend
 }
 
-func TestReserveRoutesPrimaryWhileItFits(t *testing.T) {
-	f, primary, _ := dualFixture(t, map[string]int64{
-		storage.PrimaryBackend:   1000,
-		storage.SecondaryBackend: 1000,
-	})
-	c := f.create(t)
-	in, data := largeInput()
-	_, _, _ = reserve(t, f, primary, c, in, data)
+// Placement is random among backends with room, so each case leaves exactly
+// one candidate to keep the outcome deterministic. largeInput is 49 bytes.
+func TestReserveRoutesToTheOnlyBackendThatFits(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		testCeiling, otherCeiling int64
+		want                      string
+	}{
+		{"first configured fits", 1000, 10, testBackend},
+		{"second configured fits", 10, 1000, otherTestBackend},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, first, other := dualFixture(t, tc.testCeiling, tc.otherCeiling)
+			c := f.create(t)
+			in, data := largeInput()
+			placed := map[string]*requestObjects{testBackend: first, otherTestBackend: other}[tc.want]
+			_, _, _ = reserve(t, f, placed, c, in, data)
 
-	if got := reservedBackend(t, f, c.ID); got != storage.PrimaryBackend {
-		t.Fatalf("storage_backend = %q, want primary while it has headroom", got)
-	}
-}
-
-func TestReserveSpillsToSecondaryWhenPrimaryIsFull(t *testing.T) {
-	// 49 < secondary ceiling; the primary cap is below the object size.
-	f, _, secondary := dualFixture(t, map[string]int64{
-		storage.PrimaryBackend:   10,
-		storage.SecondaryBackend: 1000,
-	})
-	c := f.create(t)
-	in, data := largeInput()
-	_, _, _ = reserve(t, f, secondary, c, in, data)
-
-	if got := reservedBackend(t, f, c.ID); got != storage.SecondaryBackend {
-		t.Fatalf("storage_backend = %q, want secondary once the primary is over ceiling", got)
+			if got := reservedBackend(t, f, c.ID); got != tc.want {
+				t.Fatalf("storage_backend = %q, want %q, the only backend whose ceiling fits", got, tc.want)
+			}
+		})
 	}
 }
 
 func TestReserveRejectsWhenEveryBackendIsFull(t *testing.T) {
-	f, _, _ := dualFixture(t, map[string]int64{
-		storage.PrimaryBackend:   10,
-		storage.SecondaryBackend: 10,
-	})
+	f, _, _ := dualFixture(t, 10, 10)
 	c := f.create(t)
 	in, _ := largeInput()
 
@@ -901,16 +906,13 @@ func TestReserveRejectsWhenEveryBackendIsFull(t *testing.T) {
 	}
 }
 
-func TestReserveZeroCeilingMeansUnlimited(t *testing.T) {
-	f, primary, _ := dualFixture(t, map[string]int64{
-		storage.PrimaryBackend:   0,
-		storage.SecondaryBackend: 1000,
-	})
+func TestReserveSingleUncappedBackendAlwaysFits(t *testing.T) {
+	f, o := largeFixture(t) // one backend, MaxTotalBytes 0 = unlimited
 	c := f.create(t)
 	in, data := largeInput()
-	_, _, _ = reserve(t, f, primary, c, in, data)
+	_, _, _ = reserve(t, f, o, c, in, data)
 
-	if got := reservedBackend(t, f, c.ID); got != storage.PrimaryBackend {
-		t.Fatalf("storage_backend = %q, want primary when its ceiling is zero (unlimited)", got)
+	if got := reservedBackend(t, f, c.ID); got != testBackend {
+		t.Fatalf("storage_backend = %q, want %q", got, testBackend)
 	}
 }

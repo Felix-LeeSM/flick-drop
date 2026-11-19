@@ -295,7 +295,7 @@ func TestReaperEnqueuesObjectDeleteForS3(t *testing.T) {
 
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_s3",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_key_s3",
 		expiresAt:      now.Add(-1 * time.Minute),
 		createdAt:      now.Add(-10 * time.Minute),
@@ -334,7 +334,7 @@ func TestReaperOrphanEnqueuesOrphanReason(t *testing.T) {
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_orphan_s3",
 		state:          "pending_upload",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_key_orphan",
 		createdAt:      now.Add(-20 * time.Minute),
 		updatedAt:      now.Add(-20 * time.Minute),
@@ -493,7 +493,7 @@ func TestReaperDedupAcrossTicks(t *testing.T) {
 
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_dedup",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_dedup",
 		expiresAt:      now.Add(-1 * time.Minute),
 		createdAt:      now.Add(-10 * time.Minute),
@@ -558,7 +558,7 @@ func TestReaperAtomicityOnFailure(t *testing.T) {
 
 	insertSecret(t, ctx, conn, secretFixture{
 		id:             "sec_fail",
-		storageBackend: "s3_object",
+		storageBackend: testBackend,
 		storageKey:     "obj_fail",
 		expiresAt:      now.Add(-1 * time.Minute),
 		createdAt:      now.Add(-10 * time.Minute),

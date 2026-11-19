@@ -254,7 +254,7 @@ docker compose exec -T postgres psql -U postgres -c "create schema $request_test
 FLICK_DATABASE_URL="postgres://postgres:flick@127.0.0.1:5432/postgres?sslmode=disable&search_path=$request_test_schema" \
 FLICK_API_ADDR=127.0.0.1:8080 \
 FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
-FLICK_STORAGE_LARGE_BACKEND=disabled \
+FLICK_STORAGE_BACKENDS= \
 FLICK_MIN_TTL_SECONDS=1 \
 FLICK_CREATE_RATE_PER_MIN=1000 FLICK_OPEN_RATE_PER_MIN=1000 \
 go run ./cmd/flick-api
@@ -303,11 +303,11 @@ FLICK_API_ADDR=127.0.0.1:8080 \
 FLICK_PUBLIC_BASE_URL=http://127.0.0.1:5173 \
 FLICK_MIN_TTL_SECONDS=1 \
 FLICK_CREATE_RATE_PER_MIN=1000 FLICK_OPEN_RATE_PER_MIN=1000 \
-FLICK_STORAGE_LARGE_BACKEND=s3 \
+FLICK_STORAGE_BACKENDS=minio \
 FLICK_PAYLOAD_INLINE_MAX_BYTES=65536 FLICK_MAX_FILE_BYTES=131072 \
-FLICK_S3_ENDPOINT=http://127.0.0.1:9000 FLICK_S3_REGION=us-east-1 \
-FLICK_S3_BUCKET=flick-request-tests FLICK_S3_PATH_STYLE=true \
-FLICK_S3_ACCESS_KEY_ID=minioadmin FLICK_S3_SECRET_ACCESS_KEY=minioadmin \
+FLICK_STORAGE_MINIO_ENDPOINT=http://127.0.0.1:9000 FLICK_STORAGE_MINIO_REGION=us-east-1 \
+FLICK_STORAGE_MINIO_BUCKET=flick-request-tests FLICK_STORAGE_MINIO_PATH_STYLE=true \
+FLICK_STORAGE_MINIO_ACCESS_KEY_ID=minioadmin FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY=minioadmin \
 go run ./cmd/flick-api
 
 # In another terminal, with the web server from the inline recipe still running.
@@ -325,7 +325,7 @@ another PUT. The object cleanup/reconciliation proof belongs to
 `scripts/ci/storage-integration.sh`, which now runs the request and storage MinIO
 integration packages together. The browser suite does not assert physical deletion.
 
-Restart the same isolated API with `FLICK_STORAGE_LARGE_BACKEND=disabled` and run
+Restart the same isolated API with an empty `FLICK_STORAGE_BACKENDS` and run
 `FLICK_REQUEST_STORAGE_DISABLED=1 pnpm --dir web test:request-storage` to verify
 the advertised inline ceiling and pre-upload rejection with real disabled config.
 Run `test:requests` as well for the complete inline lifecycle. Remove only the

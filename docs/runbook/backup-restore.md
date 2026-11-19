@@ -30,8 +30,7 @@ Related contracts:
 | Worker database | `flick_worker` on `Service/postgres` | `postgres-data` (2Gi) | No — job receipts, attempts, dead letters (idempotency state) |
 | JetStream store | `/data/jetstream` in `StatefulSet/nats` | `nats-data` (1Gi) | Partly — see [JetStream](#jetstream) |
 | Rate-limit buckets, live-transfer rooms | `Deployment/valkey` memory | none | Yes — see [Valkey](#valkey) |
-| Large ciphertext | Primary S3-compatible bucket (`FLICK_S3_BUCKET`) | n/a (object storage) | No — but holds only browser-encrypted bytes |
-| Large ciphertext | Secondary R2 bucket (`FLICK_R2_BUCKET`), only when `FLICK_R2_ENABLED=true` | n/a (object storage) | No — but holds only browser-encrypted bytes |
+| Large ciphertext | One S3-compatible bucket per name in `FLICK_STORAGE_BACKENDS` (`FLICK_STORAGE_<NAME>_BUCKET`) | n/a (object storage) | No — but holds only browser-encrypted bytes |
 
 `deploy/base/pvc.yaml` declares only `postgres-data` and `nats-data`.
 `flick-api` and `flick-worker` own no volume.
@@ -231,8 +230,7 @@ moment are gone, so those transfers must be started again.
 
 ## S3 Objects
 
-The primary bucket, and the secondary R2 bucket when `FLICK_R2_ENABLED=true`,
-hold only browser-encrypted ciphertext for large files. Object lifecycle is
+The bucket of every backend named in `FLICK_STORAGE_BACKENDS` holds only browser-encrypted ciphertext for large files. Object lifecycle is
 driven by the app, not by a backup tool:
 
 - The reaper hard-deletes reclaimable secret rows and enqueues an object-delete

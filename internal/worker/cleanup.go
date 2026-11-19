@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
-	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
 const defaultCleanupClientTimeout = 10 * time.Second
@@ -163,24 +162,21 @@ type ObjectDeleter interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// CleanupHandler deletes objects from whichever backend the delete job names
-// (empty = primary). Unknown backend names fail the job permanently — deleting
-// from the wrong bucket silently would leak the real object.
+// CleanupHandler deletes objects from whichever configured backend the delete
+// job names. An unknown backend name fails the job permanently — deleting from
+// the wrong bucket silently would leak the real object.
 type CleanupHandler struct {
 	api      CleanupAPI
 	backends map[string]ObjectDeleter
 }
 
-func NewCleanupHandler(api CleanupAPI, primary ObjectDeleter, secondary ObjectDeleter) (*CleanupHandler, error) {
+// NewCleanupHandler takes one deleter per FLICK_STORAGE_BACKENDS name. An
+// empty map means object storage is disabled for this deployment: a delete for
+// a managed key fails (and is retried) because it needs storage, and any other
+// stray delete event is acknowledged as a no-op.
+func NewCleanupHandler(api CleanupAPI, backends map[string]ObjectDeleter) (*CleanupHandler, error) {
 	if api == nil {
 		return nil, fmt.Errorf("cleanup api is required")
-	}
-	// A nil primary means object storage is disabled for this deployment; the
-	// handler keeps running so a stray delete event is acknowledged as no-op
-	// instead of failing the worker.
-	backends := map[string]ObjectDeleter{"": primary, storage.PrimaryBackend: primary}
-	if secondary != nil {
-		backends[storage.SecondaryBackend] = secondary
 	}
 	return &CleanupHandler{api: api, backends: backends}, nil
 }
@@ -218,16 +214,16 @@ func (h *CleanupHandler) handleObjectDelete(ctx context.Context, event events.Jo
 	if strings.TrimSpace(event.ObjectKey) == "" {
 		return fmt.Errorf("%w: object_key is required", ErrInvalidJob)
 	}
-	objects, ok := h.backends[event.Backend]
-	if !ok {
-		return fmt.Errorf("%w: object delete names unconfigured backend %q", ErrInvalidJob, event.Backend)
-	}
-	if objects == nil {
+	if len(h.backends) == 0 {
 		if requiresObjectAcknowledgement(event.ObjectKey) {
 			return errors.New("managed object deletion requires object storage")
 		}
 		// Object storage is disabled — a stray delete event has no target.
 		return nil
+	}
+	objects, ok := h.backends[event.Backend]
+	if !ok {
+		return fmt.Errorf("%w: object delete names unconfigured backend %q", ErrInvalidJob, event.Backend)
 	}
 	if err := objects.Delete(ctx, event.ObjectKey); err != nil {
 		return objectDeleteError{event: event, err: err}
@@ -251,11 +247,7 @@ func (e objectDeleteError) Error() string {
 	for _, form := range []string{e.event.ObjectKey, url.PathEscape(e.event.ObjectKey), url.QueryEscape(e.event.ObjectKey)} {
 		cause = strings.ReplaceAll(cause, form, "<object>")
 	}
-	backend := e.event.Backend
-	if backend == "" {
-		backend = storage.PrimaryBackend
-	}
-	return fmt.Sprintf("delete object for job %s (reason %s, backend %s): %s", e.event.JobID, e.event.Reason, backend, cause)
+	return fmt.Sprintf("delete object for job %s (reason %s, backend %s): %s", e.event.JobID, e.event.Reason, e.event.Backend, cause)
 }
 
 func (e objectDeleteError) Unwrap() error { return e.err }

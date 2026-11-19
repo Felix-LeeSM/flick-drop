@@ -112,8 +112,8 @@ of historical versions, replicas, and retention/object-lock policies; blocked
 deletion is not successful erasure. Sender reconciliation changes no private bucket setting
 and adds no automatic bucket-setting gate to existing S3 startup.
 
-Set `FLICK_STORAGE_LARGE_BACKEND=s3` only after the bucket and Customer Secret
-Key credentials are ready. Leave it `disabled` for a database-only deployment,
+Set `FLICK_STORAGE_BACKENDS` only after the bucket and Customer Secret Key
+credentials are ready. Leave it empty for a database-only deployment,
 where every payload stays in the `flick_api` database and the file size limit
 drops to the inline threshold (`EffectiveMaxFileBytes` in
 `internal/config/config.go`).
@@ -169,7 +169,8 @@ Patch `ConfigMap/flick-config` for deployment-specific non-secret values:
 ```text
 FLICK_PUBLIC_BASE_URL=https://<domain>
 FLICK_INTERNAL_API_BASE_URL=http://flick-api:8080
-FLICK_STORAGE_LARGE_BACKEND=s3
+FLICK_STORAGE_BACKENDS=oci
+FLICK_STORAGE_OCI_MAX_TOTAL_BYTES=18000000000
 FLICK_PAYLOAD_INLINE_MAX_BYTES=1048576
 FLICK_MAX_FILE_BYTES=268435456
 FLICK_DEFAULT_TTL_SECONDS=3600
@@ -181,11 +182,16 @@ FLICK_TRUSTED_PROXIES=<ingress-controller-pod-cidr>
 
 `FLICK_CSP_CONNECT_SRC` is read by the `flick-web` container
 (`web/nginx-templates/csp.conf.template`) and appended to the CSP
-`connect-src`. With `FLICK_STORAGE_LARGE_BACKEND=s3` the browser uploads large
-files straight to the presigned `FLICK_S3_ENDPOINT` URL, so the endpoint origin
-(`scheme://host[:port]`) must be listed or the browser blocks the upload. When
-the secondary backend is enabled (`FLICK_R2_ENABLED=true`), list both origins
-separated by a space.
+`connect-src`. With object storage enabled the browser uploads large files
+straight to the presigned `FLICK_STORAGE_<NAME>_ENDPOINT` URL of the backend
+the API chose, so every backend's endpoint origin (`scheme://host[:port]`) must
+be listed, separated by spaces, or the browser blocks the upload.
+
+`oci` is the backend name: it is stored in every object row and delete job, so
+keep it stable once objects exist (`docs/architecture/storage-model.md`).
+`FLICK_STORAGE_OCI_MAX_TOTAL_BYTES=18000000000` caps placement at 90 percent of
+the 20 GB Always Free Object Storage allowance; with a single backend `0`
+(unlimited) is also accepted.
 
 `FLICK_TRUSTED_PROXIES` is the comma-separated CIDR list whose peers may set
 `X-Forwarded-For` (`internal/config/config.go`,
@@ -211,12 +217,12 @@ Patch `Secret/flick-secrets` for sensitive values:
 FLICK_INTERNAL_TOKEN=<private-random-token>
 FLICK_METRICS_TOKEN=<private-random-token>
 FLICK_RATELIMIT_KEY_SALT=<private-random-salt>
-FLICK_S3_ENDPOINT=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
-FLICK_S3_REGION=<oci-region>
-FLICK_S3_BUCKET=<bucket-name>
-FLICK_S3_ACCESS_KEY_ID=<oci-customer-secret-key-id>
-FLICK_S3_SECRET_ACCESS_KEY=<oci-customer-secret-key-secret>
-FLICK_S3_PATH_STYLE=true
+FLICK_STORAGE_OCI_ENDPOINT=https://<object-storage-namespace>.compat.objectstorage.<oci-region>.oraclecloud.com
+FLICK_STORAGE_OCI_REGION=<oci-region>
+FLICK_STORAGE_OCI_BUCKET=<bucket-name>
+FLICK_STORAGE_OCI_ACCESS_KEY_ID=<oci-customer-secret-key-id>
+FLICK_STORAGE_OCI_SECRET_ACCESS_KEY=<oci-customer-secret-key-secret>
+FLICK_STORAGE_OCI_PATH_STYLE=true
 ```
 
 The access/secret pair is an OCI Customer Secret Key issued against your OCI
@@ -452,13 +458,18 @@ transit congestion and TCP packet loss. At 300 KB/s, a 256 MiB download takes
    sudo sysctl -w net.core.default_qdisc=fq
    sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
    ```
-5. **Secondary Object Backend (Cloudflare R2)**:
-   Flick can run a Cloudflare R2 bucket in parallel with the primary S3 bucket
-   (`FLICK_R2_ENABLED=true` and the `FLICK_R2_*` variables in
-   [Environment contract](../architecture/env-contract.md#r2-secondary-backend)).
-   New objects land on the primary until its `FLICK_S3_MAX_TOTAL_BYTES` ceiling
-   cannot fit them and then go to R2; existing objects never move
-   (`storage.ChooseBackend` in `internal/storage/registry.go`). Opens still
+5. **Additional Object Backend (Cloudflare R2)**:
+   Flick can run a Cloudflare R2 bucket in parallel with the OCI bucket by
+   naming both backends (`FLICK_STORAGE_BACKENDS=oci,r2` plus the
+   `FLICK_STORAGE_R2_*` variables in
+   [Environment contract](../architecture/env-contract.md#object-storage-backends),
+   with `FLICK_STORAGE_R2_REGION=auto`). With several backends every
+   `FLICK_STORAGE_<NAME>_MAX_TOTAL_BYTES` must be positive, for example
+   `18000000000` for OCI and `9000000000` for R2. Each new object goes to a
+   backend whose ceiling still fits it, chosen at random weighted by remaining
+   space; existing objects never move (`Registry.Choose` in
+   `internal/storage/registry.go`). Add the R2 endpoint origin to
+   `FLICK_CSP_CONNECT_SRC`. Opens still
    stream ciphertext through the API (`internal/storage/object.go`), so R2 adds
    free-tier capacity, not a download path that bypasses the origin.
 
@@ -468,7 +479,7 @@ Use the application UI to create and open:
 
 - a short text secret
 - a small file below `FLICK_PAYLOAD_INLINE_MAX_BYTES`
-- a file above `FLICK_PAYLOAD_INLINE_MAX_BYTES` when S3 storage is enabled
+- a file above `FLICK_PAYLOAD_INLINE_MAX_BYTES` when object storage is enabled
 
 The large-file test must use the real development or production OCI bucket in
 S3-compatibility mode. Success against a local MinIO does not prove OCI behavior.

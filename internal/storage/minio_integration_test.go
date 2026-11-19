@@ -21,11 +21,11 @@ func testClient(t *testing.T) *Client {
 	t.Helper()
 	c, err := New(Config{
 		Enabled:         true,
-		Endpoint:        getenv("FLICK_S3_ENDPOINT", "http://127.0.0.1:9000"),
-		Region:          getenv("FLICK_S3_REGION", "us-east-1"),
-		Bucket:          getenv("FLICK_S3_BUCKET", "flick-dev"),
-		AccessKeyID:     getenv("FLICK_S3_ACCESS_KEY_ID", "minioadmin"),
-		SecretAccessKey: getenv("FLICK_S3_SECRET_ACCESS_KEY", "minioadmin"),
+		Endpoint:        getenv("FLICK_STORAGE_MINIO_ENDPOINT", "http://127.0.0.1:9000"),
+		Region:          getenv("FLICK_STORAGE_MINIO_REGION", "us-east-1"),
+		Bucket:          getenv("FLICK_STORAGE_MINIO_BUCKET", "flick-dev"),
+		AccessKeyID:     getenv("FLICK_STORAGE_MINIO_ACCESS_KEY_ID", "minioadmin"),
+		SecretAccessKey: getenv("FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY", "minioadmin"),
 		PathStyle:       true,
 	})
 	if err != nil {

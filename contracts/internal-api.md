@@ -18,16 +18,17 @@ management authority or erase an unexpired terminal management outcome.
 (`internal/httpapi/secrets.go:acknowledgeObjectCleanup`):
 
 ```json
-{"backend":"s3_object","job_id":"<job-id>","object_key":"managed/secrets/<opaque-id>"}
+{"backend":"oci","job_id":"<job-id>","object_key":"managed/secrets/<opaque-id>"}
 ```
 
-`backend` is optional and names the bucket the finished delete ran against
-(`s3_object` primary, `r2_object` secondary). The worker copies it from the job
-event's `backend` field (`internal/worker/cleanup.go:AcknowledgeObjectCleanup`)
-and omits it when the event has none. An absent or empty `backend` means the
-primary, which is where every claim written by an API predating dual-backend
-support lives. The API does not validate the value against the enum; an unknown
-backend matches no claim and returns the same `204` as a missing claim.
+`backend` is required and names the configured object backend (a
+`FLICK_STORAGE_BACKENDS` name such as `oci` or `r2`) the finished delete ran
+against. The worker copies it from the job event's `backend` field
+(`internal/worker/cleanup.go:AcknowledgeObjectCleanup`). An absent or empty
+`backend` returns `400` (`internal/secrets/reconciliation.go:AcknowledgeObjectCleanup`,
+`internal/requests/cleanup.go:AcknowledgeObjectCleanup`). The API does not
+check the value against its configured names; an unknown backend matches no
+claim and returns the same `204` as a missing claim.
 
 The body is bounded at 64 KiB. `job_id` must be nonblank, and the object key must
 be inside `managed/secrets/` or `managed/requests/` with a nonempty suffix. Other object namespaces are

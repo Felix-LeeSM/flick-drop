@@ -48,18 +48,18 @@ FLICK_WORKER_DATABASE_URL = "postgres://flick_worker:flick_worker@127.0.0.1:5432
 FLICK_PAYLOAD_INLINE_MAX_BYTES = "1048576" # 1 MiB
 FLICK_MAX_FILE_BYTES = "268435456"         # 256 MiB
 
-# FLICK_STORAGE_LARGE_BACKEND is deliberately absent. scripts/dev/up.sh defaults
-# it to "s3" and starts MinIO; pinning it here would win over that default
-# (mise exports before up.sh runs) and silently kill every upload over 1 MiB.
-# Point at a different object store by setting it in .env.local instead.
-FLICK_S3_ENDPOINT = "http://localhost:9000"
-FLICK_S3_REGION = "us-east-1"
-FLICK_S3_BUCKET = "flick-dev"
+# FLICK_STORAGE_BACKENDS is deliberately absent. scripts/dev/up.sh defaults it
+# to "minio" and starts MinIO; pinning it here would win over that default
+# (mise exports before up.sh runs). Point at a different object store by
+# setting it in .env.local instead.
+FLICK_STORAGE_MINIO_ENDPOINT = "http://localhost:9000"
+FLICK_STORAGE_MINIO_REGION = "us-east-1"
+FLICK_STORAGE_MINIO_BUCKET = "flick-dev"
 # MinIO's default local credentials (compose.yaml), not a secret.
-FLICK_S3_ACCESS_KEY_ID = "minioadmin"
-FLICK_S3_SECRET_ACCESS_KEY = "minioadmin"
+FLICK_STORAGE_MINIO_ACCESS_KEY_ID = "minioadmin"
+FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY = "minioadmin"
 # MinIO and OCI S3-compat both require path-style addressing.
-FLICK_S3_PATH_STYLE = "true"
+FLICK_STORAGE_MINIO_PATH_STYLE = "true"
 
 # Link lifetime bounds in seconds: 5 minutes to 7 days, default 1 hour.
 FLICK_DEFAULT_TTL_SECONDS = "3600"

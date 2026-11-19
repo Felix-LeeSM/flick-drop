@@ -36,13 +36,13 @@ export FLICK_CREATE_RATE_PER_MIN="${FLICK_CREATE_RATE_PER_MIN:-5}"
 # This is the only place the backend is defaulted — an earlier
 # "${...:-disabled}" export here made this ":-s3" unreachable and quietly kept
 # large uploads off in local dev.
-export FLICK_STORAGE_LARGE_BACKEND="${FLICK_STORAGE_LARGE_BACKEND:-s3}"
-export FLICK_S3_ENDPOINT="${FLICK_S3_ENDPOINT:-http://localhost:9000}"
-export FLICK_S3_REGION="${FLICK_S3_REGION:-us-east-1}"
-export FLICK_S3_BUCKET="${FLICK_S3_BUCKET:-flick-dev}"
-export FLICK_S3_ACCESS_KEY_ID="${FLICK_S3_ACCESS_KEY_ID:-minioadmin}"
-export FLICK_S3_SECRET_ACCESS_KEY="${FLICK_S3_SECRET_ACCESS_KEY:-minioadmin}"
-export FLICK_S3_PATH_STYLE="${FLICK_S3_PATH_STYLE:-true}"
+export FLICK_STORAGE_BACKENDS="${FLICK_STORAGE_BACKENDS-minio}"
+export FLICK_STORAGE_MINIO_ENDPOINT="${FLICK_STORAGE_MINIO_ENDPOINT:-http://localhost:9000}"
+export FLICK_STORAGE_MINIO_REGION="${FLICK_STORAGE_MINIO_REGION:-us-east-1}"
+export FLICK_STORAGE_MINIO_BUCKET="${FLICK_STORAGE_MINIO_BUCKET:-flick-dev}"
+export FLICK_STORAGE_MINIO_ACCESS_KEY_ID="${FLICK_STORAGE_MINIO_ACCESS_KEY_ID:-minioadmin}"
+export FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY="${FLICK_STORAGE_MINIO_SECRET_ACCESS_KEY:-minioadmin}"
+export FLICK_STORAGE_MINIO_PATH_STYLE="${FLICK_STORAGE_MINIO_PATH_STYLE:-true}"
 
 compose_project="${FLICK_DEV_COMPOSE_PROJECT:-flick-dev}"
 nats_monitor_url="${FLICK_DEV_NATS_MONITOR_URL:-http://127.0.0.1:8222/varz}"
@@ -196,7 +196,7 @@ ensure_nats() {
 ensure_minio() {
 	if [ "${FLICK_DEV_SKIP_MINIO:-}" = "1" ]; then
 		echo "dev: skipping MinIO startup because FLICK_DEV_SKIP_MINIO=1"
-		export FLICK_STORAGE_LARGE_BACKEND=disabled
+		export FLICK_STORAGE_BACKENDS=
 		return
 	fi
 
