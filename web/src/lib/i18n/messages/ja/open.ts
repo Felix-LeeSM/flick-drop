@@ -1,3 +1,46 @@
 import type { open as source } from '../en/open';
 
-export const open: typeof source = {};
+export const open: typeof source = {
+	headTitle: 'シークレットを開く',
+	headerCreate: 'Create',
+	loading: 'シークレットを読み込んでいます',
+	linkIncomplete: 'このリンクは不完全です。URLに復号用の鍵が含まれていません。',
+	linkDamaged: 'このリンクは破損しています。送信者に完全なリンクを送り直してもらってください。',
+	loadFailed: 'このシークレットを読み込めませんでした。',
+	transportDropped:
+		'シークレットの受信中に接続が切れました。もう一度開くことはできません。送信者に送り直してもらってください。',
+	decryptFailed:
+		'このシークレットを復号できませんでした。もう一度開くことはできません。送信者に送り直してもらってください。',
+	alreadyOpened: 'このタブで開封済みです',
+	statusOpening: '開いています',
+	openFailed: 'このシークレットを開けませんでした。',
+	copyFailed: 'シークレットをコピーできませんでした。',
+	decryptedBadge: '復号済み · 開くと消えます',
+	resultTitle: 'Secret',
+	copyAll: 'すべてコピー',
+	copied: 'コピーしました',
+	copy: 'コピー',
+	copySecret: 'シークレットをコピー',
+	decryptedSecret: '復号したシークレット',
+	download: 'Download',
+	createOwn: '自分でも作成',
+	createOwnLabel: '自分のシークレットを作成',
+	stageCaption: 'シークレットを開いています',
+	stageUnlocked: 'ロック解除',
+	stageDecrypting: 'ブラウザで復号しています…',
+	oneTimeLink: '1回限りのリンク',
+	formTitle: 'Open a secret',
+	noPassphrase:
+		'このリンクはパスワードなしで開けます。URL全体を知っている人なら誰でも1回だけ開けます。',
+	passphraseLabel: 'パスワード',
+	placeholderOpened: '開封済み',
+	placeholderRequired: '必須',
+	hidePassphrase: 'パスワードを隠す',
+	showPassphrase: 'パスワードを表示',
+	ctaOpen: 'Open',
+	ctaOpening: 'Opening',
+	ctaOpened: 'Opened',
+	retryLoading: '再読み込み',
+	createInstead: '新しく作成',
+	createInsteadLabel: '代わりに新しいシークレットを作成'
+};

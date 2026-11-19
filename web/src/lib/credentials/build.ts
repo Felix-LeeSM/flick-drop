@@ -1,3 +1,4 @@
+import { t } from '#lib/i18n/index.js';
 import { CREDENTIAL_VERSION, type CredentialEnvelope, type CredentialField } from './schema';
 import { type CredentialType, getCredentialTemplate } from './templates';
 
@@ -103,7 +104,8 @@ function buildCustomField(
 
 	return {
 		id,
-		label: options.label ?? `Field ${nextIndex}`,
+		// A new custom field's starting label is user-editable text, so it follows the display language.
+		label: options.label ?? t().credentials.defaultFieldLabel(nextIndex),
 		value: options.value ?? '',
 		secret: options.secret ?? false
 	};

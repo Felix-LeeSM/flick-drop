@@ -47,7 +47,6 @@ import { Textarea } from '#lib/components/ui/textarea/index.js';
 import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, MIN_TTL_SECONDS } from '#lib/config/ttl.js';
 import {
 	buildEnvelope,
-	CREDENTIAL_TEMPLATES,
 	CREDENTIAL_TYPES,
 	type CredentialEnvelope,
 	type CredentialType,
@@ -60,6 +59,7 @@ import { generatePassphrase } from '#lib/crypto/passphrase.js';
 import { sealFile, sealText, wrapIdentityOffThread } from '#lib/crypto/secret.js';
 import { bundleFiles, needsBundle, type PickedFile } from '#lib/files/bundle.js';
 import { readDrop } from '#lib/files/dropped.js';
+import { t } from '#lib/i18n/index.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { holdMinimumStage, STAGE_FINISH_MS, sleep } from '#lib/stage-timing.js';
 import { clearCreatedDelivery, handOffCreatedDelivery } from '#lib/state/created-delivery.js';
@@ -230,9 +230,9 @@ const BLOCKED_CLASS = 'disabled:pointer-events-auto disabled:cursor-not-allowed'
 const blockedTitle = $derived(
 	hasCreatePayload
 		? delivery === 'link' && usePassphrase && passphrase.length === 0
-			? 'Set a passphrase to finish protecting this secret'
+			? t().create.blocked.passphrase
 			: undefined
-		: 'Add a message, file or credential first'
+		: t().create.blocked.empty
 );
 
 // Lock stage card: the create folds the form into the progress ring while running.
@@ -271,7 +271,7 @@ async function createSecret(): Promise<void> {
 	abortController = controller;
 	uploadProgress = null;
 	stageCardDone = false;
-	status = 'Encrypting in your browser…';
+	status = t().create.status.encrypting;
 	statusKind = 'encrypting';
 
 	try {
@@ -302,11 +302,10 @@ async function createSecret(): Promise<void> {
 		// A user-cancelled upload returns to the idle form, not a red error — the
 		// user chose to stop, nothing failed.
 		if (error instanceof SecretApiError && error.code === 'upload_cancelled') {
-			status = 'Upload cancelled.';
+			status = t().create.status.uploadCancelled;
 			statusKind = 'idle';
 		} else {
-			status =
-				error instanceof SecretApiError ? error.message : 'Could not create link. Try again.';
+			status = error instanceof SecretApiError ? error.message : t().create.status.createFailed;
 			statusKind = 'error';
 		}
 	} finally {
@@ -400,13 +399,18 @@ async function createSelectedSecret(): Promise<CreateResult> {
 }
 
 function uploadStatusText(progress: FileUploadProgress): string {
+	const words = t().create.status;
 	return progress.stage === 'preparing'
-		? 'Preparing encrypted upload…'
+		? words.preparingUpload
 		: progress.stage === 'finalizing'
-			? 'Finalizing link…'
+			? words.finalizing
 			: progress.total !== undefined && progress.loaded !== undefined
-				? `Uploading encrypted file · ${formatBytes(progress.loaded)} of ${formatBytes(progress.total)} (${Math.floor((progress.loaded / progress.total) * 100)}%)`
-				: 'Uploading encrypted file…';
+				? words.uploadingProgress(
+						formatBytes(progress.loaded),
+						formatBytes(progress.total),
+						Math.floor((progress.loaded / progress.total) * 100)
+					)
+				: words.uploading;
 }
 
 async function passphraseEnvelope(
@@ -472,7 +476,7 @@ async function applyFiles(files: PickedFile[]): Promise<void> {
 	} catch {
 		if (token === bundleToken) {
 			selectedFile = null;
-			status = 'Could not zip those files. Try again.';
+			status = t().create.status.zipFailed;
 			statusKind = 'error';
 		}
 	} finally {
@@ -484,10 +488,6 @@ async function applyFiles(files: PickedFile[]): Promise<void> {
 
 function fileKey({ file, path }: PickedFile): string {
 	return `${path}|${file.size}|${file.lastModified}`;
-}
-
-function fileCount(count: number): string {
-	return count === 1 ? '1 file' : `${count} files`;
 }
 
 function looseFiles(files: FileList | null): PickedFile[] {
@@ -517,7 +517,7 @@ function removeFolder(name: string): void {
 }
 
 function showEmptyFolder(): void {
-	status = 'That folder is empty.';
+	status = t().create.status.folderEmpty;
 	statusKind = 'error';
 }
 
@@ -551,7 +551,7 @@ async function addDrop(items: DataTransferItemList): Promise<void> {
 	try {
 		batch = await readDrop(items);
 	} catch {
-		status = 'Could not read that folder.';
+		status = t().create.status.folderReadFailed;
 		statusKind = 'error';
 		return;
 	}
@@ -566,7 +566,7 @@ async function addDrop(items: DataTransferItemList): Promise<void> {
 	}
 	// After addFiles, whose applyFiles run resets the status.
 	if (skipped > 0) {
-		status = `Skipped ${skipped === 1 ? '1 item' : `${skipped} items`} that could not be read.`;
+		status = t().create.status.skipped(skipped);
 		statusKind = 'error';
 	} else if (emptyFolders.length > 0) {
 		showEmptyFolder();
@@ -708,16 +708,6 @@ function isCredentialMode(value: CreateMode): value is CredentialType {
 	return credentialTypes.includes(value);
 }
 
-function modeLabel(value: CreateMode): string {
-	if (value === 'text') {
-		return 'Note';
-	}
-	if (value === 'file') {
-		return 'File';
-	}
-	return CREDENTIAL_TEMPLATES.find((template) => template.type === value)?.label ?? value;
-}
-
 // Shared with the type tablist: each tab's aria-controls and its panel's
 // role="tabpanel" aria-labelledby both derive from this id.
 function typePanelId(type: CreateMode): string {
@@ -726,7 +716,7 @@ function typePanelId(type: CreateMode): string {
 </script>
 
 <svelte:head>
-	<title>Create secret - Flick</title>
+	<title>{t().create.headTitle}</title>
 </svelte:head>
 
 <svelte:window ondragover={onWindowDragOver} ondrop={onWindowDrop} />
@@ -774,20 +764,20 @@ function typePanelId(type: CreateMode): string {
 				<div class="grid gap-2">
 					<p class="micro flex items-center justify-center gap-1.5 text-burn">
 						<FlameIcon class="size-3.5" aria-hidden="true" />
-						one-time link
+						{t().create.result.oneTimeLink}
 					</p>
 					<h1
 						class="page-title"
 						tabindex="-1"
 						bind:this={successHeading}
 					>
-						Link created
+						{t().create.result.title}
 					</h1>
-					<p class="text-sm text-muted-foreground">Opens once, then burns. Forward it fast.</p>
+					<p class="text-sm text-muted-foreground">{t().create.result.opensOnce}</p>
 				</div>
 				<div class="flex items-center gap-2 font-mono text-sm text-muted-foreground">
 					<ClockIcon class="size-4" aria-hidden="true" />
-					<span>EXPIRES IN</span>
+					<span>{t().create.result.expiresIn}</span>
 					<span class="tabular-nums text-foreground">{formatRemaining(remainingSeconds)}</span>
 				</div>
 			</div>
@@ -796,7 +786,7 @@ function typePanelId(type: CreateMode): string {
 				<UrlField value={shareUrl} id="share-url" />
 				<NativeShareButton recipientUrl={shareUrl} />
 				{#if managementUrl}
-					<a href={managementUrl} class="text-sm underline underline-offset-4">Open private management page</a>
+					<a href={managementUrl} class="text-sm underline underline-offset-4">{t().create.result.openManagement}</a>
 				{/if}
 				<Button
 					type="button"
@@ -807,7 +797,7 @@ function typePanelId(type: CreateMode): string {
 					}}
 				>
 					<QrCodeIcon class="size-4" aria-hidden="true" />
-					Show QR
+					{t().create.result.showQr}
 				</Button>
 				<aside class="flex gap-3 rounded-lg bg-muted/40 p-4 text-left">
 					<LockKeyholeIcon
@@ -816,20 +806,20 @@ function typePanelId(type: CreateMode): string {
 					/>
 					<div class="grid gap-1">
 						{#if usePassphrase}
-							<strong class="text-sm font-medium">Send the passphrase separately.</strong>
+							<strong class="text-sm font-medium">{t().create.result.passphraseTitle}</strong>
 							<p class="text-sm text-muted-foreground">
-								The recipient needs both the link and the passphrase to open this.
+								{t().create.result.passphraseBody}
 							</p>
 						{:else}
-							<strong class="text-sm font-medium">Share only with your recipient.</strong>
+							<strong class="text-sm font-medium">{t().create.result.linkOnlyTitle}</strong>
 							<p class="text-sm text-muted-foreground">
-								Anyone with this full link can open it once.
+								{t().create.result.linkOnlyBody}
 							</p>
 						{/if}
 					</div>
 				</aside>
 				<Button type="button" variant="ghost" class="h-9 w-full text-sm" onclick={createAnother}>
-					Create another
+					{t().create.result.createAnother}
 				</Button>
 			</div>
 		</section>
@@ -838,29 +828,29 @@ function typePanelId(type: CreateMode): string {
 			<div class="grid gap-1.5">
 				<p class="micro flex items-center gap-1.5 text-muted-foreground">
 					<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-					end-to-end encrypted · burns after read
+					{t().create.tagline}
 				</p>
 				<!-- The heading adapts to the delivery choice: each tab names its own flow,
 				     and the sublink under it is that flow's other entry point. -->
-				<h1 class="page-title">{delivery === 'code' ? 'Send a secret' : 'Create a secret'}</h1>
+				<h1 class="page-title">{delivery === 'code' ? t().create.titleCode : t().create.titleLink}</h1>
 				{#if delivery === 'code'}
 					<p class="text-sm text-muted-foreground">
-						Received a 6-digit code?
+						{t().create.receivedCode}
 						<button
 							type="button"
 							class="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
 							onclick={() => {
 								receiveModalOpen = true;
 							}}
-						>Enter it here</button>
+						>{t().create.enterItHere}</button>
 					</p>
 				{:else}
 					<p class="text-sm text-muted-foreground">
-						Need one from someone else?
+						{t().create.needOne}
 						<a
 							class="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
 							href={resolve('request')}
-						>Request a secret</a>
+						>{t().create.requestSecret}</a>
 					</p>
 				{/if}
 			</div>
@@ -885,8 +875,8 @@ function typePanelId(type: CreateMode): string {
 					<LockStageCard
 						mode="lock"
 						phase={stageCardDone ? 'finishing' : 'waiting'}
-						caption="preparing your link"
-						status={stageCardDone ? 'Link ready' : status}
+						caption={t().create.stage.caption}
+						status={stageCardDone ? t().create.stage.ready : status}
 						progress={stageRingProgress}
 						cancellable={statusKind === 'uploading'}
 						onCancel={cancelCreate}
@@ -900,11 +890,11 @@ function typePanelId(type: CreateMode): string {
 						role="tabpanel"
 						aria-labelledby={`${typePanelId(mode)}-tab`}
 					>
-						<Label for="secret-text" class="text-sm font-medium">Message</Label>
+						<Label for="secret-text" class="text-sm font-medium">{t().create.text.label}</Label>
 						<Textarea
 							id="secret-text"
 							class="min-h-44 resize-y px-3.5 py-3"
-							placeholder="Paste text"
+							placeholder={t().create.text.placeholder}
 							bind:value={plaintext}
 							disabled={isCreating}
 							required
@@ -917,7 +907,7 @@ function typePanelId(type: CreateMode): string {
 						role="tabpanel"
 						aria-labelledby={`${typePanelId(mode)}-tab`}
 					>
-						<span class="text-sm font-medium">Files</span>
+						<span class="text-sm font-medium">{t().create.files.label}</span>
 						<!-- The bordered zone takes drops anywhere inside it. The label wraps the
 							     file input, so a click opens the picker natively; the folder button
 							     sits outside the label so its click opens only the folder picker.
@@ -947,12 +937,12 @@ function typePanelId(type: CreateMode): string {
 									aria-hidden="true"
 								/>
 								<p class="text-sm">
-									<span class="font-medium text-foreground">Drop files</span>
-										<span class="text-muted-foreground"> or click to browse</span>
+									<span class="font-medium text-foreground">{t().create.files.dropLead}</span>
+										<span class="text-muted-foreground">{t().create.files.dropRest}</span>
 								</p>
 								<p class="micro text-muted-foreground">
 									<!-- micro uppercases its text; byte units are case-significant (MiB, KiB). -->
-									Multiple files and folders are zipped into one · up to 
+									{t().create.files.limitLead}
 									<span class="normal-case">{formatBytes(limits.maxFileBytes)}</span>
 								</p>
 								<input
@@ -961,7 +951,7 @@ function typePanelId(type: CreateMode): string {
 									type="file"
 									multiple
 									class="sr-only"
-									aria-label="Add files to upload"
+									aria-label={t().create.files.addFiles}
 									disabled={isCreating}
 									onchange={onFileInputChange}
 								/>
@@ -973,7 +963,7 @@ function typePanelId(type: CreateMode): string {
 									disabled={isCreating}
 									onclick={() => folderInput?.click()}
 								>
-									Choose a folder
+									{t().create.files.chooseFolder}
 								</Button>
 								<input
 									bind:this={folderInput}
@@ -998,12 +988,12 @@ function typePanelId(type: CreateMode): string {
 											<span class="truncate text-muted-foreground" title={`${row.name}/`}>{row.name}/</span>
 											<span class="flex shrink-0 items-center gap-2">
 												<span class="font-mono text-xs text-muted-foreground">
-													{fileCount(row.count)} · {formatBytes(row.size)}
+													{t().create.files.count(row.count)} · {formatBytes(row.size)}
 												</span>
 												<button
 													type="button"
 													class="-mr-3 grid size-11 shrink-0 place-items-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-													aria-label={`Remove folder ${row.name}`}
+													aria-label={t().create.files.removeFolder(row.name)}
 													disabled={isCreating}
 													onclick={() => {
 														removeFolder(row.name);
@@ -1021,7 +1011,7 @@ function typePanelId(type: CreateMode): string {
 												<button
 													type="button"
 													class="-mr-3 grid size-11 shrink-0 place-items-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-													aria-label={`Remove ${row.picked.path}`}
+													aria-label={t().create.files.removeFile(row.picked.path)}
 													disabled={isCreating}
 													onclick={() => {
 														removeFile(row.picked);
@@ -1040,18 +1030,18 @@ function typePanelId(type: CreateMode): string {
 									role="status"
 									aria-live="polite"
 									>
-										Zipping {fileCount(pickedFiles.length)}…
+										{t().create.files.zipping(pickedFiles.length)}
 									</p>
 							{:else if selectedFile && selectedFile !== pickedFiles[0].file}
 									<!-- A folder-named zip carries the user's folder name, so it wraps. -->
 									<p class="micro text-right normal-case text-muted-foreground [overflow-wrap:anywhere]">
-										{fileCount(pickedFiles.length)} → {selectedFile.name} · {formatBytes(selectedFile.size)}
+										{t().create.files.count(pickedFiles.length)} → {selectedFile.name} · {formatBytes(selectedFile.size)}
 									</p>
 							{/if}
 						{/if}
 						{#if selectedFileTooLarge}
 								<p class="text-sm text-destructive" role="alert" aria-live="assertive">
-									Choose files up to {formatBytes(limits.maxFileBytes)} total.
+									{t().create.files.tooLarge(formatBytes(limits.maxFileBytes))}
 								</p>
 						{/if}
 					</div>
@@ -1062,7 +1052,7 @@ function typePanelId(type: CreateMode): string {
 						role="tabpanel"
 						aria-labelledby={`${typePanelId(mode)}-tab`}
 					>
-						<span class="text-sm font-medium">{modeLabel(mode)}</span>
+						<span class="text-sm font-medium">{t().create.types[mode]}</span>
 							<CredentialForm bind:envelope={credentialEnvelope} disabled={isCreating} />
 					</div>
 				{/if}
@@ -1095,7 +1085,7 @@ function typePanelId(type: CreateMode): string {
 							title={disabled ? blockedTitle : undefined}
 							{onclick}
 						>
-							{isCreating ? 'Creating' : label}
+							{isCreating ? t().create.cta.creating : label}
 						</Button>
 						<p class="micro flex items-center justify-center gap-1.5 text-muted-foreground">
 							<Icon class="size-3" aria-hidden="true" />
@@ -1110,16 +1100,16 @@ function typePanelId(type: CreateMode): string {
 					<SwitchRow
 						id="use-passphrase"
 						bind:checked={usePassphrase}
-						label="Protect with an additional passphrase"
+						label={t().create.passphrase.toggle}
 						icon={LockKeyholeIcon}
-						infoLabel="Why the server can't see this secret"
+						infoLabel={t().create.passphrase.infoLabel}
 						describedBy="passphrase-privacy"
 						disabled={isCreating}
 					>
 						{#snippet details()}
-							<p class="mb-1 text-xs font-medium text-foreground">Why we can't read your secret</p>
-							<p class="text-[0.8125rem] leading-snug text-muted-foreground">It is locked on your device before sending.</p>
-							<p class="text-[0.8125rem] leading-snug text-muted-foreground">We never receive the passphrase.</p>
+							<p class="mb-1 text-xs font-medium text-foreground">{t().create.passphrase.whyTitle}</p>
+							<p class="text-[0.8125rem] leading-snug text-muted-foreground">{t().create.passphrase.whyLocked}</p>
+							<p class="text-[0.8125rem] leading-snug text-muted-foreground">{t().create.passphrase.whyNeverSent}</p>
 						{/snippet}
 						{#snippet field()}
 							<!-- Single inline field: the placeholder is the visible name
@@ -1130,8 +1120,8 @@ function typePanelId(type: CreateMode): string {
 									id="secret-passphrase"
 									name="flick-passphrase"
 									type={revealPassphrase ? 'text' : 'password'}
-									placeholder="Add a passphrase"
-									aria-label="Additional passphrase"
+									placeholder={t().create.passphrase.placeholder}
+									aria-label={t().create.passphrase.fieldLabel}
 									autocomplete="new-password"
 									autocapitalize="none"
 									spellcheck="false"
@@ -1150,8 +1140,8 @@ function typePanelId(type: CreateMode): string {
 										variant="ghost"
 										size="icon"
 										class="size-11 text-muted-foreground hover:text-foreground"
-										aria-label="Generate passphrase"
-										title="Generate passphrase"
+										aria-label={t().create.passphrase.generate}
+										title={t().create.passphrase.generate}
 										disabled={isCreating}
 										onclick={() => {
 											passphrase = generatePassphrase();
@@ -1165,8 +1155,8 @@ function typePanelId(type: CreateMode): string {
 										variant="ghost"
 										size="icon"
 										class="size-11 text-muted-foreground hover:text-foreground"
-										aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-										title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+										aria-label={revealPassphrase ? t().create.passphrase.hide : t().create.passphrase.show}
+										title={revealPassphrase ? t().create.passphrase.hide : t().create.passphrase.show}
 										onclick={() => {
 											revealPassphrase = !revealPassphrase;
 										}}
@@ -1185,26 +1175,26 @@ function typePanelId(type: CreateMode): string {
 					<div class="grid gap-2.5">
 						<span class="flex items-center gap-1.5 text-sm font-medium">
 							<ClockIcon class="size-4" aria-hidden="true" />
-							Expires after
+							{t().create.expiresAfter}
 						</span>
-						<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel="Secret lifetime" label="" />
+						<LifetimePicker bind:seconds={ttlSeconds} disabled={isCreating} groupLabel={t().create.lifetimeGroup} label="" />
 					</div>
 
 					{@render ctaFooter({
 						type: 'submit',
-						label: 'Create link',
+						label: t().create.cta.createLink,
 						disabled: !canCreate,
 						icon: FlameIcon,
-						caption: 'burns after a single open'
+						caption: t().create.linkCaption
 					})}
 				{:else}
 					{@render ctaFooter({
 						type: 'button',
-						label: 'Start live transfer',
+						label: t().create.cta.startLive,
 						disabled: !canPipe,
 						onclick: startPipeSend,
 						icon: TimerIcon,
-						caption: 'never stored on the server'
+						caption: t().create.liveCaption
 					})}
 				{/if}
 			{/if}
@@ -1229,7 +1219,7 @@ function typePanelId(type: CreateMode): string {
 	{#if receivedPipeSecret === null}
 		<!-- Y1: the guide opens in a new tab so the in-progress form survives. -->
 		<nav
-			aria-label="Guide"
+			aria-label={t().create.guideNav}
 			class="flex flex-wrap justify-center gap-x-5 gap-y-2 border-t pt-3.5 text-[0.8125rem] text-muted-foreground"
 		>
 			<a
@@ -1237,7 +1227,7 @@ function typePanelId(type: CreateMode): string {
 				rel="noopener noreferrer"
 				href={resolve('guides/')}
 				class="inline-flex items-center gap-1 py-2 underline-offset-4 hover:underline"
-			>How Flick works
+			>{t().create.howItWorks}
 				<ArrowUpRightIcon class="size-3" aria-hidden="true" />
 			</a>
 		</nav>

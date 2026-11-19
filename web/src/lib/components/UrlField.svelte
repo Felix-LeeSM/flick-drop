@@ -2,6 +2,7 @@
 import { CopyIcon } from '@lucide/svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { Input } from '#lib/components/ui/input/index.js';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 type Props = {
@@ -20,8 +21,8 @@ let {
 	value,
 	id,
 	class: className = '',
-	label = 'Share URL',
-	copyLabel = 'Copy to clipboard',
+	label,
+	copyLabel,
 	prominent = false,
 	oncopied
 }: Props = $props();
@@ -57,7 +58,7 @@ async function copy(): Promise<void> {
 			class={cn('h-12 w-full truncate pr-12 font-mono text-sm', prominent && 'pr-24')}
 			value={value}
 			readonly
-			aria-label={label}
+			aria-label={label ?? t().common.urlField.label}
 			title={value}
 		/>
 		<Button
@@ -70,14 +71,14 @@ async function copy(): Promise<void> {
 					: 'absolute right-1.5 size-9 text-muted-foreground hover:text-foreground',
 				!prominent && copyState === 'copied' && 'bg-success/15 text-success'
 			)}
-			aria-label={copyLabel}
-			title="Copy"
+			aria-label={copyLabel ?? t().common.urlField.copyToClipboard}
+			title={t().common.urlField.copy}
 			onclick={() => {
 				void copy();
 			}}
 		>
 			<CopyIcon class="size-4" aria-hidden="true" />
-			{#if prominent}Copy{/if}
+			{#if prominent}{t().common.urlField.copy}{/if}
 		</Button>
 	</div>
 	<p
@@ -88,9 +89,9 @@ async function copy(): Promise<void> {
 		aria-live="polite"
 	>
 		{#if copyState === 'copied'}
-			Copied
+			{t().common.urlField.copied}
 		{:else if copyState === 'failed'}
-			Copy unavailable. Select the link above and copy it.
+			{t().common.urlField.copyFailed}
 		{/if}
 	</p>
 </div>

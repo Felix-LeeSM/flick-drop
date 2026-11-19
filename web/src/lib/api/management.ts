@@ -1,3 +1,4 @@
+import { t } from '#lib/i18n/index.js';
 import { DEFAULT_API_BASE_URL, SecretApiError } from './secrets';
 
 export type ManagementStatus = 'pending_upload' | 'active' | 'locked' | 'cancelled' | 'unavailable';
@@ -58,11 +59,7 @@ function snapshotFrom(value: unknown, id: string): ManagementSnapshot {
 		data.management_expires_at !== data.expires_at ||
 		data.can_cancel !== (data.status === 'active' || data.status === 'pending_upload')
 	) {
-		throw new ManagementApiError(
-			'Could not verify delivery status. Try again.',
-			'invalid_response',
-			0
-		);
+		throw new ManagementApiError(t().errors.deliveryStatusUnverified, 'invalid_response', 0);
 	}
 	return {
 		id,
@@ -80,7 +77,7 @@ export function createManagementApiClient(
 	const fetcher = options.fetcher ?? fetch;
 	async function request(id: string, token: string, cancel: boolean, signal?: AbortSignal) {
 		if (!isManagementToken(token)) {
-			throw new ManagementApiError('Management link unavailable.', 'management_unavailable', 404);
+			throw new ManagementApiError(t().errors.managementUnavailable, 'management_unavailable', 404);
 		}
 		let response: Response;
 		try {
@@ -100,11 +97,7 @@ export function createManagementApiClient(
 				}
 			);
 		} catch {
-			throw new ManagementApiError(
-				'Could not refresh delivery status. Check your connection and try again.',
-				'network_error',
-				0
-			);
+			throw new ManagementApiError(t().errors.deliveryStatusUnreachable, 'network_error', 0);
 		}
 		return readManagementResponse(response, id, cancel);
 	}
@@ -120,7 +113,7 @@ async function readManagementResponse(
 	cancel: boolean
 ): Promise<ManagementSnapshot> {
 	if (response.status === 404) {
-		throw new ManagementApiError('Management link unavailable.', 'management_unavailable', 404);
+		throw new ManagementApiError(t().errors.managementUnavailable, 'management_unavailable', 404);
 	}
 	let data: unknown;
 	try {
@@ -135,7 +128,7 @@ async function readManagementResponse(
 		const conflict = data as { error?: { code?: string }; status?: unknown } | null;
 		if (conflict?.error?.code === 'not_cancellable') {
 			throw new ManagementApiError(
-				'Delivery can no longer be cancelled.',
+				t().errors.notCancellable,
 				'not_cancellable',
 				409,
 				snapshotFrom(conflict.status, id)
@@ -143,9 +136,7 @@ async function readManagementResponse(
 		}
 	}
 	throw new ManagementApiError(
-		response.status === 429
-			? 'Too many status checks. Wait a moment and try again.'
-			: 'Could not verify delivery status. Try again.',
+		response.status === 429 ? t().errors.tooManyStatusChecks : t().errors.deliveryStatusUnverified,
 		'management_failed',
 		response.status
 	);

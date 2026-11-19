@@ -2,6 +2,7 @@ import type { AccessVerifierPayload, KdfParams } from '#lib/crypto/access.js';
 import { base64ToBytes, bytesToBase64 } from '#lib/crypto/encoding.js';
 import { encodeKeyFragment } from '#lib/crypto/fragment.js';
 import type { SealedFile } from '#lib/crypto/secret.js';
+import { t } from '#lib/i18n/index.js';
 import { type ClientLimits, defaultLimits } from './config';
 
 export const DEFAULT_API_BASE_URL =
@@ -138,7 +139,7 @@ export function createSecretApiClient(options: ClientOptions = {}): SecretApiCli
 			// ciphertext caps already include the age overhead.
 			if (sealed.plaintextBytes > limits.maxFileBytes) {
 				// Reject before any network call — the server would refuse it too.
-				throw new SecretApiError('This file is too large.', 'payload_too_large', 0);
+				throw new SecretApiError(t().errors.fileTooLarge, 'payload_too_large', 0);
 			}
 			const request = withModelA(
 				{
@@ -213,7 +214,7 @@ async function createLargeFileSecret(
 	if (!staged.upload) {
 		// The server only returns upload when ciphertext was omitted; reaching
 		// here without it means a contract mismatch (or S3 not enabled).
-		throw new SecretApiError('Could not start the large upload. Try again.', 'upload_failed', 0);
+		throw new SecretApiError(t().errors.largeUploadStartFailed, 'upload_failed', 0);
 	}
 
 	await uploadToObjectStore(fetcher, staged.upload, body, signal, onProgress);
@@ -263,7 +264,7 @@ export async function uploadToObjectStore(
 		Object.entries(upload.headers).find(([name]) => name.toLowerCase() === 'content-length')?.[1]
 	);
 	if (Number.isFinite(signedLength) && signedLength !== body.size) {
-		throw new SecretApiError('Upload size mismatch. Try again.', 'upload_failed', 0);
+		throw new SecretApiError(t().errors.uploadSizeMismatch, 'upload_failed', 0);
 	}
 	// Echo every signed header except Content-Length, which is a forbidden
 	// header name — the browser refuses to let us set it and derives it from the
@@ -294,7 +295,7 @@ export async function uploadToObjectStore(
 				}
 			};
 			const abort = () => {
-				finish(new SecretApiError('Upload cancelled.', 'upload_cancelled', 0));
+				finish(new SecretApiError(t().errors.uploadCancelled, 'upload_cancelled', 0));
 				xhr.abort();
 			};
 			xhr.upload.onprogress = (event) => {
@@ -312,17 +313,11 @@ export async function uploadToObjectStore(
 				} else if (xhr.status >= 200 && xhr.status < 300) {
 					finish();
 				} else {
-					finish(new SecretApiError('Upload failed. Try again.', 'upload_failed', xhr.status));
+					finish(new SecretApiError(t().errors.uploadFailed, 'upload_failed', xhr.status));
 				}
 			};
 			xhr.onerror = xhr.ontimeout = () =>
-				finish(
-					new SecretApiError(
-						'Could not reach the upload endpoint. Check your connection and try again.',
-						'network_error',
-						0
-					)
-				);
+				finish(new SecretApiError(t().errors.uploadUnreachable, 'network_error', 0));
 			xhr.onabort = abort;
 			try {
 				xhr.open(upload.method, upload.url);
@@ -332,7 +327,7 @@ export async function uploadToObjectStore(
 				signal?.addEventListener('abort', abort, { once: true });
 				xhr.send(body);
 			} catch {
-				finish(new SecretApiError('Could not start the upload. Try again.', 'upload_failed', 0));
+				finish(new SecretApiError(t().errors.uploadStartFailed, 'upload_failed', 0));
 			}
 		});
 	}
@@ -345,22 +340,18 @@ export async function uploadToObjectStore(
 		// A user-triggered abort is not a failure — surface it distinctly so the
 		// caller routes it to the idle path instead of an "Upload failed" error.
 		if (error instanceof DOMException && error.name === 'AbortError') {
-			throw new SecretApiError('Upload cancelled.', 'upload_cancelled', 0);
+			throw new SecretApiError(t().errors.uploadCancelled, 'upload_cancelled', 0);
 		}
-		throw new SecretApiError(
-			'Could not reach the upload endpoint. Check your connection and try again.',
-			'network_error',
-			0
-		);
+		throw new SecretApiError(t().errors.uploadUnreachable, 'network_error', 0);
 	}
 	if (!response.ok) {
-		throw new SecretApiError('Upload failed. Try again.', 'upload_failed', response.status);
+		throw new SecretApiError(t().errors.uploadFailed, 'upload_failed', response.status);
 	}
 }
 
 function throwIfUploadAborted(signal?: AbortSignal | null): void {
 	if (signal?.aborted) {
-		throw new SecretApiError('Upload cancelled.', 'upload_cancelled', 0);
+		throw new SecretApiError(t().errors.uploadCancelled, 'upload_cancelled', 0);
 	}
 }
 
@@ -397,11 +388,7 @@ async function send(
 		response = await fetcher(input, init);
 	} catch {
 		throwIfUploadAborted(init?.signal);
-		throw new SecretApiError(
-			'Could not reach Flick. Check your connection and try again.',
-			'network_error',
-			0
-		);
+		throw new SecretApiError(t().errors.flickUnreachable, 'network_error', 0);
 	}
 
 	throwIfUploadAborted(init?.signal);
@@ -431,7 +418,7 @@ function openedSecret(response: Response): OpenedSecret {
 	const header = (name: string) => response.headers.get(name) ?? undefined;
 	const kind = header('Flick-Kind');
 	if ((kind !== 'text' && kind !== 'file') || !response.body) {
-		throw new SecretApiError('Flick sent an unreadable secret.', 'invalid_response', 0);
+		throw new SecretApiError(t().errors.unreadableSecret, 'invalid_response', 0);
 	}
 	const encryptedFilename = header('Flick-Encrypted-Filename');
 	const wrappedIdentity = header('Flick-Wrapped-Identity');
@@ -461,25 +448,25 @@ async function readServerError(response: Response): Promise<ServerError> {
 function clientErrorMessage(code: string, status: number): string {
 	switch (code) {
 		case 'invalid_access':
-			return 'Passphrase is invalid.';
+			return t().errors.invalidPassphrase;
 		case 'not_found':
 		case 'consumed':
 		case 'expired':
-			return 'This secret is no longer available.';
+			return t().errors.noLongerAvailable;
 		case 'payload_too_large':
-			return 'This file is too large.';
+			return t().errors.fileTooLarge;
 		case 'storage_full':
-			return 'Object storage is at capacity. Try again later.';
+			return t().errors.storageFull;
 		case 'upload_failed':
-			return 'Upload failed. Try again.';
+			return t().errors.uploadFailed;
 		case 'unauthorized':
 		case 'not_ready':
-			return 'Flick is not ready. Try again shortly.';
+			return t().errors.notReady;
 		default:
 			if (status >= 500) {
-				return 'Flick could not complete the request. Try again.';
+				return t().errors.serverFailed;
 			}
-			return 'Could not complete the request. Check the input and try again.';
+			return t().errors.requestFailed;
 	}
 }
 

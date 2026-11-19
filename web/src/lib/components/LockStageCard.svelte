@@ -2,6 +2,7 @@
 import { CheckIcon, LoaderCircleIcon, XIcon } from '@lucide/svelte';
 import ProgressRingLock from '#lib/components/ProgressRingLock.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { STAGE_VISUAL, type StagePhase } from '#lib/stage-timing.js';
 import { cn } from '#lib/utils.js';
 
@@ -37,7 +38,7 @@ let {
 
 <section
 	class="grid gap-5 rounded-2xl border border-border bg-card p-6 shadow-sm"
-	aria-label={label ?? (mode === 'lock' ? 'Creating your link' : 'Opening your secret')}
+	aria-label={label ?? (mode === 'lock' ? t().common.stage.creatingLink : t().common.stage.openingSecret)}
 >
 	<p class="micro text-muted-foreground">{caption}</p>
 	<div class="grid place-items-center gap-6 py-6">
@@ -61,6 +62,6 @@ let {
 		</p>
 	</div>
 	{#if cancellable && phase === 'waiting'}
-		<Button type="button" variant="outline" class="h-11 w-full" onclick={onCancel}>Cancel</Button>
+		<Button type="button" variant="outline" class="h-11 w-full" onclick={onCancel}>{t().common.stage.cancel}</Button>
 	{/if}
 </section>

@@ -1,3 +1,5 @@
+import { t } from '#lib/i18n/index.js';
+
 // TTL lifetime bounds, mirrored at build time from the server config
 // (`internal/config/defaults.go`). The web client is adapter-static, so these
 // reach the browser via `PUBLIC_FLICK_*` env at build (see web/Dockerfile and
@@ -32,18 +34,16 @@ export const DEFAULT_TTL_SECONDS = positiveInt(
 // Format a TTL bound as the largest whole unit (days > hours > minutes), so the
 // validation message reads naturally for the server-configured range.
 function formatDuration(seconds: number): string {
+	const words = t().common.lifetime;
 	if (seconds > 0 && seconds % 86_400 === 0) {
-		const days = seconds / 86_400;
-		return `${days} day${days === 1 ? '' : 's'}`;
+		return words.days(seconds / 86_400);
 	}
 	if (seconds > 0 && seconds % 3600 === 0) {
-		const hours = seconds / 3600;
-		return `${hours} hour${hours === 1 ? '' : 's'}`;
+		return words.hours(seconds / 3600);
 	}
-	const minutes = Math.round(seconds / 60);
-	return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+	return words.minutes(Math.round(seconds / 60));
 }
 
 export function formatTtlRange(minSeconds: number, maxSeconds: number): string {
-	return `Choose a lifetime between ${formatDuration(minSeconds)} and ${formatDuration(maxSeconds)}.`;
+	return t().common.lifetime.range(formatDuration(minSeconds), formatDuration(maxSeconds));
 }

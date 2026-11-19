@@ -16,6 +16,7 @@ import QrModal from '#lib/components/QrModal.svelte';
 import RemainingTime from '#lib/components/RemainingTime.svelte';
 import UrlField from '#lib/components/UrlField.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { clearCreatedDelivery, takeCreatedDelivery } from '#lib/state/created-delivery.js';
 import { cn } from '#lib/utils.js';
@@ -24,27 +25,14 @@ import { resolve } from '$app/paths';
 
 let { secretId }: { secretId: string } = $props();
 const api = createManagementApiClient();
-const statusCopy: Record<ManagementStatus, { title: string; detail: string }> = {
+const statusCopy = $derived<Record<ManagementStatus, { title: string; detail: string }>>({
 	// biome-ignore lint/style/useNamingConvention: public management status uses its canonical wire name.
-	pending_upload: {
-		title: 'Upload not finished',
-		detail: 'The encrypted upload has not been finalized. You can cancel it.'
-	},
-	active: {
-		title: 'Ready to open',
-		detail: 'The recipient can open this delivery once before it expires.'
-	},
-	locked: {
-		title: 'Locked',
-		detail: 'Five incorrect access proofs exhausted access. This is not a confirmed opening.'
-	},
-	cancelled: {
-		title: 'Cancelled',
-		detail:
-			'The recipient link can no longer open this delivery. Cancellation cannot recall copies already delivered.'
-	},
-	unavailable: { title: 'Unavailable', detail: 'The upload ended without an available delivery.' }
-};
+	pending_upload: t().manage.statuses.pendingUpload,
+	active: t().manage.statuses.active,
+	locked: t().manage.statuses.locked,
+	cancelled: t().manage.statuses.cancelled,
+	unavailable: t().manage.statuses.unavailable
+});
 // The dot only decorates the title: green while openable, amber while uploading, grey once final.
 function statusDot(status: ManagementStatus): string {
 	if (status === 'active') {
@@ -60,8 +48,6 @@ let recipientUrl = $state('');
 // the OS discards while the sender switches to a messenger) would lose it for
 // good, so the browser asks first.
 let recipientLinkHandedOff = $state(false);
-const LEAVE_WITHOUT_LINK_PROMPT =
-	"You haven't copied or shared the recipient link yet. It can't be shown again after you leave. Leave anyway?";
 function handOffRecipientLink(): void {
 	recipientLinkHandedOff = true;
 }
@@ -119,12 +105,10 @@ function report(error: unknown): void {
 		discardDetails();
 	} else if (error instanceof ManagementApiError && error.snapshot) {
 		accept(error.snapshot);
-		notice = 'The delivery changed before cancellation. Its current status is shown below.';
+		notice = t().manage.changedBeforeCancel;
 	} else {
 		errorMessage =
-			error instanceof ManagementApiError
-				? error.message
-				: 'Could not verify delivery status. Try again.';
+			error instanceof ManagementApiError ? error.message : t().errors.deliveryStatusUnverified;
 	}
 }
 
@@ -161,7 +145,7 @@ async function refresh(cancel = false): Promise<void> {
 
 function queueCancelFresh(fresh: ManagementSnapshot, signal: AbortSignal): void {
 	if (!fresh.can_cancel) {
-		notice = 'This delivery can no longer be cancelled.';
+		notice = t().manage.noLongerCancellable;
 		return;
 	}
 	pendingCancel = { fresh, signal };
@@ -202,7 +186,7 @@ beforeNavigate((navigation) => {
 		navigation.cancel();
 		return;
 	}
-	if (!window.confirm(LEAVE_WITHOUT_LINK_PROMPT)) {
+	if (!window.confirm(t().manage.leavePrompt)) {
 		navigation.cancel();
 	}
 });
@@ -246,30 +230,30 @@ onMount(() => {
 </script>
 
 <svelte:head>
-	<title>Manage delivery - Flick</title>
+	<title>{t().manage.headTitle} - Flick</title>
 	<meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
 <DeliveryFrame>
 	<div class="grid gap-1.5">
-		<p class="micro text-muted-foreground">private sender page</p>
-		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{recipientUrl ? 'Link created' : 'Manage delivery'}</h1>
-		<p class="text-sm text-muted-foreground">Check one delivery and cancel it before it is opened.</p>
+		<p class="micro text-muted-foreground">{t().manage.privateSenderPage}</p>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{recipientUrl ? t().manage.titleCreated : t().manage.titleManage}</h1>
+		<p class="text-sm text-muted-foreground">{t().manage.intro}</p>
 	</div>
 	{#if expired || unavailable}
-		<p role="status" class="rounded-[14px] border bg-card px-5 py-4.5">{expired ? 'Management link expired.' : 'Management link unavailable.'}</p>
+		<p role="status" class="rounded-[14px] border bg-card px-5 py-4.5">{expired ? t().manage.expired : t().errors.managementUnavailable}</p>
 	{:else}
-		<section aria-label="Delivery status" class="grid gap-1 rounded-[14px] border bg-card px-5 py-4.5">
+		<section aria-label={t().manage.statusRegion} class="grid gap-1 rounded-[14px] border bg-card px-5 py-4.5">
 			<div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
 				{#if snapshot}
 					<h2 class="flex grow basis-32 items-center gap-2.5 text-[1.0625rem] font-medium">
 						<span class={cn('size-2 shrink-0 rounded-full', statusDot(snapshot.status))} aria-hidden="true"></span>
-						{errorMessage ? 'Last known status: ' : ''}{statusCopy[snapshot.status].title}
+						{errorMessage ? t().manage.lastKnown : ''}{statusCopy[snapshot.status].title}
 					</h2>
 				{:else}
-					<p role="status">{busy ? 'Loading delivery status…' : 'Delivery status is unknown.'}</p>
+					<p role="status">{busy ? t().manage.loadingStatus : t().manage.unknownStatus}</p>
 				{/if}
-				<Button variant="ghost" size="sm" class="ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>
+				<Button variant="ghost" size="sm" class="ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>{t().manage.refresh}</Button>
 			</div>
 			{#if snapshot}
 				<p class="pl-4.5 text-sm text-muted-foreground">{statusCopy[snapshot.status].detail}</p>
@@ -282,35 +266,35 @@ onMount(() => {
 			<!-- A successful copy or share, opening the QR code, or a manual copy of the
 			     field counts as handing the link off, which ends the leave warning. -->
 			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5" oncopy={handOffRecipientLink}>
-				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">Send to your recipient</h2>
-				<UrlField value={recipientUrl} id="share-url" copyLabel="Copy recipient link" prominent oncopied={handOffRecipientLink} />
+				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">{t().manage.sendToRecipient}</h2>
+				<UrlField value={recipientUrl} id="share-url" copyLabel={t().manage.copyRecipientLink} prominent oncopied={handOffRecipientLink} />
 				<div class="flex flex-wrap items-start gap-2">
 					<NativeShareButton recipientUrl={recipientUrl} onshared={handOffRecipientLink} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
-					<Button variant="outline" size="seg" onclick={() => { qrOpen = true; handOffRecipientLink(); }}><QrCodeIcon class="size-4" aria-hidden="true" />Show QR</Button>
+					<Button variant="outline" size="seg" onclick={() => { qrOpen = true; handOffRecipientLink(); }}><QrCodeIcon class="size-4" aria-hidden="true" />{t().manage.showQr}</Button>
 				</div>
-				<p class="text-[0.8125rem] text-muted-foreground">{usesPassphrase ? 'Send the passphrase separately. The recipient needs both the link and the passphrase.' : 'Anyone with this full link can open it once. Share only with your recipient.'}</p>
+				<p class="text-[0.8125rem] text-muted-foreground">{usesPassphrase ? t().manage.sendPassphraseSeparately : t().manage.anyoneWithLink}</p>
 			</section>
 		{:else if !snapshot || snapshot.can_cancel}
-			<p class="text-sm text-muted-foreground">The recipient link is available only in the original creation session. Use the copy you saved or create a new delivery.</p>
+			<p class="text-sm text-muted-foreground">{t().manage.recipientLinkOnlyOriginal}</p>
 		{/if}
 		{#if managementUrl}
 			<section aria-labelledby="private-link-heading" class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-4.5">
-				<h2 id="private-link-heading" class="text-[0.9375rem] font-medium">Keep this management link private</h2>
-				<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">Anyone with this link can check or cancel this delivery until it is opened or expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.</p>
-				<UrlField value={managementUrl} id="management-url" label="Private management link" copyLabel="Copy management link" />
+				<h2 id="private-link-heading" class="text-[0.9375rem] font-medium">{t().manage.keepPrivate}</h2>
+				<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">{t().manage.keepPrivateDetail}</p>
+				<UrlField value={managementUrl} id="management-url" label={t().manage.privateLinkLabel} copyLabel={t().manage.copyManagementLink} />
 			</section>
 		{/if}
 		{#if snapshot?.can_cancel}
-			<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>Cancel delivery</Button>
+			<Button variant="destructive" class="h-10 justify-self-center rounded-[10px] border-destructive/35 bg-transparent px-4.5 dark:bg-transparent" disabled={busy} onclick={() => { void refresh(true); }}>{t().manage.cancelDelivery}</Button>
 		{/if}
 	{/if}
-	<a href={resolve('/')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">Create another</a>
+	<a href={resolve('/')} class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4">{t().manage.createAnother}</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={recipientUrl} />
 <ConfirmDialog
 	bind:open={cancelConfirmOpen}
-	title="Cancel this delivery?"
-	description="The recipient link will stop working. This cannot recall content already delivered."
-	confirmLabel="Cancel delivery"
+	title={t().manage.confirmTitle}
+	description={t().manage.confirmDescription}
+	confirmLabel={t().manage.cancelDelivery}
 	onconfirm={() => { void cancelPendingDelivery(); }}
 />

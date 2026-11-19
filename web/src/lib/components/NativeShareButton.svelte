@@ -2,6 +2,7 @@
 import { Share2Icon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { Button } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 let {
@@ -52,11 +53,11 @@ async function share(): Promise<void> {
 	<div class="grid gap-1.5">
 		<Button type="button" variant="outline" class={cn('h-11 w-full', className)} disabled={sharing} onclick={share}>
 			<Share2Icon class="size-4" aria-hidden="true" />
-			Share link
+			{t().common.share.shareLink}
 		</Button>
 		{#if failed}
 			<p class="text-sm text-destructive" role="alert">
-				Could not share. Copy the link or use its QR code.
+				{t().common.share.failed}
 			</p>
 		{/if}
 	</div>

@@ -14,10 +14,13 @@ Display language for the web app: English (`en`), Korean (`ko`), Japanese (`ja`)
 
 ## Wording rules
 
-- **English skeleton (decided 2026-11-19).** Page titles (`h1`), the delivery tabs, primary
-  action buttons, and the header's text actions stay in English in every language ("Send",
-  "Link", "Live Transfer", "Create Link", "Enter Code", "Request"). Everything else is
-  translated: descriptions, form labels, placeholders, status, errors, and accessible names.
+- **English skeleton (decided 2026-11-19).** Page names (`h1` such as "Create a secret",
+  "Open a secret", "Request a secret"), the delivery tabs, primary action buttons and their
+  in-progress labels, and the header's text actions stay in English in every language ("Send",
+  "Link", "Live Transfer", "Create Link", "Enter Code", "Request", "Open", "Download").
+  Everything else is translated: headings that report a status or outcome ("Link created",
+  "Request expired", "Transfer complete", "Nothing here."), descriptions, form labels,
+  placeholders, errors, and accessible names.
 - Korean says **비밀번호** for passphrase and uses 해요체 for sentences. Japanese uses
   です・ます and **パスワード** for passphrase.
 - The term list is `docs/work/active/2026-11-12-i18n-glossary.md`.

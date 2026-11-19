@@ -19,6 +19,8 @@ import {
 	sealRequestNote,
 	utf8ByteLength
 } from '#lib/crypto/requests.js';
+import { t } from '#lib/i18n/index.js';
+import { getLocale } from '#lib/i18n/locale.svelte.js';
 import {
 	clearRequestHandoff,
 	handOffRequest,
@@ -108,9 +110,7 @@ async function create(): Promise<void> {
 	} catch {
 		if (alive) {
 			unknown = sent;
-			error = sent
-				? 'Creation was not confirmed. An unused request may exist and will expire. Its links cannot be recovered. Nothing is retried automatically.'
-				: 'Request encryption is unavailable. Use a current browser over HTTPS or localhost.';
+			error = sent ? t().request.create.unconfirmed : t().request.create.unsupported;
 		}
 	} finally {
 		if (alive) {
@@ -120,46 +120,49 @@ async function create(): Promise<void> {
 }
 </script>
 
-<svelte:head><title>Request a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
-<DeliveryFrame link={{ href: resolve('/'), label: 'Send a secret' }}>
+<svelte:head><title>{t().request.create.pageTitle}</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
+<DeliveryFrame link={{ href: resolve('/'), label: t().request.create.headerLink }}>
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-muted-foreground">
 			<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-			end-to-end encrypted · one-time request
+			{t().request.shared.badge}
 		</p>
-		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>Request a secret</h1>
-		<p class="text-sm text-muted-foreground">Get a link for someone to send you a note, a file, or credentials, once.</p>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{t().request.create.heading}</h1>
+		<p class="text-sm text-muted-foreground">{t().request.create.intro}</p>
 	</div>
 	<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void create(); }}>
 		<div class="grid gap-2">
 			<div class="flex items-center justify-between gap-2">
-				<Label for="request-note" class="text-sm font-medium">Note</Label>
-				<span class="text-xs text-muted-foreground">Optional</span>
+				<Label for="request-note" class="text-sm font-medium">{t().request.create.noteLabel}</Label>
+				<span class="text-xs text-muted-foreground">{t().request.create.optional}</span>
 			</div>
 			<Textarea
 				id="request-note"
 				rows={3}
 				class="min-h-24 resize-y"
-				placeholder="Tell your sender what to share (e.g. Wi-Fi password, SSH key)"
+				placeholder={t().request.create.notePlaceholder}
 				bind:value={note}
 				disabled={busy}
 				autocomplete="off"
 			/>
 			{#if noteTooLong}
 				<p role="alert" class="text-xs text-destructive">
-					Note must be at most {REQUEST_NOTE_MAX_BYTES.toLocaleString()} bytes ({noteBytes.toLocaleString()} used).
+					{t().request.create.noteTooLong(
+						REQUEST_NOTE_MAX_BYTES.toLocaleString(getLocale()),
+						noteBytes.toLocaleString(getLocale())
+					)}
 				</p>
 			{:else}
 				<p class="text-xs text-muted-foreground">
-					End-to-end encrypted; shown only to the person opening your request link.
+					{t().request.create.noteHint}
 				</p>
 			{/if}
 		</div>
 		<div class="grid gap-2.5">
-			<LifetimePicker bind:seconds={ttl} disabled={busy} groupLabel="Request lifetime" />
-			<p class="text-sm text-muted-foreground">Starts when you create the link. Submitting does not extend it.</p>
+			<LifetimePicker bind:seconds={ttl} disabled={busy} groupLabel={t().request.create.lifetimeGroup} />
+			<p class="text-sm text-muted-foreground">{t().request.create.lifetimeHint}</p>
 		</div>
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
-		<Button type="submit" size="cta" disabled={busy || !validTtl || noteTooLong}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? 'Creating request…' : unknown ? 'Create a new request' : 'Create request'}</Button>
+		<Button type="submit" size="cta" disabled={busy || !validTtl || noteTooLong}><LockKeyholeIcon class="size-4" aria-hidden="true" />{busy ? t().request.create.creating : unknown ? t().request.create.createNew : t().request.create.create}</Button>
 	</form>
 </DeliveryFrame>

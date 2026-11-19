@@ -3,6 +3,7 @@ import { ChevronDownIcon, UsersIcon, XIcon } from '@lucide/svelte';
 import { tick } from 'svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import VerifyDigits from '#lib/components/VerifyDigits.svelte';
+import { t } from '#lib/i18n/index.js';
 import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
 import { cn } from '#lib/utils.js';
 
@@ -49,9 +50,11 @@ async function deny(connectionId: string): Promise<void> {
 function ago(joinedAt: number): string {
 	const seconds = Math.max(0, Math.floor((now - joinedAt) / 1000));
 	if (seconds < 5) {
-		return 'just now';
+		return t().live.pending.justNow;
 	}
-	return seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
+	return seconds < 60
+		? t().live.pending.secondsAgo(seconds)
+		: t().live.pending.minutesAgo(Math.floor(seconds / 60));
 }
 </script>
 
@@ -62,7 +65,7 @@ function ago(joinedAt: number): string {
 		>
 			<UsersIcon class="size-3.5" aria-hidden="true" />
 			<!-- Announced politely as devices join or leave. -->
-			<span aria-live="polite" aria-atomic="true">{pending.length} of {capacity} devices waiting</span>
+			<span aria-live="polite" aria-atomic="true">{t().live.pending.devicesWaiting(pending.length, capacity)}</span>
 		</span>
 		<h2
 			id="pipe-pending-heading"
@@ -70,24 +73,24 @@ function ago(joinedAt: number): string {
 			tabindex="-1"
 			class="text-base font-semibold text-foreground outline-none"
 		>
-			Which number does your receiver see?
+			{t().live.pending.heading}
 		</h2>
 		{#if pending.length === 0}
-			<p class="text-xs text-muted-foreground">Waiting for receiver to enter the code…</p>
+			<p class="text-xs text-muted-foreground">{t().live.pending.empty}</p>
 		{/if}
 	</div>
 
 	{#if pending.length > 0}
-		<ul id="pipe-pending-rows" bind:this={rows} class="grid gap-2" aria-label="Waiting devices">
+		<ul id="pipe-pending-rows" bind:this={rows} class="grid gap-2" aria-label={t().live.pending.listLabel}>
 			{#each shown as receiver (receiver.connectionId)}
 				<li class="pipe-pending-row flex items-center gap-2.5 rounded-xl border border-border bg-background px-3 py-2.5 shadow-xs sm:gap-3 sm:px-3.5 sm:py-3">
 					<VerifyDigits
 						code={receiver.verifyCode}
 						size="sm"
-						label="Number {receiver.verifyCode.split('').join(' ')}"
+						label={t().live.pending.number(receiver.verifyCode.split('').join(' '))}
 					/>
 					<div class="pipe-pending-meta grid min-w-0 flex-1">
-						<p class="truncate text-sm font-semibold text-foreground">Connection {receiver.index}</p>
+						<p class="truncate text-sm font-semibold text-foreground">{t().live.pending.connection(receiver.index)}</p>
 						<!-- The device label truncates on its own so the time never gets cut off. -->
 						<p class="flex min-w-0 gap-1 text-[11px] text-muted-foreground">
 							<span class="truncate">{receiver.device}</span>
@@ -101,7 +104,7 @@ function ago(joinedAt: number): string {
 							variant="ghost"
 							size="icon-sm"
 							class="pipe-action-hit shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-							aria-label="Deny connection {receiver.index}"
+							aria-label={t().live.pending.deny(receiver.index)}
 							onclick={() => deny(receiver.connectionId)}
 						>
 							<XIcon class="size-4" aria-hidden="true" />
@@ -111,10 +114,10 @@ function ago(joinedAt: number): string {
 							size="sm"
 							class="pipe-action-hit shrink-0 px-3 text-[0.8125rem] font-semibold"
 							data-send-for={receiver.connectionId}
-							aria-label="Send to connection {receiver.index}, number {receiver.verifyCode}"
+							aria-label={t().live.pending.sendTo(receiver.index, receiver.verifyCode)}
 							onclick={() => onSend(receiver.connectionId)}
 						>
-							Send
+							{t().live.pending.send}
 						</Button>
 					</div>
 				</li>
@@ -137,7 +140,7 @@ function ago(joinedAt: number): string {
 					class={cn('size-4 transition-transform motion-reduce:transition-none', expanded && 'rotate-180')}
 					aria-hidden="true"
 				/>
-				{expanded ? 'Show fewer' : `Show ${hiddenCount} more`}
+				{expanded ? t().live.pending.showFewer : t().live.pending.showMore(hiddenCount)}
 			</Button>
 		{/if}
 	{/if}

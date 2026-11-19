@@ -25,6 +25,7 @@ import {
 	type OpenedRequestBody,
 	type OpenedRequestContent
 } from '#lib/crypto/requests.js';
+import { t } from '#lib/i18n/index.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import {
 	clearRequestHandoff,
@@ -73,24 +74,24 @@ const terminal = $derived(
 const remaining = $derived(remainingSecondsFrom(snapshot?.expires_at ?? '', now));
 const title = $derived(
 	expired
-		? 'Request expired'
+		? t().request.receive.headingExpired
 		: unavailable
-			? 'Request unavailable'
+			? t().request.receive.headingUnavailable
 			: content
-				? 'Opened once'
+				? t().request.receive.headingOpened
 				: openLost
-					? 'Open outcome unknown'
+					? t().request.receive.headingOpenLost
 					: decryptFailed
-						? 'Could not decrypt'
+						? t().request.receive.headingDecryptFailed
 						: snapshot?.state === 'submitted'
-							? 'Ready to retrieve'
+							? t().request.receive.headingReady
 							: snapshot?.state === 'consumed'
-								? 'Consumed'
+								? t().request.receive.headingConsumed
 								: snapshot?.state === 'cancelled'
-									? 'Cancelled'
+									? t().request.receive.headingCancelled
 									: snapshot?.state === 'waiting' || snapshot?.state === 'uploading'
-										? 'Waiting for a submission'
-										: 'Request status'
+										? t().request.receive.headingWaiting
+										: t().request.receive.headingStatus
 );
 
 function clearContent(): void {
@@ -136,8 +137,7 @@ async function accept(data: RequestOwner): Promise<void> {
 		return;
 	}
 	if (!keyFragment) {
-		keyProblem =
-			'Missing private key. Reopen the complete private retrieval link. Flick cannot recover a lost key or decrypt without it.';
+		keyProblem = t().request.receive.errors.missingKey;
 		return;
 	}
 	if (identity && verifiedFingerprint === data.fingerprint) {
@@ -152,8 +152,7 @@ async function accept(data: RequestOwner): Promise<void> {
 			keyProblem = '';
 		}
 	} catch {
-		keyProblem =
-			'Invalid private key. Reopen the original complete private retrieval link. Nothing was opened; Flick cannot recover a missing or damaged key.';
+		keyProblem = t().request.receive.errors.invalidKey;
 	}
 }
 function report(cause: unknown): void {
@@ -165,9 +164,7 @@ function report(cause: unknown): void {
 		clearLinks();
 	} else {
 		error =
-			cause instanceof RequestApiError
-				? cause.message
-				: 'Could not verify request status. Try again.';
+			cause instanceof RequestApiError ? cause.message : t().request.receive.errors.statusFailed;
 	}
 }
 async function readOwner(signal: AbortSignal): Promise<void> {
@@ -190,8 +187,7 @@ async function verifyLimits(signal: AbortSignal): Promise<boolean> {
 		return true;
 	} catch {
 		if (current(signal)) {
-			error =
-				'Could not verify size limits. Refresh status before opening. Nothing has been opened.';
+			error = t().request.receive.errors.limitsFailed;
 			pollDelay = Math.min(pollDelay * 2, 120_000);
 			lastRefresh = Date.now();
 		}
@@ -248,7 +244,7 @@ async function cancelPendingRequest(): Promise<void> {
 		if (cause instanceof RequestApiError && cause.status === 409) {
 			await readOwner(signal);
 			if (alive && !signal.aborted) {
-				notice = 'The request changed before cancellation. The current server status is shown.';
+				notice = t().request.receive.notices.changedBeforeCancel;
 				void focus();
 			}
 		} else if (!signal.aborted) {
@@ -299,8 +295,7 @@ async function openFailure(cause: unknown, released: boolean, signal: AbortSigna
 				report(statusError);
 			}
 		}
-		notice =
-			'The server did not release content for this opening. The request may have changed in another tab.';
+		notice = t().request.receive.notices.notReleased;
 		return;
 	}
 	openLost = true;
@@ -385,16 +380,16 @@ onMount(() => {
 });
 </script>
 
-<svelte:head><title>Private retrieval - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
+<svelte:head><title>{t().request.receive.pageTitle}</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
 <DeliveryFrame>
 	<div class="grid gap-1.5">
-		<p class="micro text-muted-foreground">private requester page</p>
+		<p class="micro text-muted-foreground">{t().request.receive.badge}</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
 	</div>
-	<section class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Request status">
+	<section class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-[14px] border bg-card px-5 py-4.5" aria-label={t().request.receive.statusRegion}>
 		<div class="grid grow basis-32 gap-1">
-		{#if expired}<p role="status">The request and anything shown here are no longer available.</p>
-		{:else if unavailable}<p role="status">The link is invalid or expired. Use the complete private retrieval link.</p>
+		{#if expired}<p role="status">{t().request.receive.expiredBody}</p>
+		{:else if unavailable}<p role="status">{t().request.receive.unavailableBody}</p>
 			{:else if snapshot}
 				<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
 
@@ -402,19 +397,19 @@ onMount(() => {
 					role="status"
 					class={snapshot.state === 'waiting' && !error ? 'sr-only' : undefined}
 				>
-					{error ? 'Last known status: ' : ''}{snapshot.state === 'uploading'
-						? 'A file is uploading. It cannot be opened yet.'
+					{error ? t().request.receive.lastKnown : ''}{snapshot.state === 'uploading'
+						? t().request.receive.uploading
 						: snapshot.state === 'waiting'
-							? 'Waiting for the first submission.'
+							? t().request.receive.waiting
 							: snapshot.state === 'submitted'
 								? openLost || keyProblem
-									? 'A submission was accepted.'
-									: 'You can open it once.'
+									? t().request.receive.accepted
+									: t().request.receive.openOnce
 								: snapshot.state === 'cancelled'
-									? 'Nothing more can be submitted or opened.'
+									? t().request.receive.cancelled
 									: content
-										? 'Save it now. Leaving, refreshing, or reaching the deadline clears it for good.'
-										: 'It was released once and cannot be opened again.'}
+										? t().request.receive.saveNow
+										: t().request.receive.consumed}
 				</p>
 
 				{#if (snapshot.state === 'waiting' || snapshot.state === 'uploading') && !error}
@@ -423,45 +418,45 @@ onMount(() => {
 						<span class="absolute inline-flex size-full rounded-full bg-primary opacity-60 motion-safe:animate-ping"></span>
 						<span class="relative inline-flex size-2 rounded-full bg-primary"></span>
 						</span>
-						Checking automatically
+						{t().request.receive.checking}
 					</p>
 				{/if}
-			{#if !terminal || content}<RemainingTime seconds={remaining} aria-label="Time remaining" class="mt-1.5" />{/if}
-		{:else}<p role="status">{busy ? 'Loading request status…' : 'Request status is unknown.'}</p>{/if}
+			{#if !terminal || content}<RemainingTime seconds={remaining} aria-label={t().request.shared.timeRemaining} class="mt-1.5" />{/if}
+		{:else}<p role="status">{busy ? t().request.receive.loadingStatus : t().request.shared.statusUnknown}</p>{/if}
 		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</div>
-		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>Refresh status</Button>{/if}
+		{#if !terminal}<Button variant="ghost" size="sm" class="-mt-1 ml-auto text-[0.8125rem] text-muted-foreground" disabled={busy} onclick={() => { void refresh(); }}>{t().request.receive.refresh}</Button>{/if}
 	</section>
 	{#if keyProblem && !terminal}<p role="alert" class="text-sm text-destructive">{keyProblem}</p>{/if}
-	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.</p>{/if}
-	{#if decryptFailed}<p role="alert" class="text-sm text-destructive">The content was released, but decryption failed. It cannot be opened again. Ask the sender to use a new request.</p>{/if}
+	{#if openLost && !expired}<p role="alert" class="text-sm text-destructive">{t().request.receive.openLost}</p>{/if}
+	{#if decryptFailed}<p role="alert" class="text-sm text-destructive">{t().request.receive.decryptFailed}</p>{/if}
 	{#if credential}
 		<CredentialView credential={credential} />
 	{:else if content?.kind === 'text'}
-		<Textarea aria-label="Decrypted secret" value={content.text} readonly rows={8} />
+		<Textarea aria-label={t().request.receive.decryptedSecret} value={content.text} readonly rows={8} />
 	{:else if content?.kind === 'file'}
-		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">Download {content.filename}</a>
+		<a href={downloadUrl} download={content.filename} class="break-all rounded-lg bg-primary px-4 py-3 text-center text-sm text-primary-foreground">{t().request.receive.download(content.filename)}</a>
 	{/if}
 	{#if snapshot?.state === 'submitted' && !terminal && !opened}
-		<Button size="cta" disabled={busy || !identity} onclick={() => { void open(); }}>{busy ? 'Working…' : 'Open once'}</Button>
+		<Button size="cta" disabled={busy || !identity} onclick={() => { void open(); }}>{busy ? t().request.receive.working : t().request.receive.open}</Button>
 	{/if}
 	{#if submission && !terminal}
 		<section class="grid gap-2.5" aria-labelledby="submission-link-heading">
-			<h2 id="submission-link-heading" class="text-[0.9375rem] font-medium">Share the submission link</h2>
-			<p class="text-[0.8125rem] text-muted-foreground">Anyone with this link can submit once. It cannot open or cancel the request.</p>
-			<UrlField value={submission} label="Submission link" copyLabel="Copy submission link" prominent />
+			<h2 id="submission-link-heading" class="text-[0.9375rem] font-medium">{t().request.receive.shareHeading}</h2>
+			<p class="text-[0.8125rem] text-muted-foreground">{t().request.receive.shareHint}</p>
+			<UrlField value={submission} label={t().request.receive.submissionLink} copyLabel={t().request.receive.copySubmissionLink} prominent />
 			<div class="flex flex-wrap items-start gap-2">
 				<NativeShareButton recipientUrl={submission} class="h-9 w-auto justify-self-start rounded-lg px-3 text-[0.8125rem]" />
-				<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />Show submission QR</Button>
+				<Button variant="outline" size="seg" onclick={() => { qrOpen = true; }}><QrCodeIcon class="size-4" aria-hidden="true" />{t().request.receive.showSubmissionQr}</Button>
 			</div>
 		</section>
-	{:else if !terminal}<p class="text-sm text-muted-foreground">Use the submission link you saved; it cannot be shown here again.</p>{/if}
+	{:else if !terminal}<p class="text-sm text-muted-foreground">{t().request.receive.submissionGone}</p>{/if}
 	{#if privateLink && !terminal}
 		<section class="grid gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--burn)_28%,var(--border))] bg-[color-mix(in_srgb,var(--burn)_6%,var(--card))] px-5 py-4.5" aria-labelledby="retrieval-link-heading">
-			<h2 id="retrieval-link-heading" class="text-[0.9375rem] font-medium">Keep your retrieval link private</h2>
-			<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.</p>
-			<UrlField value={privateLink} label="Private retrieval link" copyLabel="Copy private retrieval link" />
+			<h2 id="retrieval-link-heading" class="text-[0.9375rem] font-medium">{t().request.receive.privateHeading}</h2>
+			<p class="text-[0.8125rem] leading-[1.55] text-muted-foreground">{t().request.receive.privateBody}</p>
+			<UrlField value={privateLink} label={t().request.receive.privateLink} copyLabel={t().request.receive.copyPrivateLink} />
 		</section>
 	{/if}
 
@@ -473,19 +468,19 @@ onMount(() => {
 			onclick={() => {
 				void refresh(true);
 			}}
-		>Cancel request</Button>
+		>{t().request.receive.cancelRequest}</Button>
 	{/if}
 
 	<a
 		href={resolve('request')}
 		class="pb-3 text-center text-[0.8125rem] text-muted-foreground underline underline-offset-4"
-	>Create another request</a>
+	>{t().request.receive.createAnother}</a>
 </DeliveryFrame>
 <QrModal bind:open={qrOpen} url={submission} />
 <ConfirmDialog
 	bind:open={cancelConfirmOpen}
-	title="Cancel this request?"
-	description="Nothing more can be submitted or opened. Already released copies cannot be recalled."
-	confirmLabel="Cancel request"
+	title={t().request.receive.confirmTitle}
+	description={t().request.receive.confirmBody}
+	confirmLabel={t().request.receive.cancelRequest}
 	onconfirm={() => { void cancelPendingRequest(); }}
 />

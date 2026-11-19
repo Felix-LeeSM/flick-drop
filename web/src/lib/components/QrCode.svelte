@@ -1,5 +1,6 @@
 <script lang="ts">
 import { renderSVG } from 'uqr';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 type Props = {
@@ -25,7 +26,7 @@ const svg = $derived(
 
 <div
 	role="img"
-	aria-label="QR code for the secret share link"
+	aria-label={t().common.qr.codeLabel}
 	class={cn('qr grid place-items-center overflow-hidden', className)}
 >
 	{#if svg.length > 0}

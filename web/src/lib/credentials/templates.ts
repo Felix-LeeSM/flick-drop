@@ -1,8 +1,11 @@
+import { type Messages, t } from '#lib/i18n/index.js';
+
+// `label` is the English name stored in the credential payload (FLCR1: JSON) and
+// never changes with the display language. Screen text comes from the
+// `credentials` catalog in web/src/lib/i18n/messages/*/credentials.ts.
 type TemplateSpec = {
 	label: string;
 	icon: string;
-	description: string;
-	titlePlaceholder: string;
 	allowCustomFields: boolean;
 	fields: readonly TemplateFieldDef[];
 };
@@ -14,7 +17,6 @@ export type TemplateFieldDef = {
 	label: string;
 	secret: boolean;
 	input: CredentialInputKind;
-	placeholder?: string;
 	autocomplete?: string;
 };
 
@@ -22,8 +24,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 	login: {
 		label: 'Login',
 		icon: 'key-round',
-		description: 'Username, password, URL, and one-time code seed.',
-		titlePlaceholder: 'Production database',
 		allowCustomFields: false,
 		fields: [
 			{
@@ -31,7 +31,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'Username',
 				secret: false,
 				input: 'text',
-				placeholder: 'alice@example.com',
 				autocomplete: 'username'
 			},
 			{
@@ -46,7 +45,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'URL',
 				secret: false,
 				input: 'url',
-				placeholder: 'https://example.com',
 				autocomplete: 'url'
 			},
 			{
@@ -61,8 +59,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 	card: {
 		label: 'Card',
 		icon: 'credit-card',
-		description: 'Payment card details for one-time delivery.',
-		titlePlaceholder: 'Company card',
 		allowCustomFields: false,
 		fields: [
 			{
@@ -70,7 +66,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'Cardholder',
 				secret: false,
 				input: 'text',
-				placeholder: 'Alice Lee',
 				autocomplete: 'cc-name'
 			},
 			{
@@ -85,7 +80,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'Expires',
 				secret: false,
 				input: 'text',
-				placeholder: 'MM/YY',
 				autocomplete: 'cc-exp'
 			},
 			{
@@ -100,8 +94,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 	identity: {
 		label: 'Identity',
 		icon: 'id-card',
-		description: 'Personal identity fields with sensitive identifiers masked.',
-		titlePlaceholder: 'Identity package',
 		allowCustomFields: false,
 		fields: [
 			{
@@ -109,7 +101,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'Full name',
 				secret: false,
 				input: 'text',
-				placeholder: 'Alice Lee',
 				autocomplete: 'name'
 			},
 			{
@@ -117,7 +108,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 				label: 'Email',
 				secret: false,
 				input: 'email',
-				placeholder: 'alice@example.com',
 				autocomplete: 'email'
 			},
 			{
@@ -139,8 +129,6 @@ export const CREDENTIAL_TEMPLATE_SPECS = {
 	custom: {
 		label: 'Custom',
 		icon: 'list-plus',
-		description: 'User-defined label, value, and secret fields.',
-		titlePlaceholder: 'Shared credential',
 		allowCustomFields: true,
 		fields: []
 	}
@@ -161,4 +149,36 @@ export function getCredentialTemplate(type: CredentialType): TemplateDef {
 		type,
 		...CREDENTIAL_TEMPLATE_SPECS[type]
 	};
+}
+
+type CredentialsText = Messages['credentials'];
+type TemplateText = CredentialsText['templates'][CredentialType];
+type FieldText = { label: string; placeholder?: string };
+
+// Name, description, and title placeholder of a template in the display language.
+export function credentialTemplateText(
+	type: CredentialType,
+	text: CredentialsText = t().credentials
+): TemplateText {
+	return text.templates[type];
+}
+
+// Display text of a template field, or undefined for a custom field id.
+export function credentialFieldText(
+	type: CredentialType,
+	fieldId: string,
+	text: CredentialsText = t().credentials
+): FieldText | undefined {
+	const fields: Partial<Record<string, FieldText>> = text.templates[type].fields;
+	return Object.hasOwn(fields, fieldId) ? fields[fieldId] : undefined;
+}
+
+// A template field shows its label in the display language; a custom field or a
+// field id the template does not know shows the label stored in the payload.
+export function displayFieldLabel(
+	type: CredentialType,
+	field: { id: string; label: string },
+	text: CredentialsText = t().credentials
+): string {
+	return credentialFieldText(type, field.id, text)?.label ?? field.label;
 }

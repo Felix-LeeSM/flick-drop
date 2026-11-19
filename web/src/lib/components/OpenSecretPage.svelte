@@ -30,6 +30,7 @@ import { deriveAccessProof } from '#lib/crypto/access.js';
 import { recipientOf } from '#lib/crypto/age.js';
 import { decodeKeyFragment } from '#lib/crypto/fragment.js';
 import { openFile, openText, unwrapIdentityOffThread } from '#lib/crypto/secret.js';
+import { t } from '#lib/i18n/index.js';
 import {
 	holdMinimumStage,
 	STAGE_FAIL_MS,
@@ -94,7 +95,7 @@ async function loadModel(): Promise<void> {
 	isLoading = true;
 	canRetryLoad = false;
 	linkUnusable = false;
-	status = 'Loading secret';
+	status = t().open.loading;
 	statusKind = 'idle';
 	try {
 		metadata = await api.getSecretMetadata(secretId);
@@ -102,7 +103,7 @@ async function loadModel(): Promise<void> {
 		if (accessModel === 'b') {
 			const identity = decodeKeyFragment(window.location.hash);
 			if (!identity) {
-				status = 'This link is incomplete — the decryption key is missing from the URL.';
+				status = t().open.linkIncomplete;
 				statusKind = 'error';
 				linkUnusable = true;
 				return;
@@ -110,7 +111,7 @@ async function loadModel(): Promise<void> {
 			// A messenger that cut or altered the link leaves a key that fails its
 			// checksum. Catch it here, before Open burns the secret for nothing.
 			if (!(await isIntactKey(identity))) {
-				status = 'This link is damaged. Ask the sender to send the full link again.';
+				status = t().open.linkDamaged;
 				statusKind = 'error';
 				linkUnusable = true;
 				return;
@@ -119,7 +120,7 @@ async function loadModel(): Promise<void> {
 		}
 		status = '';
 	} catch (error) {
-		status = error instanceof SecretApiError ? error.message : 'Could not load this secret.';
+		status = error instanceof SecretApiError ? error.message : t().open.loadFailed;
 		statusKind = 'error';
 		// Missing/burned secrets and unusable fragment keys cannot recover through
 		// metadata retry. Network, rate-limit, and server failures can.
@@ -169,14 +170,14 @@ function submitOpen(event: SubmitEvent): void {
 // a damaged link, and both models share one message.
 function consumedFailureMessage(): string {
 	if (transportBroken) {
-		return "The connection dropped while receiving this secret. It can't be opened again. Ask the sender to send it again.";
+		return t().open.transportDropped;
 	}
-	return "This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again.";
+	return t().open.decryptFailed;
 }
 
 async function openSecret(): Promise<void> {
 	if (hasOpened) {
-		status = 'Already opened in this tab';
+		status = t().open.alreadyOpened;
 		statusKind = 'success';
 		return;
 	}
@@ -187,7 +188,7 @@ async function openSecret(): Promise<void> {
 	isOpening = true;
 	openStage = 'waiting';
 	const stageStartedAt = performance.now();
-	status = 'Opening';
+	status = t().open.statusOpening;
 	statusKind = 'idle';
 	decryptedText = '';
 	credential = null;
@@ -219,7 +220,7 @@ async function openSecret(): Promise<void> {
 			status = consumedFailureMessage();
 			linkUnusable = true;
 		} else {
-			status = error instanceof SecretApiError ? error.message : 'Could not open this secret.';
+			status = error instanceof SecretApiError ? error.message : t().open.openFailed;
 			linkUnusable = isUnavailable(error);
 		}
 		statusKind = 'error';
@@ -340,7 +341,7 @@ async function copySecret(): Promise<void> {
 			copyState = 'idle';
 		}, 1600);
 	} catch {
-		status = 'Could not copy secret.';
+		status = t().open.copyFailed;
 		statusKind = 'error';
 	}
 }
@@ -356,26 +357,26 @@ function revokeDownloadUrl(): void {
 </script>
 
 <svelte:head>
-	<title>Open secret - Flick</title>
+	<title>{t().open.headTitle} - Flick</title>
 </svelte:head>
 
 <main class="min-h-screen px-3 py-4 text-foreground sm:px-5 sm:py-6">
 	<div class="mx-auto grid w-full max-w-xl grid-cols-[minmax(0,1fr)] gap-8">
-		<SiteHeader link={{ href: resolve('/'), label: 'Create' }} />
+		<SiteHeader link={{ href: resolve('/'), label: t().open.headerCreate }} />
 
 		{#if hasOpened}
 			<section class="grid gap-6">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-success">
 						<CheckIcon class="size-3.5" aria-hidden="true" />
-						decrypted · burns after read
+						{t().open.decryptedBadge}
 					</p>
 					<h1
 						class="page-title"
 						tabindex="-1"
 						bind:this={secretHeading}
 					>
-						Secret
+						{t().open.resultTitle}
 					</h1>
 				</div>
 
@@ -386,17 +387,17 @@ function revokeDownloadUrl(): void {
 							type="button"
 							variant="outline"
 							class="h-11 w-full"
-							aria-label="Copy all"
+							aria-label={t().open.copyAll}
 							onclick={() => {
 								void copySecret();
 							}}
 						>
 							{#if copyState === 'copied'}
 								<CheckIcon class="size-4" aria-hidden="true" />
-								Copied
+								{t().open.copied}
 							{:else}
 								<CopyIcon class="size-4" aria-hidden="true" />
-								Copy all
+								{t().open.copyAll}
 							{/if}
 						</Button>
 					</div>
@@ -406,23 +407,23 @@ function revokeDownloadUrl(): void {
 							class="min-h-64 resize-y font-mono text-sm"
 							value={decryptedText}
 							readonly
-							aria-label="Decrypted secret"
+							aria-label={t().open.decryptedSecret}
 						/>
 						<Button
 							type="button"
 							variant="outline"
 							class="h-11 w-full"
-							aria-label="Copy secret"
+							aria-label={t().open.copySecret}
 							onclick={() => {
 								void copySecret();
 							}}
 						>
 							{#if copyState === 'copied'}
 								<CheckIcon class="size-4" aria-hidden="true" />
-								Copied
+								{t().open.copied}
 							{:else}
 								<CopyIcon class="size-4" aria-hidden="true" />
-								Copy
+								{t().open.copy}
 							{/if}
 						</Button>
 					</div>
@@ -448,7 +449,7 @@ function revokeDownloadUrl(): void {
 									rel="external"
 								>
 									<DownloadIcon class="size-4" aria-hidden="true" />
-									Download
+									{t().open.download}
 								</a>
 							</div>
 						</Card.Content>
@@ -471,41 +472,41 @@ function revokeDownloadUrl(): void {
 				<a
 					class={buttonVariants({ variant: 'ghost' }) + ' h-9 w-full text-sm'}
 					href={resolve('/')}
-					aria-label="Create your own secret"
+					aria-label={t().open.createOwnLabel}
 				>
-					Create your own
+					{t().open.createOwn}
 				</a>
 			</section>
 		{:else if openStage}
 			<LockStageCard
 				mode="unlock"
 				phase={openStage}
-				caption="opening your secret"
+				caption={t().open.stageCaption}
 				status={openStage === 'finishing'
-					? 'Unlocked'
+					? t().open.stageUnlocked
 					: openStage === 'failing'
 						? status
-						: 'Decrypting in your browser…'}
+						: t().open.stageDecrypting}
 			/>
 		{:else}
 			<section class="grid gap-7">
 				<div class="grid gap-1.5">
 					<p class="micro flex items-center gap-1.5 text-burn">
 						<FlameIcon class="size-3.5" aria-hidden="true" />
-						one-time link
+						{t().open.oneTimeLink}
 					</p>
-					<h1 class="page-title">Open a secret</h1>
+					<h1 class="page-title">{t().open.formTitle}</h1>
 				</div>
 
 				<form class="grid gap-5" autocomplete="off" onsubmit={submitOpen}>
 					{#if accessModel === 'b'}
 						<p class="text-sm text-muted-foreground">
-							This link opens without a passphrase. Anyone with the full URL can open it once.
+							{t().open.noPassphrase}
 						</p>
 					{:else if accessModel === 'a'}
 						<div class="grid gap-2.5">
 							<Label for="open-passphrase" class="micro font-normal text-muted-foreground">
-								passphrase
+								{t().open.passphraseLabel}
 							</Label>
 							<div class="relative">
 								<Input
@@ -519,7 +520,7 @@ function revokeDownloadUrl(): void {
 									data-bwignore="true"
 									data-lpignore="true"
 									class="h-11 pr-11"
-									placeholder={hasOpened ? 'Already opened' : 'Required'}
+									placeholder={hasOpened ? t().open.placeholderOpened : t().open.placeholderRequired}
 									bind:value={passphrase}
 									disabled={isOpening || hasOpened}
 									required
@@ -529,8 +530,8 @@ function revokeDownloadUrl(): void {
 									variant="ghost"
 									size="icon"
 									class="absolute right-0 top-0 size-11 text-muted-foreground hover:text-foreground"
-									aria-label={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
-									title={revealPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+									aria-label={revealPassphrase ? t().open.hidePassphrase : t().open.showPassphrase}
+									title={revealPassphrase ? t().open.hidePassphrase : t().open.showPassphrase}
 									onclick={() => {
 										revealPassphrase = !revealPassphrase;
 									}}
@@ -548,16 +549,16 @@ function revokeDownloadUrl(): void {
 					<Button type="submit" size="cta" disabled={!canOpen}>
 						{#if hasOpened}
 							<CheckIcon class="size-4" aria-hidden="true" />
-							Opened
+							{t().open.ctaOpened}
 						{:else}
 							<LockKeyholeOpenIcon class="size-4" aria-hidden="true" />
-							{isOpening ? 'Opening' : 'Open'}
+							{isOpening ? t().open.ctaOpening : t().open.ctaOpen}
 						{/if}
 					</Button>
 
 					{#if canRetryLoad}
 						<Button type="button" variant="outline" class="h-11 w-full" onclick={() => void loadModel()}>
-							Retry loading
+							{t().open.retryLoading}
 						</Button>
 					{/if}
 
@@ -579,9 +580,9 @@ function revokeDownloadUrl(): void {
 					<a
 						class={buttonVariants({ variant: 'ghost' }) + ' h-9 w-full text-sm'}
 						href={resolve('/')}
-						aria-label="Create a new secret instead"
+						aria-label={t().open.createInsteadLabel}
 					>
-						Create one instead
+						{t().open.createInstead}
 					</a>
 				{/if}
 			</section>

@@ -12,6 +12,9 @@ import {
 	sendPipeStream,
 	waitForPipeUpdate
 } from '#lib/crypto/pipe.js';
+import { type Messages, t } from '#lib/i18n/index.js';
+
+type RelayStatus = keyof Messages['live']['relay'];
 
 // The plaintext payload the page hands over when the transfer actually runs.
 // `kind` and `filename` ride the send headers; encryption happens here, on
@@ -72,7 +75,9 @@ function mergePending(
 export function createPipeRelay(options: PipeRelayOptions) {
 	let activeCode = $state<string | null>(null);
 	let pending = $state<PendingReceiver[]>([]);
-	let statusText = $state('Waiting for receiver to enter code...');
+	// A relay status is read from the catalog on render so it follows a language
+	// switch; an error message is fixed in the language it was created in.
+	let status = $state<() => string>(() => t().live.relay.waitingForCode);
 	let progressPercent = $state(0);
 	let completed = $state(false);
 	let failed = $state(false);
@@ -89,8 +94,21 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	let settled = new Set<string>();
 	let abortController: AbortController | null = null;
 
-	function fail(err: unknown, fallback: string): void {
-		statusText = err instanceof Error ? err.message : fallback;
+	function setStatus(key: RelayStatus): void {
+		status = () => t().live.relay[key];
+	}
+
+	function setStatusFrom(err: unknown, fallback: RelayStatus): void {
+		if (err instanceof Error) {
+			const message = err.message;
+			status = () => message;
+			return;
+		}
+		setStatus(fallback);
+	}
+
+	function fail(err: unknown, fallback: RelayStatus): void {
+		setStatusFrom(err, fallback);
 		failed = true;
 	}
 
@@ -104,11 +122,11 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		try {
 			const payload = options.getPayload();
 
-			statusText = 'Encrypting stream on-the-fly (age format)...';
+			setStatus('encrypting');
 			progressPercent = 25;
 			const encryptedStream = await encryptToRecipient(recipient, payload.stream);
 
-			statusText = 'Streaming encrypted bytes directly to receiver...';
+			setStatus('streaming');
 			progressPercent = 50;
 
 			const encryptedFilename = payload.filename
@@ -128,10 +146,10 @@ export function createPipeRelay(options: PipeRelayOptions) {
 
 			progressPercent = 100;
 			completed = true;
-			statusText = 'Transfer complete!';
+			setStatus('complete');
 		} catch (err) {
 			if (!signal.aborted) {
-				fail(err, 'Streaming failed');
+				fail(err, 'streamingFailed');
 			}
 		}
 	}
@@ -167,7 +185,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			}
 		} catch (err) {
 			if (!signal.aborted && !sending) {
-				fail(err, 'Live transfer failed');
+				fail(err, 'liveFailed');
 			}
 		}
 	}
@@ -181,7 +199,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		settled = new Set();
 
 		try {
-			statusText = 'Initializing live transfer session...';
+			setStatus('initializing');
 			const session = await initPipeRendezvous(DEFAULT_API_BASE_URL, fetch);
 			if (controller.signal.aborted) {
 				return;
@@ -193,11 +211,11 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			failed = false;
 			completed = false;
 			progressPercent = 0;
-			statusText = 'Waiting for receiver to enter code...';
+			setStatus('waitingForCode');
 			await poll(session.code, controller.signal);
 		} catch (err) {
 			if (!controller.signal.aborted) {
-				fail(err, 'Live transfer failed');
+				fail(err, 'liveFailed');
 			}
 		}
 	}
@@ -211,11 +229,11 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		}
 		const chosen = pending.find((receiver) => receiver.connectionId === connectionId);
 		if (!chosen) {
-			statusText = 'That device is no longer waiting.';
+			setStatus('noLongerWaiting');
 			return;
 		}
 		selecting = true;
-		statusText = 'Sending to the chosen device...';
+		setStatus('sendingChosen');
 		try {
 			await selectPipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
 		} catch (err) {
@@ -225,7 +243,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			// The device left or was settled meanwhile: keep the session and the
 			// list. The running poll loop shows the next server view.
 			selecting = false;
-			statusText = err instanceof Error ? err.message : 'That device is no longer waiting.';
+			setStatusFrom(err, 'noLongerWaiting');
 			return;
 		}
 		selecting = false;
@@ -240,7 +258,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		if (denied && !pending.some((receiver) => receiver.connectionId === connectionId)) {
 			pending = [...pending, denied].sort((a, b) => a.index - b.index);
 		}
-		statusText = 'Could not deny that device. Try again.';
+		setStatus('denyFailed');
 	}
 
 	/** Turns one waiting receiver away; its slot reopens and the code stays live. */
@@ -256,7 +274,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		try {
 			await declinePipeConnection(DEFAULT_API_BASE_URL, code, senderToken, connectionId, fetch);
 			if (session === settled && !sending) {
-				statusText = 'Waiting for receiver to enter code...';
+				setStatus('waitingForCode');
 			}
 		} catch (err) {
 			// not_pending: the device already left or was settled, so the row stays gone.
@@ -284,7 +302,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		selecting = false;
 		settled = new Set();
 		pending = [];
-		statusText = '';
+		status = () => '';
 		progressPercent = 0;
 		completed = false;
 		failed = false;
@@ -302,7 +320,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			return pending;
 		},
 		get statusText() {
-			return statusText;
+			return status();
 		},
 		get progressPercent() {
 			return progressPercent;

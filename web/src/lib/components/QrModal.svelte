@@ -4,6 +4,7 @@ import { Dialog } from 'bits-ui';
 import QrCode from '#lib/components/QrCode.svelte';
 import UrlField from '#lib/components/UrlField.svelte';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 type Props = {
@@ -25,21 +26,21 @@ let { open = $bindable(false), url }: Props = $props();
 			<div class="relative">
 				<Dialog.Close
 					class="absolute -right-2.5 -top-2.5 grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-					aria-label="Close"
+					aria-label={t().common.qr.close}
 				>
 					<XIcon class="size-4" aria-hidden="true" />
 				</Dialog.Close>
 				<!-- Side padding keeps an enlarged title clear of the close button in the top-right corner. -->
-				<Dialog.Title class="mt-0.5 px-6 font-serif text-2xl">Scan or copy</Dialog.Title>
+				<Dialog.Title class="mt-0.5 px-6 font-serif text-2xl">{t().common.qr.title}</Dialog.Title>
 			</div>
 			<Dialog.Description class="text-sm text-muted-foreground">
-				Point a camera at the code, or copy the link below.
+				{t().common.qr.description}
 			</Dialog.Description>
 			<!-- With enlarged text the 13rem QR outgrows a phone-width dialog, so it shrinks to the dialog width. -->
 			<QrCode value={url} class="mx-auto aspect-square w-52 max-w-full rounded-lg bg-white p-2.5 shadow-xs" />
 			<UrlField value={url} class="h-12" />
 			<Dialog.Close class={cn(buttonVariants({ variant: 'outline' }), 'h-12 w-full')}>
-				Close
+				{t().common.qr.close}
 			</Dialog.Close>
 		</Dialog.Content>
 	</Dialog.Portal>
