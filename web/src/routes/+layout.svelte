@@ -1,11 +1,17 @@
 <script lang="ts">
 import './layout.css';
+import { onMount } from 'svelte';
 import favicon from '#lib/assets/favicon.svg';
+import LanguageRow from '#lib/components/LanguageRow.svelte';
+import { initializeLocale } from '#lib/i18n/locale.svelte.js';
 import { initializeTheme } from '#lib/state/theme.js';
 
 let { children } = $props();
 
 initializeTheme();
+// After hydration: prerendered pages ship English markup, and switching the language
+// before hydration matches it would leave stale text behind.
+onMount(initializeLocale);
 </script>
 
 <svelte:head>
@@ -28,3 +34,4 @@ initializeTheme();
 </svelte:head>
 
 {@render children()}
+<LanguageRow />

@@ -1,0 +1,11 @@
+import type { Messages } from '../en';
+import { common } from './common';
+import { create } from './create';
+import { credentials } from './credentials';
+import { errors } from './errors';
+import { live } from './live';
+import { manage } from './manage';
+import { open } from './open';
+import { request } from './request';
+
+export const ko: Messages = { common, create, open, manage, request, live, credentials, errors };

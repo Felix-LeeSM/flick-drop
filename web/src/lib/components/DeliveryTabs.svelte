@@ -1,4 +1,5 @@
 <script lang="ts">
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 // The first control of the create page: which delivery the rest of the form
@@ -21,13 +22,13 @@ let {
 	disabled?: boolean;
 } = $props();
 
-const tabs = [
-	{ value: 'link', label: 'Create link' },
-	{ value: 'code', label: 'Live transfer' }
-] as const;
+const tabs = $derived([
+	{ value: 'link', label: t().common.tabLink },
+	{ value: 'code', label: t().common.tabLive }
+] as const);
 </script>
 
-<div class="relative border-b border-border" role="group" aria-label="Delivery method">
+<div class="relative border-b border-border" role="group" aria-label={t().common.deliveryMethod}>
 	<div class="grid grid-cols-2">
 		{#each tabs as tab (tab.value)}
 			<button
