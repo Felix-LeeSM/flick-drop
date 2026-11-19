@@ -1,7 +1,7 @@
 import type { create as source } from '../en/create';
 
 export const create: typeof source = {
-	headTitle: '비밀 만들기 - Flick',
+	headTitle: '링크 만들기 - Flick',
 	tagline: '종단간 암호화 · 열면 사라져요',
 	titleLink: 'Create a secret',
 	titleCode: 'Send a secret',
@@ -15,7 +15,7 @@ export const create: typeof source = {
 		file: '파일',
 		login: '로그인',
 		card: '카드',
-		identity: '신원 정보',
+		identity: '개인 정보',
 		custom: '직접 입력'
 	},
 	text: {
@@ -36,19 +36,19 @@ export const create: typeof source = {
 		tooLarge: (size: string) => `파일은 합쳐서 ${size}까지 고를 수 있어요.`
 	},
 	passphrase: {
-		toggle: '비밀번호로 한 번 더 잠그기',
+		toggle: '비밀번호 걸기',
 		infoLabel: '서버가 이 내용을 볼 수 없는 이유',
 		whyTitle: 'Flick도 내용을 볼 수 없는 이유',
 		whyLocked: '보내기 전에 이 기기에서 잠가요.',
 		whyNeverSent: '비밀번호는 서버로 전송되지 않아요.',
 		placeholder: '비밀번호 입력',
-		fieldLabel: '추가 비밀번호',
+		fieldLabel: '비밀번호',
 		generate: '비밀번호 만들기',
 		hide: '비밀번호 숨기기',
 		show: '비밀번호 보기'
 	},
 	expiresAfter: '만료 시간',
-	lifetimeGroup: '비밀 만료 시간',
+	lifetimeGroup: '만료 시간',
 	cta: {
 		creating: 'Creating',
 		createLink: 'Create Link',
@@ -57,7 +57,7 @@ export const create: typeof source = {
 	linkCaption: '한 번 열면 사라져요',
 	liveCaption: '서버에 저장하지 않아요',
 	blocked: {
-		passphrase: '비밀번호를 정해야 보호가 완성돼요',
+		passphrase: '걸어 둘 비밀번호를 입력해 주세요',
 		empty: '메모, 파일, 로그인 정보 중 하나를 먼저 넣어 주세요'
 	},
 	stage: {

@@ -97,10 +97,8 @@ for (const model of ['a', 'b']) {
 			await configured;
 			await page.getByLabel('Message', { exact: true }).fill('synthetic private message');
 			if (model === 'a') {
-				await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-				await page
-					.getByLabel('Additional passphrase', { exact: true })
-					.fill('synthetic private passphrase');
+				await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
+				await page.getByLabel('Passphrase', { exact: true }).fill('synthetic private passphrase');
 			}
 			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
 			await page.locator('form button[type="submit"]').click();
@@ -180,7 +178,7 @@ for (const model of ['a', 'b']) {
 			await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
 			assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 0);
 			await page
-				.getByText('The recipient link is available only in the original creation session.', {
+				.getByText('The recipient link is shown only on the page where you created it.', {
 					exact: false
 				})
 				.waitFor();

@@ -256,7 +256,7 @@ The server issues no key material for a code transfer: no salt, no passphrase,
 and the 6-digit code only routes requests. A curious or passive server, its
 logs, a dump of its memory, or a dump of Valkey therefore hold recipients and
 (memory only) ciphertext but nothing that decrypts the stream. A code transfer takes no passphrase on either
-side; the link tab's "additional passphrase" never reaches it.
+side; the link tab's passphrase never reaches it.
 
 **What Valkey holds.** The rendezvous lives in Valkey so any API replica can
 serve any call of a transfer (`internal/piperelay/room.go`). Valkey runs with

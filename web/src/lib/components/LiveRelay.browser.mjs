@@ -181,7 +181,7 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 
 		// A code transfer is encrypted to this device's own key, so the receiver
 		// asks for no passphrase.
-		assert.equal(await dialog.getByLabel('Additional passphrase', { exact: true }).count(), 0);
+		assert.equal(await dialog.getByLabel('Passphrase', { exact: true }).count(), 0);
 
 		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
 		await input.fill('741-928');
@@ -272,7 +272,7 @@ test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF
 		assert.equal(await createSubmit.isDisabled(), true);
 
 		const passphraseSwitch = page.getByRole('switch', {
-			name: 'Protect with an additional passphrase'
+			name: 'Protect with a passphrase'
 		});
 		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'unchecked');
 
@@ -295,7 +295,7 @@ test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF
 		await passphraseSwitch.click();
 		assert.equal(await passphraseSwitch.getAttribute('data-state'), 'checked');
 		assert.equal(await createSubmit.isDisabled(), true);
-		await page.getByLabel('Additional passphrase', { exact: true }).fill('extra');
+		await page.getByLabel('Passphrase', { exact: true }).fill('extra');
 		assert.equal(await createSubmit.isDisabled(), false);
 	} finally {
 		await page.close();
@@ -685,7 +685,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		await sender.getByLabel('Message', { exact: true }).fill(message);
 		// A passphrase left on in the link tab must not reach the code transfer:
 		// the receiver below enters none and still decrypts.
-		await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
+		await sender.getByRole('switch', { name: 'Protect with a passphrase' }).click();
 		const deliveryMethod = sender.getByRole('group', { name: 'Delivery method' });
 		// An empty link-tab passphrase doesn't block the code send either.
 		await deliveryMethod.getByRole('button', { name: 'Live transfer' }).click();
@@ -694,7 +694,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			true
 		);
 		await deliveryMethod.getByRole('button', { name: 'Create link' }).click();
-		await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
+		await sender.getByLabel('Passphrase', { exact: true }).fill('link-tab-only');
 		await sender
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Live transfer' })
@@ -746,10 +746,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		await intended.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
 		assert.equal(await intended.getByRole('dialog').count(), 0);
 		await intended.getByText('Live transfer · Code 741-928').waitFor();
-		assert.equal(
-			(await intended.getByLabel('Decrypted secret content').textContent())?.trim(),
-			message
-		);
+		assert.equal((await intended.getByLabel('Received content').textContent())?.trim(), message);
 		await intended.getByRole('button', { name: 'Done', exact: true }).click();
 		await intended.getByLabel('Message', { exact: true }).waitFor();
 
@@ -1153,10 +1150,7 @@ test('Received live secret wraps a 200-character unbroken value cleanly inside 3
 			}
 		},
 		async ({ receiver }) => {
-			assert.equal(
-				(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
-				unbroken
-			);
+			assert.equal((await receiver.getByLabel('Received content').textContent())?.trim(), unbroken);
 			assert.equal(
 				await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
 				true
@@ -1317,7 +1311,7 @@ test('Received live credential copies formatted text at 360px and receiving canc
 				]);
 				assert.equal(localWait.getCancels(), 1);
 				assert.equal(
-					(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+					(await receiver.getByLabel('Received content').textContent())?.trim(),
 					'Peer override secret'
 				);
 				// File drops behind PipeReceivedSecretView must be ignored (neither prevented nor attached).
@@ -1336,7 +1330,7 @@ test('Received live credential copies formatted text at 360px and receiving canc
 				});
 				assert.equal(dropBlocked, true);
 				assert.equal(
-					(await receiver.getByLabel('Decrypted secret content').textContent())?.trim(),
+					(await receiver.getByLabel('Received content').textContent())?.trim(),
 					'Peer override secret'
 				);
 				await receiver.getByRole('button', { name: 'Done', exact: true }).click();

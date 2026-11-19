@@ -12,7 +12,7 @@ export const credentials = {
 				username: { label: 'Username', placeholder: 'alice@example.com' },
 				password: { label: 'Password' },
 				url: { label: 'URL', placeholder: 'https://example.com' },
-				totp: { label: 'TOTP seed' }
+				totp: { label: 'One-time code key' }
 			}
 		},
 		card: {

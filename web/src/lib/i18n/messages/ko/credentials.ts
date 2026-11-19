@@ -5,13 +5,13 @@ export const credentials: typeof source = {
 	templates: {
 		login: {
 			name: '로그인',
-			description: '아이디, 비밀번호, URL, 일회용 코드 시드를 담아요.',
+			description: '아이디, 비밀번호, 주소, OTP 키를 담아요.',
 			titlePlaceholder: '운영 데이터베이스',
 			fields: {
 				username: { label: '아이디', placeholder: 'alice@example.com' },
 				password: { label: '비밀번호' },
-				url: { label: 'URL', placeholder: 'https://example.com' },
-				totp: { label: 'TOTP 시드' }
+				url: { label: '주소', placeholder: 'https://example.com' },
+				totp: { label: 'OTP 키' }
 			}
 		},
 		card: {
@@ -26,9 +26,9 @@ export const credentials: typeof source = {
 			}
 		},
 		identity: {
-			name: '신원 정보',
-			description: '민감한 식별 번호는 가려서 보여 주는 신원 정보예요.',
-			titlePlaceholder: '신원 정보 묶음',
+			name: '개인 정보',
+			description: '이름, 연락처, 식별 번호를 담아요. 식별 번호는 가려서 보여 줘요.',
+			titlePlaceholder: '내 개인 정보',
 			fields: {
 				full_name: { label: '이름', placeholder: '홍길동' },
 				email: { label: '이메일', placeholder: 'alice@example.com' },

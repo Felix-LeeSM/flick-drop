@@ -37,13 +37,13 @@ export const create = {
 		tooLarge: (size: string) => `Choose files up to ${size} total.`
 	},
 	passphrase: {
-		toggle: 'Protect with an additional passphrase',
+		toggle: 'Protect with a passphrase',
 		infoLabel: "Why the server can't see this secret",
 		whyTitle: "Why we can't read your secret",
 		whyLocked: 'It is locked on your device before sending.',
 		whyNeverSent: 'We never receive the passphrase.',
 		placeholder: 'Add a passphrase',
-		fieldLabel: 'Additional passphrase',
+		fieldLabel: 'Passphrase',
 		generate: 'Generate passphrase',
 		hide: 'Hide passphrase',
 		show: 'Show passphrase'

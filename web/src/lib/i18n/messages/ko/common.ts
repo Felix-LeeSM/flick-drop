@@ -34,7 +34,7 @@ export const common: typeof source = {
 	},
 	stage: {
 		creatingLink: '링크를 만드는 중',
-		openingSecret: '비밀을 여는 중',
+		openingSecret: '내용을 여는 중',
 		cancel: '취소',
 		progressSteps: '진행 단계'
 	},

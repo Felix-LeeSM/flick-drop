@@ -5,13 +5,13 @@ export const credentials: typeof source = {
 	templates: {
 		login: {
 			name: 'ログイン',
-			description: 'ユーザー名、パスワード、URL、ワンタイムコードのシードです。',
+			description: 'ユーザー名、パスワード、URL、ワンタイムコードの鍵を入れられます。',
 			titlePlaceholder: '本番データベース',
 			fields: {
 				username: { label: 'ユーザー名', placeholder: 'alice@example.com' },
 				password: { label: 'パスワード' },
 				url: { label: 'URL', placeholder: 'https://example.com' },
-				totp: { label: 'TOTPシード' }
+				totp: { label: 'ワンタイムコードの鍵' }
 			}
 		},
 		card: {
@@ -26,9 +26,9 @@ export const credentials: typeof source = {
 			}
 		},
 		identity: {
-			name: '本人情報',
-			description: '重要な識別番号を伏せて表示する本人情報です。',
-			titlePlaceholder: '本人情報一式',
+			name: '個人情報',
+			description: '氏名、連絡先、識別番号を入れられます。識別番号は伏せて表示します。',
+			titlePlaceholder: '自分の個人情報',
 			fields: {
 				full_name: { label: '氏名', placeholder: '山田 太郎' },
 				email: { label: 'メールアドレス', placeholder: 'alice@example.com' },

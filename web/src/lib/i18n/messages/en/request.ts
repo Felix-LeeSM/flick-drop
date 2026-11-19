@@ -33,7 +33,7 @@ export const request = {
 		headingReady: 'Send a secret',
 		intro: 'Only the requester can open what you send.',
 		resumed:
-			'The previous in-memory attempt was discarded when you left or reloaded. It may already have been accepted.',
+			'What you were sending was lost when you left or reloaded. It may already have arrived.',
 		acceptedBody: 'Only the requester can open it.',
 		expiredBody: 'Ask the requester for a new link.',
 		unavailableBody:
@@ -43,7 +43,7 @@ export const request = {
 		outcomeHint:
 			'Keep this tab open and check the submission before retrying. A retry resends the same encrypted content; leaving or reloading discards it.',
 		reservationRemaining: (minutes: number, seconds: number) =>
-			`Upload reservation: ${minutes}m ${seconds}s remaining.`,
+			`Time left to upload: ${minutes}m ${seconds}s.`,
 		checkSubmission: 'Check submission',
 		cancelUpload: 'Cancel upload',
 		retryCancellation: 'Retry cancellation',
@@ -70,14 +70,14 @@ export const request = {
 		},
 		errors: {
 			reservationExpired:
-				'The upload reservation expired. Check the attempt before choosing another file.',
+				'Time to upload ran out. Check whether it arrived before choosing another file.',
 			keyMismatch:
-				'The request key does not match this link. Ask the requester for a new submission link.',
+				'This link does not match the request. Ask the requester for a new submission link.',
 			loadFailed: 'Could not load the request. Try again.',
 			noteMismatch:
 				'The request note does not match this link. Ask the requester for the complete submission link.',
 			noteDecryptFailed:
-				'Could not decrypt the requester note. Ask the requester for the complete submission link.',
+				'Could not open the requester note. Ask the requester for the complete submission link.',
 			submitUnconfirmed: 'Submission was not confirmed.',
 			fillField: 'Fill in at least one field.',
 			sizeRange: (max: string) => `Choose content between 1 and ${max} bytes.`,
@@ -100,13 +100,13 @@ export const request = {
 		}
 	},
 	receive: {
-		pageTitle: 'Private retrieval - Flick',
+		pageTitle: 'Your request - Flick',
 		badge: 'private requester page',
 		headingExpired: 'Request expired',
 		headingUnavailable: 'Request unavailable',
 		headingOpened: 'Opened once',
 		headingOpenLost: 'Open outcome unknown',
-		headingDecryptFailed: 'Could not decrypt',
+		headingDecryptFailed: 'Could not open',
 		headingReady: 'Ready to retrieve',
 		headingConsumed: 'Consumed',
 		headingCancelled: 'Cancelled',
@@ -114,7 +114,7 @@ export const request = {
 		headingStatus: 'Request status',
 		statusRegion: 'Request status',
 		expiredBody: 'The request and anything shown here are no longer available.',
-		unavailableBody: 'The link is invalid or expired. Use the complete private retrieval link.',
+		unavailableBody: 'The link is invalid or expired. Use your complete receiving link.',
 		lastKnown: 'Last known status: ',
 		uploading: 'A file is uploading. It cannot be opened yet.',
 		waiting: 'Waiting for the first submission.',
@@ -129,8 +129,8 @@ export const request = {
 		openLost:
 			'The open response was lost or invalid. The server may already have consumed the content, and this page will not retry.',
 		decryptFailed:
-			'The content was released, but decryption failed. It cannot be opened again. Ask the sender to use a new request.',
-		decryptedSecret: 'Decrypted secret',
+			'The content arrived, but it could not be opened. It cannot be opened again. Ask the sender to use a new request.',
+		decryptedSecret: 'Received secret',
 		download: (filename: string) => `Download ${filename}`,
 		working: 'Working…',
 		open: 'Open once',
@@ -140,11 +140,11 @@ export const request = {
 		copySubmissionLink: 'Copy submission link',
 		showSubmissionQr: 'Show submission QR',
 		submissionGone: 'Use the submission link you saved; it cannot be shown here again.',
-		privateHeading: 'Keep your retrieval link private',
+		privateHeading: 'Keep your receiving link to yourself',
 		privateBody:
-			'This link holds your decryption key. Save it to come back here or on another device; without it, the submission cannot be opened. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.',
-		privateLink: 'Private retrieval link',
-		copyPrivateLink: 'Copy private retrieval link',
+			'Only this link opens what you receive. Save it to come back here or on another device. Anyone with it can open or cancel the request. Browser history, sync, clipboard managers, and screenshots may keep a copy.',
+		privateLink: 'Your receiving link',
+		copyPrivateLink: 'Copy your receiving link',
 		cancelRequest: 'Cancel request',
 		createAnother: 'Create another request',
 		confirmTitle: 'Cancel this request?',
@@ -152,9 +152,9 @@ export const request = {
 			'Nothing more can be submitted or opened. Already released copies cannot be recalled.',
 		errors: {
 			missingKey:
-				'Missing private key. Reopen the complete private retrieval link. Flick cannot recover a lost key or decrypt without it.',
+				'The end of this link is missing. Reopen your complete receiving link. If the link is lost, not even Flick can open what you receive.',
 			invalidKey:
-				'Invalid private key. Reopen the original complete private retrieval link. Nothing was opened; Flick cannot recover a missing or damaged key.',
+				'The end of this link is wrong. Reopen your complete receiving link. Nothing was opened.',
 			statusFailed: 'Could not verify request status. Try again.',
 			limitsFailed:
 				'Could not verify size limits. Refresh status before opening. Nothing has been opened.'
@@ -178,6 +178,6 @@ export const request = {
 		storageFull: 'Object storage is at capacity. Try again later.',
 		serverUnavailable: 'The server is temporarily unavailable. Try again later.',
 		reservationExpired:
-			'The upload reservation expired. Check the attempt or cancel it before choosing another file.'
+			'Time to upload ran out. Check whether it arrived or cancel before choosing another file.'
 	}
 };

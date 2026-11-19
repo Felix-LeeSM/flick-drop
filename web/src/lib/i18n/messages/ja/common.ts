@@ -4,7 +4,7 @@ export const common: typeof source = {
 	enterCode: 'Enter Code',
 	siteNav: 'サイト',
 	languageRow: '言語',
-	deliveryMethod: '送信方法',
+	deliveryMethod: '送り方',
 	tabLink: 'Link',
 	tabLive: 'Live Transfer',
 	theme: {
@@ -34,7 +34,7 @@ export const common: typeof source = {
 	},
 	stage: {
 		creatingLink: 'リンクを作成中',
-		openingSecret: 'シークレットを開いています',
+		openingSecret: '内容を開いています',
 		cancel: 'キャンセル',
 		progressSteps: '進行状況'
 	},

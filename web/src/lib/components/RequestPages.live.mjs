@@ -27,7 +27,7 @@ async function create(owner) {
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await owner.waitForURL('**/receive#receive=*');
 	const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
-	const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
+	const receive = await owner.getByLabel('Your receiving link', { exact: true }).inputValue();
 	return {
 		submit,
 		receive,
@@ -134,7 +134,7 @@ for (const kind of ['text', 'file']) {
 			assert.equal(await resumed.getByLabel('Submission link', { exact: true }).count(), 0);
 			await resumed.getByRole('button', { name: 'Open once', exact: true }).click();
 			if (kind === 'text') {
-				assert.equal(await resumed.getByLabel('Decrypted secret').inputValue(), plaintext);
+				assert.equal(await resumed.getByLabel('Received secret').inputValue(), plaintext);
 			} else {
 				const download = resumed.getByRole('link', {
 					name: 'Download synthetic-private-filename.txt',

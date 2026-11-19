@@ -47,10 +47,10 @@ export const manage = {
 		'Send the passphrase separately. The recipient needs both the link and the passphrase.',
 	anyoneWithLink: 'Anyone with this full link can open it once. Share only with your recipient.',
 	recipientLinkOnlyOriginal:
-		'The recipient link is available only in the original creation session. Use the copy you saved or create a new delivery.',
+		'The recipient link is shown only on the page where you created it. Use the copy you saved or create a new delivery.',
 	keepPrivate: 'Keep this management link private',
 	keepPrivateDetail:
-		'Anyone with this link can check or cancel this delivery until it is opened or expires. Save it now; a lost link cannot be recovered. It cannot decrypt the content or recover the recipient link.',
+		'Anyone with this link can check or cancel this delivery until it is opened or expires. Save it now; a lost link cannot be recovered. It cannot open the content or recover the recipient link.',
 	privateLinkLabel: 'Private management link',
 	copyManagementLink: 'Copy management link',
 	cancelDelivery: 'Cancel delivery',
@@ -60,6 +60,5 @@ export const manage = {
 		'The recipient link will stop working. This cannot recall content already delivered.',
 	keepIt: 'Keep it',
 	// formatRemaining in web/src/lib/lifetime.ts writes "6d 23h"; each unit letter maps here.
-	timeUnits: { d: 'd', h: 'h', m: 'm', s: 's' },
 	remaining: (time: string) => `${time} remaining`
 };
