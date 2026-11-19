@@ -1030,7 +1030,7 @@ test('the logo on the home page clears the draft and returns to the first tabs',
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Live transfer' })
 			.click();
-		await page.getByRole('link', { name: 'Flick' }).click();
+		await page.getByRole('link', { name: 'Flick', exact: true }).click();
 		const linkTab = page
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Create link' });

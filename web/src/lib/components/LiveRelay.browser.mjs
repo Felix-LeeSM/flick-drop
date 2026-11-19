@@ -1364,7 +1364,7 @@ test('Sender: the logo on the home page cancels a waiting live transfer on the s
 		await sender.getByRole('button', { name: 'Start live transfer' }).click();
 		await sender.getByLabel('Transfer code 741-928').waitFor();
 
-		await sender.getByRole('link', { name: 'Flick' }).click();
+		await sender.getByRole('link', { name: 'Flick', exact: true }).click();
 
 		await sender.getByLabel('Message', { exact: true }).waitFor();
 		assert.equal(await sender.getByLabel('Transfer code 741-928').count(), 0);

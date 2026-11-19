@@ -239,10 +239,11 @@ for (const width of [360, 1280]) {
 		const long = (tag) => `${tag}-${'x'.repeat(200)}`;
 		const credential = `FLCR1:${JSON.stringify({
 			v: 1,
-			type: 'login',
+			type: 'custom',
 			title: long('title'),
 			notes: long('notes'),
-			fields: [{ id: 'username', label: long('label'), value: long('value'), secret: false }]
+			// 템플릿 필드는 보는 사람 언어의 라벨로 바뀌므로, 저장된 라벨이 그대로 보이는 사용자 지정 필드로 확인한다.
+			fields: [{ id: 'custom-1', label: long('label'), value: long('value'), secret: false }]
 		})}`;
 		const identity = await generateHybridIdentity();
 		const encrypter = new Encrypter();
