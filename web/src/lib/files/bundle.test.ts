@@ -6,12 +6,10 @@ function file(name: string, body: string, type = 'text/plain'): File {
 	return new File([body], name, { type });
 }
 
-// A loose file: its path is its own name.
 function loose(name: string, body: string): PickedFile {
 	return { file: file(name, body), path: name };
 }
 
-// A file inside a picked folder: the path keeps the folder structure.
 function inFolder(path: string, body: string): PickedFile {
 	return { file: file(path.split('/').at(-1) ?? path, body), path };
 }

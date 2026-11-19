@@ -11,9 +11,7 @@ type Props = {
 	class?: string;
 	label?: string;
 	copyLabel?: string;
-	// The link the page exists to hand over gets a labeled primary copy button.
 	prominent?: boolean;
-	// Runs only after the clipboard write succeeds.
 	oncopied?: () => void;
 };
 
@@ -43,9 +41,7 @@ async function copy(): Promise<void> {
 			copyState = 'idle';
 		}, 2400);
 	} catch {
-		// Clipboard may be unavailable (insecure context, denied permission). Say so
-		// instead of failing silently; the value stays selectable in the input. The
-		// failure text is not auto-cleared because it carries an instruction.
+		// Clipboard may be unavailable; the failure text is not auto-cleared because it carries an instruction.
 		copyState = 'failed';
 	}
 }

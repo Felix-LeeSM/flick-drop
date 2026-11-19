@@ -2,22 +2,13 @@ import type { PickedFile } from './bundle';
 
 export type DroppedBatch = {
 	files: PickedFile[];
-	// Dropped folders that held no file at any depth; they add nothing.
 	emptyFolders: string[];
-	// Entries the browser could not read (broken symlink, permission denied,
-	// removed mid-walk); the rest of the drop still goes through.
 	skipped: number;
 };
 
 export type WalkedDirectory = { files: PickedFile[]; skipped: number };
 
-// Reads a drop into picked files, walking any dropped folder so each of its
-// files keeps a folder-relative path. dataTransfer.files alone lists a folder
-// as one opaque entry without its contents.
-//
-// The browser clears the DataTransferItemList once the drop event returns, so
-// every item is captured before the first await — call this synchronously
-// from the drop handler and await the result afterwards.
+// The browser clears DataTransferItemList once the drop event returns: call synchronously from the handler.
 export function readDrop(items: DataTransferItemList): Promise<DroppedBatch> {
 	const looseFiles: File[] = [];
 	const folders: FileSystemDirectoryEntry[] = [];
@@ -56,10 +47,6 @@ async function collect(
 	return { files, emptyFolders, skipped };
 }
 
-// Walks a directory depth-first. Empty subdirectories contribute nothing: a zip
-// only carries files. An unreadable file counts as one skipped item; a directory
-// whose listing fails counts as one skipped item and keeps the entries read
-// before the failure.
 export async function readDirectory(
 	directory: FileSystemDirectoryEntry,
 	parentPath: string
@@ -68,8 +55,7 @@ export async function readDirectory(
 	const reader = directory.createReader();
 	const files: PickedFile[] = [];
 	let skipped = 0;
-	// readEntries returns at most one batch per call (Chrome caps it at 100) and
-	// signals the end with an empty batch, so keep reading until then.
+	// readEntries returns one batch per call (Chrome caps at 100) until an empty batch.
 	for (;;) {
 		const batch = await readBatch(reader);
 		if (batch === null) {
@@ -101,8 +87,7 @@ async function readEntry(entry: FileSystemEntry, parentPath: string): Promise<Wa
 		: { files: [{ file, path: `${parentPath}/${entry.name}` }], skipped: 0 };
 }
 
-// Both readers resolve null on the browser's error callback, so one unreadable
-// entry is counted and skipped instead of rejecting the whole walk.
+// Resolve null on error so one unreadable entry is skipped, not fatal to the walk.
 function readBatch(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[] | null> {
 	return new Promise((resolve) => {
 		reader.readEntries(resolve, () => resolve(null));

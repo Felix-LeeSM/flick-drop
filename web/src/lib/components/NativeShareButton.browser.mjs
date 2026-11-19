@@ -78,15 +78,14 @@ for (const [model, support, outcome] of [
 			const hydrated = page.waitForResponse('**/api/config');
 			await page.goto(baseUrl);
 			await hydrated;
-			// The announcer mounts when hydration finishes; the config response can
-			// arrive from the SSR prefetch first, so this is the reliable gate.
+			// The announcer mounts on hydration; config may arrive earlier via SSR prefetch.
 			await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			await page.getByLabel('Message', { exact: true }).fill('private synthetic content');
 			if (model === 'a') {
 				await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
 				await page.getByLabel('Passphrase', { exact: true }).fill('private synthetic passphrase');
 			}
-			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
+			// The delivery tab shares the CTA name, so pick the submit button by role.
 			await page.locator('form button[type="submit"]').click();
 			await page.getByRole('heading', { name: 'Link created' }).waitFor();
 			const recipientUrl = await page.getByRole('textbox', { name: 'Share URL' }).inputValue();
@@ -98,7 +97,6 @@ for (const [model, support, outcome] of [
 			} else {
 				assert.match(new URL(recipientUrl).hash, /^#key=AGE-SECRET-KEY-PQ-1[02-9AC-HJ-NP-Z]+$/);
 			}
-			// A future management route must share the provided link, never its own URL.
 			await page.evaluate(() => history.replaceState(null, '', '#manage=private-management-token'));
 			const share = page.getByRole('button', { name: 'Share link', exact: true });
 			if (outcome === 'unused') {

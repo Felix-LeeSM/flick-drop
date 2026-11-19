@@ -1,13 +1,10 @@
 // biome-ignore-all lint/suspicious/noMisplacedAssertion: 브라우저 테스트가 await하는 검사 헬퍼다.
 import assert from 'node:assert/strict';
 
-// 열린 대화상자가 화면 안에 들어오고, 그 안 내용이 대화상자 폭을 넘지 않는지 검사한다.
-// document.documentElement.scrollWidth는 position: fixed 대화상자의 넘침을 보지 못하므로 따로 잰다.
-// 내용이 화면보다 길면 대화상자는 화면 밖으로 잘리지 않고 안에서 세로로 스크롤해야 한다.
+// scrollWidth는 position: fixed 대화상자의 넘침을 보지 못하므로 따로 잰다.
 export async function assertDialogFits(page, message) {
 	const fit = await page.locator('[role="dialog"]').evaluate(async (dialog) => {
-		// 여는 확대 애니메이션과 글자 크기 변경에 따른 버튼 전환(transition-all)이 끝난 뒤 잰다.
-		// 무한 반복 애니메이션(대기 아이콘 회전)은 끝나지 않으므로 기다리지 않는다.
+		// 열기·transition-all 애니메이션 종료 후 잰다; 무한 반복 애니메이션은 기다리지 않는다.
 		await Promise.allSettled(
 			dialog
 				.getAnimations({ subtree: true })

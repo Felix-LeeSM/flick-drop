@@ -21,8 +21,7 @@ after(async () => {
 
 async function create(owner) {
 	await owner.goto(`${baseUrl}/request`);
-	// The announcer mounts after hydration; clicking before it lands submits the
-	// form as a plain GET instead of running the request-creation handler.
+	// Wait for hydration: an earlier click submits the form as a plain GET.
 	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	await owner.waitForURL('**/receive#receive=*');
@@ -175,7 +174,6 @@ test('real API: cancellation rejects a later submission and never fabricates con
 		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
 		await sender.getByLabel('Message', { exact: true }).fill('Synthetic cancelled request');
 		await owner.getByRole('button', { name: 'Cancel request', exact: true }).click();
-		// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
 		await owner
 			.getByRole('dialog')
 			.getByRole('button', { name: 'Cancel request', exact: true })

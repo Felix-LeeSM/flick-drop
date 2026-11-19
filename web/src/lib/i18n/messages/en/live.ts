@@ -1,6 +1,4 @@
 // biome-ignore-all lint/style/useNamingConvention: relay error keys are the API's snake_case error codes.
-// Live transfer (send with code): the receiver's dialog, the sender's waiting
-// room, the received view, and relay status and error messages.
 export const live = {
 	receive: {
 		dialogTitle: 'Receive secret with code',
@@ -117,7 +115,6 @@ export const live = {
 		save: (name: string) => `Save ${name}`,
 		saved: (name: string) => `Saved ${name}`
 	},
-	// Sender-side relay status (web/src/lib/state/pipe-relay.svelte.ts).
 	relay: {
 		initializing: 'Preparing the transfer...',
 		waitingForCode: 'Waiting for receiver to enter code...',
@@ -130,8 +127,7 @@ export const live = {
 		noLongerWaiting: 'That device is no longer waiting.',
 		denyFailed: 'Could not deny that device. Try again.'
 	},
-	// Relay API errors (web/src/lib/crypto/pipe.ts). `reasons` is keyed by the
-	// API's error code; the rest are fallbacks when the code is unknown.
+	// `reasons` is keyed by API error code; the rest are fallbacks.
 	errors: {
 		reasons: {
 			not_found: 'Invalid or expired 6-digit code.',

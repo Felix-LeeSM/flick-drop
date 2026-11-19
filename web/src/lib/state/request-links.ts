@@ -21,9 +21,7 @@ export function submissionFromFragment(
 export function retrievalFromFragment(
 	fragment: string
 ): { token: string; identity: string } | null {
-	// Bound input before parsing. A key of the right alphabet is returned as
-	// is, so the page can tell a damaged key from a missing one; identity
-	// import (importRequestIdentity) checks it against the request.
+	// Bound input before parsing; a damaged key is returned so the page can tell it from a missing one.
 	if (fragment.length > 256) {
 		return null;
 	}

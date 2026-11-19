@@ -432,7 +432,6 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 			return next;
 		},
 		// The body is the raw age file; age authenticates it while decrypting.
-		// These operations have NO request body.
 		async open(id: string, token: string, signal?: AbortSignal): Promise<OpenedRequestBody> {
 			const response = await send(path(id, '/open'), 'POST', token, undefined, signal);
 			const kind = response.headers.get('Flick-Kind');
@@ -461,10 +460,7 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 	};
 }
 
-// serverErrorCode lifts the machine-readable error code out of an error body.
-// Server-provided prose is deliberately dropped (same rule as the secrets
-// client): the body is not rendered, so a hostile response cannot inject UI
-// text. A body without a code falls back to the generic code.
+// Server prose is dropped so a hostile response cannot inject UI text.
 async function serverErrorCode(response: Response): Promise<string> {
 	try {
 		const body = (await response.json()) as { error?: { code?: string } };

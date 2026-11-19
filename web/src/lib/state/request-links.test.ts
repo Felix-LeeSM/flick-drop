@@ -12,7 +12,6 @@ import {
 
 const token = 'A'.repeat(43);
 const origin = 'https://flick.example.test';
-// The fingerprint is a fixed synthetic value; only its shape matters here.
 const vectors = { fingerprint: `${'F'.repeat(42)}A`, identity: '' };
 beforeAll(async () => {
 	vectors.identity = (await generateRequestKeys()).identity;

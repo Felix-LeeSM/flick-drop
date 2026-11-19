@@ -1,10 +1,7 @@
-// The display language. URLs never carry it: a shared link opens in the
-// recipient's own language. A manual choice is remembered in this browser;
-// otherwise the browser's language list decides, and English is the fallback.
+// URLs never carry the language: a shared link opens in the recipient's own.
 export const LOCALES = ['en', 'ko', 'ja'] as const;
 export type Locale = (typeof LOCALES)[number];
 
-// Each language names itself, so a reader finds theirs whatever is showing.
 export const LOCALE_NAMES: Record<Locale, string> = { en: 'English', ko: '한국어', ja: '日本語' };
 
 export const LOCALE_STORAGE_KEY = 'flick-locale';
@@ -19,8 +16,6 @@ export function isLocale(value: unknown): value is Locale {
 	return typeof value === 'string' && (LOCALES as readonly string[]).includes(value);
 }
 
-// A stored manual choice wins; then the first browser language whose primary
-// subtag Flick has (ko-KR -> ko); then English.
 export function detectLocale(stored: string | null, languages: readonly string[]): Locale {
 	if (isLocale(stored)) {
 		return stored;
@@ -55,7 +50,6 @@ export function initializeLocale(): void {
 	apply(detectLocale(stored, navigator.languages ?? [navigator.language]));
 }
 
-// A manual choice from the language row, remembered for later visits.
 export function chooseLocale(next: Locale): void {
 	apply(next);
 	try {

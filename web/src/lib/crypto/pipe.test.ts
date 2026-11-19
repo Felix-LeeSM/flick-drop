@@ -56,7 +56,6 @@ describe('end-to-end pipe crypto', () => {
 		});
 
 	it('a stream encrypted to the receiver recipient opens only with that receiver identity', async () => {
-		// Given: 수신자가 브라우저에서 만든 키와, 같은 코드를 친 다른 기기의 키
 		const receiver = await createPipeReceiverKey();
 		const other = await createPipeReceiverKey();
 		expect(receiver.recipient).toMatch(/^age1pq1[02-9ac-hj-np-z]+$/);
@@ -67,12 +66,10 @@ describe('end-to-end pipe crypto', () => {
 			payload[i] = i % 251;
 		}
 
-		// When: 송신자가 /wait로 받은 수신자 recipient에 암호화한다
 		const ciphertext = await streamToBytes(
 			await encryptToRecipient(receiver.recipient, plaintextStream(payload))
 		);
 
-		// Then: 그 수신자의 identity로만 열리고, 다른 identity는 실패한다
 		expect(
 			await streamToBytes(await decryptWith(receiver.identity, plaintextStream(ciphertext)))
 		).toEqual(payload);
@@ -190,7 +187,6 @@ describe('client API hooks', () => {
 			await expect(rejection).rejects.toMatchObject({ reason: code, message });
 		}
 
-		// A proxy error page without a JSON body still maps by status.
 		await expect(
 			joinPipe('http://localhost:8080', '123456', 'age1pq1recipient', () =>
 				Promise.resolve(new Response('<html>', { status: 404 }))
@@ -199,7 +195,6 @@ describe('client API hooks', () => {
 	});
 
 	it('waitForPipeSelection re-polls /status until selected and rejects with the end reason', async () => {
-		// Given: 서버가 두 번은 waiting, 세 번째에 selected를 준다
 		const answers = ['waiting', 'waiting', 'selected'];
 		const seen: { url: string; headers: Record<string, string> }[] = [];
 		const mockFetch: typeof fetch = (url, init) => {
@@ -209,14 +204,12 @@ describe('client API hooks', () => {
 
 		await waitForPipeSelection('http://localhost:8080/', '123-456', 'conn-1', mockFetch);
 
-		// Then: 고를 때까지 같은 연결로 /status를 세 번 불렀다
 		expect(seen).toHaveLength(3);
 		expect(seen[0]).toEqual({
 			url: 'http://localhost:8080/api/pipe/status',
 			headers: { 'X-Flick-Pipe-Code': '123456', 'X-Flick-Pipe-Connection': 'conn-1' }
 		});
 
-		// Then: 거절·미선택은 이유 코드와 함께 끝난다
 		for (const [status, code] of [
 			[403, 'declined'],
 			[410, 'not_selected']
@@ -238,19 +231,16 @@ describe('client API hooks', () => {
 		const status = (value: string) => () => jsonResponse({ status: value });
 		const proxyError = (code: number) => () => new Response('<html>', { status: code });
 
-		// Given: 프록시 524 한 번 뒤 정상 응답 → 실패 없이 선택까지 간다
 		const flaky = sequence(proxyError(524), status('waiting'), proxyError(502), status('selected'));
 		await waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', flaky.fetcher);
 		expect(flaky.calls()).toBe(4);
 
-		// Given: 5xx가 연달아 두 번 → 두 번째에서 실패한다
 		const down = sequence(proxyError(502), proxyError(503));
 		await expect(
 			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', down.fetcher)
 		).rejects.toMatchObject({ status: 503 });
 		expect(down.calls()).toBe(2);
 
-		// Given: 롤링 업데이트로 레플리카가 내려가 소켓이 끊긴다(TypeError) → 한 번 다시 연다
 		let dropped = 0;
 		const socketDrop: typeof fetch = () => {
 			dropped++;
@@ -261,7 +251,6 @@ describe('client API hooks', () => {
 		await waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', socketDrop);
 		expect(dropped).toBe(2);
 
-		// Given: 사용자가 취소한 요청(AbortError)은 다시 열지 않는다
 		let aborted = 0;
 		const abort: typeof fetch = () => {
 			aborted++;
@@ -272,7 +261,6 @@ describe('client API hooks', () => {
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(aborted).toBe(1);
 
-		// Given: 참가는 됐는데 /status가 404 → 거절이 아니라 연결이 끊긴 것으로 안내한다
 		await expect(
 			waitForPipeSelection('http://localhost:8080', '123456', 'conn-1', () =>
 				Promise.resolve(errorResponse(404, 'not_found'))
@@ -326,7 +314,6 @@ describe('client API hooks', () => {
 			]
 		});
 
-		// Given: 수신자를 선택하면 ready 응답에 선택된 수신자의 recipient가 실린다
 		const ready = await waitForPipeUpdate('http://localhost:8080', '123456', 'tok', 4, () =>
 			Promise.resolve(
 				jsonResponse({ status: 'ready', version: 5, recipient: 'age1pq1first', connections: [] })
@@ -349,7 +336,6 @@ describe('client API hooks', () => {
 			return { fetcher, calls: () => calls };
 		};
 
-		// Given: 내려가는 레플리카의 502, 끊긴 소켓 → 각각 한 번 다시 열어 대기 목록을 받는다
 		for (const failure of [
 			() => Promise.resolve(new Response('<html>', { status: 502 })),
 			() => Promise.reject(new TypeError('Failed to fetch'))
@@ -361,7 +347,6 @@ describe('client API hooks', () => {
 			expect(flaky.calls()).toBe(2);
 		}
 
-		// Given: 연달아 두 번 실패 → 두 번째 실패가 그대로 올라간다
 		const down = sequence(
 			() => Promise.resolve(new Response('<html>', { status: 502 })),
 			() => Promise.resolve(errorResponse(503, 'service_unavailable'))
@@ -415,8 +400,7 @@ describe('client API hooks', () => {
 			);
 		};
 
-		// A request body stream can be consumed only once, so each call gets a
-		// fresh one.
+		// A request body stream can be consumed only once, so each call gets a fresh one.
 		const makeStream = () =>
 			new ReadableStream<Uint8Array>({
 				start(c) {
@@ -440,8 +424,7 @@ describe('client API hooks', () => {
 		expect(capturedHeaders['X-Flick-Pipe-Sender']).toBe('tok');
 		expect(capturedHeaders['Flick-Kind']).toBe('file');
 		expect(capturedHeaders['Flick-Encrypted-Filename']).toBe('enc_filename_token');
-		// Plaintext HTTP/1.1 targets get a buffered Blob body: Chromium refuses
-		// streaming uploads without HTTP/2.
+		// Plaintext HTTP/1.1 targets get a buffered Blob: Chromium streams uploads only over HTTP/2.
 		expect(capturedDuplex).toBe('');
 		expect(capturedBody).toBeInstanceOf(Blob);
 

@@ -115,12 +115,9 @@ function switchMode(next: typeof mode): void {
 		clearInput();
 	}
 }
-// Shared with the type tablist: each tab's aria-controls and its panel's
-// role="tabpanel" aria-labelledby both derive from this id.
 function typePanelId(type: typeof mode): string {
 	return `request-type-${type}`;
 }
-// Credential templates travel as FLCR1 text, exactly like credential secrets on the create page.
 function textContent(): string {
 	return mode === 'text' ? message : serializeCredential(credential);
 }

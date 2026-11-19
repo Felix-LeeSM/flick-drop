@@ -1,6 +1,4 @@
-// Request links on age: docs/architecture/request-links.md. No I/O or key
-// persistence. The requester's identity decrypts; submitters hold only its
-// recipient. Everything is a standard age file (contracts/age-format-v1.md).
+// Request links (docs/architecture/request-links.md): submitters hold only the recipient; no I/O or key persistence.
 import { decryptWith, encryptToRecipient, generateSecretIdentity, recipientOf } from './age';
 import { base64ToBytes, bytesToBase64 } from './encoding';
 import { decodeKeyFragment } from './fragment';
@@ -13,8 +11,7 @@ const RECIPIENT_MAX_CHARS = 2400;
 const FILENAME_MAX_BYTES = 4096;
 // The plaintext filename, in UTF-8 bytes, on both sides.
 const NAME_MAX_BYTES = 1024;
-// The requester's optional memo plaintext limit in UTF-8 bytes (fits inside
-// the server's 4,096-byte age encrypted_note cap alongside the PQ header).
+// Fits the server's 4,096-byte encrypted_note cap alongside the PQ header.
 export const REQUEST_NOTE_MAX_BYTES = 1024;
 const ENCRYPTED_NOTE_MAX_BYTES = 4096;
 const encoder = new TextEncoder();
@@ -25,11 +22,9 @@ const decoder = new TextDecoder('utf-8', {
 });
 
 export type RequestKind = 'text' | 'file';
-// Plaintext byte limits, as /api/config advertises them.
 export type RequestLimits = { maxTextBytes: number; maxFileBytes: number };
 export type RequestEnvelope = { version: 2; encrypted_filename?: string };
-// An encrypted submission. size_bytes is the exact age file length the API
-// checks; plaintextBytes is what the limits are expressed in.
+// size_bytes is the exact age file length the API checks.
 export type SealedRequest = {
 	kind: RequestKind;
 	size_bytes: number;
@@ -89,8 +84,7 @@ export async function importRequestPublicKey(
 	return value;
 }
 
-// The requester checks that the link's identity belongs to this request before
-// a consuming open: its recipient must have the stored fingerprint.
+// Before a consuming open, the link's identity must match the stored recipient fingerprint.
 export async function importRequestIdentity(
 	value: unknown,
 	expectedFingerprint: unknown
@@ -125,8 +119,7 @@ function assertLimit(size: number, kind: RequestKind, limits: RequestLimits): vo
 	}
 }
 
-// Fails the decrypted stream, and so cancels the response body, as soon as the
-// plaintext passes the limit instead of after buffering all of it.
+// Fails the stream (cancelling the body) as soon as plaintext passes the limit.
 function capped(
 	stream: ReadableStream<Uint8Array>,
 	kind: RequestKind,
@@ -156,8 +149,6 @@ function capped(
 	);
 }
 
-// Encrypts to the request's recipient. A file is encrypted as it is read,
-// 64 KiB at a time, into a Blob the browser may keep on disk.
 export async function encryptRequestPayload(
 	recipient: string,
 	content: RequestContent,
@@ -205,9 +196,8 @@ export async function encryptRequestPayload(
 	};
 }
 
-// Resolves only after the final chunk has been authenticated, so a truncated
-// or altered body rejects instead of yielding partial content. A file Blob is
-// always application/octet-stream, so it cannot render in the Flick origin.
+// Resolves only after the final chunk authenticates; a file Blob is always
+// application/octet-stream so it cannot render in the Flick origin.
 export async function decryptRequestPayload(
 	identity: string,
 	opened: OpenedRequestBody,
@@ -249,7 +239,6 @@ export async function decryptRequestPayload(
 	}
 }
 
-// Decodes the Flick-Encrypted-Filename header value.
 export function encryptedFilenameFromHeader(value: string): Uint8Array {
 	try {
 		const bytes = base64ToBytes(value);
@@ -266,9 +255,8 @@ export function utf8ByteLength(text: string): number {
 	return encoder.encode(text).length;
 }
 
-// Seals an optional requester note to its own single-purpose hybrid age
-// keypair; the encrypted age file lives on the request row until open/revoke/
-// expiry while `memoKey` stays strictly in the submission URL fragment (#mk=).
+// Single-purpose keypair: the age file stays on the request row; `memoKey` stays only in the
+// submission URL fragment (#mk=).
 export async function sealRequestNote(
 	note: string
 ): Promise<{ encryptedNote: string; memoKey: string }> {

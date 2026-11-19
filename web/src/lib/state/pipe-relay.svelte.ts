@@ -16,9 +16,6 @@ import { type Messages, t } from '#lib/i18n/index.js';
 
 type RelayStatus = keyof Messages['live']['relay'];
 
-// The plaintext payload the page hands over when the transfer actually runs.
-// `kind` and `filename` ride the send headers; encryption happens here, on
-// the fly.
 export type PipePayload = {
 	kind: 'text' | 'file';
 	stream: ReadableStream<Uint8Array>;
@@ -26,28 +23,21 @@ export type PipePayload = {
 };
 
 export type PipeRelayOptions = {
-	// Read at send time, not at start time, so the page answers from its live
-	// form state. A code transfer takes no passphrase: the stream is encrypted to
-	// the chosen receiver's age recipient.
+	// Read at send time so the page answers from its live form state.
 	getPayload: () => PipePayload;
 };
 
-/** One receiver waiting for the sender's pick, as the waiting panel lists it. */
 export type PendingReceiver = {
 	connectionId: string;
 	index: number;
 	verifyCode: string;
 	device: string;
-	/** The age recipient this device generated; the stream is encrypted to it if picked. */
 	recipient: string;
-	/** Local clock time the connection joined, for the "12s ago" label. */
 	joinedAt: number;
 };
 
-// Keeps each known receiver's joinedAt so its relative time does not jitter
-// between polls; new receivers are placed from the server's connected_seconds.
-// Rows the sender already settled locally stay out even when a poll that was
-// in flight during the decision still lists them.
+// Keeps known joinedAt so relative times do not jitter; locally settled rows stay out
+// even when an in-flight poll still lists them.
 function mergePending(
 	previous: PendingReceiver[],
 	connections: PipePendingConnection[],
@@ -67,16 +57,11 @@ function mergePending(
 		}));
 }
 
-/**
- * One sender-side live pipe relay session: rendezvous, the receiver waiting
- * room, and the encrypted stream. All state lives in browser memory only —
- * cancel or abort wipes it.
- */
+/** All state lives in browser memory only; cancel or abort wipes it. */
 export function createPipeRelay(options: PipeRelayOptions) {
 	let activeCode = $state<string | null>(null);
 	let pending = $state<PendingReceiver[]>([]);
-	// A relay status is read from the catalog on render so it follows a language
-	// switch; an error message is fixed in the language it was created in.
+	// Status reads the catalog on render (follows a language switch); errors stay in their creation language.
 	let status = $state<() => string>(() => t().live.relay.waitingForCode);
 	let progressPercent = $state(0);
 	let completed = $state(false);
@@ -84,13 +69,10 @@ export function createPipeRelay(options: PipeRelayOptions) {
 	let expiresInSeconds = $state(180);
 	// The sender token never renders; it stays out of reactive state.
 	let senderToken = '';
-	// True once the sender committed to one receiver; the poll loop ends.
 	let sending = false;
-	// True while a Send click waits for /select; a second click is ignored and
-	// the one poll loop keeps running, so a failed select needs no new loop.
+	// Set while /select is pending: a second click is ignored and the one poll loop keeps running.
 	let selecting = false;
-	// Rows the sender denied or picked in this session. A /wait response that
-	// was already in flight when the sender decided must not bring them back.
+	// Denied or picked rows; a /wait already in flight must not bring them back.
 	let settled = new Set<string>();
 	let abortController: AbortController | null = null;
 
@@ -112,8 +94,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		failed = true;
 	}
 
-	// Encrypts to the receiver's own age recipient, so only that browser's
-	// in-memory identity can open the stream; the API relays ciphertext only.
+	// Only that browser's in-memory identity can open the stream; the API relays ciphertext only.
 	async function streamPayload(
 		code: string,
 		recipient: string,
@@ -165,9 +146,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		pending = mergePending(pending, update.connections, settled, Date.now());
 	}
 
-	// Long-polls the session to keep the waiting list fresh until the sender
-	// commits to a receiver. `start` runs exactly one loop per session; nothing
-	// else starts one.
+	// Exactly one poll loop per session; only `start` starts it.
 	async function poll(code: string, signal: AbortSignal): Promise<void> {
 		let since = 0;
 		try {
@@ -220,7 +199,6 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		}
 	}
 
-	/** Sends to one waiting receiver; every other waiting receiver is turned away. */
 	async function sendTo(connectionId: string): Promise<void> {
 		const code = activeCode;
 		const signal = abortController?.signal;
@@ -240,8 +218,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 			if (signal.aborted) {
 				return;
 			}
-			// The device left or was settled meanwhile: keep the session and the
-			// list. The running poll loop shows the next server view.
+			// The device left or was settled meanwhile; the running poll loop shows the next view.
 			selecting = false;
 			setStatusFrom(err, 'noLongerWaiting');
 			return;
@@ -261,7 +238,6 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		setStatus('denyFailed');
 	}
 
-	/** Turns one waiting receiver away; its slot reopens and the code stays live. */
 	async function deny(connectionId: string): Promise<void> {
 		const code = activeCode;
 		if (code === null) {
@@ -291,8 +267,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		const token = senderToken;
 		abortController?.abort();
 		abortController = null;
-		// Burn the session on the server so waiting receivers learn at once. A
-		// stream in flight is stopped by the abort above, not by this call.
+		// Burn on the server so receivers learn at once; an in-flight stream is stopped by the abort above.
 		if (code !== null && token !== '' && !completed && progressPercent === 0) {
 			void cancelPipe(DEFAULT_API_BASE_URL, code, token, fetch).catch(() => undefined);
 		}
@@ -308,8 +283,7 @@ export function createPipeRelay(options: PipeRelayOptions) {
 		failed = false;
 	}
 
-	// Leaving the page (the logo, another route) burns a waiting session too, so
-	// receivers learn at once instead of waiting out the code's expiry.
+	// Leaving the page burns a waiting session too, so receivers need not wait out the code's expiry.
 	onDestroy(cancel);
 
 	return {

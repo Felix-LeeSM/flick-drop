@@ -1,4 +1,3 @@
-// Seals and opens Flick secrets with the age format (contracts/age-format-v1.md).
 // The API client moves the bytes; this module never talks to the network.
 
 import { decryptWith, encryptTo, unwrapIdentity, wrapIdentity } from './age';
@@ -16,8 +15,7 @@ export function sealText(identity: string, text: string): Promise<Uint8Array> {
 	return encryptTo(identity, text);
 }
 
-// Encrypts the file as it is read, 64 KiB at a time, into a Blob the browser
-// may keep on disk. The plaintext file is never loaded whole.
+// Encrypts while reading; the plaintext file is never loaded whole.
 export async function sealFile(identity: string, file: File): Promise<SealedFile> {
 	const encrypted = await encryptTo(identity, file.stream());
 	return {
@@ -28,8 +26,7 @@ export async function sealFile(identity: string, file: File): Promise<SealedFile
 	};
 }
 
-// Resolves only after the final chunk has been authenticated, so a truncated or
-// altered body rejects instead of producing partial text.
+// Resolves only after the final chunk authenticates, so a truncated body rejects.
 export async function openText(
 	identity: string,
 	body: ReadableStream<Uint8Array>
@@ -38,10 +35,8 @@ export async function openText(
 	return new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 }
 
-// Same guarantee as openText: the Blob exists only once the whole file has
-// decrypted, so nothing partial can be downloaded. The Blob is always
-// application/octet-stream: the sender picks the content type, and a
-// text/html blob: URL opened in a tab would run in the Flick origin.
+// Nothing partial is downloadable. Always application/octet-stream: a text/html blob: URL
+// would run in the Flick origin.
 export async function openFile(
 	identity: string,
 	body: ReadableStream<Uint8Array>,

@@ -6,20 +6,16 @@ import { t } from '#lib/i18n/index.js';
 import { STAGE_VISUAL, type StagePhase } from '#lib/stage-timing.js';
 import { cn } from '#lib/utils.js';
 
-// Stage card shown in place of the form while a secret is created ('lock') or
-// opened ('unlock'). STAGE_VISUAL picks the progress ring or the plain spinner.
 type Props = {
 	mode: 'lock' | 'unlock';
 	phase: StagePhase;
-	/** Accessible name of the card; defaults to the create/open wording for the mode. */
 	label?: string;
-	/** Micro caption above the visual, e.g. "preparing your link". */
 	caption: string;
-	/** The status sentence under the visual; on 'failing' it carries the error. */
+	/** On 'failing' it carries the error. */
 	status: string;
-	/** 0..1 measured progress (file upload), or null when the step has none. */
+	/** 0..1, or null when the step has no measured progress. */
 	progress?: number | null;
-	/** Cancel is offered only while the encrypted PUT can still be aborted. */
+	/** Only while the encrypted PUT can still be aborted. */
 	cancellable?: boolean;
 	onCancel?: () => void;
 };
@@ -51,8 +47,7 @@ let {
 		{:else}
 			<LoaderCircleIcon class="size-8 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
 		{/if}
-		<!-- A failure is announced as an alert by the form it returns to, so the failing
-		     text is shown here without a live region to avoid announcing it twice. -->
+		<!-- No live region on failure: the form announces it as an alert. -->
 		<p
 			role={phase === 'failing' ? undefined : 'status'}
 			aria-live={phase === 'failing' ? undefined : 'polite'}

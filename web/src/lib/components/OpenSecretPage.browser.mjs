@@ -6,10 +6,7 @@ import { Encrypter, generateHybridIdentity, identityToRecipient } from 'age-encr
 import { chromium } from 'playwright';
 import { routeCassette } from '../../../../scripts/dev/mock-api.mjs';
 
-// access_proof is the PBKDF2 vector shared with the Go client; the age block
-// made by this module is a real text file to the web identity, plus that
-// identity wrapped under the same passphrase (both fixtures use
-// "correct horse battery staple").
+// access_proof is the PBKDF2 vector shared with the Go client; passphrase "correct horse battery staple".
 const { access_proof: accessProof } = JSON.parse(
 	await readFile(new URL('../../../../tests/fixtures/client-crypto-vectors.json', import.meta.url))
 );
@@ -98,8 +95,7 @@ for (const model of ['a', 'b']) {
 					await route.fulfill({
 						contentType: 'application/octet-stream',
 						headers: {
-							// The app calls the API cross-origin; internal/httpapi/router.go
-							// exposes these headers the same way.
+							// Mirrors the headers internal/httpapi/router.go exposes cross-origin.
 							'Access-Control-Expose-Headers':
 								'Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At',
 							'Flick-Kind': 'text',
@@ -182,7 +178,6 @@ for (const [status, phase] of [
 	});
 }
 
-// Serves a Model B secret: metadata without an access block, then the age body.
 async function routeModelB(page, kind, body, headers = {}) {
 	await page.route(`**${secretPath}`, (route) =>
 		route.fulfill({
@@ -209,8 +204,7 @@ async function routeModelB(page, kind, body, headers = {}) {
 	);
 }
 
-// 실제 API 응답을 녹화한 카세트(scripts/dev/mock-api.mjs)로 한 번 열기 화면 흐름을 재생한다.
-// 서버의 한 번 열기 규칙 자체는 실제 API 에 붙는 *.live.mjs 가 검증한다.
+// 녹화 카세트(scripts/dev/mock-api.mjs)로 재생한다; 서버의 한 번 열기 규칙은 *.live.mjs가 검증한다.
 test('recorded Model B cassette decrypts once, then the link reads as gone', async () => {
 	const context = await browser.newContext();
 	try {
@@ -233,7 +227,6 @@ test('recorded Model B cassette decrypts once, then the link reads as gone', asy
 	}
 });
 
-// 보낸 사람이 정하는 로그인 정보의 제목·라벨·값·메모가 공백 없이 길어도 페이지가 가로로 넘치지 않는다.
 for (const width of [360, 1280]) {
 	test(`long unbroken credential text stays inside a ${width}px page`, async () => {
 		const long = (tag) => `${tag}-${'x'.repeat(200)}`;
@@ -324,11 +317,9 @@ test('a body that fails to authenticate after the open is final and shows nothin
 	}
 });
 
-// 메신저가 링크 끝을 잘라 키 체크섬이 깨지면 Open 전에 막고, 서버의 /open을 부르지 않는다.
 test('a cut-off link key is caught before Open, without consuming the secret', async () => {
 	const page = await browser.newPage();
 	try {
-		// Given: 마지막 글자가 잘린 키
 		const opens = [];
 		await routeModelB(page, 'text', Buffer.from(age.web.text, 'base64'));
 		page.on('request', (request) => {
@@ -337,10 +328,8 @@ test('a cut-off link key is caught before Open, without consuming the secret', a
 			}
 		});
 
-		// When: 링크를 연다
 		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment.slice(0, -1)}`);
 
-		// Then: 손상 안내가 뜨고 Open은 막히며 /open 요청은 없다
 		await page
 			.getByRole('alert')
 			.filter({ hasText: 'This link is damaged. Ask the sender to send the full link again.' })
@@ -352,11 +341,9 @@ test('a cut-off link key is caught before Open, without consuming the secret', a
 	}
 });
 
-// 서버가 내준 뒤 본문을 받다가 연결이 끊기면, 복호화 실패가 아니라 연결 끊김으로 안내한다.
 test('a connection that drops while the opened body streams says so', async () => {
 	const page = await browser.newPage();
 	try {
-		// Given: /open 응답 본문이 첫 조각 뒤에 끊긴다
 		await routeModelB(page, 'text', Buffer.from(age.web.text, 'base64'));
 		await page.addInitScript((openPath) => {
 			const original = window.fetch;
@@ -384,10 +371,8 @@ test('a connection that drops while the opened body streams says so', async () =
 		}, `${secretPath}/open`);
 		await page.goto(`${baseUrl}/s/metadata-retry${modelBFragment}`);
 
-		// When: Open을 누른다
 		await page.getByRole('button', { name: 'Open', exact: true }).click();
 
-		// Then: 연결 끊김 안내가 뜨고 내용은 보이지 않는다
 		await page
 			.getByRole('alert')
 			.filter({

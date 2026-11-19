@@ -8,14 +8,11 @@ import { t } from '#lib/i18n/index.js';
 import type { PendingReceiver } from '#lib/state/pipe-relay.svelte.js';
 import { cn } from '#lib/utils.js';
 
-// The sender's waiting room: every device that entered the 6-digit code, in
-// join order, each with its own server-drawn 3-digit number. The sender sends
-// to the row whose number the receiver reads out, or denies single rows.
+// Each row carries a server-drawn 3-digit number; the sender sends to the one the receiver reads out.
 type Props = {
 	pending: PendingReceiver[];
 	/** Server room size (internal/piperelay/coordinator.go MaxPendingConnections). */
 	capacity: number;
-	/** Local clock, ticking once a second, for the relative join time. */
 	now: number;
 	onSend: (connectionId: string) => void;
 	onDeny: (connectionId: string) => void;
@@ -23,8 +20,7 @@ type Props = {
 
 let { pending, capacity, now, onSend, onDeny }: Props = $props();
 
-// The first rows stay in view; the rest fold behind one disclosure button so
-// ten waiting devices do not push the 6-digit code off screen.
+// Fold extra rows so ten waiting devices do not push the 6-digit code off screen.
 const VISIBLE_ROWS = 3;
 let expanded = $state(false);
 const hiddenCount = $derived(Math.max(0, pending.length - VISIBLE_ROWS));
@@ -33,9 +29,7 @@ const shown = $derived(expanded ? pending : pending.slice(0, VISIBLE_ROWS));
 let heading: HTMLHeadingElement | undefined = $state();
 let rows: HTMLUListElement | undefined = $state();
 
-// Denying removes the focused row, so focus moves to the Send button of the row
-// that takes its place, or to the list heading when none is left, instead of
-// falling back to the page body.
+// Denying removes the focused row; move focus to the next Send button, else the heading.
 async function deny(connectionId: string): Promise<void> {
 	const position = pending.findIndex((receiver) => receiver.connectionId === connectionId);
 	const nextId = pending[position + 1]?.connectionId;
@@ -65,7 +59,6 @@ function ago(joinedAt: number): string {
 			class="inline-flex items-center justify-center gap-1.5 justify-self-center rounded-full bg-primary/15 px-2.5 py-0.5 text-[11px] font-bold text-primary"
 		>
 			<UsersIcon class="size-3.5" aria-hidden="true" />
-			<!-- Announced politely as devices join or leave. -->
 			<span aria-live="polite" aria-atomic="true">{t().live.pending.devicesWaiting(pending.length, capacity)}</span>
 		</span>
 		<h2
@@ -92,7 +85,6 @@ function ago(joinedAt: number): string {
 					/>
 					<div class="pipe-pending-meta grid min-w-0 flex-1">
 						<p class="truncate text-sm font-semibold text-foreground">{t().live.pending.connection(receiver.index)}</p>
-						<!-- The device label truncates on its own so the time never gets cut off. -->
 						<p class="flex min-w-0 gap-1 text-[11px] text-muted-foreground">
 							<span class="truncate">{deviceLabelText(receiver.device, t())}</span>
 							<span class="shrink-0" aria-hidden="true">·</span>

@@ -5,11 +5,7 @@ export function cn(...inputs: ClassValue[]): string {
 	return twMerge(clsx(inputs));
 }
 
-// Human-readable byte size (B / KiB / MiB). Shared by the create + open pages.
-// Rounds down, never up. Rounding up overstates both things this formats: a
-// limit fetched from /api/config (1,048,560 bytes rendered as "1024.0 KiB" — a
-// size the server refuses, and one unit short of reading as 1 MiB) and a real
-// file size (anything in [1048524.8, 1048576) shows the same nonsense).
+// Rounds down: rounding up shows limits the server refuses (1,048,560 B as "1024.0 KiB").
 export function formatBytes(bytes: number): string {
 	if (bytes < 1024) {
 		return `${bytes} B`;

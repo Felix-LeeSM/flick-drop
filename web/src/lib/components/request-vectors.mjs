@@ -1,7 +1,5 @@
 // biome-ignore-all lint/style/useNamingConvention: request fixtures use canonical API field names.
-// Synthetic request-link material for the browser and live tests, generated
-// per run with the same age library the app uses. age output is randomized, so
-// there are no fixed bytes to pin; the tests check round trips instead.
+// Generated per run; age output is randomized, so tests check round trips, not pinned bytes.
 import { createHash } from 'node:crypto';
 import { Encrypter, generateHybridIdentity, identityToRecipient } from 'age-encryption';
 
@@ -44,12 +42,10 @@ export async function requestVectors() {
 	};
 }
 
-// The open response the API sends for a submitted payload.
 export function openResponse(payload) {
 	const headers = {
 		'Content-Type': 'application/octet-stream',
-		// The app calls the API cross-origin; internal/httpapi/router.go exposes
-		// these headers the same way.
+		// Mirrors the headers internal/httpapi/router.go exposes cross-origin.
 		'Access-Control-Expose-Headers': 'Flick-Kind, Flick-Encrypted-Filename',
 		'Flick-Kind': payload.kind
 	};

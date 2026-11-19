@@ -21,7 +21,6 @@ describe('fragment identity transport', () => {
 		expect(decodeKeyFragment('')).toBeNull();
 		expect(decodeKeyFragment('other=value')).toBeNull();
 		expect(decodeKeyFragment('#key=')).toBeNull();
-		// The AES-GCM format's base64url raw key is no longer a valid fragment.
 		expect(decodeKeyFragment('key=cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8')).toBeNull();
 		expect(decodeKeyFragment('key=AGE-SECRET-KEY-1QQQQ')).toBeNull();
 		expect(decodeKeyFragment('key=AGE-SECRET-KEY-PQ-1bad!')).toBeNull();

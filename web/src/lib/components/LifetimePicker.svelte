@@ -84,7 +84,7 @@ function updateCustom(): void {
 			class={`${buttonVariants({ variant: customActive ? 'toggleActive' : 'toggle', size: 'pill' })} relative`}
 			class:opacity-50={disabled}
 		>
-			<!-- An empty label covers the pill, so tapping anywhere but the unit focuses the value; a label may hold only one control. -->
+			<!-- An empty label covers the pill so a tap focuses the value; a label holds only one control. -->
 			<label for={`${id}-custom-value`} class="absolute inset-0 cursor-text"></label>
 			<!-- iOS Safari zooms into focused fields under 16px: render at 16px, then scale to the 12px pill text at every width. -->
 			<span class="pointer-events-none relative -mx-2 flex scale-75 items-center gap-1.5">

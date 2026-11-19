@@ -7,9 +7,7 @@ import { initializeTheme } from '#lib/state/theme.js';
 let { children } = $props();
 
 initializeTheme();
-// Before any page mounts: a child's onMount runs before this layout's, so a page that
-// stores text at mount would otherwise capture English. Hydration replaces the
-// prerendered English text and attributes with the chosen language's values.
+// Before any page mounts: a child's onMount runs before this layout's and would capture English.
 initializeLocale();
 </script>
 

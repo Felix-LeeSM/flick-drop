@@ -1,5 +1,3 @@
-// Standard base64 for API fields. Shared by secrets and request links.
-
 export function bytesToBase64(bytes: Uint8Array): string {
 	let binary = '';
 	const chunkSize = 0x80_00;

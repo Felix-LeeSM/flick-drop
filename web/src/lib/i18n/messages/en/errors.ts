@@ -1,5 +1,3 @@
-// API and client errors shown on several screens (web/src/lib/api/*.ts) and the error page
-// (web/src/routes/+error.svelte).
 export const errors = {
 	invalidPassphrase: 'Passphrase is invalid.',
 	noLongerAvailable: 'This secret is no longer available.',

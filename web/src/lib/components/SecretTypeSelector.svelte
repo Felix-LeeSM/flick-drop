@@ -20,9 +20,6 @@ let {
 }: {
 	value: SecretType;
 	disabled?: boolean;
-	// Id of the panel a tab reveals, so each tab can carry aria-controls and
-	// the page can label its role="tabpanel" with this tab's own id
-	// (see CreateSecretPage.svelte / SubmitRequestPage.svelte).
 	panelId: (type: SecretType) => string;
 	onSelect: (value: SecretType) => void;
 } = $props();
@@ -33,7 +30,6 @@ const icons = {
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
-// Labels come from the catalog at render time so they follow a language change.
 const options: Array<{ type: SecretType; icon: typeof FileTextIcon }> = [
 	{ type: 'text', icon: FileTextIcon },
 	{ type: 'file', icon: FileUpIcon },
@@ -46,8 +42,6 @@ const options: Array<{ type: SecretType; icon: typeof FileTextIcon }> = [
 // Server-rendered buttons stay disabled until hydration attaches their click handlers.
 let ready = $state(false);
 
-// Roving focus per the tablist standard, plus the sliding underline measured
-// from the active tab (prototype round 30, T8).
 let focusIndex = $state(0);
 let tabEls: Array<HTMLElement | null> = [];
 let underline = $state({ x: 0, w: 0 });
@@ -62,15 +56,14 @@ function measureUnderline(): void {
 
 $effect(() => {
 	void value;
-	// Tab labels change width with the display language.
+	// Re-measure when the display language changes tab widths.
 	void t();
 	measureUnderline();
 });
 
 onMount(() => {
 	ready = true;
-	// Tab widths settle once the webfont finishes loading; the underline was
-	// measured against fallback-metric widths at mount, so measure again.
+	// Re-measure once the webfont loads; mount measured fallback-font widths.
 	void document.fonts.ready.then(measureUnderline);
 });
 
@@ -87,11 +80,6 @@ function tabKeydown(event: KeyboardEvent): void {
 }
 </script>
 
-<!-- Underline tab row: the indicator slides to the active tab and the row
-     scrolls horizontally where six labels do not fit. min-w-0 keeps the
-     min-w-max tab strip from stretching its grid track on narrow phones; the
-     gradient fades the clipped edge instead of hinting that the last visible
-     tab is the last tab. -->
 <div class="relative min-w-0">
 	<div
 		class="-mx-1 overflow-x-auto border-b border-border"

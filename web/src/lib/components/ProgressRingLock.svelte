@@ -1,15 +1,8 @@
 <script lang="ts">
 import type { StagePhase } from '#lib/stage-timing.js';
 
-// Progress ring around a padlock (decorative; the stage card owns the status text).
-// waiting: with no measurable progress the ring creeps toward 85% and a dot orbits
-//   the ring; with progress (0..1) the ring follows it.
-// finishing: the ring fills, then the lock closes ('lock') or its shackle lifts
-//   ('unlock'), with a small pop and a burst of dots.
-// failing: the ring drains in the destructive color and the lock shakes.
-// Motion runs on one rAF clock so the waiting loop hands off to the finishing
-// beat without a jump. prefers-reduced-motion stops the clock: waiting is a still
-// frame and finishing/failing show only their end state.
+// Decorative; the stage card owns the status text. One rAF clock hands waiting off to finishing
+// without a jump; prefers-reduced-motion stops it (still frame, end states only).
 type Props = {
 	mode: 'lock' | 'unlock';
 	phase: StagePhase;
@@ -21,7 +14,6 @@ let { mode, phase, progress = null }: Props = $props();
 let t = $state(0);
 let tf = $state(0);
 let shownFill = $state(0);
-// Fill at the moment the phase left 'waiting'; the finishing/failing curves start there.
 let fillAtTurn = $state(0);
 
 const clamp = (x: number) => Math.min(1, Math.max(0, x));
@@ -29,7 +21,7 @@ const span = (time: number, start: number, duration: number) => clamp((time - st
 const easeOutCubic = (x: number) => 1 - (1 - x) ** 3;
 const easeOutBack = (x: number) => 1 + 2.4 * (x - 1) ** 3 + 1.4 * (x - 1) ** 2;
 const mix = (a: number, b: number, x: number) => a + (b - a) * x;
-// The end of the work is unknown, so the creep only approaches 85%; 100% is the finish.
+// The end of the work is unknown, so the creep only approaches 85%.
 const creepAt = (time: number) => 0.85 * (1 - Math.exp(-time / 2200));
 const waitingTarget = (time: number) =>
 	progress === null ? creepAt(time) : 0.05 + 0.9 * clamp(progress);
@@ -53,7 +45,6 @@ $effect(() => {
 		}
 		if (turnedAt === null) {
 			t = now - start;
-			// Ease toward the target so a jump in measured progress still animates.
 			shownFill += (waitingTarget(t) - shownFill) * Math.min(1, (now - last) / 180);
 		} else {
 			tf = now - turnedAt;
@@ -74,7 +65,6 @@ const fill = $derived(
 			? mix(fillAtTurn, 0, easeOutCubic(span(tf, 0, 450)))
 			: shownFill
 );
-// The lock turns once the ring is full (from 320ms).
 const turn = $derived(finishing ? easeOutBack(span(tf, 320, 260)) : 0);
 const pop = $derived(finishing ? Math.sin(Math.PI * span(tf, 320, 380)) : 0);
 const burst = $derived(finishing ? span(tf, 340, 520) : 0);
@@ -106,7 +96,6 @@ const BURST_DOTS = Array.from({ length: 10 }, (_, i) => i);
 		style="stroke: {failing ? 'var(--destructive)' : 'var(--primary)'}; transition: stroke 200ms; stroke-width: 4px; stroke-dasharray: 100; stroke-dashoffset: {100 - fill * 100}; transform: rotate(-90deg); transform-origin: 60px 60px"
 	/>
 	{#if phase === 'waiting'}
-		<!-- The orbiting dot keeps a slow fill from reading as frozen. -->
 		<circle
 			cx="60"
 			cy="12"
@@ -124,7 +113,7 @@ const BURST_DOTS = Array.from({ length: 10 }, (_, i) => i);
 			style="fill: var(--primary); opacity: {burst > 0 ? 1 - burst : 0}"
 		/>
 	{/each}
-	<!-- The lucide lock shape (24 units) at 2x; the shackle pivots on its right leg (17,11). -->
+	<!-- lucide lock (24 units) at 2x; the shackle pivots on its right leg (17,11). -->
 	<g
 		transform="translate({36 + shake * 2} 34) scale(2)"
 		class="transition-colors duration-200 {failing

@@ -33,7 +33,6 @@ for (const model of ['a', 'b']) {
 				const recipient = await context.newPage();
 				if (operation === 'cancel') {
 					await sender.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
-					// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
 					await sender
 						.getByRole('dialog')
 						.getByRole('button', { name: 'Cancel delivery', exact: true })
@@ -54,7 +53,6 @@ for (const model of ['a', 'b']) {
 						'Synthetic managed delivery'
 					);
 					await sender.getByRole('button', { name: 'Refresh status', exact: true }).click();
-					// The server forgets an opened delivery: management reads as an unknown link.
 					await sender.getByText('Management link unavailable.', { exact: true }).waitFor();
 					await recipient.reload();
 					await recipient

@@ -1,13 +1,7 @@
 import { t } from '#lib/i18n/index.js';
 
-// TTL lifetime bounds, mirrored at build time from the server config
-// (`internal/config/defaults.go`). The web client is adapter-static, so these
-// reach the browser via `PUBLIC_FLICK_*` env at build (see web/Dockerfile and
-// .github/workflows/publish-images.yml). TTL is a near-static constraint, so it
-// stays build-time; file size limits, by contrast, are fetched at runtime from
-// GET /api/config (see web/src/lib/api/config.ts) because they must drive live
-// routing between the inline and S3 upload paths. The defaults below must equal
-// the Go constants — `scripts/ci/ttl-drift.sh` fails the build if they drift.
+// Build-time `PUBLIC_FLICK_*` bounds; defaults must equal `internal/config/defaults.go`
+// (`scripts/ci/ttl-drift.sh` enforces it).
 
 const DEFAULT_MIN_TTL_SECONDS = 300;
 const DEFAULT_MAX_TTL_SECONDS = 604_800;
@@ -31,8 +25,6 @@ export const DEFAULT_TTL_SECONDS = positiveInt(
 	DEFAULT_DEFAULT_TTL_SECONDS
 );
 
-// Format a TTL bound as the largest whole unit (days > hours > minutes), so the
-// validation message reads naturally for the server-configured range.
 function formatDuration(seconds: number): string {
 	const words = t().common.lifetime;
 	if (seconds > 0 && seconds % 86_400 === 0) {
