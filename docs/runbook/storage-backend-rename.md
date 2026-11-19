@@ -135,6 +135,11 @@ Verify:
 - A file upload above the inline threshold succeeds and opens.
 - `flick_storage_bytes_used` shows one series per backend name.
 
+Delete jobs that were still in NATS under an old identifier are rejected right
+after the start: the worker logs them as `object delete names unconfigured
+backend "s3_object"` and records a dead letter for each. That burst is
+expected; reconciliation queues fresh deletes for their objects.
+
 ## Rollback
 
 Before step 3, scale both deployments back up on the old release.

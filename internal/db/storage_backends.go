@@ -49,7 +49,7 @@ func retireLegacyStorageBackendChecks(ctx context.Context, conn *sql.Conn) error
 		return fmt.Errorf("check legacy storage backend names: %w", err)
 	}
 	if legacy {
-		return fmt.Errorf("the database still names object backends 's3_object' or 'r2_object'; or an object delete without a backend; rename them to FLICK_STORAGE_BACKENDS names first (%s)", legacyStorageBackendRunbook)
+		return fmt.Errorf("the database still has object rows or delete events naming 's3_object'/'r2_object', or an object delete without a backend; rename them to FLICK_STORAGE_BACKENDS names first (%s)", legacyStorageBackendRunbook)
 	}
 
 	tx, err := conn.BeginTx(ctx, nil)
