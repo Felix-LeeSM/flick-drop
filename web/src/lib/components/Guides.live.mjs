@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 
 // Serve the built app with nginx and a real same-origin API for this suite.
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
-const paths = ['/guides/password-sharing/', '/guides/temporary-file-sharing/'];
+const paths = ['/guides/'];
 let browser;
 before(async () => {
 	browser = await chromium.launch();
@@ -42,10 +42,13 @@ for (const width of [375, 1280]) {
 					await page.evaluate(() => document.activeElement.textContent.trim()),
 					'Create a one-time link'
 				);
-				assert.equal(
-					await page.getByRole('navigation', { name: 'Sharing guides' }).getByRole('link').count(),
-					3
-				);
+				// 목차의 모든 링크는 페이지 안의 실제 절로 이어진다.
+				const toc = page.getByRole('navigation', { name: 'On this page' }).getByRole('link');
+				for (const href of await toc.evaluateAll((links) =>
+					links.map((link) => link.getAttribute('href'))
+				)) {
+					assert.equal(await page.locator(href).count(), 1, `${href} has a target`);
+				}
 			}
 			assert.deepEqual(remote, []);
 			if (process.env.FLICK_GUIDE_SCREENSHOT) {
@@ -59,6 +62,18 @@ for (const width of [375, 1280]) {
 		}
 	});
 }
+
+test('retired topic guide URLs redirect to the merged guide', async () => {
+	for (const path of [
+		'/guides/password-sharing/',
+		'/guides/temporary-file-sharing',
+		'/guides/password-sharing/index.html'
+	]) {
+		const response = await fetch(`${baseUrl}${path}`, { redirect: 'manual' });
+		assert.equal(response.status, 301, path);
+		assert.equal(response.headers.get('location'), '/guides/#sending', path);
+	}
+});
 
 test('private SPA routes are noindex before hydration and excluded from robots', async () => {
 	for (const path of ['/s/synthetic', '/m/synthetic', '/r/synthetic/receive']) {
