@@ -33,7 +33,7 @@ export const manage: typeof source = {
 	noLongerCancellable: 'このリンクはもうキャンセルできません。',
 	privateSenderPage: '自分専用のページ',
 	titleCreated: 'リンクを作成しました',
-	titleManage: 'Manage delivery',
+	titleManage: 'リンクの管理',
 	intro: 'リンクが開かれたかを確認し、開かれる前ならキャンセルできます。',
 	expired: '管理リンクの期限が切れました。',
 	statusRegion: 'リンクの状態',

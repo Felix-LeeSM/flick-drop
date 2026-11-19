@@ -2,14 +2,14 @@ import type { request as source } from '../en/request';
 
 export const request: typeof source = {
 	shared: {
-		badge: '종단간 암호화 · 일회용 요청',
+		badge: '기기에서 암호화 · 한 번만 받는 요청',
 		timeRemaining: '남은 시간',
 		statusUnknown: '요청 상태를 알 수 없어요.'
 	},
 	create: {
 		pageTitle: '요청하기 - Flick',
-		headerLink: 'Send a secret',
-		heading: 'Request a secret',
+		headerLink: '보내기',
+		heading: '링크로 요청하기',
 		intro: '상대가 메모, 파일, 로그인 정보를 한 번 보낼 수 있는 링크를 만들어요.',
 		noteLabel: '메모',
 		optional: '선택',
@@ -23,16 +23,16 @@ export const request: typeof source = {
 			'요청이 만들어졌는지 확인하지 못했어요. 만들어졌더라도 링크는 되찾을 수 없고, 시간이 지나면 저절로 사라져요. 필요하면 새로 만들어 주세요.',
 		unsupported:
 			'이 브라우저에서는 요청을 만들 수 없어요. 최신 브라우저로 https 주소에 접속해 주세요.',
-		creating: 'Creating request…',
-		createNew: 'Create a new request',
-		create: 'Create request'
+		creating: '요청 만드는 중…',
+		createNew: '새 요청 만들기',
+		create: '요청 링크 만들기'
 	},
 	submit: {
 		pageTitle: '보내기 - Flick',
 		headingAccepted: '보냈어요',
 		headingExpired: '요청이 만료됐어요',
 		headingUnavailable: '이 요청에는 보낼 수 없어요',
-		headingReady: 'Send a secret',
+		headingReady: '요청받은 내용 보내기',
 		intro: '보낸 내용은 요청한 사람만 열 수 있어요.',
 		resumed: '페이지를 떠나거나 새로고침해서 보내던 내용은 사라졌어요. 이미 도착했을 수도 있어요.',
 		acceptedBody: '요청한 사람만 열 수 있어요.',
@@ -56,8 +56,8 @@ export const request: typeof source = {
 		messageLabel: '메시지',
 		fileLabel: '파일',
 		fileLimit: (size: string) => `파일 1개, 최대 ${size}.`,
-		encrypting: 'Encrypting…',
-		submit: 'Encrypt and submit',
+		encrypting: '암호화하는 중…',
+		submit: '암호화해서 보내기',
 		loading: '요청을 불러오는 중…',
 		retryLoading: '요청 다시 불러오기',
 		progress: {
@@ -130,8 +130,8 @@ export const request: typeof source = {
 			'내용은 받았지만 열지 못했어요. 다시 열 수 없으니 새 요청을 만들어 다시 보내 달라고 하세요.',
 		decryptedSecret: '받은 내용',
 		download: (filename: string) => `${filename} 다운로드`,
-		working: 'Working…',
-		open: 'Open once',
+		working: '여는 중…',
+		open: '내용 열기',
 		shareHeading: '상대에게 줄 링크',
 		shareHint:
 			'이 링크를 가진 사람은 누구나 한 번 보낼 수 있어요. 이 링크로는 받은 내용을 열거나 요청을 취소할 수 없어요.',

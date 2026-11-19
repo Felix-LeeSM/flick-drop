@@ -2,14 +2,14 @@ import type { request as source } from '../en/request';
 
 export const request: typeof source = {
 	shared: {
-		badge: 'エンドツーエンド暗号化 · 1回限りのリクエスト',
+		badge: '端末で暗号化 · 1回限りのリクエスト',
 		timeRemaining: '残り時間',
 		statusUnknown: 'リクエストの状態が分かりません。'
 	},
 	create: {
 		pageTitle: 'リクエストする - Flick',
-		headerLink: 'Send a secret',
-		heading: 'Request a secret',
+		headerLink: '送る',
+		heading: 'リンクでリクエスト',
 		intro: '相手がメモ・ファイル・認証情報を1回だけ送れるリンクを作成します。',
 		noteLabel: 'メモ',
 		optional: '任意',
@@ -23,16 +23,16 @@ export const request: typeof source = {
 			'リクエストを作成できたか確認できませんでした。作成されていてもリンクは取り戻せず、期限が来ると自動で消えます。自動で作成し直すことはないため、必要なら新しく作成してください。',
 		unsupported:
 			'このブラウザではリクエストを作成できません。最新のブラウザで https:// から始まるアドレスを開いてください。',
-		creating: 'Creating request…',
-		createNew: 'Create a new request',
-		create: 'Create request'
+		creating: 'リクエストを作成中…',
+		createNew: '新しいリクエストを作成',
+		create: 'リクエストリンクを作成'
 	},
 	submit: {
 		pageTitle: '内容を送る - Flick',
 		headingAccepted: '送りました',
 		headingExpired: 'リクエストの期限が切れました',
 		headingUnavailable: 'このリクエストには送れません',
-		headingReady: 'Send a secret',
+		headingReady: 'リクエストに送る',
 		intro: '送った内容は依頼者だけが開けます。',
 		resumed:
 			'ページを離れたか再読み込みしたため、送っていた内容は消えました。すでに相手に届いている可能性があります。',
@@ -57,8 +57,8 @@ export const request: typeof source = {
 		messageLabel: 'メッセージ',
 		fileLabel: 'ファイル',
 		fileLimit: (size: string) => `ファイル1つ、最大${size}。`,
-		encrypting: 'Encrypting…',
-		submit: 'Encrypt and submit',
+		encrypting: '暗号化中…',
+		submit: '暗号化して送る',
 		loading: 'リクエストを読み込み中…',
 		retryLoading: 'リクエストを再読み込み',
 		progress: {
@@ -136,8 +136,8 @@ export const request: typeof source = {
 			'内容は届きましたが、開けませんでした。もう一度開くことはできないため、新しいリクエストを作成して送り直してもらってください。',
 		decryptedSecret: '受け取った内容',
 		download: (filename: string) => `${filename}をダウンロード`,
-		working: 'Working…',
-		open: 'Open once',
+		working: '開いています…',
+		open: '内容を開く',
 		shareHeading: '相手に渡すリンク',
 		shareHint:
 			'このリンクを知っている人なら誰でも1回だけ送れます。このリンクでは、届いた内容を開くこともリクエストをキャンセルすることもできません。',

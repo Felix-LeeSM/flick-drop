@@ -9,6 +9,7 @@ export const errors: typeof source = {
 	notReady: 'Flick이 아직 준비되지 않았어요. 잠시 후 다시 시도해 주세요.',
 	serverFailed: 'Flick에서 문제가 생겼어요. 다시 시도해 주세요.',
 	requestFailed: '처리하지 못했어요. 입력한 내용을 확인하고 다시 시도해 주세요.',
+	rateLimited: '짧은 시간에 너무 많이 시도했어요. 잠시 후 다시 시도해 주세요.',
 	largeUploadStartFailed: '파일을 올리기 시작하지 못했어요. 다시 시도해 주세요.',
 	uploadSizeMismatch: '파일이 끝까지 올라가지 않았어요. 다시 시도해 주세요.',
 	uploadCancelled: '업로드를 취소했어요.',
@@ -32,6 +33,6 @@ export const errors: typeof source = {
 		notFoundBody:
 			'이 주소에는 페이지가 없어요. 링크에 오타가 없는지 확인하거나, 첫 화면으로 돌아가 새로 시작해 주세요.',
 		failedBody: '예기치 않은 오류로 페이지가 멈췄어요. 보통은 첫 화면에서 다시 시작하면 해결돼요.',
-		cta: 'Create a one-time link'
+		cta: '링크 만들기'
 	}
 };

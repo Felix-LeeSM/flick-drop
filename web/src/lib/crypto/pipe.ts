@@ -383,7 +383,7 @@ async function senderAction(action: SenderAction): Promise<void> {
 		headers
 	});
 	if (!response.ok) {
-		throw await pipeError(response, t().live.errors.actionFailed(action.path));
+		throw await pipeError(response, t().live.errors.actionFailed);
 	}
 }
 

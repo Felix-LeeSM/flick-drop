@@ -4,8 +4,8 @@ Display language for the web app: English (`en`), Korean (`ko`), Japanese (`ja`)
 
 - `locale.svelte.ts`: the current language. `initializeLocale` picks a stored manual choice
   (`localStorage` key `flick-locale`), else the first browser language Flick has, else `en`.
-  `chooseLocale` is the manual switch (`LanguageRow.svelte` in `web/src/lib/components/`).
-  URLs never carry a language.
+  `chooseLocale` is the header language menu (`LanguageRow.svelte` rendered in
+  `SiteHeader.svelte` beside `ThemeToggle`). URLs never carry a language.
 - `index.ts`: `t()` returns the catalog of the current language; read it inside markup or
   `$derived` so text follows a language change.
 - `web/src/routes/+layout.svelte` calls `initializeLocale` while the layout is created, before
@@ -18,13 +18,11 @@ Display language for the web app: English (`en`), Korean (`ko`), Japanese (`ja`)
 
 ## Wording rules
 
-- **English skeleton (decided 2026-11-19).** Page names (`h1` such as "Create a secret",
-  "Open a secret", "Request a secret"), the delivery tabs, primary action buttons and their
-  in-progress labels, and the header's text actions stay in English in every language ("Send",
-  "Link", "Live Transfer", "Create Link", "Enter Code", "Request", "Open", "Download").
-  Everything else is translated: headings that report a status or outcome ("Link created",
-  "Request expired", "Transfer complete", "Nothing here."), descriptions, form labels,
-  placeholders, errors, and accessible names.
+- **Full UI localization with natural CJK titles (updated 2026-11-19).** Page names (`h1` such as
+  `링크로 보내기`, `코드로 보내기`, `링크 열어보기`, `링크로 요청하기` in Korean and
+  `リンクで送る`, `コードで送る`, `リンクを開く`, `リンクでリクエスト` in Japanese), delivery
+  tabs, primary action buttons, and header navigation actions are all localized alongside status
+  headings, descriptions, form labels, placeholders, errors, and accessible names.
 - **Users' words, not the system's (decided 2026-11-19).** Name things the way the sender,
   recipient, or requester would: "열다" not "복호화", "보내다·도착" not "제출·접수", "내용" not
   "비밀" for what was sent, "상대에게 줄 링크 / 내 받기 링크" not "제출 링크 / 비공개 받기
@@ -34,3 +32,15 @@ Display language for the web app: English (`en`), Korean (`ko`), Japanese (`ja`)
 - Korean says **비밀번호** for passphrase and uses 해요체 for sentences. Japanese uses
   です・ます and **パスワード** for passphrase.
 - The term list is `docs/work/active/2026-11-12-i18n-glossary.md`.
+
+## Tests
+
+- Tests check wording by key, not by each language's text: a test that needs a translated
+  string reads it from the catalog (`ko.create.titleLink`, `en.errors.rateLimited`), and one
+  non-English language is enough to prove a screen follows the language. Browser checks running
+  on `vite dev` read a catalog with
+  `await import('/src/lib/i18n/messages/ko/index.ts')` inside `page.evaluate`.
+- `catalogs.test.ts` is the only place every language is checked: each catalog must have every
+  `en` key with the same shape (string, array length, or phrase-function argument count) and no
+  empty string. Keep one catalog object per language; splitting it into separately loaded
+  scopes would mean loading every scope before this comparison.

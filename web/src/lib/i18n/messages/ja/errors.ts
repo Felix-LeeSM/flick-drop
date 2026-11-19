@@ -9,6 +9,7 @@ export const errors: typeof source = {
 	notReady: 'Flickの準備ができていません。少し待ってからもう一度お試しください。',
 	serverFailed: 'Flickが処理を完了できませんでした。もう一度お試しください。',
 	requestFailed: '処理を完了できませんでした。入力内容を確認して、もう一度お試しください。',
+	rateLimited: '短時間に操作が多すぎます。少し待ってからもう一度お試しください。',
 	largeUploadStartFailed: 'ファイルのアップロードを開始できませんでした。もう一度お試しください。',
 	uploadSizeMismatch: 'ファイルを最後までアップロードできませんでした。もう一度お試しください。',
 	uploadCancelled: 'アップロードをキャンセルしました。',
@@ -33,6 +34,6 @@ export const errors: typeof source = {
 			'このアドレスにページはありません。リンクに入力ミスがないか確認するか、トップに戻って新しく始めてください。',
 		failedBody:
 			'予期しないエラーでページが中断されました。たいていはトップページからやり直せば解決します。',
-		cta: 'Create a one-time link'
+		cta: 'リンクを作成'
 	}
 };

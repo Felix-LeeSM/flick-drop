@@ -1,7 +1,6 @@
 <script lang="ts">
 import './layout.css';
 import favicon from '#lib/assets/favicon.svg';
-import LanguageRow from '#lib/components/LanguageRow.svelte';
 import { initializeLocale } from '#lib/i18n/locale.svelte.js';
 import { initializeTheme } from '#lib/state/theme.js';
 
@@ -34,4 +33,3 @@ initializeLocale();
 </svelte:head>
 
 {@render children()}
-<LanguageRow />

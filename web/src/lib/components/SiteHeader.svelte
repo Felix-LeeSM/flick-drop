@@ -7,6 +7,7 @@ import { LockKeyholeIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { resolve } from '$app/paths';
 import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
+import LanguageRow from '#lib/components/LanguageRow.svelte';
 import type { ReceivedPipePayload } from '#lib/components/PipeReceivedSecretView.svelte';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
@@ -72,7 +73,7 @@ onMount(() => {
 		</span>
 		<span class="font-serif text-[1.6875rem] leading-none tracking-[-0.005em]">Flick</span>
 	</a>
-	<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
+	<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2">
 		{#if showEnterCode}
 			<button
 				type="button"
@@ -92,7 +93,10 @@ onMount(() => {
 				>
 			</nav>
 		{/if}
-		<ThemeToggle />
+		<div class="flex shrink-0 items-center gap-1.5">
+			<LanguageRow />
+			<ThemeToggle />
+		</div>
 	</div>
 </header>
 

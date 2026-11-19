@@ -92,6 +92,8 @@ export const live = {
 		empty: 'Waiting for receiver to enter the code…',
 		listLabel: 'Waiting devices',
 		number: (spaced: string) => `Number ${spaced}`,
+		device: (browser: string, platform: string) => `${browser} on ${platform}`,
+		unknownBrowser: 'Unknown browser',
 		connection: (index: number) => `Connection ${index}`,
 		justNow: 'just now',
 		secondsAgo: (seconds: number) => `${seconds}s ago`,
@@ -156,7 +158,7 @@ export const live = {
 		joinFailed: 'Join failed',
 		statusFailed: 'Status check failed',
 		waitFailed: 'Wait failed',
-		actionFailed: (_path: string) => 'The server could not complete this step',
+		actionFailed: 'The server could not complete this step',
 		sendFailed: 'Send failed',
 		receiveFailed: 'Receive failed',
 		emptyBody: 'Server response body is empty'

@@ -4,6 +4,7 @@ export const common = {
 	enterCode: 'Enter Code',
 	siteNav: 'Site',
 	languageRow: 'Language',
+	languageButton: (current: string) => `Change language (current: ${current})`,
 	deliveryMethod: 'Delivery method',
 	tabLink: 'Create link',
 	tabLive: 'Live transfer',
