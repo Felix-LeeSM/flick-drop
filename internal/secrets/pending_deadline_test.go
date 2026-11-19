@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// timestamptz는 마이크로초 정밀도로 저장하므로 대기 마감 경계는 마이크로초 단위로
-// 확인한다. SQLite 때 나노초 단위로 확인하던 경계 포함 여부(<=)는 같은 의미다.
+// timestamptz는 마이크로초 정밀도라 경계는 마이크로초 단위로 확인한다.
 func TestManagementPendingFractionalDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		name             string

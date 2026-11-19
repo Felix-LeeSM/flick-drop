@@ -66,7 +66,7 @@ func TestManagementHTTPAuthorizationAndOutcomes(t *testing.T) {
 			}
 			attempts, proof := 1, "proof"
 			if outcome == "locked" {
-				attempts, proof = 4, "wrong" // The management-token misuse was the first invalid proof.
+				attempts, proof = 4, "wrong"
 			}
 			for i := 0; i < attempts; i++ {
 				resp = performJSON(t, f.router, http.MethodPost, path+"/open", map[string]any{"access_proof": base64.StdEncoding.EncodeToString([]byte(proof))})
@@ -167,7 +167,6 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	if err != nil || status.Status != "pending_upload" {
 		t.Fatalf("large status: %+v %v", status, err)
 	}
-	// Text is always inline: without ciphertext it is refused, not presigned.
 	text := validCreateSecretBody()
 	delete(text, "ciphertext")
 	text["size_bytes"] = 2048
@@ -176,11 +175,8 @@ func TestLargeCreateReturnsManagementCapability(t *testing.T) {
 	}
 }
 
-// 열람이 끝난 시크릿은 서버가 그 ID의 존재를 잊는다. 관리 조회·취소와 수신자
-// 메타데이터·재열람 모두 한 번도 없던 ID와 상태 코드·헤더·본문이 바이트 단위로 같고,
-// DB와 outbox에도 그 ID가 남지 않는다.
+// Status, headers, body, DB, and outbox must be byte-identical to a never-existing ID.
 func TestOpenedSecretIsIndistinguishableFromUnknownID(t *testing.T) {
-	// Given: 열람된 시크릿 하나와 한 번도 만들어진 적 없는 ID
 	f := newTestRouterFixture(t, Options{OpenRatePerMinute: 100})
 	resp := performJSON(t, f.router, http.MethodPost, "/api/secrets", validCreateSecretBody())
 	var created createSecretResponse
@@ -192,7 +188,6 @@ func TestOpenedSecretIsIndistinguishableFromUnknownID(t *testing.T) {
 	}
 	unknownID := "AAAAAAAAAAAAAAAAAAAAAAAA"
 
-	// When / Then: 같은 요청을 두 ID에 보내면 응답이 완전히 같다
 	for _, req := range []struct {
 		name, method, suffix string
 		body                 any

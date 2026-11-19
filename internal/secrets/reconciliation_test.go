@@ -25,8 +25,7 @@ func TestReconciliationResumesPaginationAndProtectsLiveObjects(t *testing.T) {
 	conn := database.openPool(t)
 	objects := newMockObjectStore()
 	store := newLargeTestStore(t, conn, objects)
-	// Microsecond precision is what timestamptz stores, so the one-unit offsets
-	// below are one microsecond.
+	// timestamptz stores microseconds, so one-unit offsets are one microsecond.
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	fixtures := []secretFixture{
 		{id: "a-active", state: "active", expiresAt: now.Add(time.Hour), createdAt: now},
@@ -48,8 +47,7 @@ func TestReconciliationResumesPaginationAndProtectsLiveObjects(t *testing.T) {
 	if n, err := reaper.ReconcileOnce(ctx); err != nil || n != 0 {
 		t.Fatalf("live page: %d %v", n, err)
 	}
-	// A fresh pool over the same schema is the restart: the cursor row and the
-	// pending claims must survive it.
+	// A fresh pool is the restart: the cursor row and pending claims must survive it.
 	conn = database.openPool(t)
 	store = newLargeTestStore(t, conn, objects)
 	reaper = newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
@@ -91,8 +89,7 @@ func TestReconciliationLatePUTAfterExpiryGetsFreshFencedJob(t *testing.T) {
 	if err := objects.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	// The original signature and management authority can both expire before a
-	// PUT accepted earlier finishes. No finite completion deadline is assumed.
+	// The signature and management authority can both expire before an earlier PUT finishes.
 	now = now.Add(24 * time.Hour)
 	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
 	reaper.SetNowForTest(func() time.Time { return now })
@@ -194,14 +191,12 @@ func TestReconciliationFailuresDoNotAdvanceOrLoseClaims(t *testing.T) {
 			var setupErr error
 			switch failure {
 			case "lookup":
-				// The pending claims and cursor tables survive; only the live-row
-				// source is gone. CASCADE drops the dependents of secrets.
+				// CASCADE drops the dependents of secrets.
 				_, setupErr = conn.Exec(`drop table secrets cascade`)
 			case "outbox":
 				reaper.outbox = &fakeOutbox{err: errors.New("enqueue failed")}
 			case "commit":
-				// A deferred constraint trigger fires at COMMIT, so the claim
-				// insert succeeds and only the commit fails.
+				// A deferred constraint trigger fires at COMMIT, so only the commit fails.
 				if _, err := conn.Exec(`create function fail_claim() returns trigger language plpgsql as $fn$
 					begin
 						raise exception 'injected claim commit failure';
@@ -344,12 +339,7 @@ func TestReaperRequestScanIsIndependentOfExpiryAndSenderFailures(t *testing.T) {
 	}
 }
 
-// A consumed S3 body may still be streaming to its recipient, so
-// reconciliation leaves it alone for openObjectGrace after consumed_at and
-// deletes it as an orphan once that has passed.
 func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
-	// timestamptz keeps microseconds, so grace boundaries are probed at
-	// one-microsecond granularity.
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	for _, tc := range []struct {
 		name       string
@@ -384,14 +374,9 @@ func TestReconciliationProtectsOpenedObjectForStreamGrace(t *testing.T) {
 	}
 }
 
-// 열람은 secrets 행과 관리 행을 즉시 지운다. 그래도 수신자에게 아직 스트리밍 중일 수
-// 있는 객체는 객체 키와 유예 마감만 담은 secret_open_grace 행이 openObjectGrace 동안
-// 재조정(reconciliation)으로부터 보호하고, 유예가 지나면 객체는 고아로 삭제 예약되며
-// 유예 행도 reaper가 지운다.
+// 열람은 secrets 행을 즉시 지우므로 secret_open_grace 행만이 openObjectGrace 동안 객체를 보호한다.
 func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) {
-	// Given: 방금 열람한 S3 시크릿
 	ctx := context.Background()
-	// timestamptz는 마이크로초 정밀도라 유예 경계는 1마이크로초 간격으로 확인한다.
 	now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 	conn := openTestDB(t, ctx)
 	objects := newMockObjectStore()
@@ -412,7 +397,6 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 	}
 	opened.Body.Close()
 
-	// Then: 시크릿 ID로 찾을 수 있는 행은 없고, 유예 행은 키와 마감만 가진다
 	count := func(query string, args ...any) int {
 		t.Helper()
 		var n int
@@ -431,7 +415,6 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 		t.Fatalf("grace rows for the streaming object = %d, want 1", n)
 	}
 
-	// When: reaper가 유예 직전과 유예 마감에 각각 한 번씩 돈다
 	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 10)
 	tick := func(at time.Time) int {
 		t.Helper()
@@ -458,8 +441,6 @@ func TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow(t *testing.T) 
 	}
 }
 
-// requestTestRegistry wraps a requests-side test double as a single-backend
-// storage registry. The error is unreachable for a non-nil store.
 func requestTestRegistry(primary storage.ObjectStore) *storage.Registry {
 	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: primary})
 	if err != nil {

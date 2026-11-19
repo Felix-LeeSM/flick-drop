@@ -44,9 +44,7 @@ type createSecretResponse struct {
 	ExpiresAt           string `json:"expires_at"`
 }
 
-// presignedUploadResponse hands the client a presigned upload so it sends the
-// ciphertext straight to the bucket; the server never sees the bytes. Headers
-// are part of the signature and must be echoed verbatim.
+// Headers are part of the signature and must be echoed verbatim.
 type presignedUploadResponse struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
@@ -83,8 +81,6 @@ type openSecretRequest struct {
 	AccessProof string `json:"access_proof"`
 }
 
-// Open response headers. The body is the raw age file; everything else the
-// recipient needs travels here (contracts/openapi.yaml openSecret).
 const (
 	headerKind              = "Flick-Kind"
 	headerContentType       = "Flick-Content-Type"
@@ -130,9 +126,6 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Large payloads omit ciphertext: the client uploads it straight to the
-	// bucket via a presigned PUT, then calls /finalize. Small payloads take
-	// the inline path below.
 	if req.Ciphertext == "" {
 		s.createLargeSecret(w, r, req)
 		return
@@ -143,8 +136,6 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_ciphertext", "ciphertext must be base64 encoded")
 		return
 	}
-	// Model A secrets carry an access proof; Model B secrets omit it and the
-	// store leaves the proof/KDF columns NULL.
 	var accessProofHash string
 	if req.Access.Proof != "" {
 		accessProofHash, err = hashAccessProof(req.Access.Proof)
@@ -179,8 +170,6 @@ func (s Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createLargeSecret stages a pending_upload secret and returns a presigned PUT
-// form so the client uploads the ciphertext directly to the bucket.
 func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req createSecretRequest) {
 	var accessProofHash string
 	if req.Access.Proof != "" {
@@ -222,9 +211,6 @@ func (s Server) createLargeSecret(w http.ResponseWriter, r *http.Request, req cr
 	})
 }
 
-// finalizeSecret confirms a pending_upload large secret after the client has
-// uploaded the object. The server HEADs the bucket to verify the object exists
-// and is within the ciphertext cap, then flips the row to active.
 func (s Server) finalizeSecret(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
@@ -251,8 +237,6 @@ func (s Server) getSecretMetadata(w http.ResponseWriter, r *http.Request) {
 		SizeBytes: metadata.SizeBytes,
 		ExpiresAt: metadata.ExpiresAt.UTC().Format(timeFormat),
 	}
-	// Model A exposes access KDF so the browser can derive the proof; Model B
-	// omits the access block so the browser opens with the fragment key instead.
 	if metadata.AccessKDF.Algorithm != "" {
 		resp.Access = &accessMetadataResponse{KDF: metadata.AccessKDF}
 	}
@@ -285,8 +269,6 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Model A opens require a proof; Model B opens omit it (the link is the
-	// capability). The store decides per-secret whether to verify.
 	var accessProofHash string
 	if req.AccessProof != "" {
 		accessProofHash, err = hashAccessProof(req.AccessProof)
@@ -296,9 +278,7 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The deadline covers the bucket read and every write to the recipient, so
-	// a body cannot stream past the window in which reconciliation protects
-	// its object.
+	// Covers every write so a body cannot stream past the window in which reconciliation protects its object.
 	ctx, cancel := context.WithTimeout(r.Context(), secrets.OpenStreamTimeout)
 	defer cancel()
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(secrets.OpenStreamTimeout))
@@ -321,8 +301,6 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 	if secret.EncryptedFilename != nil {
 		h.Set(headerEncryptedFilename, *secret.EncryptedFilename)
 	}
-	// Model A only: the passphrase-wrapped identity. Model B's identity is in
-	// the URL fragment.
 	if secret.WrappedIdentity != nil {
 		h.Set(headerWrappedIdentity, *secret.WrappedIdentity)
 	}
@@ -332,9 +310,7 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(secret.Ciphertext)
 		return
 	}
-	// The secret is already consumed; a failure from here on loses it, which
-	// the recipient sees as a truncated age file that will not decrypt. The log
-	// line carries no ID or error text (which names the client address).
+	// The secret is already consumed. The log carries no ID or error text (it names the client address).
 	if _, err := io.Copy(w, secret.Body); err != nil {
 		slog.Warn("opened secret body stopped streaming before the end", "storage.backend", secret.StorageBackend)
 	}
@@ -342,10 +318,8 @@ func (s Server) openSecret(w http.ResponseWriter, r *http.Request) {
 	s.enqueueOpenedObjectCleanup(context.WithoutCancel(r.Context()), secret.StorageBackend, secret.StorageKey)
 }
 
-// openAndCommit commits the one-time open. OpenTx deletes the secret row, its
-// inline payload, and its management record in this transaction, so no
-// delete_secret job is queued: it would only keep the opened ID in the outbox.
-// The outbox stays required for the bucket delete queued after streaming.
+// OpenTx deletes the row, inline payload, and management record, so no delete_secret job is queued
+// (it would keep the opened ID in the outbox).
 func (s Server) openAndCommit(ctx context.Context, id string, accessProofHash string) (_ secrets.Secret, err error) {
 	if s.outbox == nil {
 		return secrets.Secret{}, fmt.Errorf("outbox store is required")
@@ -360,7 +334,6 @@ func (s Server) openAndCommit(ctx context.Context, id string, accessProofHash st
 	}()
 
 	secret, err := s.secrets.OpenTx(ctx, tx, id, accessProofHash)
-	// An opened S3 body belongs to the caller only on success.
 	defer func() {
 		if err != nil && secret.Body != nil {
 			secret.Body.Close()
@@ -374,8 +347,7 @@ func (s Server) openAndCommit(ctx context.Context, id string, accessProofHash st
 		}
 		return secrets.Secret{}, err
 	}
-	// An S3 body is deleted only after it has streamed (enqueueOpenedObjectCleanup);
-	// deleting it now could cut the recipient's download short.
+	// Deleting the S3 body before it streams could cut the recipient's download short.
 	if err := tx.Commit(); err != nil {
 		return secrets.Secret{}, fmt.Errorf("commit open transaction: %w", err)
 	}
@@ -383,11 +355,8 @@ func (s Server) openAndCommit(ctx context.Context, id string, accessProofHash st
 	return secret, nil
 }
 
-// enqueueOpenedObjectCleanup queues the bucket delete for a body that has
-// finished streaming, successfully or not. If this fails or the API stops
-// mid-stream, object reconciliation deletes the object once the stream window
-// has passed. backend names the bucket holding the object; an empty value
-// would make the worker delete from the primary and miss an R2 object.
+// If this fails, object reconciliation deletes the object once the stream window has passed.
+// backend must name the bucket holding the object; the worker deletes only there.
 func (s Server) enqueueOpenedObjectCleanup(ctx context.Context, backend, key string) {
 	jobID, err := s.newJobID()
 	if err != nil {
@@ -585,8 +554,7 @@ func (s Server) getManagementStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s Server) revokeSecret(w http.ResponseWriter, r *http.Request) {
 	id, token := chi.URLParam(r, "id"), managementBearer(r)
-	// Authenticate before interpreting the cancellation body; wrong credentials
-	// receive the same unavailable response regardless of the delivery's state.
+	// Authenticate first; wrong credentials get the same response regardless of state.
 	if _, err := s.secrets.Management(r.Context(), id, token); err != nil {
 		writeManagementError(w, err)
 		return
@@ -625,9 +593,6 @@ func (s Server) acknowledgeObjectCleanup(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, createBodyOverheadLimit))
 	decoder.DisallowUnknownFields()
 	var req struct {
-		// Backend names the configured backend (FLICK_STORAGE_BACKENDS) the
-		// finished delete ran against. It is required; an empty value is
-		// rejected by the owning store.
 		Backend   string `json:"backend,omitempty"`
 		JobID     string `json:"job_id"`
 		ObjectKey string `json:"object_key"`

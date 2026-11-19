@@ -10,16 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// PresignPUT returns a presigned PUT whose signature covers Content-Length, so
-// the bucket rejects any body that is not exactly size bytes — an upload of the
-// wrong length fails authentication before the object lands. That is stricter
-// than the content-length-range this replaced, which allowed anything up to a
-// ceiling.
-//
-// PUT rather than POST because Oracle's S3 Compatibility API does not implement
-// POST Object (browser form upload with a policy document); a presigned POST
-// there returns 403 SignatureDoesNotMatch. PUT is supported by every
-// S3-compatible store this targets, MinIO included.
+// Content-Length is signed so the bucket rejects any other size before the object lands.
+// PUT, not POST: OCI's S3 Compatibility API lacks POST Object (403 SignatureDoesNotMatch).
 func (c *Client) PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error) {
 	if key == "" {
 		return UploadInstruction{}, fmt.Errorf("object key is required")
@@ -37,9 +29,7 @@ func (c *Client) PresignPUT(ctx context.Context, key string, size int64, ttl tim
 		return UploadInstruction{}, fmt.Errorf("presign put: %w", err)
 	}
 
-	// Content-Length is in the signature, so the browser has to send exactly
-	// this value. fetch() sets it from the body, which is why the client must
-	// upload the raw ciphertext rather than a multipart envelope.
+	// fetch() sets Content-Length from the body, so the client must upload raw ciphertext, not multipart.
 	return UploadInstruction{
 		URL:       req.URL,
 		Method:    req.Method,

@@ -12,10 +12,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
-// openUsageDB opens an isolated Postgres schema for one test and runs
-// MigrateAPI in it. Without FLICK_TEST_POSTGRES_URL the test skips: the
-// compose/CI service provides the URL (scripts/dev/postgres-init.sql,
-// .github/workflows/ci.yml).
 func openUsageDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 
@@ -43,8 +39,6 @@ func openUsageDB(t *testing.T, ctx context.Context) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
 	conn, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -108,8 +102,7 @@ func TestIncrementUpsertsPerDayAndMetric(t *testing.T) {
 	}
 }
 
-// 하루 업로드 바이트 합계는 32비트 정수(약 2 GiB)를 쉽게 넘는다. 256 MiB 파일
-// 아홉 개면 넘으므로, 카운터는 그 합계를 오버플로 없이 누적해야 한다.
+// 하루 업로드 바이트 합계는 int32(약 2 GiB)를 넘는다(256 MiB 파일 아홉 개).
 func TestIncrementAccumulatesPastInt32(t *testing.T) {
 	ctx := context.Background()
 	conn := openUsageDB(t, ctx)

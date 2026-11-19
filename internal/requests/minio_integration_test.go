@@ -14,8 +14,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
-// Run with scripts/ci/storage-integration.sh. The service credentials and bucket
-// are supplied by its isolated MinIO stack; no real deployment values are used.
+// Run with scripts/ci/storage-integration.sh.
 func TestMinIORequestImmutableFinalizeAndLatePUT(t *testing.T) {
 	ctx := context.Background()
 	f, _ := largeFixture(t)

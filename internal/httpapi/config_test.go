@@ -33,8 +33,7 @@ func TestGetConfig(t *testing.T) {
 }
 
 func TestGetConfigFallsBackToDefaultsWhenUnset(t *testing.T) {
-	// An empty Options leaves both limits at zero, so the router must substitute
-	// the built-in defaults (1 MiB inline threshold, 256 MiB absolute bound).
+	// Empty Options must fall back to the defaults (1 MiB inline, 256 MiB absolute).
 	fixture := newTestRouterFixture(t, Options{})
 
 	resp := performJSON(t, fixture.router, http.MethodGet, "/api/config", nil)
@@ -54,9 +53,7 @@ func TestGetConfigFallsBackToDefaultsWhenUnset(t *testing.T) {
 	}
 }
 
-// TestGetConfigAdvertisesPlaintextInlineCeiling pins /api/config to the
-// plaintext ceiling: the browser compares its plaintext size against it, while
-// PayloadInlineMaxBytes bounds the ciphertext and sizes the request body limit.
+// The browser compares plaintext size against /api/config; PayloadInlineMaxBytes bounds ciphertext.
 func TestGetConfigAdvertisesPlaintextInlineCeiling(t *testing.T) {
 	fixture := newTestRouterFixture(t, Options{
 		PayloadInlineMaxBytes:    2048,

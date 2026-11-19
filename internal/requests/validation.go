@@ -24,28 +24,22 @@ var (
 const (
 	EnvelopeMaxBytes = 8192
 	MaxGeneration    = 16
-	// envelopeVersion 2 is the age format (contracts/age-format-v1.md). The
-	// RSA-OAEP/AES-GCM version 1 is gone.
+	// Age format (contracts/age-format-v1.md).
 	envelopeVersion = 2
-	// recipientPrefix is the only recipient type a request uses: the hybrid
-	// ML-KEM-768 + X25519 recipient, about 1,960 characters.
+	// Hybrid ML-KEM-768 + X25519 recipient, about 1,960 characters.
 	recipientPrefix     = "age1pq1"
 	maxRecipientChars   = 2400
 	maxEncryptedNameLen = 4096
 	maxEncryptedNoteLen = 4096
-	// AgeMagic starts every age file; bodies and filenames must carry it.
-	AgeMagic = "age-encryption.org/v1\n"
+	AgeMagic            = "age-encryption.org/v1\n"
 )
 
-// Envelope is the submitted metadata beside the body. For files it carries the
-// filename as a base64 age file to the same recipient; text has none.
 type Envelope struct {
 	Version           int    `json:"version"`
 	EncryptedFilename string `json:"encrypted_filename,omitempty"`
 }
 
-// DecodeObject rejects unknown/case-alias/duplicate fields, nulls, missing
-// required fields, and trailing JSON before decoding the bounded object.
+// Rejects unknown/case-alias/duplicate fields, nulls, missing required fields, and trailing JSON.
 func DecodeObject(data []byte, target any, required, optional []string) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	t, err := d.Token()
@@ -97,8 +91,7 @@ func canonicalBase64(s string, min, max int) ([]byte, error) {
 	return b, nil
 }
 
-// publicKeyFingerprint accepts a hybrid age recipient in its canonical string
-// form and returns SHA-256 over that string, unpadded base64url.
+// SHA-256 over the canonical string, unpadded base64url.
 func publicKeyFingerprint(s string) (string, error) {
 	if len(s) > maxRecipientChars || !strings.HasPrefix(s, recipientPrefix) {
 		return "", ErrInvalid

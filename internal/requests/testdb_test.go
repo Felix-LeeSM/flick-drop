@@ -13,9 +13,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
-// testRequestsDatabase owns one isolated Postgres schema per test. Tests that
-// simulate restarts or races open additional pools over the same schema; the
-// schema is dropped when the test finishes.
 type testRequestsDatabase struct {
 	db  *sql.DB
 	url string
@@ -23,10 +20,6 @@ type testRequestsDatabase struct {
 
 var testSchemaCounter atomic.Int64
 
-// openTestRequestsDatabase creates the per-test schema, migrates the API
-// schema into it, and returns the scoped pool. pgx passes the search_path in
-// the DSN as a runtime parameter, so every pooled connection lands in the
-// test schema and fixture rows never leak between tests.
 func openTestRequestsDatabase(t *testing.T) *testRequestsDatabase {
 	t.Helper()
 	ctx := context.Background()
@@ -46,8 +39,7 @@ func openTestRequestsDatabase(t *testing.T) *testRequestsDatabase {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	// pgx v5 passes unknown URL query parameters to the server as runtime
-	// parameters, so every pooled connection lands in the test schema.
+	// pgx v5 passes unknown URL query parameters as runtime parameters, so every pooled connection lands in the test schema.
 	scoped, err := url.Parse(baseURL)
 	if err != nil {
 		_ = admin.Close()
@@ -57,8 +49,6 @@ func openTestRequestsDatabase(t *testing.T) *testRequestsDatabase {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
 	pool, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -79,11 +69,6 @@ func openTestRequestsDatabase(t *testing.T) *testRequestsDatabase {
 	return &testRequestsDatabase{db: pool, url: scoped.String()}
 }
 
-// injectFailureTrigger installs a trigger that aborts its statement with a
-// raised exception. It is the Postgres analogue of the SQLite raise(abort)
-// triggers these tests used to inject storage failures: the raised exception
-// aborts the statement inside the caller's transaction, so the transition must
-// roll back with it.
 func injectFailureTrigger(t *testing.T, conn *sql.DB, name, table, action, when string) {
 	t.Helper()
 	fn := name + "_fn"
@@ -103,11 +88,6 @@ func injectFailureTrigger(t *testing.T, conn *sql.DB, name, table, action, when 
 	})
 }
 
-// injectDeferredCommitFailure creates a table whose foreign key to requests is
-// checked only at COMMIT, plus a trigger that writes a violating row after the
-// given row event. Every statement succeeds, so the transaction reaches COMMIT
-// and fails there — the Postgres analogue of the SQLite deferred-constraint
-// commit failures.
 func injectDeferredCommitFailure(t *testing.T, conn *sql.DB, name, table, action, when string) {
 	t.Helper()
 	if _, err := conn.Exec(`create table deferred_failure (request_id text references requests(id) deferrable initially deferred)`); err != nil {
@@ -132,9 +112,6 @@ func injectDeferredCommitFailure(t *testing.T, conn *sql.DB, name, table, action
 	})
 }
 
-// rowTriggerDDL renders a row-level trigger definition shared by both failure
-// injections; when narrows the firing to matching rows, the SQLite WHEN form
-// carried over verbatim.
 func rowTriggerDDL(name, table, action, when, body string) string {
 	ddl := `create trigger ` + name + ` ` + action + ` on ` + table + ` for each row`
 	if when != "" {

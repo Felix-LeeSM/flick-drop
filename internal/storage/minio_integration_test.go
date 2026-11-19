@@ -1,9 +1,6 @@
 //go:build integration
 
-// Integration tests run against a real MinIO brought up by `docker compose up
-// minio createbuckets`. Run with: go test -tags integration ./internal/storage/
-// They verify the presigned PUT actually interoperates with an
-// S3-compatible bucket — the one thing unit tests cannot prove.
+// Needs `docker compose up minio createbuckets`.
 
 package storage
 
@@ -46,8 +43,6 @@ func nowSuffix(t *testing.T) string {
 	return time.Now().Format("20060102-150405.000000")
 }
 
-// uploadViaPUT mimics the browser: the raw ciphertext as the request body,
-// with Content-Length exactly as signed.
 func uploadViaPUT(t *testing.T, upload UploadInstruction, payload []byte) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(upload.Method, upload.URL, bytes.NewReader(payload))
@@ -114,8 +109,6 @@ func TestMinIORejectsOversized(t *testing.T) {
 	ctx := context.Background()
 	key := "it-oversized-" + nowSuffix(t)
 
-	// The signature pins Content-Length to 8; the client tries to upload 64, so
-	// authentication fails and no object lands.
 	upload, err := c.PresignPUT(ctx, key, 8, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("presign: %v", err)
@@ -166,8 +159,7 @@ func TestMinIOListsLatePUTAfterDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The same still-authorized PUT can recreate ciphertext after an immediate
-	// cleanup. A later complete ListObjectsV2 pass must discover it again.
+	// A still-authorized PUT can recreate ciphertext after cleanup; a later full list pass must find it.
 	resp := uploadViaPUT(t, uploads[0], payload)
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {

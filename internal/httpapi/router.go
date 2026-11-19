@@ -23,9 +23,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// defaultTracer instruments the HTTP server when no Tracer or TracerProvider is
-// supplied via Options. With tracing off (no OTLP endpoint) it is OTel's no-op,
-// so the middleware adds no measurable cost.
 var defaultTracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/httpapi")
 
 type Server struct {
@@ -50,18 +47,12 @@ type Server struct {
 	pipeJoinLimiter          *rateLimiter
 	pipeStatusLimiter        *rateLimiter
 	tracer                   trace.Tracer
-	// natsConnected reports broker liveness for /readyz. Kept as a func, not a
-	// *nats.Conn, so the nats package stays out of httpapi's imports.
-	// ponytail: a one-method closure beats dragging the whole driver type in here.
+	// A func keeps the nats package out of httpapi's imports.
 	natsConnected func() bool
 }
 
 type Options struct {
-	// PayloadInlineMaxBytes bounds the ciphertext the inline path accepts; it
-	// sizes the request body limit. AdvertisedInlineMaxBytes is the plaintext
-	// equivalent reported by /api/config — smaller by the AEAD tag, since the
-	// browser compares its plaintext size against it. Defaults to
-	// PayloadInlineMaxBytes when unset.
+	// AdvertisedInlineMaxBytes is the plaintext equivalent (smaller by the AEAD tag) for /api/config.
 	PayloadInlineMaxBytes    int64
 	AdvertisedInlineMaxBytes int64
 	MaxFileBytes             int64
@@ -71,19 +62,13 @@ type Options struct {
 	OpenRatePerMinute        int
 	CreateRatePerMinute      int
 	TrustedProxies           []*net.IPNet
-	// Valkey, when set, shares every rate limiter's buckets across API
-	// replicas; RateLimitKeySalt (FLICK_RATELIMIT_KEY_SALT) keys the HMAC that
-	// hashes client networks before they reach Valkey. Nil keeps the buckets
-	// in process memory.
-	Valkey           *redis.Client
-	RateLimitKeySalt string
-	OutboxStore      *events.OutboxStore
-	NewJobID         func() (string, error)
-	NATSConnected    func() bool
-	RequestStore     *requests.Store
-	// PipeCoordinator serves /api/pipe/*. Nil disables live transfer: the
-	// endpoints answer 503 and /api/config reports pipe_relay_enabled=false
-	// (cmd/flick-api/main.go leaves it nil without FLICK_VALKEY_ADDR).
+	Valkey                   *redis.Client
+	RateLimitKeySalt         string
+	OutboxStore              *events.OutboxStore
+	NewJobID                 func() (string, error)
+	NATSConnected            func() bool
+	RequestStore             *requests.Store
+	// Nil disables live transfer (503).
 	PipeCoordinator *piperelay.Coordinator
 	Tracer          trace.Tracer
 	TracerProvider  trace.TracerProvider
@@ -116,8 +101,6 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	if opts.Valkey != nil {
 		shared = newSharedBuckets(opts.Valkey, opts.RateLimitKeySalt)
 	}
-	// limiter names each bucket family; the name is the telemetry label and
-	// keeps limiters apart in the one Valkey keyspace.
 	limiter := func(name string, perMinute int, scope rateLimitScope) *rateLimiter {
 		rl := newRateLimiter(perMinute, opts.TrustedProxies, scope)
 		rl.name, rl.shared = name, shared
@@ -139,10 +122,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		openLimiter:              limiter("open", opts.OpenRatePerMinute, perResourceID),
 		secretCreateLimiter:      limiter("secret_create", opts.CreateRatePerMinute, perNetwork),
 		requestCreateLimiter:     limiter("request_create", opts.CreateRatePerMinute, perNetwork),
-		// Both management actions (status and revoke) spend one bucket per delivery.
-		managementLimiter: limiter("management", opts.OpenRatePerMinute, perResourceID),
-		// One bucket across request IDs and operations: rotating IDs must not
-		// bypass the limit or allocate one bucket per guessed request ID.
+		managementLimiter:        limiter("management", opts.OpenRatePerMinute, perResourceID),
+		// One bucket across request IDs: rotating IDs must not bypass the limit or allocate buckets.
 		requestLimiter:    limiter("request", opts.OpenRatePerMinute, perNetwork),
 		pipeCoordinator:   opts.PipeCoordinator,
 		pipeInitLimiter:   limiter("pipe_init", opts.CreateRatePerMinute, perNetwork),
@@ -156,8 +137,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	server.natsConnected = opts.NATSConnected
 
 	r := chi.NewRouter()
-	// Outermost: turn a handler panic into a logged 500 instead of a dropped
-	// connection (the client otherwise sees a reset with no response or headers).
+	// Outermost: a panic becomes a logged 500 instead of a dropped connection.
 	r.Use(middleware.Recoverer)
 	r.Use(server.cors)
 	r.Use(server.tracing)
@@ -189,14 +169,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 	})
 	registerPipeRoutes := func(r chi.Router) {
 		r.With(server.pipeInitLimiter.middleware).Post("/init", server.initPipe)
-		// /join is the only call that accepts a bare 6-digit code, so it carries
-		// the open-rate limit, keyed by client network (IPv6 /64) and shared by
-		// both route prefixes. /status and /receive need a connection ID from
-		// /join, and the sender calls need the sender token from /init; a wrong
-		// ID or token answers 404 exactly like an unknown code. /status long-polls
-		// hold a goroutine and a socket each, so they carry their own
-		// per-network limit (pipeStatusRatePerMinute) on top of the coordinator's
-		// per-connection cap (piperelay.MaxStatusPollsPerConnection).
+		// /join is the only call accepting a bare 6-digit code, so it carries the open-rate limit.
+		// /status long-polls hold a goroutine and socket each, hence their own per-network limit.
 		r.With(server.pipeJoinLimiter.middleware).Post("/join", server.joinPipe)
 		r.With(server.pipeStatusLimiter.middleware).Get("/status", server.statusPipe)
 		r.Get("/receive", server.receivePipe)
@@ -218,12 +192,8 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 
 func (s Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set on every response (including errors and the OPTIONS preflight):
-		// stop browsers MIME-sniffing a JSON body into an executable type.
-		// This is the only middleware that runs unconditionally for /api, which
-		// the ingress routes straight to flick-api (nginx headers cover only /).
+		// The only unconditional middleware for /api, which ingress routes past nginx's headers.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// Also covers preflight, unknown routes, rate limits and error responses.
 		if r.URL.Path == "/api/requests" || strings.HasPrefix(r.URL.Path, "/api/requests/") || strings.HasPrefix(r.URL.Path, "/api/pipe/") || strings.HasPrefix(r.URL.Path, "/api/v1/pipe/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -232,7 +202,6 @@ func (s Server) cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Flick-Pipe-Code, X-Flick-Pipe-Sender, X-Flick-Pipe-Connection, Flick-Kind, Flick-Encrypted-Filename")
-			// The open response carries its metadata in these headers.
 			w.Header().Set("Access-Control-Expose-Headers", "Flick-Kind, Flick-Content-Type, Flick-Encrypted-Filename, Flick-Wrapped-Identity, Flick-Expires-At")
 			w.Header().Set("Vary", "Origin")
 		}
@@ -246,11 +215,7 @@ func (s Server) cors(next http.Handler) http.Handler {
 	})
 }
 
-// tracing starts a server span per request so a create/open/cleanup flow can be
-// followed end to end (and, once #133 PR2 lands cross-process propagation,
-// across the api↔worker boundary). Probe and scrape endpoints are skipped — they
-// are health/monitoring noise, not request flows worth a span. Only method,
-// matched route, and status are recorded; never secret content.
+// Only method, matched route, and status are recorded; never secret content.
 func (s Server) tracing(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -268,8 +233,6 @@ func (s Server) tracing(next http.Handler) http.Handler {
 			trace.WithAttributes(attribute.String("http.request.method", r.Method)),
 		)
 		defer span.End()
-		// Tracing disabled (no OTLP endpoint) or this span unsampled: skip the
-		// response wrapper and route bookkeeping so the off-path stays free.
 		if !span.IsRecording() {
 			next.ServeHTTP(w, r)
 			return
@@ -278,10 +241,7 @@ func (s Server) tracing(next http.Handler) http.Handler {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r.WithContext(ctx))
 
-		// chi populates RoutePattern only after routing the request; the
-		// RouteContext is the same pointer chi installed upstream, so reading it
-		// here yields the matched template (e.g. "/api/secrets/{id}/open") rather
-		// than the high-cardinality concrete path.
+		// RoutePattern is populated only after routing; reading it here yields the template, not the concrete path.
 		if rp := chi.RouteContext(r.Context()).RoutePattern(); rp != "" {
 			span.SetName(r.Method + " " + rp)
 			span.SetAttributes(attribute.String("http.route", rp))
@@ -317,10 +277,7 @@ func secureTokenEqual(got, want string) bool {
 	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 }
 
-// metricsAuth guards /metrics behind a bearer token separate from the internal
-// token, so a Prometheus scraper credential cannot reach /internal/*. The token
-// is a static pre-shared key (FLICK_METRICS_TOKEN); an empty configured token
-// fails closed (401) so a misconfigured deploy never exposes metrics.
+// Separate from the internal token so a scraper credential cannot reach /internal/*. Empty token fails closed.
 func (s Server) metricsAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.checkBearer(r.Header.Get("Authorization"), s.metricsToken) {
@@ -331,9 +288,7 @@ func (s Server) metricsAuth(next http.Handler) http.Handler {
 	})
 }
 
-// checkBearer reports whether header is "Bearer <token>" matching the given
-// configured token (only the metrics credential today). The scheme match is
-// case-insensitive per RFC 6750; the token tail is compared in constant time.
+// Scheme is case-insensitive per RFC 6750; the token is compared in constant time.
 func (s Server) checkBearer(header, token string) bool {
 	const prefix = "bearer "
 	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
@@ -355,9 +310,7 @@ func (s Server) readyz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "not_ready", "database is not ready")
 		return
 	}
-	// The outbox publisher depends on NATS; a down broker backs the outbox up
-	// silently, so /readyz must fail closed on it. Nil-safe: callers that do not
-	// wire the check (tests, db-only setups) keep the old DB-only behaviour.
+	// A down broker backs the outbox up silently, so /readyz must fail closed on it.
 	if s.natsConnected != nil && !s.natsConnected() {
 		writeError(w, http.StatusServiceUnavailable, "not_ready", "message broker is not ready")
 		return

@@ -25,8 +25,6 @@ func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
 					return nil, errors.New("https://private.example/?signed=private")
 				}
 				sent, err := io.ReadAll(r.Body)
-				// A streamed aws-chunked body carries trailers some S3-compatible
-				// stores reject; the spool makes the request a plain sized PUT.
 				if err != nil || r.Method != "PUT" || !bytes.Equal(sent, body) || r.ContentLength != int64(len(body)) || strings.Contains(r.Header.Get("Content-Encoding"), "aws-chunked") {
 					t.Fatalf("PUT changed bytes or framing: %v %q %d %q", err, sent, r.ContentLength, r.Header.Get("Content-Encoding"))
 				}
@@ -52,8 +50,6 @@ func TestPutStreamSendsExactBytesWithLength(t *testing.T) {
 					t.Fatal(err, puts, verified)
 				}
 			case "refused":
-				// A refused body is never written, and the refusal is not
-				// masked as a storage failure.
 				if err != refusal || puts != 0 {
 					t.Fatal("refused body was written", err, puts)
 				}

@@ -29,9 +29,6 @@ func requireUsageCount(t *testing.T, conn *sql.DB, day, metric string, want int6
 	}
 }
 
-// Each lifecycle transition must commit its counter with the state change:
-// create rides the insert tx, submit rides the waiting->submitted tx, and
-// consume rides the consuming tx.
 func TestUsageCountersFollowRequestLifecycle(t *testing.T) {
 	f := newFixture(t)
 	day := usage.Day(f.now)
@@ -46,8 +43,7 @@ func TestUsageCountersFollowRequestLifecycle(t *testing.T) {
 	}
 	requireUsageCount(t, f.db, day, usage.RequestSubmitted, 1)
 
-	// A retried identical submission is accepted from the replay branch without
-	// a new state change, so the counter must not move.
+	// A replayed identical submission must not move the counter.
 	if _, err := f.store.Submit(ctx, c.ID, c.SubmissionToken, in); err != nil {
 		t.Fatalf("resubmit: %v", err)
 	}
@@ -62,7 +58,6 @@ func TestUsageCountersFollowRequestLifecycle(t *testing.T) {
 	}
 	requireUsageCount(t, f.db, day, usage.RequestConsumed, 1)
 
-	// Opening again conflicts without consuming twice.
 	if _, err := f.store.Open(ctx, c.ID, c.RetrievalToken); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reopen error = %v, want ErrConflict", err)
 	}

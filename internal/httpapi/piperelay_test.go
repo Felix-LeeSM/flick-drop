@@ -28,7 +28,6 @@ const (
 	uaFirefoxLinux  = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0"
 )
 
-// pipeDo는 파이프 엔드포인트 하나를 호출한다. headers의 빈 값은 보내지 않는다.
 func pipeDo(router http.Handler, method, path string, headers map[string]string, body io.Reader) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, body)
 	for name, value := range headers {
@@ -56,9 +55,7 @@ type pipeFixture struct {
 	coord  *piperelay.Coordinator
 }
 
-// pipeCluster는 같은 Valkey 이름공간을 쓰는 API 레플리카 묶음이다. 레플리카마다
-// 192.0.2.N(문서용 주소)을 광고하고, 스트림 전송은 그 주소:8081을 그 레플리카의
-// 실제 스트림 리스너로 이어 준다.
+// Each replica advertises 192.0.2.N; stream dials to N:8081 reach that replica's listener.
 type pipeCluster struct {
 	t         *testing.T
 	valkey    *redis.Client
@@ -99,7 +96,6 @@ func (c *pipeCluster) transport() http.RoundTripper {
 	}
 }
 
-// replica는 라우터 + 코디네이터 + 스트림 리스너로 된 API 레플리카 하나를 띄운다.
 func (c *pipeCluster) replica(opts piperelay.CoordinatorOptions, openRatePerMinute int) pipeFixture {
 	c.t.Helper()
 	c.mu.Lock()
@@ -146,7 +142,6 @@ func newPipeFixtureWith(t *testing.T, opts piperelay.CoordinatorOptions, openRat
 	return newPipeCluster(t).replica(opts, openRatePerMinute)
 }
 
-// active는 모든 레플리카를 통틀어 살아 있는 세션 수다.
 func (f pipeFixture) active() int {
 	f.t.Helper()
 	n, err := f.coord.ActiveSessions(context.Background())
@@ -156,8 +151,6 @@ func (f pipeFixture) active() int {
 	return n
 }
 
-// pipeTestRecipient는 userAgent 기기가 브라우저에서 만든 것으로 치는 진짜 하이브리드 age 수신자다.
-// 기기(User-Agent)마다 하나씩 만들어 두고 재사용하며, 기기마다 다르다.
 func pipeTestRecipient(userAgent string) string {
 	pipeTestRecipientsMu.Lock()
 	defer pipeTestRecipientsMu.Unlock()
@@ -182,7 +175,6 @@ func pipeJoinBody(userAgent string) io.Reader {
 	return strings.NewReader(`{"recipient":"` + pipeTestRecipient(userAgent) + `"}`)
 }
 
-// joinFrom는 remoteAddr(예: "[2001:db8::1]:443")에서 /join을 부른다.
 func (f pipeFixture) joinFrom(path, code, userAgent, remoteAddr string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, pipeJoinBody(userAgent))
 	req.RemoteAddr = remoteAddr
@@ -193,12 +185,11 @@ func (f pipeFixture) joinFrom(path, code, userAgent, remoteAddr string) *httptes
 	return rec
 }
 
-// joinAddr는 i번째 기기마다 서로 다른 IPv4 주소를 준다(네트워크별 상한에 걸리지 않게).
+// Distinct IPv4 per device so the per-network cap does not trip.
 func joinAddr(i int) string {
 	return "198.51.100." + strconv.Itoa(i+1) + ":443"
 }
 
-// status는 /status 롱폴을 백그라운드로 한 번 열고 응답을 채널로 돌려준다.
 func (f pipeFixture) status(code, connectionID string) <-chan *httptest.ResponseRecorder {
 	out := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -237,7 +228,6 @@ func (f pipeFixture) mustJoin(code, userAgent string) pipeJoinResponse {
 	return out
 }
 
-// receive는 /receive를 백그라운드로 열고 끝난 응답을 채널로 돌려준다.
 func (f pipeFixture) receive(code, connectionID string) <-chan *httptest.ResponseRecorder {
 	out := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -246,7 +236,6 @@ func (f pipeFixture) receive(code, connectionID string) <-chan *httptest.Respons
 	return out
 }
 
-// waitFor는 /wait를 버전과 함께 반복해 done이 참인 응답을 돌려준다.
 func (f pipeFixture) waitFor(init pipeInitResponse, done func(pipeWaitResponse) bool) pipeWaitResponse {
 	f.t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -304,7 +293,6 @@ func awaitRecorder(t *testing.T, ch <-chan *httptest.ResponseRecorder) *httptest
 func TestPipeRelay_Disabled(t *testing.T) {
 	fixture := newTestRouterFixture(t, Options{})
 
-	// 1. /api/config reports false
 	resp := performJSON(t, fixture.router, http.MethodGet, "/api/config", nil)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("GET /api/config: status = %d, want 200", resp.Code)
@@ -315,7 +303,6 @@ func TestPipeRelay_Disabled(t *testing.T) {
 		t.Fatalf("pipe_relay_enabled = true, want false when disabled")
 	}
 
-	// 2. All pipe endpoints return 503
 	for _, prefix := range []string{"/api/pipe", "/api/v1/pipe"} {
 		for _, ep := range []struct {
 			method string
@@ -407,7 +394,6 @@ func TestPipeRelay_LateConnectorsGet409WithoutBurning(t *testing.T) {
 	received := f.receive(init.Code, first.ConnectionID)
 	f.waitFor(init, func(w pipeWaitResponse) bool { return w.Status == "ready" })
 
-	// 첫 연결이 선택된 뒤 미선택·늦은 연결은 몇 번이 와도 세션을 태우지 않는다.
 	lost := awaitRecorder(t, f.receive(init.Code, second.ConnectionID))
 	if lost.Code != http.StatusGone || pipeErrorCode(t, lost) != "not_selected" {
 		t.Fatalf("losing receiver: %d %s", lost.Code, lost.Body.String())
@@ -463,7 +449,6 @@ func TestPipeRelay_WaitingRoomSelectStreamsToChosenOnly(t *testing.T) {
 	if joins[0].VerifyCode == joins[1].VerifyCode || joins[1].VerifyCode == joins[2].VerifyCode || joins[0].VerifyCode == joins[2].VerifyCode {
 		t.Fatalf("verify codes repeat: %v %v %v", joins[0].VerifyCode, joins[1].VerifyCode, joins[2].VerifyCode)
 	}
-	// 아직 고르지 않은 연결은 /receive를 열어 둘 수 없다(프록시가 끊는 무응답 대기를 막는다).
 	early := awaitRecorder(t, f.receive(init.Code, joins[0].ConnectionID))
 	if early.Code != http.StatusConflict || pipeErrorCode(t, early) != "awaiting_decision" {
 		t.Fatalf("receive before select: %d %s", early.Code, early.Body.String())
@@ -505,7 +490,6 @@ func TestPipeRelay_SelectOfAConnectionThatLeftIs409NotPending(t *testing.T) {
 	init := f.init()
 	left := f.mustJoin(init.Code, uaChromeWindows)
 
-	// /status를 한 번도 열지 않은 연결은 presence 시간이 지나면 목록에서 빠진다.
 	time.Sleep(100 * time.Millisecond)
 	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
 	for _, connectionID := range []string{left.ConnectionID, "never-joined"} {
@@ -525,7 +509,6 @@ func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testin
 	f := newPipeFixture(t)
 	init := f.init()
 
-	// 같은 /64 안의 서로 다른 주소 세 개, User-Agent도 서로 다르다.
 	agents := []string{uaChromeWindows, uaSafariIPhone, uaFirefoxLinux}
 	var first pipeJoinResponse
 	for i, ua := range agents {
@@ -545,7 +528,6 @@ func TestPipeRelay_PendingCapPerNetworkTreatsAnIPv6Slash64AsOneNetwork(t *testin
 		t.Fatalf("join from the next /64: %d %s", rec.Code, rec.Body.String())
 	}
 
-	// 거절 차단도 /64 단위다: 같은 /64의 다른 주소로 바꿔도 같은 브라우저는 다시 못 들어온다.
 	if rec := f.senderCall("/api/pipe/decline", init, first.ConnectionID); rec.Code != http.StatusOK {
 		t.Fatalf("decline: %d %s", rec.Code, rec.Body.String())
 	}
@@ -560,7 +542,6 @@ func TestPipeRelay_StatusCapsConcurrentPollsAndRateLimitsPerNetwork(t *testing.T
 	init := f.init()
 	join := f.mustJoin(init.Code, uaChromeWindows)
 
-	// 한 연결 ID의 동시 롱폴은 piperelay.MaxStatusPollsPerConnection(2)개까지다.
 	var held []<-chan *httptest.ResponseRecorder
 	for i := 0; i < piperelay.MaxStatusPollsPerConnection; i++ {
 		held = append(held, f.status(init.Code, join.ConnectionID))
@@ -579,7 +560,6 @@ func TestPipeRelay_StatusCapsConcurrentPollsAndRateLimitsPerNetwork(t *testing.T
 		}
 	}
 
-	// 네트워크(IPv6 /64)마다 분당 pipeStatusRatePerMinute번이고, /api/v1 경로도 같은 버킷을 쓴다.
 	statusFrom := func(path, remoteAddr string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.RemoteAddr = remoteAddr
@@ -605,7 +585,6 @@ func TestPipeRelay_StatusCapsConcurrentPollsAndRateLimitsPerNetwork(t *testing.T
 func TestPipeRelay_JoinRateLimitSharesOneBucketPerIPv6Slash64AndAcrossPrefixes(t *testing.T) {
 	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{}, 2)
 
-	// 버킷 2개: 같은 /64의 두 주소가 다 쓰면, 셋째 주소도, /api/v1 경로도 막힌다.
 	for i, addr := range []string{"[2001:db8::1]:443", "[2001:db8::2]:443"} {
 		if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, addr); rec.Code == http.StatusTooManyRequests {
 			t.Fatalf("join %d inside the burst was rate limited", i)
@@ -619,7 +598,6 @@ func TestPipeRelay_JoinRateLimitSharesOneBucketPerIPv6Slash64AndAcrossPrefixes(t
 	if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, "[2001:db8:0:1::1]:443"); rec.Code == http.StatusTooManyRequests {
 		t.Fatal("another /64 shared the bucket")
 	}
-	// IPv4는 주소마다 그대로 따로다.
 	for _, addr := range []string{"203.0.113.1:443", "203.0.113.1:443", "203.0.113.2:443"} {
 		if rec := f.joinFrom("/api/pipe/join", "123456", uaChromeWindows, addr); rec.Code == http.StatusTooManyRequests {
 			t.Fatalf("IPv4 %s rate limited inside its own burst", addr)
@@ -644,7 +622,6 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	}
 	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
 
-	// 같은 IP와 User-Agent는 이 세션에 다시 들어오지 못한다. 다른 기기는 들어온다.
 	rejoin := f.join(init.Code, uaChromeWindows)
 	if rejoin.Code != http.StatusForbidden || pipeErrorCode(t, rejoin) != "declined" {
 		t.Fatalf("rejoin from declined client: %d %s", rejoin.Code, rejoin.Body.String())
@@ -782,7 +759,6 @@ func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 			t.Fatalf("%s: %d %s, want 400 invalid_recipient", name, rec.Code, rec.Body.String())
 		}
 	}
-	// 잘못된 join은 대기실에 아무것도 남기지 않고, 진짜 수신자는 들어온다.
 	if w := f.waitFor(init, func(pipeWaitResponse) bool { return true }); len(w.Connections) != 0 {
 		t.Fatalf("rejected joins left connections: %+v", w.Connections)
 	}
@@ -791,7 +767,6 @@ func TestPipeRelay_JoinRequiresAValidRecipient(t *testing.T) {
 	}
 }
 
-// flipBech32는 bech32 문자 하나를 다른 문자로 바꿔 체크섬을 깨뜨린다.
 func flipBech32(c string) string {
 	if c == "q" {
 		return "p"
@@ -845,8 +820,6 @@ func TestPipeDeviceLabel(t *testing.T) {
 	}
 }
 
-// 송신 브라우저와 수신 브라우저가 서로 다른 API 레플리카에 붙어도(로드밸런서가
-// 요청마다 아무 레플리카로 보낸다) 대기방·선택·전송이 끝까지 이어진다.
 func TestPipeRelay_SenderAndReceiverOnDifferentReplicas(t *testing.T) {
 	cluster := newPipeCluster(t)
 	senderSide := cluster.replica(piperelay.CoordinatorOptions{}, 100)
@@ -888,7 +861,6 @@ func TestPipeRelay_SenderAndReceiverOnDifferentReplicas(t *testing.T) {
 	}
 }
 
-// Valkey가 죽으면 /api/pipe/*만 503이고, 설정·준비 상태는 그대로다.
 func TestPipeRelay_ValkeyDownAnswers503(t *testing.T) {
 	down := NewValkeyClient("127.0.0.1:1") // 아무도 듣지 않는 포트
 	t.Cleanup(func() { _ = down.Close() })

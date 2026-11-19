@@ -12,14 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// PutStream writes exactly size bytes from body to a server-only final key.
-// The body is spooled to a temporary file first: the SDK signs and checksums a
-// seekable body the same way as before, while an unseekable stream would need
-// aws-chunked trailing checksums that S3-compatible stores do not all accept.
-// Memory stays bounded; the spool holds only ciphertext and is removed. verify
-// runs once the whole body is spooled and before anything is written, so a
-// caller that hashes the stream can refuse it; its error is returned as is. A
-// failed response may follow a successful write; callers must not delete it.
+// Spools to a temp file: an unseekable body would need aws-chunked trailing checksums
+// that not all S3-compatible stores accept. A failed response may follow a successful write; callers must not delete it.
 func (c *Client) PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error {
 	if key == "" || size < 1 || verify == nil {
 		return errors.New("invalid object write")
@@ -66,8 +60,7 @@ func (c *Client) Head(ctx context.Context, key string) (ObjectInfo, error) {
 	}, nil
 }
 
-// Open returns once the store has answered with headers, so a failure to start
-// the read surfaces here and not midway through a caller's stream.
+// Returns after response headers so a failed read start surfaces here, not mid-stream.
 func (c *Client) Open(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.cfg.Bucket),
@@ -83,7 +76,7 @@ func (c *Client) Open(ctx context.Context, key string) (io.ReadCloser, int64, er
 	return out.Body, *out.ContentLength, nil
 }
 
-// Delete is idempotent: a 404 (already gone) is not an error.
+// Idempotent: a 404 is not an error.
 func (c *Client) Delete(ctx context.Context, key string) error {
 	_, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.cfg.Bucket),

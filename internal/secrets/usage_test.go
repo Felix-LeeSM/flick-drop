@@ -30,10 +30,6 @@ func requireUsageCount(t *testing.T, conn *sql.DB, day, metric string, want int6
 	}
 }
 
-// Every write point below must commit its counter in the same transaction as
-// the state change: the create counters ride the create tx, bytes ride the tx
-// that persists the body (inline create or large finalize), and open/failure
-// counters ride the open tx the HTTP handler commits.
 func TestUsageCountersFollowInlineCreateAndOpen(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -77,8 +73,6 @@ func TestUsageCountersFollowInlineCreateAndOpen(t *testing.T) {
 	requireUsageCount(t, conn, day, usage.SecretCreatedFile, 1)
 	requireUsageCount(t, conn, day, usage.BytesUploaded, 2*int64(testBodyLen))
 
-	// A failed access proof records its counter in the tx the handler commits
-	// for the failed attempt (openAndEnqueueCleanup commits on ErrInvalidAccess).
 	proofed, err := store.Create(ctx, CreateInput{
 		Kind:            KindText,
 		Ciphertext:      testBody,
@@ -106,8 +100,6 @@ func TestUsageCountersFollowInlineCreateAndOpen(t *testing.T) {
 	requireUsageCount(t, conn, day, usage.SecretOpenFailed, 1)
 	requireUsageCount(t, conn, day, usage.SecretOpened, 0)
 
-	// A Model B secret carries no access KDF, proof hash, or wrapped identity:
-	// the link fragment is the capability, so it opens without a proof.
 	modelB, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
 		Ciphertext: testBody,
@@ -161,15 +153,13 @@ func TestUsageCountersFollowLargeCreateAndFinalize(t *testing.T) {
 	requireUsageCount(t, conn, day, usage.SecretCreatedFile, 1)
 	requireUsageCount(t, conn, day, usage.BytesUploaded, 0)
 
-	// The client uploads the age file straight to the bucket; finalize confirms
-	// the exact length, and only then do the bytes count.
 	mock.objects["managed/secrets/"+res.ID] = ageBody(1000)
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 	requireUsageCount(t, conn, day, usage.BytesUploaded, 1000)
 
-	// Finalize is idempotent: replaying it must not double-count the bytes.
+	// Replaying finalize must not double-count the bytes.
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize replay: %v", err)
 	}

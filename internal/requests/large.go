@@ -56,8 +56,6 @@ func objectAttemptTx(ctx context.Context, tx *sql.Tx, id string) (objectAttempt,
 	return a, err
 }
 
-// backendOf names the backend a reservation row was written to. The column is
-// never null; an unconfigured name fails at Registry.For.
 func backendOf(a objectAttempt) string {
 	return a.backend.String
 }
@@ -74,9 +72,7 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if err != nil {
 		return UploadResult{}, err
 	}
-	// size_bytes is the exact age file length. Any file may take the large
-	// path: clients route on the inline limit before encryption, which is not
-	// this store's limit on the age file.
+	// Clients route on the pre-encryption inline limit, so any file may take the large path.
 	if in.Kind != "file" || in.SizeBytes < int64(len(AgeMagic)) {
 		return UploadResult{}, ErrInvalid
 	}
@@ -128,11 +124,7 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 		if _, err := rand.Read(random[:]); err != nil {
 			return UploadResult{}, err
 		}
-		// Placement: a random backend weighted by remaining space among those
-		// whose ceiling still fits (storage.Registry.Choose). The aggregate rides the reservation transaction
-		// (RowQueryer), so the ceiling check and the row it guards share one
-		// connection and one commit scope. No row is written before the backend
-		// passes its ceiling.
+		// Usage is read in the reservation tx so the ceiling check and the row share one commit scope.
 		usage, err := db.StorageObjectBytes(ctx, tx.Tx, s.now().UTC(), s.opts.Objects.Names())
 		if err != nil {
 			return UploadResult{}, ErrStorage
@@ -179,7 +171,6 @@ func (s *Store) Reserve(ctx context.Context, id, token string, in UploadInput) (
 	if err != nil {
 		return UploadResult{}, ErrStorage
 	}
-	// Bound the advertised deadline even if signing and response delivery take time.
 	instruction.ExpiresAt = row.reservationExpires
 	return UploadResult{Generation: row.generation, State: "uploading", Upload: &instruction, ReservationExpiresAt: &row.reservationExpires}, nil
 }
@@ -205,8 +196,7 @@ func (s *Store) Finalize(ctx context.Context, id, token string, in AttemptInput)
 		return Receipt{}, ErrConflict
 	}
 	if row.state != "uploading" {
-		// Accepted receipts survive consume/revoke, but a cancelled reservation was
-		// never accepted. It retains no attempt hash (see clearPayloadTx).
+		// A cancelled reservation was never accepted and retains no attempt hash.
 		if row.state != "submitted" && row.state != "consumed" && row.state != "cancelled" {
 			return Receipt{}, ErrConflict
 		}
@@ -288,10 +278,7 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 	if err := requireTransition(result); err != nil {
 		return Receipt{}, err
 	}
-	// Large requests count the submission here: uploading -> submitted is the
-	// transition (store.Submit handles the inline waiting -> submitted one).
-	// A losing or replayed finalize never passes requireTransition, so the
-	// counter counts the submission exactly once.
+	// Only uploading -> submitted counts; a losing or replayed finalize never reaches here.
 	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestSubmitted, 1); err != nil {
 		return Receipt{}, err
 	}
@@ -309,14 +296,8 @@ func (s *Store) finalizeAttempt(ctx context.Context, id, token string, in Attemp
 	return Receipt{row.generation, "submitted"}, nil
 }
 
-// copyVerified streams the uploaded object into the server-only final key
-// while hashing it, so a large body is never held in memory. The bytes are
-// checked before PutStream writes them: the final key only ever holds an age
-// file of the reserved length and checksum, even when a losing finalizer read
-// a re-PUT upload. Never delete on error: a write may have succeeded, or
-// another same-attempt finalizer may accept; reconciliation removes an unused
-// final object. A copy waits for a slot before it opens the bucket read, so a
-// waiting finalize holds no idle download.
+// Bytes are verified before PutStream writes, so a losing finalizer cannot write a re-PUT upload.
+// Never delete on error: a write may have succeeded; reconciliation removes unused final objects.
 func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 	select {
 	case s.copies <- struct{}{}:
@@ -354,7 +335,6 @@ func (s *Store) copyVerified(ctx context.Context, a objectAttempt) error {
 	return nil
 }
 
-// prefixRecorder keeps the first limit bytes written to it.
 type prefixRecorder struct {
 	b     []byte
 	limit int

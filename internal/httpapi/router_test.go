@@ -81,8 +81,7 @@ func TestSecretHTTPFlow(t *testing.T) {
 		"Flick-Content-Type":       "",
 		"Flick-Encrypted-Filename": "",
 	})
-	// The open transaction already deleted the inline payload, so no cleanup
-	// job (which would carry the opened ID) is queued.
+	// The open transaction already deleted the inline payload, so no job carrying the opened ID is queued.
 	due := listOutboxDue(t, fixture.db, fixture.outbox, time.Date(2026, 6, 17, 10, 1, 0, 0, time.UTC), 10)
 	if len(due) != 0 {
 		t.Fatalf("due outbox events = %+v, want none for an inline open", due)
@@ -322,8 +321,7 @@ func TestMetricsRequiresToken(t *testing.T) {
 		t.Fatalf("correct token metrics status = %d, want 200, body = %s", resp.Code, resp.Body.String())
 	}
 
-	// A misconfigured deploy (no token) fails closed: /metrics stays 401 even
-	// with a bearer header, so it can never be exposed unauthenticated.
+	// No configured token fails closed.
 	disabledRouter := newTestRouter(t)
 	disabledReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	disabledReq.Header.Set("Authorization", "Bearer anything")
@@ -454,7 +452,6 @@ func TestReadyzChecksNATS(t *testing.T) {
 		t.Fatalf("readyz with NATS up status = %d, want 200, body = %s", readyResp.Code, readyResp.Body.String())
 	}
 
-	// No NATSConnected wired: readyz stays DB-only and returns 200.
 	nilResp := performJSON(t, newTestRouter(t), http.MethodGet, "/readyz", nil)
 	if nilResp.Code != http.StatusOK {
 		t.Fatalf("readyz without NATS check status = %d, want 200, body = %s", nilResp.Code, nilResp.Body.String())
@@ -486,8 +483,6 @@ func newTestRouterFixture(t *testing.T, opts Options) testRouterFixture {
 	return newTestRouterFixtureWithObjects(t, opts, nil)
 }
 
-// newTestRouterFixtureWithObjects backs the store with objects (nil for an
-// inline-only deployment).
 func newTestRouterFixtureWithObjects(t *testing.T, opts Options, objects storage.ObjectStore) testRouterFixture {
 	t.Helper()
 
@@ -551,10 +546,6 @@ func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	}
 }
 
-// openHTTPTestDB opens an isolated Postgres schema for one test and runs
-// MigrateAPI in it. Without FLICK_TEST_POSTGRES_URL the test skips: the
-// compose/CI service provides the URL (scripts/dev/postgres-init.sql,
-// .github/workflows/ci.yml).
 func openHTTPTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 
@@ -582,8 +573,6 @@ func openHTTPTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
 	conn, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -631,13 +620,11 @@ func performJSON(t *testing.T, handler http.Handler, method, path string, body a
 
 const ageMagicLine = "age-encryption.org/v1\n"
 
-// ageBody is an age-shaped file of exactly n bytes: the magic line, then
-// padding. The server checks only the magic line and the length.
+// The server checks only the magic line and the length.
 func ageBody(n int) []byte {
 	return append([]byte(ageMagicLine), bytes.Repeat([]byte{'x'}, n-len(ageMagicLine))...)
 }
 
-// ageField is ageBody(n) as the base64 the API carries in JSON fields.
 func largeFilename() *string {
 	name := ageField(120)
 	return &name
@@ -647,7 +634,6 @@ func ageField(n int) string {
 	return base64.StdEncoding.EncodeToString(ageBody(n))
 }
 
-// validCreateSecretBody is a Model A text secret with a 64-byte age body.
 func validCreateSecretBody() map[string]any {
 	return map[string]any{
 		"kind":       "text",
@@ -667,8 +653,7 @@ func validCreateSecretBody() map[string]any {
 	}
 }
 
-// assertOpenResponse checks an open response: 200, the raw age bytes, the
-// transport headers, and each Flick-* header in want ("" means absent).
+// "" in want means the header is absent.
 func assertOpenResponse(t *testing.T, resp *httptest.ResponseRecorder, wantBody []byte, want map[string]string) {
 	t.Helper()
 
@@ -718,8 +703,7 @@ func TestSecretHTTPFlowModelB(t *testing.T) {
 	})
 	router := fixture.router
 
-	// Model B create: no kdf, no access. The decryption key travels in the URL
-	// fragment, which the API never receives.
+	// The decryption key travels in the URL fragment, which the API never receives.
 	createBody := map[string]any{
 		"kind":        "text",
 		"ciphertext":  ageField(48),
@@ -742,28 +726,22 @@ func TestSecretHTTPFlowModelB(t *testing.T) {
 		t.Fatalf("model B metadata should omit access: %s", getResp.Body.String())
 	}
 
-	// Model B opens without a proof; the link is the capability.
 	openResp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
 	if openResp.Code != http.StatusOK {
 		t.Fatalf("open status = %d, body = %s", openResp.Code, openResp.Body.String())
 	}
-	// Model B has no wrapped identity: the identity is in the URL fragment.
 	assertOpenResponse(t, openResp, ageBody(48), map[string]string{
 		"Flick-Kind":             secrets.KindText,
 		"Flick-Expires-At":       "2026-06-17T10:10:00Z",
 		"Flick-Wrapped-Identity": "",
 	})
 
-	// One-time open still applies.
 	secondOpen := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
 	if secondOpen.Code != http.StatusNotFound {
 		t.Fatalf("second open status = %d, body = %s", secondOpen.Code, secondOpen.Body.String())
 	}
 }
 
-// TestCreateValidatesAgeFields covers the age create contract: the body must be
-// an age file whose exact length is size_bytes, Model A carries a wrapped
-// identity and Model B does not, and only file secrets carry a filename.
 func TestCreateValidatesAgeFields(t *testing.T) {
 	modelB := func(body map[string]any) {
 		delete(body, "access")
@@ -813,8 +791,6 @@ func TestCreateValidatesAgeFields(t *testing.T) {
 	}
 }
 
-// streamObjects is a bucket holding one S3 body. Open serves it through a
-// reader that calls onEOF when the handler reads past the last byte.
 type streamObjects struct {
 	storage.ObjectStore
 	body     []byte
@@ -822,9 +798,7 @@ type streamObjects struct {
 	openErr  error
 	opened   []string
 	onEOF    func()
-	// readErr, when set, ends the body with this error after half the bytes,
-	// as a bucket connection that drops mid-stream would.
-	readErr error
+	readErr  error
 }
 
 func (o *streamObjects) PresignPUT(_ context.Context, key string, _ int64, _ time.Duration) (storage.UploadInstruction, error) {
@@ -866,8 +840,6 @@ func (e *eofHookReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// listOutboxDue claims the due outbox rows inside one committed transaction —
-// the same shape a publisher batch uses.
 func listOutboxDue(t *testing.T, conn *sql.DB, outbox *events.OutboxStore, dueAt time.Time, limit int) []events.OutboxRecord {
 	t.Helper()
 	ctx := context.Background()
@@ -886,7 +858,6 @@ func listOutboxDue(t *testing.T, conn *sql.DB, outbox *events.OutboxStore, dueAt
 	return records
 }
 
-// outboxKinds lists the kinds of every outbox job, in no particular order.
 func outboxKinds(t *testing.T, conn *sql.DB, outbox *events.OutboxStore) map[string]events.JobEvent {
 	t.Helper()
 
@@ -926,10 +897,7 @@ func newS3OpenFixture(t *testing.T, objects *streamObjects) (testRouterFixture, 
 	return fixture, created.ID
 }
 
-// TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete proves an S3 body larger
-// than the inline cap streams from the object store's Open, and that the
-// bucket delete is queued only once the body has been read to the end. The
-// open transaction itself queues nothing: it already deleted the secret's rows.
+// The bucket delete is queued only after the body is read to the end.
 func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	objects := &streamObjects{body: ageBody(5000)}
 	fixture, id := newS3OpenFixture(t, objects)
@@ -958,12 +926,10 @@ func TestOpenStreamsS3BodyBeforeEnqueuingObjectDelete(t *testing.T) {
 	}
 }
 
-// 스트리밍이 끝난 뒤 넣는 객체 삭제 작업은 그 객체가 있는 백엔드를 담는다. 워커는
-// 작업에 적힌 백엔드에서만 지우므로, 다른 이름이 담기면 객체는 재조정 유예가 지날 때까지 남는다.
+// The worker deletes only from the backend named in the job.
 func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 	for _, backend := range []string{testBackend, otherTestBackend} {
 		t.Run(backend, func(t *testing.T) {
-			// Given: 두 버킷이 설정되고 시크릿이 backend에 놓였다
 			ctx := context.Background()
 			conn := openHTTPTestDB(t, ctx)
 			objects := &streamObjects{body: ageBody(5000)}
@@ -994,13 +960,11 @@ func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// When: 수신자가 열고 본문을 끝까지 받는다
 			resp := performJSON(t, router, http.MethodPost, "/api/secrets/"+created.ID+"/open", map[string]any{})
 			if resp.Code != http.StatusOK {
 				t.Fatalf("open: %d", resp.Code)
 			}
 
-			// Then: 삭제 작업이 같은 백엔드를 가리킨다
 			job, ok := outboxKinds(t, conn, outbox)[events.KindDeleteOCIObject]
 			if !ok || job.Backend != backend || job.ObjectKey != "managed/secrets/"+created.ID {
 				t.Fatalf("object delete job = %+v, want backend %q", job, backend)
@@ -1009,9 +973,6 @@ func TestOpenedObjectDeleteNamesItsBackend(t *testing.T) {
 	}
 }
 
-// TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete covers a bucket read that
-// fails after the 200 status: the secret is consumed (lost by design), the
-// recipient gets a short body, and the object still gets its delete job.
 func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	objects := &streamObjects{body: ageBody(5000), readErr: errors.New("connection reset")}
 	fixture, id := newS3OpenFixture(t, objects)
@@ -1028,9 +989,6 @@ func TestOpenS3BodyBrokenMidStreamStillQueuesObjectDelete(t *testing.T) {
 	}
 }
 
-// TestOpenS3BodyFailureLeavesSecretOpenable proves a bucket that cannot start
-// the read, or reports a length other than size_bytes, refuses the open
-// without consuming the secret or queueing any cleanup.
 func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 	for name, breakOpen := range map[string]func(*streamObjects){
 		"open fails":      func(o *streamObjects) { o.openErr = errors.New("bucket unavailable") },
@@ -1059,16 +1017,11 @@ func TestOpenS3BodyFailureLeavesSecretOpenable(t *testing.T) {
 	}
 }
 
-// testBackend and otherTestBackend name the object backends test registries
-// configure; any name matching storage.ValidBackendName works.
 const (
 	testBackend      = "oci"
 	otherTestBackend = "r2"
 )
 
-// newTestRegistry wraps a test double as a single uncapped backend named
-// testBackend. Constructing a registry cannot fail for a non-nil store, so a
-// panic is unreachable in practice.
 func newTestRegistry(objects storage.ObjectStore) *storage.Registry {
 	if objects == nil {
 		return nil // nil registry = object storage disabled, same as production wiring

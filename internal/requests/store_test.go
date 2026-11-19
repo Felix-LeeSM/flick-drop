@@ -68,8 +68,7 @@ func attempt(value byte) string {
 	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{value}, 32))
 }
 
-// ageBody is an age-shaped body of size bytes: the store checks only the
-// header magic, so the rest stands in for the encrypted payload.
+// The store checks only the header magic.
 func ageBody(size int, value byte) []byte {
 	return append([]byte(AgeMagic), bytes.Repeat([]byte{value}, size-len(AgeMagic))...)
 }
@@ -85,8 +84,6 @@ func submission(kind string) SubmitInput {
 	return SubmitInput{Generation: 1, AttemptToken: attempt(5), Kind: kind, SizeBytes: 60, Envelope: raw, Ciphertext: ageEncoded(60, 6)}
 }
 
-// readOpened drains and closes an opened body, returning it as the base64 a
-// submission carries.
 func readOpened(t *testing.T, opened Opened) string {
 	t.Helper()
 	body, err := io.ReadAll(opened.Body)
@@ -262,8 +259,6 @@ func TestConcurrentSubmissionAndOpenAcrossConnections(t *testing.T) {
 			f := newFixture(t)
 			c := f.create(t)
 			ctx := context.Background()
-			// A second pool over the same schema is the Postgres analogue of a
-			// second API connection: each pool commits independently.
 			second := reopenLarge(t, f)
 			stores := []*Store{f.store, second}
 			start := make(chan struct{})
@@ -579,8 +574,7 @@ func TestCancelledCommitPreservesReplacementCleanup(t *testing.T) {
 		calls++
 		if calls == 2 {
 			cancel()
-			// Let database/sql complete its asynchronous cancellation rollback
-			// and discard the cancelled physical connection.
+			// Let database/sql finish its async cancellation rollback and discard the connection.
 			time.Sleep(10 * time.Millisecond)
 		}
 		return f.now
@@ -591,8 +585,6 @@ func TestCancelledCommitPreservesReplacementCleanup(t *testing.T) {
 		t.Fatalf("cancelled submission: %v", err)
 	}
 	f.store.now = func() time.Time { return f.now }
-	// A replacement connection from the pool must be healthy: the cancelled
-	// one is discarded, and nothing about the pool may be poisoned by it.
 	if err := f.db.PingContext(context.Background()); err != nil {
 		t.Fatalf("replacement pool ping: %v", err)
 	}
@@ -716,7 +708,6 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 	ctx := context.Background()
 	wantNote := ageEncoded(64, 9)
 
-	// 1. Consumed inline request omits encrypted_note once submitted and clears it on open.
 	f := newFixture(t)
 	created, err := f.store.Create(ctx, publicKey(t), nil, &wantNote)
 	if err != nil {
@@ -741,8 +732,6 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		t.Fatalf("encrypted_note retained after open: %+v err=%v", dbNote, err)
 	}
 
-	// 2. Large upload lifecycle: uploading hides note, abandon keeps it for renewal, consumeObject clears it,
-	//    and generation-16 exhaustion clears it.
 	lf, obj := largeFixture(t)
 	lc, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
 	if err != nil {
@@ -781,7 +770,6 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		t.Fatalf("encrypted_note survived object consume (final %s / %s): %+v err=%v", finalKey, final2, dbNote, err)
 	}
 
-	// Exhausting generation 16 leaves state='unavailable' and clears encrypted_note.
 	exhausted, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
 	if err != nil {
 		t.Fatal(err)
@@ -798,7 +786,6 @@ func TestEncryptedNoteReturnedOnInstructionsAndClearedOnConsumeAndRevoke(t *test
 		t.Fatalf("encrypted_note survived generation exhaustion: %+v err=%v", dbNote, err)
 	}
 
-	// 3. Revoked waiting, uploading, and submitted requests clear encrypted_note, and expiry purge removes it.
 	for _, stage := range []string{"waiting", "uploading", "submitted"} {
 		revoked, err := lf.store.Create(ctx, publicKey(t), nil, &wantNote)
 		if err != nil {

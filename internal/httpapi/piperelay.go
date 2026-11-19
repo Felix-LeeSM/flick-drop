@@ -20,34 +20,19 @@ const (
 	pipeCodeHeader       = "X-Flick-Pipe-Code"
 	pipeSenderHeader     = "X-Flick-Pipe-Sender"
 	pipeConnectionHeader = "X-Flick-Pipe-Connection"
-	// pipeWaitMaxHold bounds one /wait or /status long-poll. The caller
-	// re-polls, so this only has to stay under proxy idle timeouts (Cloudflare
-	// cuts idle responses at 100 seconds) and under the coordinator's 35-second
-	// presence timeout (internal/piperelay/coordinator.go defaultPresenceTimeout).
+	// Under Cloudflare's 100 s idle cut and the coordinator's 35 s presence timeout.
 	pipeWaitMaxHold = 25 * time.Second
-	// pipeStatusRatePerMinute bounds /status calls per client network (IPv4
-	// address or IPv6 /64). One waiting receiver polls about 3 times a minute
-	// (25-second holds) and a network holds at most 3 waiting receivers per
-	// session (piperelay.MaxPendingPerNetwork), so 120 leaves room for several
-	// sessions behind one NAT while stopping a tight poll loop.
+	// ~3 polls/min per waiting receiver x MaxPendingPerNetwork(3), with room for several sessions behind one NAT.
 	pipeStatusRatePerMinute = 120
 	pipeInitBodyMax         = 1024
-	// pipeRecipientMaxChars caps the receiver's age recipient. A hybrid
-	// ML-KEM-768 + X25519 recipient (web/src/lib/crypto/age.ts
-	// generateSecretIdentity) is 1,959 characters.
+	// A hybrid ML-KEM-768 + X25519 recipient (web/src/lib/crypto/age.ts) is 1,959 characters.
 	pipeRecipientMaxChars = 4096
 	pipeJoinBodyMax       = pipeRecipientMaxChars + 1024
 )
 
-// pipeRecipientPattern is a hybrid age recipient: the age1pq1 prefix, then
-// lowercase bech32 characters only.
 var pipeRecipientPattern = regexp.MustCompile(`^age1pq1[02-9ac-hj-np-z]+$`)
 
-// validPipeRecipient accepts only a recipient the sender's browser can encrypt
-// to: the cheap shape check first, then a full parse (bech32 checksum and the
-// ML-KEM-768 + X25519 key), the same rule request links apply
-// (internal/requests/validation.go). A canonical re-encoding is required so
-// one key has one spelling.
+// Same rule as internal/requests/validation.go; canonical re-encoding keeps one spelling per key.
 func validPipeRecipient(raw string) bool {
 	if len(raw) > pipeRecipientMaxChars || !pipeRecipientPattern.MatchString(raw) {
 		return false
@@ -57,9 +42,7 @@ func validPipeRecipient(raw string) bool {
 }
 
 type pipeJoinRequest struct {
-	// Recipient is the age public key the receiving browser generated for this
-	// one connection. The sender encrypts the stream to it, so the API relays
-	// only ciphertext it cannot open.
+	// The API relays only ciphertext it cannot open.
 	Recipient string `json:"recipient"`
 }
 
@@ -87,8 +70,7 @@ type pipePendingConnection struct {
 	ConnectedSeconds int    `json:"connected_seconds"`
 }
 
-// pipeWaitResponse goes to the sender only. Recipient is the attached
-// receiver's age recipient once Status is "ready".
+// Sender only.
 type pipeWaitResponse struct {
 	Status      string                  `json:"status"`
 	Version     uint64                  `json:"version"`
@@ -113,7 +95,6 @@ func (s Server) pipeEnabled(w http.ResponseWriter) bool {
 	return true
 }
 
-// requirePipeHeaders reads the named headers, answering 400 when one is missing.
 func requirePipeHeaders(w http.ResponseWriter, r *http.Request, names ...string) ([]string, bool) {
 	values := make([]string, len(names))
 	for i, name := range names {
@@ -126,8 +107,7 @@ func requirePipeHeaders(w http.ResponseWriter, r *http.Request, names ...string)
 	return values, true
 }
 
-// writePipeError maps coordinator errors to responses. Messages are fixed
-// strings: codes, verification numbers, tokens, and User-Agents never appear.
+// Messages are fixed strings: codes, verification numbers, tokens, and User-Agents never appear.
 func writePipeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, piperelay.ErrInvalidCode):
@@ -176,7 +156,6 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The body is optional (empty or {}); unknown fields are still rejected.
 	var body pipeInitRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, pipeInitBodyMax))
 	decoder.DisallowUnknownFields()
@@ -207,21 +186,8 @@ func (s Server) initPipe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pipeJoinClient describes a receiving client to the coordinator by hashes
-// only. Both hashes start from the client network: the client IP resolved
-// through FLICK_TRUSTED_PROXIES the same way as the rate limiter, with IPv6
-// collapsed to its /64 (rateLimiter.clientNetwork), so rotating addresses
-// inside one IPv6 prefix escapes neither a decline nor the per-network cap.
-//
-//   - Key, for the per-session decline block, is SHA-256 of the network and
-//     the User-Agent. It is deliberately coarse: another device behind the same
-//     NAT or /64 with the same browser and OS string is blocked too for that
-//     one short session, and changing network or User-Agent gets past it. The
-//     sender can decline again.
-//   - Network, for piperelay.MaxPendingPerNetwork, is SHA-256 of the network.
-//
-// Only the hashes reach the coordinator, which HMACs them again under
-// FLICK_RATELIMIT_KEY_SALT before they enter Valkey for the session's lifetime.
+// Only hashes reach the coordinator. The network is the trusted-proxy client IP with IPv6 collapsed to /64.
+// Key = SHA-256(network, User-Agent), deliberately coarse; Network = SHA-256(network).
 func (s Server) pipeJoinClient(r *http.Request, recipient string) piperelay.JoinClient {
 	network := s.pipeJoinLimiter.clientNetwork(r)
 	return piperelay.JoinClient{
@@ -269,12 +235,7 @@ func (s Server) joinPipe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// statusPipe is a waiting receiver's long-poll. It answers
-// {"status":"selected"} once the sender picked this connection, and the
-// receiver then opens /receive; {"status":"waiting"} after at most
-// pipeWaitMaxHold; or the connection's end as an error (declined,
-// not_selected, cancelled, expired, closed). Polling is what keeps the
-// connection in the room.
+// Polling is what keeps the connection in the room.
 func (s Server) statusPipe(w http.ResponseWriter, r *http.Request) {
 	if !s.pipeEnabled(w) {
 		return
@@ -409,15 +370,12 @@ func (s Server) receivePipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extend deadlines to accommodate streaming large payloads (up to 15m)
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 
 	pr, meta, cleanup, err := s.pipeCoordinator.Receive(r.Context(), headers[0], headers[1])
 	if err != nil {
-		// A rejected, late, or not-yet-picked receiver never counts against
-		// the session.
 		writePipeError(w, r, err)
 		return
 	}
@@ -452,7 +410,6 @@ func (s Server) sendPipe(w http.ResponseWriter, r *http.Request) {
 	kind := r.Header.Get("Flick-Kind")
 	encryptedFilename := r.Header.Get("Flick-Encrypted-Filename")
 
-	// Extend deadlines to accommodate streaming large uploads and writing completion status (up to 15m)
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(15 * time.Minute))
 	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))

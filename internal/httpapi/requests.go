@@ -143,8 +143,7 @@ func (s Server) openRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	// The deadline covers the bucket read and every write to the requester, so
-	// a body cannot stream past the window in which cleanup protects its object.
+	// Covers every write so a body cannot stream past the window in which cleanup protects its object.
 	ctx, cancel := context.WithTimeout(r.Context(), requests.OpenStreamTimeout)
 	defer cancel()
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(requests.OpenStreamTimeout))
@@ -163,9 +162,7 @@ func (s Server) openRequest(w http.ResponseWriter, r *http.Request) {
 		h.Set(headerEncryptedFilename, opened.Envelope.EncryptedFilename)
 	}
 	w.WriteHeader(http.StatusOK)
-	// The request is already consumed; a failure from here on loses the
-	// submission, which the requester sees as a truncated age file. The log
-	// line carries no ID or error text (which names the client address).
+	// The request is already consumed. The log carries no ID or error text (it names the client address).
 	if _, err := io.Copy(w, opened.Body); err != nil {
 		slog.Warn("opened request body stopped streaming before the end")
 	}

@@ -1,9 +1,5 @@
-// Package usage owns the flick_api usage_counters table: small daily aggregate
-// counters written inside the same transaction as the state change they
-// describe. Because secrets and requests rows are hard-deleted when they
-// expire, these counters are the only durable usage history. Rows carry
-// counts only — never IDs, IPs, user agents, or content metadata — and are
-// never deleted, which keeps the table at one row per day per metric.
+// Package usage: counters are the only durable usage history (secrets/requests rows are hard-deleted).
+// Rows carry counts only, never IDs, IPs, user agents, or content metadata, and are never deleted.
 package usage
 
 import (
@@ -13,9 +9,7 @@ import (
 	"time"
 )
 
-// Metric names stored in usage_counters.metric. The secrets and requests
-// stores write these constants. Keep the set closed — a new metric needs a
-// write point in the same change.
+// Keep the set closed: a new metric needs a write point in the same change.
 const (
 	SecretCreatedText = "secret_created_text"
 	SecretCreatedFile = "secret_created_file"
@@ -27,15 +21,10 @@ const (
 	RequestConsumed   = "request_consumed"
 )
 
-// The kind strings are the secrets table's CHECK vocabulary
-// ('text'/'file'); usage cannot import the secrets package (it would
-// cycle), so the literals live here with that comment as the link.
+// Mirrors the secrets table CHECK vocabulary; importing secrets would cycle.
 const secretKindFile = "file"
 
-// SecretCreatedMetric maps a secret kind to its created counter. Unknown
-// kinds cannot reach this path: the secrets store validates kind before
-// inserting, but mapping them to the text counter keeps the increment
-// total rather than dropping the event.
+// Unknown kinds map to the text counter so the increment is never dropped.
 func SecretCreatedMetric(kind string) string {
 	if kind == secretKindFile {
 		return SecretCreatedFile
@@ -43,24 +32,17 @@ func SecretCreatedMetric(kind string) string {
 	return SecretCreatedText
 }
 
-// Counter is the subset of *sql.Tx/*sql.DB the increment needs. It takes the
-// caller's transaction handle rather than *sql.DB because the increment must
-// commit or roll back with the state change it describes — the write stays in
-// the same snapshot and atomicity scope as the row it describes.
+// Takes the caller's tx so the increment commits or rolls back with the state change.
 type Counter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// Day renders the UTC calendar day (YYYY-MM-DD) a counter increment belongs
-// to. All write points hold the store clock, so the counters bucket on the
-// same clock the TTLs use.
+// UTC; callers pass the store clock so counters bucket on the TTL clock.
 func Day(t time.Time) string {
 	return t.UTC().Format("2006-01-02")
 }
 
-// Increment adds delta to the (day, metric) counter inside the caller's
-// transaction. Deletion and cancellation are deliberately not subtracted:
-// the counters record committed usage events, not current inventory.
+// Deletion and cancellation are deliberately not subtracted: counters record events, not inventory.
 func Increment(ctx context.Context, q Counter, t time.Time, metric string, delta int64) error {
 	_, err := q.ExecContext(ctx, `insert into usage_counters (day, metric, count)
 		values ($1, $2, $3)

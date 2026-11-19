@@ -12,9 +12,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
-// ReconcileOnce visits one page per configured backend, independently of the
-// expiry batch. Each backend keeps its own cursor and pending claims; both
-// commit with the outbox and survive API restarts.
+// Each backend keeps its own cursor and pending claims; both commit with the outbox and survive restarts.
 func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 	if r.store.objects == nil {
 		return 0, nil
@@ -37,7 +35,6 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string) (int, error) {
 	var cursor string
 	var generation int64
-	// A backend added to FLICK_STORAGE_BACKENDS gets its cursor on first visit.
 	if _, err := r.db.ExecContext(ctx, `insert into object_reconciliation_cursor_v2 (backend) values ($1) on conflict do nothing`, backend); err != nil {
 		return 0, fmt.Errorf("seed object reconciliation cursor: %w", err)
 	}
@@ -64,8 +61,7 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 		return 0, err
 	}
 	defer rollback(tx)
-	// Claim this generation before live-row reads. A concurrent scanner may have
-	// advanced the same page while List was in flight; only one result can commit.
+	// Claim this generation before live-row reads; only one concurrent scanner's page can commit.
 	result, err := tx.ExecContext(ctx, `update object_reconciliation_cursor_v2 set continuation_token = $1, generation = generation + 1 where backend = $2 and generation = $3`, page.NextCursor, backend, generation)
 	if err != nil {
 		return 0, fmt.Errorf("advance object reconciliation cursor: %w", err)
@@ -94,9 +90,7 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 		if err != nil {
 			return 0, err
 		}
-		// The conflict target is the (backend, object_key) primary key: a job_id
-		// collision must fail loudly rather than silently skip a real orphan's
-		// cleanup enqueue.
+		// A job_id collision must fail loudly rather than silently skip a real orphan's cleanup.
 		result, err := tx.ExecContext(ctx, `insert into object_reconciliation_pending_v2 (backend, object_key, job_id) values ($1, $2, $3)
 			on conflict (backend, object_key) do nothing`, backend, key, jobID)
 		if err != nil {
@@ -121,10 +115,7 @@ func (r *Reaper) reconcileBackend(ctx context.Context, objects storage.ObjectSto
 }
 
 func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, now time.Time) (bool, error) {
-	// A just-opened body may still be streaming to the recipient; its secret
-	// row is already gone, and the open handler enqueues its delete when the
-	// stream ends. The grace record protects it until the stream deadline has
-	// certainly passed, then it is reconciled like any orphan.
+	// The secret row is gone after open; the grace record protects a still-streaming body until the deadline.
 	var graceUntil time.Time
 	err := tx.QueryRowContext(ctx, `select grace_until from secret_open_grace where object_key = $1`, key).Scan(&graceUntil)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -143,8 +134,6 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	if err != nil {
 		return false, fmt.Errorf("check live object protection: %w", err)
 	}
-	// Only a locked row is still consumed here (opens delete their row), and
-	// lockout queues its object delete at once; the grace stays as a margin.
 	// A consumed row is protected exactly until the grace ends, never longer.
 	if consumedAt.Valid {
 		return now.Before(consumedAt.Time.Add(openObjectGrace)), nil
@@ -161,7 +150,6 @@ func (r *Reaper) protectObjectTx(ctx context.Context, tx *sql.Tx, key string, no
 	return now.Before(createdAt.Add(r.pendingTTL)), nil
 }
 
-// AcknowledgeObjectCleanup removes only the claim for this completed worker job.
 // Old or duplicate acknowledgements cannot clear a newer job for a late PUT.
 func (s *Store) AcknowledgeObjectCleanup(ctx context.Context, backend, jobID, key string) error {
 	if strings.TrimSpace(jobID) == "" || backend == "" || !strings.HasPrefix(key, managedObjectPrefix) || key == managedObjectPrefix {

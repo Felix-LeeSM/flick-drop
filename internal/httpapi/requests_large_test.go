@@ -114,8 +114,6 @@ func TestRequestLargeHTTPContractAndInternalAcknowledgement(t *testing.T) {
 	if opened.Header().Get("Flick-Encrypted-Filename") != envelope.EncryptedFilename {
 		t.Fatal("open lost the encrypted filename")
 	}
-	// The handler finished the stream, so the final object is queued and the
-	// row no longer protects it.
 	var finalKey sql.NullString
 	if err := conn.QueryRow(`select final_key from requests where id=$1`, c.ID).Scan(&finalKey); err != nil || finalKey.Valid {
 		t.Fatal("open did not release the final key", err)
@@ -167,7 +165,7 @@ func TestRequestUploadReportsStorageFullWhenBothBackendsAreAtCeiling(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both ceilings sit below the 40-byte body, so placement has no room.
+	// Both ceilings sit below the 40-byte body.
 	registry, err := storage.NewRegistry(
 		storage.Backend{Name: testBackend, Store: &requestHTTPObjects{bodies: map[string][]byte{}}, MaxTotalBytes: 10},
 		storage.Backend{Name: otherTestBackend, Store: &requestHTTPObjects{bodies: map[string][]byte{}}, MaxTotalBytes: 10},

@@ -17,7 +17,7 @@ type ObjectPage struct {
 	NextCursor string
 }
 
-// List returns one bounded page. An empty NextCursor completes the current pass.
+// An empty NextCursor completes the current pass.
 func (c *Client) List(ctx context.Context, prefix, cursor string, limit int) (ObjectPage, error) {
 	if prefix == "" || limit < 1 || limit > 1000 {
 		return ObjectPage{}, fmt.Errorf("invalid object listing bounds")

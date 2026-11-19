@@ -6,10 +6,7 @@ import (
 	"testing"
 )
 
-// Every API response — including error bodies and the OPTIONS preflight — must
-// carry X-Content-Type-Options: nosniff. The ingress routes /api straight to
-// flick-api, so the nginx headers that cover the web app never reach these
-// responses; the cors middleware is the only unconditional per-response hook.
+// Ingress routes /api straight to flick-api, so nginx headers never reach these responses.
 func TestResponsesCarryNosniff(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -33,10 +30,7 @@ func TestResponsesCarryNosniff(t *testing.T) {
 	}
 }
 
-// A handler panic must surface as a recovered 500, not a dropped connection. A
-// nil store makes getSecretMetadata nil-dereference, exercising the real
-// middleware.Recoverer wiring NewRouter installs (ServeHTTP must return rather
-// than let the panic escape).
+// A nil store makes getSecretMetadata panic, exercising the real Recoverer wiring.
 func TestRouterRecoversFromHandlerPanic(t *testing.T) {
 	router := NewRouter(nil, nil, Options{PayloadInlineMaxBytes: 1024})
 
@@ -47,9 +41,7 @@ func TestRouterRecoversFromHandlerPanic(t *testing.T) {
 	if resp.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 from recovered panic", resp.Code)
 	}
-	// Headline property: headers set by the outer middleware survive the panic
-	// unwind, so even a recovered 500 still carries nosniff (Recoverer is mounted
-	// outside cors).
+	// Recoverer is mounted outside cors, so a recovered 500 still carries nosniff.
 	if got := resp.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("recovered-panic response X-Content-Type-Options = %q, want nosniff", got)
 	}

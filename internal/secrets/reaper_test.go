@@ -31,10 +31,8 @@ func newTestReaper(t *testing.T, conn *sql.DB, store *Store, outbox outboxEnqueu
 	return reaper
 }
 
-// 발행된 outbox 행은 객체 키나 시크릿 ID를 담고 있으므로 보존 기간(1시간)이 지나면
-// reaper가 지운다. 아직 보존 기간 안인 발행 행과 진단에 필요한 failed·pending 행은 남는다.
+// 발행된 outbox 행은 객체 키나 시크릿 ID를 담으므로 보존 기간(1시간) 뒤 지운다.
 func TestReaperPrunesPublishedOutboxRowsAfterRetention(t *testing.T) {
-	// Given: 오래된 발행 행, 최근 발행 행, 오래된 failed 행, pending 행
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	store := newTestStore(t, conn)
@@ -57,14 +55,12 @@ func TestReaperPrunesPublishedOutboxRowsAfterRetention(t *testing.T) {
 		}
 	}
 
-	// When: reaper가 한 번 돈다
 	reaper := newTestReaper(t, conn, store, outbox, 10)
 	reaper.SetNowForTest(func() time.Time { return now })
 	if _, err := reaper.ClaimOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Then: 보존 기간이 지난 발행 행만 사라진다
 	rows, err := conn.QueryContext(ctx, `select id from outbox_events order by id`)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +84,7 @@ func TestReaperPurgesRequestsAtOriginalDeadline(t *testing.T) {
 	conn := openTestDB(t, ctx)
 	store := newTestStore(t, conn)
 	reaper := newTestReaper(t, conn, store, newTestOutbox(t, conn), 2)
-	// timestamptz는 마이크로초 정밀도라 마감 경계도 마이크로초 단위로 확인한다.
+	// timestamptz는 마이크로초 정밀도다.
 	now := time.Date(2026, 10, 8, 0, 0, 0, 500000, time.UTC)
 	reaper.SetNowForTest(func() time.Time { return now })
 	zeroHash := make([]byte, 32)
@@ -247,7 +243,6 @@ func TestReaperClaimsExpiredActive(t *testing.T) {
 	if got := countSecrets(t, ctx, conn); got != 0 {
 		t.Fatalf("secrets after reap = %d, want 0 (row hard-deleted)", got)
 	}
-	// sqlite_blob row enqueues no object-delete event.
 	if events := readOutboxEvents(t, ctx, conn); len(events) != 0 {
 		t.Fatalf("outbox events = %d, want 0 for inline secret", len(events))
 	}
@@ -263,7 +258,6 @@ func TestReaperClaimsOrphanPending(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return now })
 	reaper.SetNowForTest(func() time.Time { return now })
 
-	// pending_upload older than PendingTTL (default 15m) is an orphan.
 	insertSecret(t, ctx, conn, secretFixture{
 		id:        "sec_orphan",
 		state:     "pending_upload",
@@ -437,7 +431,7 @@ func TestReaperContentExpiryPrecision(t *testing.T) {
 				ctx := context.Background()
 				conn := openTestDB(t, ctx)
 				store := newLargeTestStore(t, conn, newMockObjectStore())
-				// timestamptz는 마이크로초 정밀도라 만료 경계도 마이크로초 단위다.
+				// timestamptz는 마이크로초 정밀도다.
 				base := time.Date(2026, 10, 8, 1, 10, 0, 0, time.UTC)
 				expires := base.Add(time.Duration(tc.expiresUs) * time.Microsecond)
 				now := expires.Add(-10 * time.Minute) // Content expiry precedes the 15-minute pending deadline.
@@ -573,7 +567,6 @@ func TestReaperAtomicityOnFailure(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("claim error = %v, want %v", err, wantErr)
 	}
-	// Rollback must leave the row reclaimable again (claim not persisted).
 	if got := countSecrets(t, ctx, conn); got != 1 {
 		t.Fatalf("secrets = %d, want 1 (row survived rollback)", got)
 	}
@@ -614,7 +607,6 @@ func TestRunReaperTicksUntilCancelled(t *testing.T) {
 	if runner.calls != len(runner.results) {
 		t.Fatalf("ticks = %d, want %d", runner.calls, len(runner.results))
 	}
-	// Claimed>0 ticks log; the final 0-claim tick does not.
 	if len(logs) != 2 {
 		t.Fatalf("claimed-batch logs = %d, want 2", len(logs))
 	}
@@ -659,7 +651,6 @@ func (f *fakeClaimRunner) ClaimOnce(context.Context) (int, error) {
 
 	idx := f.calls
 	f.calls++
-	// An error tick must not cancel the loop — it logs and continues.
 	if idx < len(f.errors) && f.errors[idx] != nil {
 		return 0, f.errors[idx]
 	}
@@ -670,7 +661,6 @@ func (f *fakeClaimRunner) ClaimOnce(context.Context) (int, error) {
 		return 0, nil
 	}
 	claimed := f.results[idx]
-	// Cancel after the last planned result is consumed.
 	if idx+1 >= len(f.results) && f.cancel != nil {
 		f.cancel()
 	}
@@ -698,10 +688,7 @@ func remainingIDs(t *testing.T, ctx context.Context, conn *sql.DB) []string {
 	return ids
 }
 
-// TestReaperOrphanCompetesWithActiveBacklog guards the unified reclaimable-since
-// ordering: with a small batch, orphans that became reclaimable earlier must be
-// reaped before newer expired-active rows. Under the old order-by-expires_at the
-// orphans' future expires_at would always sort them behind an active backlog.
+// Orphans' future expires_at must not sort them behind an active backlog.
 func TestReaperOrphanCompetesWithActiveBacklog(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -712,8 +699,6 @@ func TestReaperOrphanCompetesWithActiveBacklog(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return now })
 	reaper.SetNowForTest(func() time.Time { return now })
 
-	// Two orphans created 30m ago — reclaimable since now-15m (PendingTTL default).
-	// Their expires_at is in the future, which the old ordering sorted last.
 	for _, id := range []string{"sec_orphan_a", "sec_orphan_b"} {
 		insertSecret(t, ctx, conn, secretFixture{
 			id:        id,
@@ -723,7 +708,6 @@ func TestReaperOrphanCompetesWithActiveBacklog(t *testing.T) {
 			updatedAt: now.Add(-30 * time.Minute),
 		})
 	}
-	// Two expired-active rows — reclaimable since now-1m (newer than the orphans).
 	for _, id := range []string{"sec_active_a", "sec_active_b"} {
 		insertSecret(t, ctx, conn, secretFixture{
 			id:        id,
@@ -756,10 +740,6 @@ func TestReaperOrphanCompetesWithActiveBacklog(t *testing.T) {
 	}
 }
 
-// TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan confirms the ordering is
-// by reclaimable-since in both directions: an expired-active row that has been
-// reclaimable longer than an orphan wins the batch slot, so neither class is
-// unconditionally prioritized.
 func TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -770,14 +750,12 @@ func TestReaperPrefersOlderReclaimableActiveWhenNewerOrphan(t *testing.T) {
 	store.SetNowForTest(func() time.Time { return now })
 	reaper.SetNowForTest(func() time.Time { return now })
 
-	// Active expired 2h ago — reclaimable since now-2h.
 	insertSecret(t, ctx, conn, secretFixture{
 		id:        "sec_old_active",
 		expiresAt: now.Add(-2 * time.Hour),
 		createdAt: now.Add(-3 * time.Hour),
 		updatedAt: now.Add(-3 * time.Hour),
 	})
-	// Orphan created 20m ago — reclaimable since now-5m (newer).
 	insertSecret(t, ctx, conn, secretFixture{
 		id:        "sec_young_orphan",
 		state:     "pending_upload",
@@ -804,9 +782,7 @@ func TestReaperRollsBackFailedCommit(t *testing.T) {
 	store := newTestStore(t, conn)
 	now := time.Now().UTC()
 	insertSecret(t, ctx, conn, secretFixture{id: "expire", expiresAt: now.Add(-time.Second), createdAt: now.Add(-time.Hour)})
-	// A deferred constraint trigger fires at COMMIT, so the claim and the delete
-	// succeed and only the commit fails — the boundary where Postgres aborts the
-	// server-side transaction on its own.
+	// A deferred constraint trigger fires at COMMIT, so only the commit fails.
 	if _, err := conn.Exec(`create function fail_reap() returns trigger language plpgsql as $fn$
 		begin
 			raise exception 'injected reap commit failure';

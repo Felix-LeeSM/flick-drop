@@ -17,8 +17,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// openTestValkey는 FLICK_TEST_VALKEY_ADDR의 Valkey에 붙는 클라이언트를 연다.
-// 없으면 건너뛴다(CI와 compose가 주소를 준다).
 func openTestValkey(t *testing.T) *redis.Client {
 	t.Helper()
 	addr := os.Getenv("FLICK_TEST_VALKEY_ADDR")
@@ -30,7 +28,6 @@ func openTestValkey(t *testing.T) *redis.Client {
 	return client
 }
 
-// randomSalt는 테스트마다 다른 키 공간을 쓰게 해 다른 테스트의 버킷과 섞이지 않게 한다.
 func randomSalt(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 16)
@@ -40,7 +37,6 @@ func randomSalt(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// replicaLimiter는 API 레플리카 하나가 만드는 리미터와 같은 구성을 만든다.
 func replicaLimiter(client *redis.Client, salt, name string, perMinute int) *rateLimiter {
 	rl := newRateLimiter(perMinute, nil, perNetwork)
 	rl.name, rl.shared = name, newSharedBuckets(client, salt)
@@ -58,8 +54,6 @@ func limitedStatus(rl *rateLimiter, remoteAddr string) int {
 	return rec.Code
 }
 
-// 두 레플리카가 같은 Valkey를 쓰면 한 클라이언트 네트워크는 레플리카를 번갈아
-// 때려도 예산 하나만 쓴다. 이름이 다른 리미터는 예산을 나누지 않는다.
 func TestSharedRateLimiterSpendsOneBudgetAcrossReplicas(t *testing.T) {
 	salt := randomSalt(t)
 	replicaA := replicaLimiter(openTestValkey(t), salt, "secret_create", 3)
@@ -82,8 +76,6 @@ func TestSharedRateLimiterSpendsOneBudgetAcrossReplicas(t *testing.T) {
 	}
 }
 
-// Valkey에는 HMAC으로 해시한 키만 들어가고 원시 클라이언트 IP는 남지 않으며,
-// 키 수명은 보안 모델 상한(10분) 안이다.
 func TestSharedRateLimiterStoresHashedKeysWithBoundedTTL(t *testing.T) {
 	ctx := context.Background()
 	client := openTestValkey(t)
@@ -123,9 +115,8 @@ func TestSharedRateLimiterStoresHashedKeysWithBoundedTTL(t *testing.T) {
 	}
 }
 
-// 비운 버킷은 Valkey 서버 시계로 다시 찬다. 리필이 깨지면 그 네트워크는 영영 막힌다.
 func TestSharedRateLimiterRefills(t *testing.T) {
-	rl := replicaLimiter(openTestValkey(t), randomSalt(t), "pipe_status", 60) // 초당 1개
+	rl := replicaLimiter(openTestValkey(t), randomSalt(t), "pipe_status", 60)
 	for i := range 60 {
 		if got := limitedStatus(rl, "203.0.113.8:1000"); got != http.StatusOK {
 			t.Fatalf("burst request %d = %d, want 200", i+1, got)
@@ -143,8 +134,6 @@ func TestSharedRateLimiterRefills(t *testing.T) {
 	}
 }
 
-// Valkey가 죽어도 요청은 막히지 않고, 프로세스 버킷이 예산을 그대로 강제하며,
-// 폴백 횟수가 메트릭에 남는다.
 func TestRateLimiterFallsBackToProcessBucketsWhenValkeyDown(t *testing.T) {
 	down := NewValkeyClient("127.0.0.1:1") // 아무도 듣지 않는 포트
 	t.Cleanup(func() { _ = down.Close() })
@@ -158,7 +147,6 @@ func TestRateLimiterFallsBackToProcessBucketsWhenValkeyDown(t *testing.T) {
 			t.Fatalf("request %d with valkey down = %d, want %d", i+1, got, code)
 		}
 	}
-	// 장애 중에는 첫 실패 뒤 Valkey를 건너뛰므로 요청마다 타임아웃을 기다리지 않는다.
 	if elapsed := time.Since(start); elapsed >= 2*sharedBucketTimeout {
 		t.Fatalf("3 requests with valkey down took %s, want < %s", elapsed, 2*sharedBucketTimeout)
 	}
@@ -167,8 +155,6 @@ func TestRateLimiterFallsBackToProcessBucketsWhenValkeyDown(t *testing.T) {
 	}
 }
 
-// Valkey가 죽은 레플리카도 /readyz는 200이고, 시크릿 생성은 프로세스 버킷으로
-// 판정되어 그대로 성공한다(Valkey는 준비 상태 조건이 아니다).
 func TestRouterServesWithValkeyDown(t *testing.T) {
 	down := NewValkeyClient("127.0.0.1:1") // 아무도 듣지 않는 포트
 	t.Cleanup(func() { _ = down.Close() })

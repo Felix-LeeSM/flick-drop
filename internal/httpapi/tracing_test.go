@@ -11,11 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// The tracing middleware's fragile, load-bearing bits: the matched chi route
-// template is read AFTER next() (so spans carry "/api/secrets/{id}", not the
-// high-cardinality concrete path), the status code is captured, and probe
-// endpoints get no span at all. A recording provider is passed via Options
-// so tests do not mutate otel's global provider.
+// A recording provider is passed via Options so tests do not mutate otel's global provider.
 func TestTracingMiddlewareRecordsRouteAndStatus(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
@@ -28,12 +24,9 @@ func TestTracingMiddlewareRecordsRouteAndStatus(t *testing.T) {
 		TracerProvider:        tp,
 	})
 
-	// Unknown id still routes through the "/api/secrets/{id}" template (handler
-	// returns 404), so the matched route — not the concrete id — must be recorded.
 	if resp := performJSON(t, router, http.MethodGet, "/api/secrets/does-not-exist", nil, nil); resp.Code != http.StatusNotFound {
 		t.Fatalf("get unknown status = %d, want 404", resp.Code)
 	}
-	// Probe endpoints are skipped by the middleware — they must produce no span.
 	if resp := performJSON(t, router, http.MethodGet, "/healthz", nil, nil); resp.Code != http.StatusOK {
 		t.Fatalf("healthz status = %d, want 200", resp.Code)
 	}

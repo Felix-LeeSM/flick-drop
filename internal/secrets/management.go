@@ -14,8 +14,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/events"
 )
 
-// Expiry comparisons are native timestamptz comparisons; values are pinned to
-// UTC before they are written.
+// Expiry values are pinned to UTC before they are written.
 const managedObjectPrefix = "managed/secrets/"
 
 var ErrManagementUnavailable = errors.New("management unavailable")
@@ -99,10 +98,7 @@ func (s *Store) management(ctx context.Context, q queryer, id, token string) (Ma
 	return ManagementStatus{ID: id, Status: status, ExpiresAt: expires, CanCancel: status == "active" || status == "pending_upload"}, nil
 }
 
-// Revoke retains only the authenticated outcome, removing access and payload in
-// the same transaction as any required object cleanup. No network I/O occurs.
-// A failed COMMIT leaves the server-side transaction aborted and database/sql
-// returns the connection to the pool, so no manual rollback is needed.
+// No network I/O occurs. A failed COMMIT aborts server-side, so no manual rollback is needed.
 func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -116,11 +112,8 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if !status.CanCancel {
 		return status, ErrNotCancellable
 	}
-	// Under READ COMMITTED each statement sees the latest commit, so a
-	// concurrent open, lockout, or revoke can land between the reads below.
-	// lostRace re-reads the outcome and answers as if that winner had committed
-	// first: forgotten (open) → 404, locked → not cancellable, cancelled → the
-	// idempotent cancelled status.
+	// Under READ COMMITTED a concurrent open, lockout, or revoke can land between reads;
+	// lostRace answers as if that winner had committed first.
 	lostRace := func() (ManagementStatus, error) {
 		status, err := s.management(ctx, tx, id, token)
 		if err != nil || status.Status == "cancelled" {
@@ -136,9 +129,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	if err != nil {
 		return ManagementStatus{}, fmt.Errorf("read cancellation storage: %w", err)
 	}
-	// Recheck after loading storage metadata so an elapsed pending/content
-	// deadline, or a concurrent open or revoke that committed while this
-	// transaction waited on its lock, wins over cancellation.
+	// Recheck after loading storage metadata so an elapsed deadline or concurrent commit wins over cancellation.
 	status, err = s.management(ctx, tx, id, token)
 	if err != nil {
 		return ManagementStatus{}, err
@@ -181,10 +172,7 @@ func (s *Store) Revoke(ctx context.Context, id, token string) (ManagementStatus,
 	return status, nil
 }
 
-// Payload cleanup remains independent. Purge only expired managed terminal rows,
-// whose deletion jobs were committed with their outcome; leave legacy rows alone.
-// Opened secrets have no rows left to purge (OpenTx deletes them); only their
-// streaming-grace records remain, and those go once the stream deadline passes.
+// Purge only expired managed terminal rows, whose deletion jobs committed with their outcome; leave legacy rows.
 func purgeManagementTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
 	cutoff := now.UTC()
 	const expired = `select m.secret_id from secret_management m
