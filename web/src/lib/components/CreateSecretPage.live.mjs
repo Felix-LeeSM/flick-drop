@@ -27,8 +27,8 @@ async function prepare(page, bytes) {
 		buffer: bytes
 	});
 	// The passphrase field appears only after the option is checked (it ships OFF).
-	await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-	await page.getByLabel('Additional passphrase', { exact: true }).fill(passphrase);
+	await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
+	await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
 }
 
 // The Delivery tab is also named "Create link"; the form's submit button is the

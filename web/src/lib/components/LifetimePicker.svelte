@@ -7,6 +7,7 @@ import {
 	MAX_TTL_SECONDS,
 	MIN_TTL_SECONDS
 } from '#lib/config/ttl.js';
+import { t } from '#lib/i18n/index.js';
 
 type Unit = 'minutes' | 'hours' | 'days';
 type Props = {
@@ -19,17 +20,17 @@ type Props = {
 let {
 	seconds = $bindable(DEFAULT_TTL_SECONDS),
 	disabled = false,
-	label = 'Expires after',
-	groupLabel = 'Lifetime'
+	label,
+	groupLabel
 }: Props = $props();
 
 const id = $props.id();
 const unitFactor: Record<Unit, number> = { minutes: 60, hours: 3600, days: 86_400 };
 const presets = [
-	{ label: '10 min', value: 600 },
-	{ label: '1 hour', value: 3600 },
-	{ label: '24 hours', value: 86_400 },
-	{ label: '7 days', value: 604_800 }
+	{ label: () => t().common.lifetime.preset10Min, value: 600 },
+	{ label: () => t().common.lifetime.preset1Hour, value: 3600 },
+	{ label: () => t().common.lifetime.preset24Hours, value: 86_400 },
+	{ label: () => t().common.lifetime.preset7Days, value: 604_800 }
 ];
 
 const initialSeconds = untrack(() => seconds);
@@ -62,8 +63,8 @@ function updateCustom(): void {
 </script>
 
 <div class="grid gap-2.5">
-	<span class="text-sm font-medium">{label}</span>
-	<div class="flex flex-wrap items-center gap-2" role="group" aria-label={groupLabel}>
+	<span class="text-sm font-medium">{label ?? t().common.lifetime.label}</span>
+	<div class="flex flex-wrap items-center gap-2" role="group" aria-label={groupLabel ?? t().common.lifetime.group}>
 		{#each presets as option (option.value)}
 			<Button
 				type="button"
@@ -76,7 +77,7 @@ function updateCustom(): void {
 					seconds = option.value;
 				}}
 			>
-				{option.label}
+				{option.label()}
 			</Button>
 		{/each}
 		<div
@@ -91,7 +92,7 @@ function updateCustom(): void {
 					id={`${id}-custom-value`}
 					type="text"
 					inputmode="numeric"
-					aria-label="Custom lifetime value"
+					aria-label={t().common.lifetime.customValue}
 					aria-invalid={invalid}
 					aria-describedby={invalid ? `${id}-error` : undefined}
 					placeholder="2"
@@ -108,7 +109,7 @@ function updateCustom(): void {
 				/>
 				<select
 					value={customUnit}
-					aria-label="Custom lifetime unit"
+					aria-label={t().common.lifetime.customUnit}
 					class="pointer-events-auto field-sizing-content cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-0 font-mono text-base leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 					{disabled}
 					onchange={(event) => {
@@ -116,9 +117,9 @@ function updateCustom(): void {
 						updateCustom();
 					}}
 				>
-					<option value="minutes">min</option>
-					<option value="hours">hours</option>
-					<option value="days">days</option>
+					<option value="minutes">{t().common.lifetime.unitMinutes}</option>
+					<option value="hours">{t().common.lifetime.unitHours}</option>
+					<option value="days">{t().common.lifetime.unitDays}</option>
 				</select>
 			</span>
 		</div>

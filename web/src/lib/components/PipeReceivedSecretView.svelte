@@ -12,6 +12,7 @@ import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 import * as Card from '#lib/components/ui/card/index.js';
 import { parseCredential } from '#lib/credentials/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
+import { t } from '#lib/i18n/index.js';
 import { cn, formatBytes } from '#lib/utils.js';
 
 let { payload, onDone }: { payload: ReceivedPipePayload; onDone: () => void } = $props();
@@ -75,11 +76,11 @@ async function copySecret(): Promise<void> {
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-success">
 			<CheckIcon class="size-3.5 shrink-0" aria-hidden="true" />
-			Live transfer · Code {formatPipeCode(payload.code)}
+			{t().live.received.label(formatPipeCode(payload.code))}
 		</p>
-		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>Secret</h1>
+		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{t().live.received.title}</h1>
 		<p class="text-sm text-muted-foreground">
-			Save this content before closing the tab. Nothing remains on the server.
+			{t().live.received.body}
 		</p>
 	</div>
 
@@ -90,35 +91,35 @@ async function copySecret(): Promise<void> {
 				<Button type="button" size="cta" class="w-full gap-2" onclick={copySecret}>
 					{#if copied}
 						<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
-						Copied
+						{t().live.received.copied}
 					{:else}
 						<CopyIcon class="size-4 shrink-0" aria-hidden="true" />
-						Copy all
+						{t().live.received.copyAll}
 					{/if}
 				</Button>
 				<Button type="button" variant="outline" size="cta" class="w-full" onclick={onDone}>
-					Done
+					{t().live.received.done}
 				</Button>
 			</div>
 		</div>
 	{:else if payload.kind === 'text'}
 		<div class="grid gap-4">
 			<pre
-				aria-label="Decrypted secret content"
+				aria-label={t().live.received.decryptedContent}
 				class="max-h-[26rem] overflow-auto rounded-lg border border-border bg-card p-6 font-mono text-[0.9375rem] leading-[1.65] whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground shadow-xs"
 			>{payload.text}</pre>
 			<div class="grid gap-2.5 sm:grid-cols-2">
 				<Button type="button" size="cta" class="w-full gap-2" onclick={copySecret}>
 					{#if copied}
 						<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
-						Copied
+						{t().live.received.copied}
 					{:else}
 						<CopyIcon class="size-4 shrink-0" aria-hidden="true" />
-						Copy secret
+						{t().live.received.copySecret}
 					{/if}
 				</Button>
 				<Button type="button" variant="outline" size="cta" class="w-full" onclick={onDone}>
-					Done
+					{t().live.received.done}
 				</Button>
 			</div>
 		</div>
@@ -133,7 +134,7 @@ async function copySecret(): Promise<void> {
 						<div class="min-w-0 flex-1">
 							<Card.Title class="break-all text-base">{payload.fileName}</Card.Title>
 							<Card.Description class="font-mono text-xs">
-								{formatBytes(payload.fileSize)} · Decrypted in browser
+								{t().live.received.decryptedInBrowser(formatBytes(payload.fileSize))}
 							</Card.Description>
 						</div>
 					</div>
@@ -150,16 +151,16 @@ async function copySecret(): Promise<void> {
 					>
 						{#if downloaded}
 							<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
-							<span class="truncate">Saved {payload.fileName}</span>
+							<span class="truncate">{t().live.received.saved(payload.fileName)}</span>
 						{:else}
 							<DownloadIcon class="size-4 shrink-0" aria-hidden="true" />
-							<span class="truncate">Save {payload.fileName}</span>
+							<span class="truncate">{t().live.received.save(payload.fileName)}</span>
 						{/if}
 					</a>
 				</Card.Footer>
 			</Card.Root>
 			<Button type="button" variant="outline" size="cta" class="w-full" onclick={onDone}>
-				Done
+				{t().live.received.done}
 			</Button>
 		</div>
 	{/if}

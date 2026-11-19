@@ -1,3 +1,4 @@
+import { t } from '#lib/i18n/index.js';
 import { decryptWith, encryptToRecipient, generateSecretIdentity, recipientOf } from './age';
 import { base64ToBytes, bytesToBase64 } from './encoding';
 
@@ -98,25 +99,12 @@ export class PipeRelayError extends Error {
 	}
 }
 
-const PIPE_ERROR_MESSAGES: Record<string, string> = {
-	not_found: 'Invalid or expired 6-digit code.',
-	declined: 'The sender declined this device.',
-	room_full: 'Too many devices are trying to connect. Ask the sender for a new code.',
-	dropped: 'This device was disconnected while waiting. Enter the code again.',
-	poll_in_progress:
-		'This device is already waiting in another request. Wait a moment and try again.',
-	network_full:
-		'Too many devices on your network are already waiting for this code. Close one of them and try again.',
-	already_connected: 'Another device is already receiving this transfer.',
-	not_selected: 'The sender chose another device.',
-	cancelled: 'The sender cancelled this code.',
-	expired: 'This code expired.',
-	closed: 'This transfer session has ended.',
-	streaming: 'The transfer is already streaming.',
-	rate_limited: 'Too many attempts. Wait a minute and try again.',
-	capacity_exceeded: 'Server is at maximum capacity for live transfers. Please try again later.',
-	service_unavailable: 'Live transfer is not available on this server right now.'
-};
+// The message for an API error code in the display language, or undefined for a
+// code the catalog does not know.
+function pipeErrorMessage(reason: string): string | undefined {
+	const reasons: Partial<Record<string, string>> = t().live.errors.reasons;
+	return Object.hasOwn(reasons, reason) ? reasons[reason] : undefined;
+}
 
 function statusReason(status: number): string {
 	switch (status) {
@@ -131,6 +119,7 @@ function statusReason(status: number): string {
 	}
 }
 
+// `fallback` names the failed call in the display language when the API code is unknown.
 async function pipeError(response: Response, fallback: string): Promise<PipeRelayError> {
 	let reason = '';
 	try {
@@ -142,7 +131,7 @@ async function pipeError(response: Response, fallback: string): Promise<PipeRela
 	if (reason === '') {
 		reason = statusReason(response.status);
 	}
-	const message = PIPE_ERROR_MESSAGES[reason] ?? `${fallback} (${response.status})`;
+	const message = pipeErrorMessage(reason) ?? `${fallback} (${response.status})`;
 	return new PipeRelayError(reason, response.status, message);
 }
 
@@ -170,7 +159,7 @@ export async function initPipeRendezvous(
 		body: '{}'
 	});
 	if (!response.ok) {
-		throw await pipeError(response, 'Failed to initialize transfer session');
+		throw await pipeError(response, t().live.errors.initFailed);
 	}
 
 	const data = (await response.json()) as {
@@ -211,7 +200,7 @@ export async function joinPipe(
 		signal
 	});
 	if (!response.ok) {
-		throw await pipeError(response, 'Join failed');
+		throw await pipeError(response, t().live.errors.joinFailed);
 	}
 	const data = (await response.json()) as {
 		connection_id: string;
@@ -282,12 +271,12 @@ export async function waitForPipeSelection(
 			signal
 		});
 		if (!response.ok) {
-			const err = await pipeError(response, 'Status check failed');
+			const err = await pipeError(response, t().live.errors.statusFailed);
 			// The join succeeded with this code, so not_found here means the server
 			// dropped this connection (no poll for 35 seconds, e.g. a sleeping tab).
 			// It is not a decline: the same code may be entered again.
 			if (err.reason === 'not_found') {
-				throw new PipeRelayError('dropped', response.status, PIPE_ERROR_MESSAGES.dropped);
+				throw new PipeRelayError('dropped', response.status, t().live.errors.reasons.dropped);
 			}
 			throw err;
 		}
@@ -342,7 +331,7 @@ export async function waitForPipeUpdate(
 		}
 	);
 	if (!response.ok) {
-		throw await pipeError(response, 'Wait failed');
+		throw await pipeError(response, t().live.errors.waitFailed);
 	}
 	const data = (await response.json()) as {
 		status: 'waiting' | 'ready';
@@ -394,7 +383,7 @@ async function senderAction(action: SenderAction): Promise<void> {
 		headers
 	});
 	if (!response.ok) {
-		throw await pipeError(response, `${action.path} failed`);
+		throw await pipeError(response, t().live.errors.actionFailed(action.path));
 	}
 }
 
@@ -493,10 +482,10 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 			throw new PipeRelayError(
 				'receiver_disconnected',
 				502,
-				'Receiver disconnected during live transfer.'
+				t().live.errors.reasons.receiver_disconnected
 			);
 		}
-		throw await pipeError(response, 'Send failed');
+		throw await pipeError(response, t().live.errors.sendFailed);
 	}
 
 	const data = (await response.json()) as { status: string; bytes_transferred: number };
@@ -531,11 +520,11 @@ export async function receivePipeStream(
 	});
 
 	if (!response.ok) {
-		throw await pipeError(response, 'Receive failed');
+		throw await pipeError(response, t().live.errors.receiveFailed);
 	}
 
 	if (!response.body) {
-		throw new Error('Server response body is empty');
+		throw new Error(t().live.errors.emptyBody);
 	}
 
 	const kind = response.headers.get('Flick-Kind') ?? undefined;

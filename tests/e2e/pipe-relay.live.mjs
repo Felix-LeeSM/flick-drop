@@ -63,8 +63,8 @@ test('waiting room: two devices wait, sender denies one and sends to the number 
 	await sender.getByLabel('Message').fill(message);
 	// A passphrase left on in the link tab must not reach the code transfer: the
 	// receivers below enter none and the chosen one still decrypts.
-	await sender.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-	await sender.getByLabel('Additional passphrase', { exact: true }).fill('link-tab-only');
+	await sender.getByRole('switch', { name: 'Protect with a passphrase' }).click();
+	await sender.getByLabel('Passphrase', { exact: true }).fill('link-tab-only');
 	await sender.getByRole('button', { name: 'Live transfer' }).click();
 	await sender.getByRole('button', { name: 'Start live transfer' }).click();
 	await sender.getByText('Live transfer code', { exact: true }).waitFor();
@@ -101,7 +101,7 @@ test('waiting room: two devices wait, sender denies one and sends to the number 
 		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
 		.click();
 	await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
-	const received = (await receiver.getByLabel('Decrypted secret content').textContent())?.trim();
+	const received = (await receiver.getByLabel('Received content').textContent())?.trim();
 	assert.equal(received, message);
 	await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
 
@@ -137,7 +137,7 @@ test('#code deep link auto-joins into waiting-room confirmation without a passph
 		.getByRole('button', { name: `Send to connection 1, number ${receiverNumber}` })
 		.click();
 	await receiver.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
-	const received = (await receiver.getByLabel('Decrypted secret content').textContent())?.trim();
+	const received = (await receiver.getByLabel('Received content').textContent())?.trim();
 	assert.equal(received, message);
 	await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
 

@@ -903,9 +903,9 @@ test('the passphrase switch reveals its field with in-field generate and reveal 
 	try {
 		await fixture(page);
 		await openForm(page, forms[0]);
-		const field = page.getByLabel('Additional passphrase', { exact: true });
+		const field = page.getByLabel('Passphrase', { exact: true });
 		assert.equal(await field.count(), 0);
-		const toggle = page.getByRole('switch', { name: 'Protect with an additional passphrase' });
+		const toggle = page.getByRole('switch', { name: 'Protect with a passphrase' });
 		await toggle.click();
 		await field.waitFor({ state: 'visible' });
 		// The placeholder names the field; the switch row above is its context.
@@ -930,8 +930,8 @@ test('Generate fills a revealed passphrase that never reaches the API', async ()
 	try {
 		const mock = await fixture(page);
 		await openForm(page, forms[0]);
-		await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-		const field = page.getByLabel('Additional passphrase', { exact: true });
+		await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
+		const field = page.getByLabel('Passphrase', { exact: true });
 		const generate = page.getByRole('button', { name: 'Generate passphrase', exact: true });
 		await generate.click();
 		const first = await field.inputValue();
@@ -1030,7 +1030,7 @@ test('the logo on the home page clears the draft and returns to the first tabs',
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Live transfer' })
 			.click();
-		await page.getByRole('link', { name: 'Flick' }).click();
+		await page.getByRole('link', { name: 'Flick', exact: true }).click();
 		const linkTab = page
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Create link' });

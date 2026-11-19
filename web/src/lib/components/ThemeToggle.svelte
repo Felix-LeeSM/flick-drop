@@ -2,6 +2,7 @@
 import { MoonIcon, SunIcon } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { Button } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { initializeTheme, resolvedTheme, toggleResolvedTheme } from '#lib/state/theme.js';
 
 let isMounted = $state(false);
@@ -24,8 +25,8 @@ onMount(() => {
 	variant="outline"
 	size="icon"
 	class="rounded-lg bg-card dark:bg-card"
-	aria-label={isDark ? 'Use light theme' : 'Use dark theme'}
-	title={isDark ? 'Use light theme' : 'Use dark theme'}
+	aria-label={isDark ? t().common.theme.useLight : t().common.theme.useDark}
+	title={isDark ? t().common.theme.useLight : t().common.theme.useDark}
 	onclick={toggleResolvedTheme}
 >
 	{#if isMounted && isDark}

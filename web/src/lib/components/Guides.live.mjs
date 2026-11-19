@@ -97,17 +97,15 @@ test('guide CTA reaches a real synthetic create and one-time open', async () => 
 			page.getByRole('link', { name: 'Create a one-time link' }).click()
 		]);
 		await page.getByLabel('Message', { exact: true }).fill('Synthetic guide handoff');
-		await page
-			.getByLabel('Additional passphrase', { exact: true })
-			.fill('synthetic-guide-passphrase');
+		await page.getByLabel('Passphrase', { exact: true }).fill('synthetic-guide-passphrase');
 		await page.getByRole('button', { name: 'Create link', exact: true }).click();
 		await page.getByRole('heading', { name: 'Link created' }).waitFor();
 		const url = await page.getByLabel('Share URL').inputValue();
 		await page.goto(url);
 		await page.getByLabel('passphrase', { exact: true }).fill('synthetic-guide-passphrase');
 		await page.getByRole('button', { name: 'Open', exact: true }).click();
-		await page.getByLabel('Decrypted secret').waitFor();
-		assert.equal(await page.getByLabel('Decrypted secret').inputValue(), 'Synthetic guide handoff');
+		await page.getByLabel('Received secret').waitFor();
+		assert.equal(await page.getByLabel('Received secret').inputValue(), 'Synthetic guide handoff');
 		await page.reload();
 		await page.getByText('This secret is no longer available.', { exact: true }).waitFor();
 	} finally {

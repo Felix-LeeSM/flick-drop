@@ -9,6 +9,7 @@ import {
 } from '@lucide/svelte';
 import { onMount } from 'svelte';
 import { CREDENTIAL_TEMPLATES, type CredentialType } from '#lib/credentials/index.js';
+import { t } from '#lib/i18n/index.js';
 
 type SecretType = 'text' | 'file' | CredentialType;
 let {
@@ -32,12 +33,12 @@ const icons = {
 	'id-card': IdCardIcon,
 	'list-plus': ListPlusIcon
 };
-const options: Array<{ type: SecretType; label: string; icon: typeof FileTextIcon }> = [
-	{ type: 'text', label: 'Note', icon: FileTextIcon },
-	{ type: 'file', label: 'File', icon: FileUpIcon },
+// Labels come from the catalog at render time so they follow a language change.
+const options: Array<{ type: SecretType; icon: typeof FileTextIcon }> = [
+	{ type: 'text', icon: FileTextIcon },
+	{ type: 'file', icon: FileUpIcon },
 	...CREDENTIAL_TEMPLATES.map((template) => ({
 		type: template.type,
-		label: template.label,
 		icon: icons[template.icon as keyof typeof icons] ?? ListPlusIcon
 	}))
 ];
@@ -61,6 +62,8 @@ function measureUnderline(): void {
 
 $effect(() => {
 	void value;
+	// Tab labels change width with the display language.
+	void t();
 	measureUnderline();
 });
 
@@ -93,7 +96,7 @@ function tabKeydown(event: KeyboardEvent): void {
 	<div
 		class="-mx-1 overflow-x-auto border-b border-border"
 		role="tablist"
-		aria-label="Secret type"
+		aria-label={t().create.typeTablist}
 		tabindex="-1"
 		onkeydown={tabKeydown}
 	>
@@ -124,7 +127,7 @@ function tabKeydown(event: KeyboardEvent): void {
 					}}
 				>
 					<Icon class="size-4" aria-hidden="true" />
-					{option.label}
+					{t().create.types[option.type]}
 				</button>
 			{/each}
 		</div>

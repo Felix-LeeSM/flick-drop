@@ -326,7 +326,7 @@ test('reservation expiry returns to the form only after a newer server generatio
 		const { sender } = await pages(context);
 		await submitFile(sender);
 		await mock.putStarted.promise;
-		await sender.getByText('The upload reservation expired.', { exact: false }).waitFor();
+		await sender.getByText('Time to upload ran out.', { exact: false }).waitFor();
 		assert.equal(await sender.locator('input[type="file"]').count(), 0);
 		await sender.getByRole('button', { name: 'Check submission', exact: true }).click();
 		await sender.locator('input[type="file"]').waitFor();

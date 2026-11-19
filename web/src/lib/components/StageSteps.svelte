@@ -1,6 +1,7 @@
 <script lang="ts">
 import { CheckIcon } from '@lucide/svelte';
 import type { Component } from 'svelte';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 type StageStep = { icon: Component; label: string };
@@ -15,7 +16,7 @@ type Props = {
 let { steps, activeIndex, class: className }: Props = $props();
 </script>
 
-<ol class={cn('grid gap-1', className)} aria-label="Progress steps">
+<ol class={cn('grid gap-1', className)} aria-label={t().common.stage.progressSteps}>
 	{#each steps as step, index (step.label)}
 		{@const StepIcon = step.icon}
 		{@const done = index < activeIndex}

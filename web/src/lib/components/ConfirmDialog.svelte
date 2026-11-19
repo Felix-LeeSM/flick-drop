@@ -1,6 +1,7 @@
 <script lang="ts">
 import { Dialog } from 'bits-ui';
 import { buttonVariants } from '#lib/components/ui/button/index.js';
+import { t } from '#lib/i18n/index.js';
 import { cn } from '#lib/utils.js';
 
 type Props = {
@@ -33,7 +34,7 @@ let {
 			<Dialog.Title class="font-serif text-xl">{title}</Dialog.Title>
 			<Dialog.Description class="text-sm leading-[1.55] text-muted-foreground">{description}</Dialog.Description>
 			<div class="grid grid-cols-2 gap-2">
-				<Dialog.Close class={cn(buttonVariants({ variant: 'outline' }), 'h-auto min-h-10 whitespace-normal py-2 rounded-[10px]')} disabled={busy}>Keep it</Dialog.Close>
+				<Dialog.Close class={cn(buttonVariants({ variant: 'outline' }), 'h-auto min-h-10 whitespace-normal py-2 rounded-[10px]')} disabled={busy}>{t().manage.keepIt}</Dialog.Close>
 				<button
 					class={cn(buttonVariants({ variant: 'destructive' }), 'h-auto min-h-10 whitespace-normal py-2 rounded-[10px]')}
 					disabled={busy}

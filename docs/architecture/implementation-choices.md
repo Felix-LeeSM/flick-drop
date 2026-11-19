@@ -32,6 +32,31 @@ and, when either is missing, inserts a `role="alert"` notice asking the reader
 to update the browser before opening a secret. The check opens or consumes
 nothing.
 
+### Display language
+
+The web app shows English, Korean, and Japanese. `web/src/lib/i18n/` holds typed
+message catalogs (`messages/en/*.ts` is the source; `ko` and `ja` are typed as the
+same shape, so a missing key fails `pnpm check`) and the current language
+(`locale.svelte.ts`). No i18n library is used: three languages and one catalog per
+screen area need only typed objects and the browser's `Intl`.
+
+- The language never appears in a URL, so a shared link opens in the recipient's
+  own language. A manual choice from the language row at the foot of every page
+  (`web/src/lib/components/LanguageRow.svelte`) is stored in `localStorage`
+  (`flick-locale`); otherwise the first supported browser language wins, then
+  English.
+- Pages are prerendered in English. The language is applied after hydration
+  (`web/src/routes/+layout.svelte`), so a Korean or Japanese reader briefly sees
+  English on a cold load.
+- Korean and Japanese use Pretendard / Pretendard JP for body text and Noto Serif
+  KR / JP for serif headings, self-hosted from npm (`pretendard`, `pretendard-jp`,
+  `@fontsource-variable/noto-serif-kr`, `@fontsource-variable/noto-serif-jp`) and
+  selected by `<html lang>` in `web/src/routes/layout.css`. Every face is split by
+  `unicode-range`, so English pages download none of them.
+- Server error messages are not shown; the web client maps error codes to its own
+  catalog text (`web/src/lib/api/secrets.ts`). The API, worker, and `flick` CLI stay
+  English.
+
 ## Backend HTTP
 
 ```text

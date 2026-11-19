@@ -7,6 +7,7 @@ import {
 	type Submission
 } from '#lib/api/requests.js';
 import type { FileUploadProgress } from '#lib/api/secrets.js';
+import { t } from '#lib/i18n/index.js';
 
 type RequestApi = ReturnType<typeof createRequestApiClient>;
 export type AttemptOutcome =
@@ -43,11 +44,7 @@ export async function finishRequestUpload(
 	}
 	onReservation(reservation);
 	if (uploadExpired(reservation)) {
-		throw new RequestApiError(
-			'The upload reservation expired. Check the attempt or cancel it before choosing another file.',
-			'upload_expired',
-			0
-		);
+		throw new RequestApiError(t().request.api.reservationExpired, 'upload_expired', 0);
 	}
 	await api.put(reservation.upload, attempt.upload as Blob, signal, onProgress);
 	signal.throwIfAborted();

@@ -233,7 +233,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		}
 		assert.equal(compact['Share link'].y, compact['Show submission QR'].y);
 		const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
-		const receive = await owner.getByLabel('Private retrieval link', { exact: true }).inputValue();
+		const receive = await owner.getByLabel('Your receiving link', { exact: true }).inputValue();
 		const privateKey = new URLSearchParams(new URL(receive).hash.slice(1)).get('key');
 		assert.equal(submit.includes(privateKey), false);
 		assert.equal(submit.includes(receiveToken), false);
@@ -245,7 +245,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 			submit
 		);
 		await owner.keyboard.press('Escape');
-		await owner.getByRole('button', { name: 'Copy private retrieval link', exact: true }).click();
+		await owner.getByRole('button', { name: 'Copy your receiving link', exact: true }).click();
 		assert.deepEqual(await owner.evaluate(() => window.copies), [submit, receive]);
 		assert.deepEqual(await owner.evaluate(() => window.shares), [submit]);
 		assert.equal(
@@ -265,7 +265,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		assert.equal(await owner.getByText('Checking automatically', { exact: true }).count(), 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
 		assert.equal(
-			await owner.getByLabel('Decrypted secret').inputValue(),
+			await owner.getByLabel('Received secret').inputValue(),
 			'Synthetic private request content'
 		);
 		assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 1);
@@ -281,7 +281,7 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		}
 		await owner.reload();
 		await owner.getByRole('heading', { name: 'Consumed', exact: true }).waitFor();
-		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
+		assert.equal(await owner.getByLabel('Received secret').count(), 0);
 	} finally {
 		await ownerContext.close();
 		await senderContext.close();
@@ -351,7 +351,7 @@ test('credential templates submit as FLCR1 text and open in the credential view'
 		assert.equal(await owner.getByText('synthetic-request-password', { exact: true }).count(), 0);
 		await owner.getByRole('button', { name: 'Show Password', exact: true }).click();
 		await owner.getByText('synthetic-request-password', { exact: true }).waitFor();
-		assert.equal(await owner.getByLabel('Decrypted secret').count(), 0);
+		assert.equal(await owner.getByLabel('Received secret').count(), 0);
 		for (const value of ['synthetic-request-user', 'synthetic-request-password']) {
 			await privacy(owner, mock.calls, vectors.identity, value);
 			await privacy(sender, mock.calls, vectors.identity, value);
@@ -458,7 +458,7 @@ test('pin mismatch, size ceiling, and 429 status remain actionable without consu
 		await mock.attach(context);
 		const page = await context.newPage();
 		await page.goto(`${baseUrl}${submitPath.replace(vectors.fingerprint, submitToken)}`);
-		await page.getByText('The request key does not match this link.', { exact: false }).waitFor();
+		await page.getByText('This link does not match the request.', { exact: false }).waitFor();
 		assert.equal(await page.getByLabel('Message', { exact: true }).count(), 0);
 		await page.goto(`${baseUrl}${submitPath}`);
 		await page.getByRole('tab', { name: 'File', exact: true }).click();
@@ -504,7 +504,7 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 		await readyOwner(owner);
 		assert.equal(ownerMock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
-		assert.equal(await owner.getByLabel('Decrypted secret').inputValue(), vectors.text.plaintext);
+		assert.equal(await owner.getByLabel('Received secret').inputValue(), vectors.text.plaintext);
 	} finally {
 		await context.close();
 	}
@@ -528,9 +528,7 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 			)
 			.catch(() => undefined);
 		await sender.locator('#svelte-announcer').waitFor({ state: 'attached' });
-		await sender
-			.getByText('The previous in-memory attempt was discarded', { exact: false })
-			.waitFor();
+		await sender.getByText('What you were sending was lost', { exact: false }).waitFor();
 		await sender.getByLabel('Message', { exact: true }).waitFor();
 		assert.equal(mock.bodies.length, 1);
 		await sender.getByLabel('Message', { exact: true }).fill('Synthetic deliberate new submission');
@@ -667,7 +665,7 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 
 			const submitLink = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 			const receiveLink = await owner
-				.getByLabel('Private retrieval link', { exact: true })
+				.getByLabel('Your receiving link', { exact: true })
 				.inputValue();
 			const hashParams = new URLSearchParams(new URL(submitLink).hash.slice(1));
 			const memoKey = hashParams.get('mk');
@@ -716,9 +714,7 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 			const badKey = `${memoKey.slice(0, -4)}AAAA`;
 			corrupted.hash = `submit=${hashParams.get('submit')}&fp=${hashParams.get('fp')}&mk=${badKey}`;
 			await corruptPage.goto(corrupted.toString());
-			await corruptPage
-				.getByText('Could not decrypt the requester note.', { exact: false })
-				.waitFor();
+			await corruptPage.getByText('Could not open the requester note.', { exact: false }).waitFor();
 			assert.equal(
 				await corruptPage.getByRole('button', { name: 'Encrypt and submit' }).count(),
 				0

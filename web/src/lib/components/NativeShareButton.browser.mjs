@@ -83,10 +83,8 @@ for (const [model, support, outcome] of [
 			await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
 			await page.getByLabel('Message', { exact: true }).fill('private synthetic content');
 			if (model === 'a') {
-				await page.getByRole('switch', { name: 'Protect with an additional passphrase' }).click();
-				await page
-					.getByLabel('Additional passphrase', { exact: true })
-					.fill('private synthetic passphrase');
+				await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
+				await page.getByLabel('Passphrase', { exact: true }).fill('private synthetic passphrase');
 			}
 			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
 			await page.locator('form button[type="submit"]').click();

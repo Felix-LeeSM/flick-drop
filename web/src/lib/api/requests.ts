@@ -5,6 +5,7 @@ import {
 	type OpenedRequestBody,
 	type SealedRequest
 } from '#lib/crypto/requests.js';
+import { t } from '#lib/i18n/index.js';
 import type { ClientLimits } from './config';
 import { isManagementToken } from './management';
 import {
@@ -178,7 +179,7 @@ function reservation(value: unknown, attempt: Submission, expiresAt: string): Re
 }
 
 function invalidResponse(): never {
-	throw new RequestApiError('Could not verify the server response.', 'invalid_response', 0);
+	throw new RequestApiError(t().request.api.invalidResponse, 'invalid_response', 0);
 }
 function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -221,7 +222,7 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 		signal?: AbortSignal
 	): Promise<Response> {
 		if (token !== undefined && !isManagementToken(token)) {
-			throw new RequestApiError('Request link unavailable.', 'request_unavailable', 404);
+			throw new RequestApiError(t().request.api.linkUnavailable, 'request_unavailable', 404);
 		}
 		let response: Response;
 		try {
@@ -239,32 +240,27 @@ export function createRequestApiClient(options: { baseUrl?: string; fetcher?: ty
 				body
 			});
 		} catch {
-			throw new RequestApiError(
-				'Offline or connection interrupted. Check your connection.',
-				'network_error',
-				0
-			);
+			throw new RequestApiError(t().request.api.offline, 'network_error', 0);
 		}
 		if (!response.ok) {
 			const code = await serverErrorCode(response);
+			const messages = t().request.api;
 			const byCode: Record<string, string> = {
-				request_unavailable: 'Request unavailable. The link may be invalid or expired.',
-				request_conflict: 'The request changed. Refresh its status.',
-				payload_too_large: 'The content exceeds the supported size limit.',
-				rate_limited: 'Too many requests. Wait a moment before trying again.',
-				storage_full: 'Object storage is at capacity. Try again later.',
-				storage_unavailable: 'The server is temporarily unavailable. Try again later.'
+				request_unavailable: messages.unavailable,
+				request_conflict: messages.conflict,
+				payload_too_large: messages.tooLarge,
+				rate_limited: messages.rateLimited,
+				storage_full: messages.storageFull,
+				storage_unavailable: messages.serverUnavailable
 			};
 			const byStatus: Record<number, string> = {
-				404: 'Request unavailable. The link may be invalid or expired.',
-				409: 'The request changed. Refresh its status.',
-				413: 'The content exceeds the supported size limit.',
-				429: 'Too many requests. Wait a moment before trying again.'
+				404: messages.unavailable,
+				409: messages.conflict,
+				413: messages.tooLarge,
+				429: messages.rateLimited
 			};
 			throw new RequestApiError(
-				byCode[code] ??
-					byStatus[response.status] ??
-					'The server is temporarily unavailable. Try again later.',
+				byCode[code] ?? byStatus[response.status] ?? messages.serverUnavailable,
 				code,
 				response.status
 			);

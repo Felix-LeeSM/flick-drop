@@ -30,6 +30,7 @@ import {
 	streamToText,
 	waitForPipeSelection
 } from '#lib/crypto/pipe.js';
+import { t } from '#lib/i18n/index.js';
 import {
 	holdMinimumStage,
 	STAGE_FAIL_MS,
@@ -92,7 +93,8 @@ let ringPhase = $state<StagePhase>('waiting');
 // ring beat is pacing only and Cancel would throw the secret away.
 let decrypted = $state(false);
 let errorMessage = $state('');
-let statusMessage = $state('');
+// The ring's status while connected; read from the catalog on render.
+let statusKey = $state<'connectingStatus' | 'decryptingStatus' | null>(null);
 // This device's own server-drawn number, shown while the sender picks.
 let verifyCode = $state('');
 
@@ -121,7 +123,7 @@ function reset(): void {
 	ringPhase = 'waiting';
 	decrypted = false;
 	errorMessage = '';
-	statusMessage = '';
+	statusKey = null;
 	clearPayloadState();
 	verifyCode = '';
 }
@@ -192,7 +194,7 @@ async function startReceive(): Promise<void> {
 	try {
 		normalized = normalizePipeCode(rawCode);
 	} catch {
-		errorMessage = 'Please enter a valid 6-digit number';
+		errorMessage = t().live.receive.invalidCode;
 		currentState = 'error';
 		return;
 	}
@@ -207,7 +209,7 @@ async function startReceive(): Promise<void> {
 	ringPhase = 'waiting';
 	decrypted = false;
 	verifyCode = '';
-	statusMessage = 'Connecting to the sender…';
+	statusKey = 'connectingStatus';
 	errorMessage = '';
 	const controller = new AbortController();
 	abortController = controller;
@@ -249,7 +251,7 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	// The ring starts when the chosen device's stream arrives.
 	attempt.stageStartedAt = performance.now();
 	currentState = 'streaming';
-	statusMessage = 'Decrypting in your browser…';
+	statusKey = 'decryptingStatus';
 
 	const decryptedStream = await decryptWith(identity, result.stream);
 
@@ -275,7 +277,7 @@ async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> 
 	if (endState === 'declined') {
 		await rememberDeclinedCode(attempt.normalized, attempt.sessionExpiresAt);
 	}
-	errorMessage = err instanceof Error ? err.message : 'Transfer failed';
+	errorMessage = err instanceof Error ? err.message : t().live.receive.failedFallback;
 	// Only a visible ring plays the failure beat; the number view ends at once.
 	if (!ringVisible || (await settleRing(attempt.stageStartedAt, 'failing', attempt.signal))) {
 		currentState = endState;
@@ -398,20 +400,20 @@ async function copyText(): Promise<void> {
 				<div class="relative z-10 -mb-8 flex items-center justify-end">
 					<Dialog.Close
 						class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-						aria-label="Close"
+						aria-label={t().live.receive.close}
 					>
 						<XIcon class="size-4" aria-hidden="true" />
 					</Dialog.Close>
 				</div>
-				<Dialog.Title class="sr-only">Connection declined</Dialog.Title>
+				<Dialog.Title class="sr-only">{t().live.receive.declinedTitle}</Dialog.Title>
 				<Dialog.Description class="sr-only">
-					Nothing was sent to this device, and this code cannot be used again. Ask the sender for a new one.
+					{t().live.receive.declinedDescription}
 				</Dialog.Description>
 			{:else}
 				<!-- The dialog keeps one name in every other step; the visible heading names the step. -->
-				<Dialog.Title class="sr-only">Receive secret with code</Dialog.Title>
+				<Dialog.Title class="sr-only">{t().live.receive.dialogTitle}</Dialog.Title>
 				<Dialog.Description class="sr-only">
-					Enter a 6-digit code to connect to the sender's live memory pipe and receive encrypted data.
+					{t().live.receive.dialogDescription}
 				</Dialog.Description>
 
 				<div class="flex items-start justify-between gap-3">
@@ -419,24 +421,24 @@ async function copyText(): Promise<void> {
 						<div class="grid gap-1">
 							<div class="flex flex-wrap items-center gap-1.5">
 								<span class="whitespace-nowrap rounded-md bg-primary/12 px-2 py-0.5 font-mono text-[0.625rem] font-bold text-primary">
-									STEP {step} OF 2
+									{t().live.receive.step(step)}
 								</span>
-								<span class="micro whitespace-nowrap text-muted-foreground">0B disk relay</span>
+								<span class="micro whitespace-nowrap text-muted-foreground">{t().live.receive.zeroDisk}</span>
 							</div>
 							<h3 class="font-serif text-2xl leading-tight">
 								{step === 1
-									? 'Connect to sender'
+									? t().live.receive.headingConnect
 									: currentState === 'verify'
-										? 'Read this to the sender'
+										? t().live.receive.headingVerify
 										: currentState === 'streaming'
-											? 'Receiving'
-											: 'Connecting'}
+											? t().live.receive.headingReceiving
+											: t().live.receive.headingConnecting}
 							</h3>
 						</div>
 					{/if}
 					<Dialog.Close
 						class="-mr-1.5 -mt-1.5 ml-auto grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-						aria-label="Close"
+						aria-label={t().live.receive.close}
 					>
 						<XIcon class="size-4" aria-hidden="true" />
 					</Dialog.Close>
@@ -446,7 +448,7 @@ async function copyText(): Promise<void> {
 			{#if currentState === 'input'}
 				<div class="grid gap-5 text-center">
 					<div class="grid gap-2">
-						<Label for="pipe-code-input" class="sr-only">6-digit transfer code</Label>
+						<Label for="pipe-code-input" class="sr-only">{t().live.receive.codeInputLabel}</Label>
 						<!-- Six key caps mirror one transparent input laid over them, so typing, pasting,
 						     and the phone's number pad all go through a single real field. -->
 						<div class="relative flex items-center justify-center gap-1.5">
@@ -489,17 +491,17 @@ async function copyText(): Promise<void> {
 							/>
 						</div>
 						<p class="text-[0.6875rem] text-muted-foreground">
-							Auto-connects immediately when 6 digits are typed.
+							{t().live.receive.autoConnect}
 						</p>
 					</div>
 
 					<div class="grid gap-2">
 						<Button type="button" size="cta" disabled={rawCode.length !== 6} onclick={() => startReceive()}>
 							<ZapIcon class="size-4" aria-hidden="true" />
-							Connect
+							{t().live.receive.connect}
 						</Button>
 						<p class="text-[0.6875rem] text-muted-foreground">
-							Next, you'll read a 3-digit number to the sender to confirm.
+							{t().live.receive.nextHint}
 						</p>
 					</div>
 				</div>
@@ -514,12 +516,14 @@ async function copyText(): Promise<void> {
 							class={cn('text-sm', ringPhase === 'failing' ? 'text-destructive' : 'text-muted-foreground')}
 						>
 							{ringPhase === 'finishing'
-								? 'Unlocked'
+								? t().live.receive.unlocked
 								: ringPhase === 'failing'
 									? errorMessage
-									: statusMessage}
+									: statusKey
+										? t().live.receive[statusKey]
+										: ''}
 						</p>
-						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
+						<p class="font-mono text-xs text-muted-foreground">{t().live.receive.pipe(formatPipeCode(rawCode))}</p>
 					</div>
 
 					{#if !decrypted}
@@ -530,21 +534,21 @@ async function copyText(): Promise<void> {
 							class="text-xs text-muted-foreground hover:text-foreground"
 							onclick={() => reset()}
 						>
-							Cancel
+							{t().live.receive.cancel}
 						</Button>
 					{/if}
 				</div>
 			{:else if currentState === 'verify'}
 				<div class="grid grid-cols-[minmax(0,1fr)] gap-5 text-center">
 					<p class="text-xs text-muted-foreground">
-						Read this number to the sender out loud or in chat. They pick your device by this number.
+						{t().live.receive.verifyHint}
 					</p>
-					<VerifyDigits code={verifyCode} label="Your number {verifyCode.split('').join(' ')}" />
+					<VerifyDigits code={verifyCode} label={t().live.receive.yourNumber(verifyCode.split('').join(' '))} />
 					<p class="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
 						<LoaderCircleIcon class="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
-						Waiting for the sender to pick…
+						{t().live.receive.waitingForPick}
 					</p>
-					<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
+					<p class="font-mono text-xs text-muted-foreground">{t().live.receive.pipe(formatPipeCode(rawCode))}</p>
 					<Button
 						type="button"
 						variant="ghost"
@@ -554,7 +558,7 @@ async function copyText(): Promise<void> {
 							open = false;
 						}}
 					>
-						Not my transfer — disconnect
+						{t().live.receive.notMine}
 					</Button>
 				</div>
 			{:else if currentState === 'declined'}
@@ -567,13 +571,13 @@ async function copyText(): Promise<void> {
 					</div>
 					<div class="grid justify-items-center gap-2">
 						<p class="micro text-muted-foreground">
-							Code {formatPipeCode(rawCode)} · Declined
+							{t().live.receive.declinedLabel(formatPipeCode(rawCode))}
 						</p>
 						<h3 class="font-serif text-[1.625rem] leading-[1.15] font-normal tracking-[-0.01em] text-balance text-foreground">
-							The sender declined this connection
+							{t().live.receive.declinedHeading}
 						</h3>
 						<p class="max-w-xs text-[0.8125rem] leading-relaxed text-muted-foreground">
-							Nothing was sent to this device, and this code can't be used again. Ask the sender for a new one.
+							{t().live.receive.declinedBody}
 						</p>
 					</div>
 					<Button
@@ -584,7 +588,7 @@ async function copyText(): Promise<void> {
 							open = false;
 						}}
 					>
-						Close
+						{t().live.receive.close}
 					</Button>
 				</div>
 			{:else if currentState === 'not-chosen'}
@@ -594,13 +598,13 @@ async function copyText(): Promise<void> {
 						<LogOutIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-serif text-lg text-foreground">The sender chose another device</h4>
+						<h4 class="font-serif text-lg text-foreground">{t().live.receive.notChosenHeading}</h4>
 						<p class="text-xs text-muted-foreground">
-							This device was disconnected and received nothing. If you were expecting a secret, ask the sender for a new code.
+							{t().live.receive.notChosenBody}
 						</p>
 					</div>
 					<Button type="button" variant="outline" class="mt-1 w-full" onclick={() => reset()}>
-						Enter a new code
+						{t().live.receive.enterNewCode}
 					</Button>
 				</div>
 			{:else if currentState === 'room-full'}
@@ -609,13 +613,13 @@ async function copyText(): Promise<void> {
 						<UsersIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-serif text-lg text-foreground">Too many devices are trying to connect</h4>
+						<h4 class="font-serif text-lg text-foreground">{t().live.receive.roomFullHeading}</h4>
 						<p class="text-xs text-muted-foreground">
-							Too many devices are trying to connect. Ask the sender for a new code.
+							{t().live.receive.roomFullBody}
 						</p>
 					</div>
 					<Button type="button" variant="outline" class="mt-1 w-full" onclick={() => reset()}>
-						Enter a new code
+						{t().live.receive.enterNewCode}
 					</Button>
 				</div>
 			{:else if currentState === 'done-file'}
@@ -624,8 +628,8 @@ async function copyText(): Promise<void> {
 						<CheckIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-serif text-xl">File Downloaded!</h4>
-						<p class="text-xs text-muted-foreground">Decrypted and saved directly to your device.</p>
+						<h4 class="font-serif text-xl">{t().live.receive.fileDownloaded}</h4>
+						<p class="text-xs text-muted-foreground">{t().live.receive.fileSaved}</p>
 					</div>
 					<div class="flex w-full items-center justify-between rounded-xl border border-border bg-muted/40 p-3 text-left">
 						<div class="min-w-0 pr-2">
@@ -634,11 +638,11 @@ async function copyText(): Promise<void> {
 						</div>
 						<Button type="button" size="sm" variant="outline" class="gap-1.5" onclick={downloadFile}>
 							<DownloadIcon class="size-3.5" aria-hidden="true" />
-							Download again
+							{t().live.receive.downloadAgain}
 						</Button>
 					</div>
 					<Button type="button" class="w-full mt-2" onclick={() => { open = false; reset(); }}>
-						Done
+						{t().live.receive.done}
 					</Button>
 				</div>
 			{:else if currentState === 'done-text'}
@@ -646,18 +650,18 @@ async function copyText(): Promise<void> {
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-1.5 text-xs font-semibold text-emerald-500">
 							<CheckIcon class="size-4" aria-hidden="true" />
-							<span>Secret decrypted directly in memory</span>
+							<span>{t().live.receive.decryptedInMemory}</span>
 						</div>
 						<span class="micro flex items-center gap-1 text-burn">
 							<FlameIcon class="size-3" aria-hidden="true" />
-							burned
+							{t().live.receive.burned}
 						</span>
 					</div>
 
 					<div class="relative">
 						<textarea
 							readonly
-							aria-label="Decrypted secret content"
+							aria-label={t().live.receive.decryptedContent}
 							class="min-h-36 w-full rounded-xl border border-border bg-muted/30 p-3 pr-28 font-mono text-xs text-foreground focus:outline-none"
 							value={receivedText}
 						></textarea>
@@ -669,12 +673,12 @@ async function copyText(): Promise<void> {
 							onclick={copyText}
 						>
 							<CopyIcon class="size-3.5" aria-hidden="true" />
-							{copiedText ? 'Copied!' : 'Copy'}
+							{copiedText ? t().live.receive.copied : t().live.receive.copy}
 						</Button>
 					</div>
 
 					<Button type="button" class="w-full mt-2" onclick={() => { open = false; reset(); }}>
-						Done
+						{t().live.receive.done}
 					</Button>
 				</div>
 			{:else if currentState === 'error'}
@@ -683,11 +687,11 @@ async function copyText(): Promise<void> {
 						<XIcon class="size-6" aria-hidden="true" />
 					</div>
 					<div class="grid gap-1">
-						<h4 class="font-serif text-lg text-foreground">Transfer Failed</h4>
+						<h4 class="font-serif text-lg text-foreground">{t().live.receive.failedHeading}</h4>
 						<p class="text-xs text-destructive">{errorMessage}</p>
 					</div>
 					<Button type="button" variant="outline" class="w-full mt-2" onclick={() => reset()}>
-						Try again
+						{t().live.receive.tryAgain}
 					</Button>
 				</div>
 			{/if}

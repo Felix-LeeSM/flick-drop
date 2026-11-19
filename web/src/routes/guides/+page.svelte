@@ -25,7 +25,8 @@ const sections = [
 	<link rel="canonical" href={resolve('guides/')} />
 </svelte:head>
 
-<div class="mx-auto grid max-w-3xl grid-cols-[minmax(0,1fr)] px-5 py-6 text-foreground sm:px-8 sm:py-10">
+<!-- The guide is English only; lang keeps screen readers on English whatever the display language. -->
+<div lang="en" class="mx-auto grid max-w-3xl grid-cols-[minmax(0,1fr)] px-5 py-6 text-foreground sm:px-8 sm:py-10">
 	<SiteHeader />
 	<main class="py-12 sm:py-20">
 		<h1 class="max-w-2xl font-serif text-5xl leading-[1.06] sm:text-6xl">{title}</h1>
@@ -56,7 +57,7 @@ const sections = [
 			<ol>
 				<li>Choose what to send: a <strong>Note</strong>, one or more <strong>Files</strong> (several files or a folder are zipped into one bundle), or a template for a <strong>Login</strong>, <strong>Card</strong>, <strong>Identity</strong>, or <strong>Custom</strong> set of fields.</li>
 				<li>Pick how long it may wait: 10 minutes, 1 hour, 24 hours, 7 days, or a custom time between 5 minutes and 7 days.</li>
-				<li>Optionally turn on an additional passphrase.</li>
+				<li>Optionally set a passphrase.</li>
 				<li>Choose <strong>Create link</strong> and send the whole link to your recipient. The part after <code>#</code> is the key; a link cut short cannot be opened.</li>
 			</ol>
 

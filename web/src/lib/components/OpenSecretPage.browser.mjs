@@ -128,7 +128,7 @@ for (const model of ['a', 'b']) {
 					assert.equal(await page.getByLabel('passphrase', { exact: true }).count(), 0);
 				}
 				await open.click();
-				const secret = page.getByRole('textbox', { name: 'Decrypted secret' });
+				const secret = page.getByRole('textbox', { name: 'Received secret' });
 				await secret.waitFor();
 				assert.equal(await secret.inputValue(), plaintext);
 				assert.equal(lookups, 2);
@@ -222,7 +222,7 @@ test('recorded Model B cassette decrypts once, then the link reads as gone', asy
 		await first.goto(`${baseUrl}${linkPath}`);
 		await first.getByRole('button', { name: 'Open', exact: true }).click();
 		assert.equal(
-			await first.getByRole('textbox', { name: 'Decrypted secret' }).inputValue(),
+			await first.getByRole('textbox', { name: 'Received secret' }).inputValue(),
 			'synthetic cassette text'
 		);
 		const second = await context.newPage();
@@ -239,10 +239,11 @@ for (const width of [360, 1280]) {
 		const long = (tag) => `${tag}-${'x'.repeat(200)}`;
 		const credential = `FLCR1:${JSON.stringify({
 			v: 1,
-			type: 'login',
+			type: 'custom',
 			title: long('title'),
 			notes: long('notes'),
-			fields: [{ id: 'username', label: long('label'), value: long('value'), secret: false }]
+			// 템플릿 필드는 보는 사람 언어의 라벨로 바뀌므로, 저장된 라벨이 그대로 보이는 사용자 지정 필드로 확인한다.
+			fields: [{ id: 'custom-1', label: long('label'), value: long('value'), secret: false }]
 		})}`;
 		const identity = await generateHybridIdentity();
 		const encrypter = new Encrypter();
@@ -311,12 +312,12 @@ test('a body that fails to authenticate after the open is final and shows nothin
 			.getByRole('alert')
 			.filter({
 				hasText:
-					"This secret couldn't be decrypted. It can't be opened again. Ask the sender to send it again."
+					"This secret arrived but couldn't be read. It has been used up and can't be opened again. Ask the sender to send it again."
 			})
 			.waitFor();
 		assert.equal(await open.isEnabled(), false);
 		await page.getByRole('link', { name: 'Create a new secret instead' }).waitFor();
-		assert.equal(await page.getByRole('textbox', { name: 'Decrypted secret' }).count(), 0);
+		assert.equal(await page.getByRole('textbox', { name: 'Received secret' }).count(), 0);
 		assert.equal(await page.getByText(age.plaintext.text, { exact: false }).count(), 0);
 	} finally {
 		await page.close();

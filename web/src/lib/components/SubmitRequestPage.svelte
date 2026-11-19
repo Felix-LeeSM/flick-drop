@@ -25,7 +25,7 @@ import {
 	buildEnvelope,
 	type CredentialEnvelope,
 	type CredentialType,
-	getCredentialTemplate,
+	credentialTemplateText,
 	hasCredentialContent,
 	isCredentialType,
 	serializeCredential
@@ -35,6 +35,8 @@ import {
 	importRequestPublicKey,
 	openRequestNote
 } from '#lib/crypto/requests.js';
+import { t } from '#lib/i18n/index.js';
+import { getLocale } from '#lib/i18n/locale.svelte.js';
 import { remainingSecondsFrom } from '#lib/lifetime.js';
 import { submissionFromFragment } from '#lib/state/request-links.js';
 import {
@@ -89,12 +91,12 @@ const remaining = $derived(remainingSecondsFrom(instructions?.expires_at ?? '', 
 const terminal = $derived(['accepted', 'unavailable', 'expired', 'invalid'].includes(phase));
 const title = $derived(
 	phase === 'accepted'
-		? 'Submission accepted'
+		? t().request.submit.headingAccepted
 		: hasExpired()
-			? 'Request expired'
+			? t().request.submit.headingExpired
 			: phase === 'unavailable'
-				? 'Request unavailable'
-				: 'Send a secret'
+				? t().request.submit.headingUnavailable
+				: t().request.submit.headingReady
 );
 
 function clearInput(): void {
@@ -153,7 +155,7 @@ function clock(): void {
 			busy = false;
 		}
 		if (!cancelRequested) {
-			error = 'The upload reservation expired. Check the attempt before choosing another file.';
+			error = t().request.submit.errors.reservationExpired;
 		}
 	}
 }
@@ -180,8 +182,7 @@ async function pinKey(data: RequestInstructions, signal: AbortSignal): Promise<v
 	} catch {
 		if (current(signal)) {
 			phase = 'invalid';
-			error =
-				'The request key does not match this link. Ask the requester for a new submission link.';
+			error = t().request.submit.errors.keyMismatch;
 		}
 	}
 }
@@ -190,8 +191,7 @@ function reportLoad(cause: unknown): void {
 	if (cause instanceof RequestApiError && cause.status === 404) {
 		phase = 'unavailable';
 	}
-	error =
-		cause instanceof RequestApiError ? cause.message : 'Could not load the request. Try again.';
+	error = cause instanceof RequestApiError ? cause.message : t().request.submit.errors.loadFailed;
 }
 async function decryptNote(
 	encryptedNote: string | undefined,
@@ -199,8 +199,7 @@ async function decryptNote(
 ): Promise<string | null> {
 	if ((encryptedNote !== undefined) !== (memoKey !== '')) {
 		phase = 'invalid';
-		error =
-			'The request note does not match this link. Ask the requester for the complete submission link.';
+		error = t().request.submit.errors.noteMismatch;
 		return null;
 	}
 	if (!encryptedNote || !memoKey) {
@@ -212,8 +211,7 @@ async function decryptNote(
 	} catch {
 		if (current(signal)) {
 			phase = 'invalid';
-			error =
-				'Could not decrypt the requester note. Ask the requester for the complete submission link.';
+			error = t().request.submit.errors.noteDecryptFailed;
 		}
 		return null;
 	}
@@ -313,7 +311,10 @@ async function sendPending(request: AbortController): Promise<void> {
 		if (current(request.signal)) {
 			phase = 'unknown';
 			retryReady = false;
-			error = cause instanceof SecretApiError ? cause.message : 'Submission was not confirmed.';
+			error =
+				cause instanceof SecretApiError
+					? cause.message
+					: t().request.submit.errors.submitUnconfirmed;
 			void focus();
 		}
 	}
@@ -321,13 +322,13 @@ async function sendPending(request: AbortController): Promise<void> {
 
 function validSize(): boolean {
 	if (isCredentialType(mode) && !hasCredentialContent(credential)) {
-		error = 'Fill in at least one field.';
+		error = t().request.submit.errors.fillField;
 		return false;
 	}
 	const size = mode === 'file' ? selected?.size : new TextEncoder().encode(textContent()).length;
 	const max = mode === 'file' ? limits.maxFileBytes : limits.maxTextBytes;
 	if (size === undefined || size === 0 || size > max) {
-		error = `Choose content between 1 and ${max.toLocaleString()} bytes.`;
+		error = t().request.submit.errors.sizeRange(max.toLocaleString(getLocale()));
 		return false;
 	}
 	return true;
@@ -344,8 +345,7 @@ function encryptionFailed(): void {
 		return;
 	}
 	phase = 'ready';
-	error =
-		'Could not encrypt the content. Check the file name and size, and use a current browser over HTTPS or localhost.';
+	error = t().request.submit.errors.encryptFailed;
 }
 async function submit(): Promise<void> {
 	if (busy || phase !== 'ready' || !publicKey || !instructions) {
@@ -401,8 +401,7 @@ async function applyOutcome(outcome: AttemptOutcome, signal: AbortSignal): Promi
 	}
 	if (outcome.state === 'accepted') {
 		if (cancelRequested) {
-			notice =
-				'The server accepted the submission before cancellation. Only the requester can cancel accepted content.';
+			notice = t().request.submit.notices.acceptedBeforeCancel;
 		}
 		accepted();
 		return;
@@ -410,7 +409,7 @@ async function applyOutcome(outcome: AttemptOutcome, signal: AbortSignal): Promi
 	if (outcome.state === 'renewed') {
 		clear(true);
 		instructions = outcome.instructions;
-		notice = 'The previous upload attempt ended. Choose a file to start a new attempt.';
+		notice = t().request.submit.notices.attemptRenewed;
 		await unlockInstructions(outcome.instructions, signal);
 		return;
 	}
@@ -423,8 +422,8 @@ async function applyOutcome(outcome: AttemptOutcome, signal: AbortSignal): Promi
 		!cancelRequested && !reservationExpired && (!reservation || !uploadExpired(reservation));
 	if (!retryReady) {
 		notice = cancelRequested
-			? 'Cancellation is not confirmed. Retry cancellation with the same attempt.'
-			: 'The upload instruction expired. Cancel this attempt before choosing another file.';
+			? t().request.submit.notices.cancelNotConfirmed
+			: t().request.submit.notices.instructionExpired;
 	}
 }
 async function checkAttempt(): Promise<void> {
@@ -457,7 +456,7 @@ function reportAttempt(cause: unknown): void {
 		phase = 'unavailable';
 		clear();
 	}
-	error = cause instanceof SecretApiError ? cause.message : 'Could not verify the submission.';
+	error = cause instanceof SecretApiError ? cause.message : t().request.submit.errors.verifyFailed;
 }
 async function retry(): Promise<void> {
 	if (busy || !retryReady || !pending || phase !== 'unknown' || cancelRequested) {
@@ -507,8 +506,7 @@ async function cancelUpload(): Promise<void> {
 	} catch (cause) {
 		if (current(request.signal)) {
 			reportAttempt(cause);
-			notice =
-				'Cancellation was not confirmed. Keep this tab open and check the attempt. Stopping a transfer does not delete uploaded bytes.';
+			notice = t().request.submit.notices.cancelUnconfirmed;
 		}
 	} finally {
 		if (alive && controller === request) {
@@ -517,21 +515,24 @@ async function cancelUpload(): Promise<void> {
 	}
 }
 function progressText(value: FileUploadProgress | null): string {
+	const text = t().request.submit.progress;
 	if (cancelRequested && busy) {
-		return 'Cancelling upload…';
+		return text.cancelling;
 	}
 	if (value?.stage === 'preparing') {
-		return 'Reserving encrypted upload…';
+		return text.reserving;
 	}
 	if (value?.stage === 'finalizing') {
-		return 'Verifying upload… Acceptance is not confirmed yet.';
+		return text.verifying;
 	}
 	if (value?.stage === 'uploading' && value.loaded !== undefined && value.total !== undefined) {
-		return `Uploading encrypted file: ${value.loaded.toLocaleString()} of ${value.total.toLocaleString()} bytes (${Math.floor((value.loaded / value.total) * 100)}%). Acceptance requires verification.`;
+		return text.uploadingBytes(
+			value.loaded.toLocaleString(getLocale()),
+			value.total.toLocaleString(getLocale()),
+			Math.floor((value.loaded / value.total) * 100)
+		);
 	}
-	return value?.stage === 'uploading'
-		? 'Uploading encrypted file…'
-		: 'Submitting encrypted content…';
+	return value?.stage === 'uploading' ? text.uploading : text.submitting;
 }
 
 onMount(() => {
@@ -541,7 +542,7 @@ onMount(() => {
 		.some((entry) => (entry as PerformanceNavigationTiming).type === 'reload');
 	if (!globalThis.crypto?.subtle) {
 		phase = 'invalid';
-		error = 'Request encryption requires a browser with Web Crypto over HTTPS or localhost.';
+		error = t().request.submit.errors.noWebCrypto;
 		return;
 	}
 	const link = submissionFromFragment(location.hash);
@@ -552,7 +553,7 @@ onMount(() => {
 		void load();
 	} else {
 		phase = 'invalid';
-		error = 'Invalid submission link. Ask the requester for the complete link.';
+		error = t().request.submit.errors.invalidLink;
 	}
 	void focus();
 	const timer = window.setInterval(clock, 1000);
@@ -578,44 +579,44 @@ onMount(() => {
 });
 </script>
 
-<svelte:head><title>Submit a secret - Flick</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
+<svelte:head><title>{t().request.submit.pageTitle}</title><meta name="robots" content="noindex, nofollow" /><meta name="referrer" content="no-referrer" /></svelte:head>
 <DeliveryFrame>
 	<div class="grid gap-1.5">
 		<p class="micro flex items-center gap-1.5 text-muted-foreground">
 			<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-			end-to-end encrypted · one-time request
+			{t().request.shared.badge}
 		</p>
 		<h1 class="page-title outline-none" tabindex="-1" bind:this={heading}>{title}</h1>
-		{#if !terminal}<p class="text-sm text-muted-foreground">Only the requester can open what you send.</p>{/if}
-		{#if instructions && !terminal}<RemainingTime seconds={remaining} aria-label="Time remaining" class="mt-1" />{/if}
+		{#if !terminal}<p class="text-sm text-muted-foreground">{t().request.submit.intro}</p>{/if}
+		{#if instructions && !terminal}<RemainingTime seconds={remaining} aria-label={t().request.shared.timeRemaining} class="mt-1" />{/if}
 	</div>
-	{#if resumed}<p role="status" class="text-sm text-muted-foreground">The previous in-memory attempt was discarded when you left or reloaded. It may already have been accepted.</p>{/if}
+	{#if resumed}<p role="status" class="text-sm text-muted-foreground">{t().request.submit.resumed}</p>{/if}
 	{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if phase === 'accepted'}
-		<p role="status">Only the requester can open it.</p>
+		<p role="status">{t().request.submit.acceptedBody}</p>
 	{:else if hasExpired()}
-		<p role="status">Ask the requester for a new link.</p>
+		<p role="status">{t().request.submit.expiredBody}</p>
 	{:else if phase === 'unavailable'}
-		<p role="status">This link no longer accepts submissions. If you still need to send something, ask the requester for a new link.</p>
+		<p role="status">{t().request.submit.unavailableBody}</p>
 	{:else if phase === 'unknown' || (phase === 'submitting' && pending)}
-		<section class="grid gap-4 rounded-[14px] border bg-card px-5 py-4.5" aria-label="Submission outcome">
-			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : 'Submission outcome unknown.'}</p>
-			<p class="text-sm text-muted-foreground">Keep this tab open and check the submission before retrying. A retry resends the same encrypted content; leaving or reloading discards it.</p>
-			{#if reservation}<p class="text-sm">Upload reservation: {Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60)}m {remainingSecondsFrom(reservation.reservation_expires_at, now) % 60}s remaining.</p>{/if}
-			<Button variant="outline" disabled={busy} onclick={() => { void checkAttempt(); }}>Check submission</Button>
-			{#if pending?.upload}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? 'Retry cancellation' : 'Cancel upload'}</Button><p class="text-sm text-muted-foreground">Cancellation must be confirmed by the server before another attempt. Stopping the transfer does not delete uploaded bytes; server cleanup handles them.</p>{/if}
-			{#if retryReady}<p role="status">The server has not accepted this attempt. You can retry the same submission.</p><Button disabled={busy} onclick={() => { void retry(); }}>Retry same submission</Button>{/if}
+		<section class="grid gap-4 rounded-[14px] border bg-card px-5 py-4.5" aria-label={t().request.submit.outcomeRegion}>
+			<p role="status">{phase === 'submitting' || (cancelRequested && busy) ? progressText(progress) : t().request.submit.outcomeUnknown}</p>
+			<p class="text-sm text-muted-foreground">{t().request.submit.outcomeHint}</p>
+			{#if reservation}<p class="text-sm">{t().request.submit.reservationRemaining(Math.floor(remainingSecondsFrom(reservation.reservation_expires_at, now) / 60), remainingSecondsFrom(reservation.reservation_expires_at, now) % 60)}</p>{/if}
+			<Button variant="outline" disabled={busy} onclick={() => { void checkAttempt(); }}>{t().request.submit.checkSubmission}</Button>
+			{#if pending?.upload}<Button variant="destructive" disabled={cancelRequested && busy} onclick={() => { void cancelUpload(); }}>{cancelRequested ? t().request.submit.retryCancellation : t().request.submit.cancelUpload}</Button><p class="text-sm text-muted-foreground">{t().request.submit.cancelHint}</p>{/if}
+			{#if retryReady}<p role="status">{t().request.submit.retryReady}</p><Button disabled={busy} onclick={() => { void retry(); }}>{t().request.submit.retrySame}</Button>{/if}
 		</section>
 	{:else if phase === 'ready' || phase === 'submitting'}
 		{#if requesterNote.length > 0}
 			<section
 				class="grid min-w-0 gap-1 rounded-xl border border-border bg-muted/30 px-4 py-3 text-left"
-				aria-label="Note from requester"
+				aria-label={t().request.submit.requesterNote}
 			>
 				<p class="micro flex items-center gap-1.5 text-muted-foreground">
 					<MessageSquareTextIcon class="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-					Note from requester
+					{t().request.submit.requesterNote}
 				</p>
 				<p class="text-sm whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground">
 					{requesterNote}
@@ -625,17 +626,17 @@ onMount(() => {
 		<form class="grid gap-6" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
 			<SecretTypeSelector value={mode} disabled={busy} panelId={typePanelId} onSelect={switchMode} />
 			{#if mode === 'text'}
-				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-message">Message</Label><Textarea id="request-message" rows={7} class="min-h-44 resize-y px-3.5 py-3" bind:value={message} disabled={busy} required autocomplete="off" /></div>
+				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-message">{t().request.submit.messageLabel}</Label><Textarea id="request-message" rows={7} class="min-h-44 resize-y px-3.5 py-3" bind:value={message} disabled={busy} required autocomplete="off" /></div>
 			{:else if mode === 'file'}
-				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-file">File</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
+				<div class="grid gap-2" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><Label for="request-file">{t().request.submit.fileLabel}</Label><Input id="request-file" type="file" bind:ref={fileInput} disabled={busy} onchange={(event) => { selected = event.currentTarget.files?.[0] ?? null; }} required /></div>
 			{:else}
-				<div class="grid gap-2.5" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><span class="text-sm font-medium">{getCredentialTemplate(mode).label}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
+				<div class="grid gap-2.5" id={typePanelId(mode)} role="tabpanel" aria-labelledby={`${typePanelId(mode)}-tab`}><span class="text-sm font-medium">{credentialTemplateText(mode).name}</span><CredentialForm bind:envelope={credential} disabled={busy} /></div>
 			{/if}
-			{#if mode === 'file'}<p class="text-sm text-muted-foreground">One file, up to {formatBytes(limits.maxFileBytes)}.</p>{/if}
-			<Button type="submit" size="cta" disabled={busy}>{busy ? 'Encrypting…' : 'Encrypt and submit'}</Button>
+			{#if mode === 'file'}<p class="text-sm text-muted-foreground">{t().request.submit.fileLimit(formatBytes(limits.maxFileBytes))}</p>{/if}
+			<Button type="submit" size="cta" disabled={busy}>{busy ? t().request.submit.encrypting : t().request.submit.submit}</Button>
 		</form>
 	{:else if phase === 'loading'}
-		<p role="status">{busy ? 'Loading request…' : 'Request status is unknown.'}</p>
-		<Button variant="outline" disabled={busy} onclick={() => { void load(); }}>Retry loading request</Button>
+		<p role="status">{busy ? t().request.submit.loading : t().request.shared.statusUnknown}</p>
+		<Button variant="outline" disabled={busy} onclick={() => { void load(); }}>{t().request.submit.retryLoading}</Button>
 	{/if}
 </DeliveryFrame>

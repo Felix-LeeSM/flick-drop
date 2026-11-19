@@ -10,6 +10,7 @@ import { DEFAULT_API_BASE_URL } from '#lib/api/secrets.js';
 import type { ReceivedPipePayload } from '#lib/components/PipeReceivedSecretView.svelte';
 import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
+import { t } from '#lib/i18n/index.js';
 
 // Every page renders this header, so the wordmark and the one optional link keep one size and place.
 // With large text the link and toggle wrap below the wordmark instead of widening the page.
@@ -80,11 +81,11 @@ onMount(() => {
 					receiveModalOpen = true;
 				}}
 			>
-				Enter Code
+				{t().common.enterCode}
 			</button>
 		{/if}
 		{#if link}
-			<nav aria-label="Site" class="flex">
+			<nav aria-label={t().common.siteNav} class="flex">
 				<a
 					class={headerActionClass}
 					href={link.href}>{link.label}</a

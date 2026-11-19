@@ -10,10 +10,14 @@ import {
 	type CredentialEnvelope,
 	type CredentialField,
 	type CredentialInputKind,
+	credentialFieldText,
+	credentialTemplateText,
+	displayFieldLabel,
 	getCredentialTemplate,
 	removeField,
 	setFieldValue
 } from '#lib/credentials/index.js';
+import { t } from '#lib/i18n/index.js';
 
 type Props = {
 	envelope: CredentialEnvelope;
@@ -28,6 +32,7 @@ let { envelope = $bindable(), disabled = false }: Props = $props();
 let revealedFields = $state<Record<string, boolean>>({});
 
 const template = $derived(getCredentialTemplate(envelope.type));
+const templateText = $derived(credentialTemplateText(envelope.type, t().credentials));
 
 function textInputValue(event: Event): string {
 	return (event.currentTarget as HTMLInputElement | HTMLTextAreaElement).value;
@@ -111,7 +116,7 @@ function fieldInputKind(field: CredentialField): CredentialInputKind {
 }
 
 function fieldPlaceholder(field: CredentialField): string | undefined {
-	return template.fields.find((item) => item.id === field.id)?.placeholder;
+	return credentialFieldText(envelope.type, field.id, t().credentials)?.placeholder;
 }
 
 function fieldAutocomplete(field: CredentialField): AutocompleteValue {
@@ -122,13 +127,13 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 
 <div class="grid gap-4">
 	<div class="grid gap-2">
-		<Label for="credential-title">Title</Label>
+		<Label for="credential-title">{t().credentials.title}</Label>
 		<Input
 			id="credential-title"
 			type="text"
 			class="text-base md:text-sm"
 			autocomplete="off"
-			placeholder={template.titlePlaceholder}
+			placeholder={templateText.titlePlaceholder}
 			value={envelope.title ?? ''}
 			disabled={disabled}
 			oninput={updateTitle}
@@ -143,7 +148,7 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 				<div class="flex min-w-0 items-start justify-between gap-2">
 					{#if template.allowCustomFields}
 						<div class="grid min-w-0 flex-1 gap-1">
-							<Label for={`credential-${envelope.type}-${field.id}-label`}>Label</Label>
+							<Label for={`credential-${envelope.type}-${field.id}-label`}>{t().credentials.label}</Label>
 							<Input
 								id={`credential-${envelope.type}-${field.id}-label`}
 								type="text"
@@ -161,8 +166,8 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 							variant="ghost"
 							size="icon"
 							class="mt-6 size-9 shrink-0"
-							aria-label={`Remove ${field.label || 'field'}`}
-							title="Remove field"
+							aria-label={t().credentials.removeNamed(field.label)}
+							title={t().credentials.removeField}
 							disabled={disabled}
 							onclick={() => {
 								removeCustomField(field.id);
@@ -171,7 +176,7 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 							<Trash2Icon class="size-4" />
 						</Button>
 					{:else}
-						<Label class="pt-1" for={valueId}>{field.label}</Label>
+						<Label class="pt-1" for={valueId}>{displayFieldLabel(envelope.type, field, t().credentials)}</Label>
 					{/if}
 				</div>
 
@@ -213,8 +218,10 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 									variant="ghost"
 									size="icon"
 									class="absolute right-0 top-0 size-10"
-									aria-label={revealedFields[field.id] ? `Hide ${field.label}` : `Show ${field.label}`}
-									title={revealedFields[field.id] ? 'Hide value' : 'Show value'}
+									aria-label={revealedFields[field.id]
+										? t().credentials.hideNamed(displayFieldLabel(envelope.type, field, t().credentials))
+										: t().credentials.showNamed(displayFieldLabel(envelope.type, field, t().credentials))}
+									title={revealedFields[field.id] ? t().credentials.hideValue : t().credentials.showValue}
 									disabled={disabled}
 									onclick={() => {
 										toggleReveal(field.id);
@@ -241,7 +248,7 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 									updateFieldSecret(field.id, checkedInputValue(event));
 								}}
 							/>
-							<span>Secret</span>
+							<span>{t().credentials.secret}</span>
 						</label>
 					{/if}
 				</div>
@@ -258,17 +265,17 @@ function fieldAutocomplete(field: CredentialField): AutocompleteValue {
 			onclick={addField}
 		>
 			<PlusIcon class="size-4" aria-hidden="true" />
-			Add field
+			{t().credentials.addField}
 		</Button>
 	{/if}
 
 	<div class="grid gap-2">
-		<Label for="credential-notes">Notes</Label>
+		<Label for="credential-notes">{t().credentials.notes}</Label>
 		<Textarea
 			id="credential-notes"
 			class="min-h-24 resize-y text-base md:text-sm"
 			autocomplete="off"
-			placeholder="Optional"
+			placeholder={t().credentials.notesPlaceholder}
 			value={envelope.notes ?? ''}
 			disabled={disabled}
 			oninput={updateNotes}

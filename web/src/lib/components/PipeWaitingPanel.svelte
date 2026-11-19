@@ -6,6 +6,7 @@ import PipePendingList from '#lib/components/PipePendingList.svelte';
 import QrModal from '#lib/components/QrModal.svelte';
 import { Button } from '#lib/components/ui/button/index.js';
 import { formatPipeCode } from '#lib/crypto/pipe.js';
+import { t } from '#lib/i18n/index.js';
 import {
 	holdMinimumStage,
 	STAGE_FAIL_MS,
@@ -37,7 +38,7 @@ let {
 	expiresInSeconds = 180,
 	onCancel,
 	onReset,
-	statusText = 'Waiting for receiver...',
+	statusText: statusTextProp,
 	progressPercent = 0,
 	completed = false,
 	failed = false,
@@ -130,17 +131,22 @@ const formattedCode = $derived(formatPipeCode(code));
 const firstHalf = $derived(formattedCode.slice(0, 3));
 const secondHalf = $derived(formattedCode.slice(4));
 
-const NORMAL_STATUS_MESSAGES = new Set([
-	'',
-	'Waiting for receiver...',
-	'Waiting for receiver to enter code...',
-	'Initializing live transfer session...',
-	'Sending to the chosen device...',
-	'Encrypting stream on-the-fly (age format)...',
-	'Streaming encrypted bytes directly to receiver...',
-	'Transfer complete!'
-]);
-const waitingNotice = $derived(NORMAL_STATUS_MESSAGES.has(statusText) ? '' : statusText);
+const statusText = $derived(statusTextProp ?? t().live.waiting.defaultStatus);
+// The relay's progress statuses in the current language; anything else is a
+// notice (an error or a failed pick) shown under the waiting list.
+const normalStatusMessages = $derived(
+	new Set([
+		'',
+		t().live.waiting.defaultStatus,
+		t().live.relay.waitingForCode,
+		t().live.relay.initializing,
+		t().live.relay.sendingChosen,
+		t().live.relay.encrypting,
+		t().live.relay.streaming,
+		t().live.relay.complete
+	])
+);
+const waitingNotice = $derived(normalStatusMessages.has(statusText) ? '' : statusText);
 
 // Direct receive URL that can be encoded in QR code
 let directReceiveUrl = $derived(
@@ -155,15 +161,15 @@ let directReceiveUrl = $derived(
 		<LockStageCard
 			mode="lock"
 			phase={stagePhase}
-			label="Sending your secret"
-			caption="sending to receiver"
+			label={t().live.waiting.stageLabel}
+			caption={t().live.waiting.stageCaption}
 			status={stagePhase === 'finishing'
-				? 'Cleared from memory'
+				? t().live.waiting.stageCleared
 				: stagePhase === 'failing'
 					? statusText
 					: progressPercent >= 50
-						? 'Streaming to receiver…'
-						: 'Encrypting in your browser…'}
+						? t().live.waiting.stageStreaming
+						: t().live.waiting.stageEncrypting}
 			progress={progressPercent / 100}
 			cancellable={stagePhase === 'waiting'}
 			{onCancel}
@@ -174,16 +180,16 @@ let directReceiveUrl = $derived(
 			<div class="grid gap-1.5">
 				<p class="micro flex items-center gap-1.5 text-success">
 					<CheckIcon class="size-3.5 shrink-0" aria-hidden="true" />
-					transfer complete
+					{t().live.waiting.completeLabel}
 				</p>
-				<h1 class="page-title">Transfer complete</h1>
+				<h1 class="page-title">{t().live.waiting.completeTitle}</h1>
 				<p class="text-sm text-muted-foreground">
-					Delivered directly from this tab with zero server storage.
+					{t().live.waiting.completeBody}
 				</p>
 			</div>
 
 			<Button type="button" size="cta" class="w-full" onclick={onReset}>
-				Send another secret
+				{t().live.waiting.sendAnother}
 			</Button>
 		</section>
 	{:else if failed && (stageSettled || !streaming)}
@@ -191,33 +197,33 @@ let directReceiveUrl = $derived(
 		     code; the code view would offer a code that no longer works. -->
 		<section class="grid gap-6" role="alert">
 			<div class="grid gap-1.5">
-				<p class="micro text-destructive">session ended</p>
-				<h1 class="page-title">Transfer failed</h1>
+				<p class="micro text-destructive">{t().live.waiting.endedLabel}</p>
+				<h1 class="page-title">{t().live.waiting.failedTitle}</h1>
 				<p class="text-sm text-muted-foreground">{statusText}</p>
-				<p class="text-xs text-muted-foreground">The code no longer works. Nothing more will be sent.</p>
+				<p class="text-xs text-muted-foreground">{t().live.waiting.failedBody}</p>
 			</div>
 			<Button type="button" size="cta" variant="outline" class="w-full" onclick={onReset}>
-				Start new secret
+				{t().live.waiting.startNew}
 			</Button>
 		</section>
 	{:else}
 		<section class="grid gap-5 rounded-xl border border-border bg-card p-5 shadow-sm" aria-labelledby="pipe-waiting-heading">
-			<h1 id="pipe-waiting-heading" class="sr-only">Live transfer</h1>
+			<h1 id="pipe-waiting-heading" class="sr-only">{t().live.waiting.pageTitle}</h1>
 			<div class="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3.5">
 				<div class="flex items-center gap-2">
 					<span class="size-2 rounded-full bg-primary animate-pulse motion-reduce:animate-none" aria-hidden="true"></span>
-					<span class="micro text-foreground">Live transfer code</span>
+					<span class="micro text-foreground">{t().live.waiting.codeLabel}</span>
 				</div>
 				<span class="font-mono text-xs tabular-nums text-muted-foreground">
-					Expires in <strong class="font-bold text-foreground">{formatTime(remainingSeconds)}</strong>
+					{t().live.waiting.expiresBefore}<strong class="font-bold text-foreground">{formatTime(remainingSeconds)}</strong>{t().live.waiting.expiresAfter}
 				</span>
 			</div>
 
 			<div class="grid gap-3 py-1 text-center">
 				<p class="text-sm text-muted-foreground">
-					Recipient clicks <strong class="font-medium text-foreground">Enter Code</strong> in the header and enters:
+					{t().live.waiting.recipientHintBefore}<strong class="font-medium text-foreground">{t().common.enterCode}</strong>{t().live.waiting.recipientHintAfter}
 				</p>
-				<div class="flex min-w-0 items-center justify-center gap-2" aria-label="Transfer code {formattedCode}">
+				<div class="flex min-w-0 items-center justify-center gap-2" aria-label={t().live.waiting.codeAria(formattedCode)}>
 					<div class="flex min-w-0 gap-1.5 font-mono text-2xl font-bold sm:text-[1.75rem]">
 						{#each firstHalf as digit, idx (`a-${idx}`)}
 							<span class="grid h-12 w-9 min-w-0 place-items-center rounded-xl border-2 border-primary/40 bg-muted/40 text-primary shadow-xs sm:h-14 sm:w-11">
@@ -255,10 +261,10 @@ let directReceiveUrl = $derived(
 					<Button type="button" variant="outline" class="h-auto min-h-11 gap-2 whitespace-normal py-2" onclick={copyCode}>
 						{#if copied}
 							<CheckIcon class="size-4 shrink-0" aria-hidden="true" />
-							Copied!
+							{t().live.waiting.copied}
 						{:else}
 							<CopyIcon class="size-4 shrink-0" aria-hidden="true" />
-							Copy code
+							{t().live.waiting.copyCode}
 						{/if}
 					</Button>
 					<Button
@@ -270,7 +276,7 @@ let directReceiveUrl = $derived(
 						}}
 					>
 						<QrCodeIcon class="size-4 shrink-0" aria-hidden="true" />
-						Show QR
+						{t().live.waiting.showQr}
 					</Button>
 				</div>
 				<Button
@@ -280,13 +286,13 @@ let directReceiveUrl = $derived(
 					class="h-10 justify-self-center text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
 					onclick={onCancel}
 				>
-					Cancel live transfer
+					{t().live.waiting.cancel}
 				</Button>
 			</div>
 
 			<aside class="rounded-lg bg-muted/40 px-3.5 py-2.5 text-left text-xs text-muted-foreground">
 				<p class="leading-relaxed">
-					<strong class="font-medium text-foreground">Keep this tab open.</strong> Nothing is saved on the server — your browser sends the secret live when the recipient connects.
+					<strong class="font-medium text-foreground">{t().live.waiting.keepOpen}</strong> {t().live.waiting.keepOpenBody}
 				</p>
 			</aside>
 		</section>

@@ -5,6 +5,13 @@
 @import "@fontsource/instrument-serif";
 @import "@fontsource/instrument-serif/400-italic.css";
 @import "@fontsource-variable/jetbrains-mono";
+/* Korean and Japanese text (src/lib/i18n). Every face is split by unicode-range, so a
+   browser downloads only the slices for glyphs a page actually shows: an English page
+   loads none of them. */
+@import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
+@import "pretendard-jp/dist/web/variable/pretendardvariable-jp-dynamic-subset.css";
+@import "@fontsource-variable/noto-serif-kr";
+@import "@fontsource-variable/noto-serif-jp";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -183,5 +190,48 @@
 		opacity: var(--noise-op);
 		mix-blend-mode: overlay;
 		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+	}
+}
+
+/* Korean and Japanese. Inter and Instrument Serif keep drawing Latin letters and digits;
+   Pretendard and Noto Serif draw the CJK glyphs Inter lacks. The language comes from
+   <html lang>, which src/lib/i18n/locale.svelte.ts sets. :lang() adds specificity, so
+   these rules win over the plain font utilities in the same layer. */
+@layer utilities {
+	html:lang(ko),
+	:lang(ko) .font-sans {
+		font-family: "Inter Variable", "Pretendard Variable", ui-sans-serif, system-ui, sans-serif;
+	}
+	html:lang(ko) {
+		/* Break Korean lines between words, not inside them; long unbroken text still wraps. */
+		word-break: keep-all;
+		overflow-wrap: anywhere;
+	}
+	html:lang(ja),
+	:lang(ja) .font-sans {
+		font-family: "Inter Variable", "Pretendard JP Variable", ui-sans-serif, system-ui, sans-serif;
+	}
+	html:lang(ja) {
+		line-break: strict;
+	}
+	:lang(ko) :is(.font-serif, .page-title) {
+		font-family: "Instrument Serif", "Noto Serif KR Variable", Georgia, serif;
+	}
+	:lang(ja) :is(.font-serif, .page-title) {
+		font-family: "Instrument Serif", "Noto Serif JP Variable", Georgia, serif;
+	}
+	/* Mono text keeps JetBrains Mono for digits and Latin; Korean or Japanese words in
+	   it (remaining-time chips) fall back to the body face, not the system font. */
+	:lang(ko) .font-mono {
+		font-family: "JetBrains Mono Variable", "Pretendard Variable", ui-monospace, monospace;
+	}
+	:lang(ja) .font-mono {
+		font-family: "JetBrains Mono Variable", "Pretendard JP Variable", ui-monospace, monospace;
+	}
+	/* The mono micro-label spaces out capitals; CJK text needs neither the spacing nor
+	   the monospace fallback. */
+	:is(:lang(ko), :lang(ja)) .micro {
+		font-family: inherit;
+		letter-spacing: 0;
 	}
 }
