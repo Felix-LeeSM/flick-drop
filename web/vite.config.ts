@@ -5,6 +5,12 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
 	envPrefix: ['VITE_', 'PUBLIC_'],
+	build: {
+		// Vite inlines assets under 4 KiB as data: URLs. The CSP in
+		// web/nginx-templates/csp.conf.template has no font-src, so a data: font is
+		// blocked; keep every font a same-origin file instead.
+		assetsInlineLimit: (filePath) => (/\.woff2?$/.test(filePath) ? false : undefined)
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({
