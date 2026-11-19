@@ -873,6 +873,7 @@ test('header language menu switches the page and remembers the choice on a 320px
 		const toggle = page.locator('[data-language-toggle]');
 		const korean = page.locator('header button[lang="ko"]');
 		await toggle.click();
+		await page.keyboard.press('Tab');
 		await page.keyboard.press('Escape');
 		await korean.waitFor({ state: 'detached' });
 		assert.equal(await toggle.evaluate((el) => el === document.activeElement), true);

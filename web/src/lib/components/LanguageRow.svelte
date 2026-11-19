@@ -60,7 +60,7 @@ function outside(target: EventTarget | null): boolean {
 		aria-label={t().common.languageButton(LOCALE_NAMES[getLocale()])}
 		title={t().common.languageButton(LOCALE_NAMES[getLocale()])}
 		aria-expanded={open}
-		aria-controls="language-list"
+		aria-controls={open ? 'language-list' : undefined}
 		onclick={(event: MouseEvent) => {
 			event.stopPropagation();
 			open = !open;
