@@ -523,7 +523,7 @@ async function copyText(): Promise<void> {
 										? t().live.receive[statusKey]
 										: ''}
 						</p>
-						<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
+						<p class="font-mono text-xs text-muted-foreground">{t().live.receive.pipe(formatPipeCode(rawCode))}</p>
 					</div>
 
 					{#if !decrypted}
@@ -548,7 +548,7 @@ async function copyText(): Promise<void> {
 						<LoaderCircleIcon class="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
 						{t().live.receive.waitingForPick}
 					</p>
-					<p class="font-mono text-xs text-muted-foreground">Pipe: {formatPipeCode(rawCode)}</p>
+					<p class="font-mono text-xs text-muted-foreground">{t().live.receive.pipe(formatPipeCode(rawCode))}</p>
 					<Button
 						type="button"
 						variant="ghost"

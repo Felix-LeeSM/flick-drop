@@ -33,6 +33,16 @@ describe('displayFieldLabel', () => {
 		expect(displayFieldLabel('login', unknown, ko.credentials)).toBe('PIN');
 	});
 
+	it('서식 필드라도 다른 라벨로 저장됐으면 저장된 라벨을 보여 준다', () => {
+		expect.assertions(1);
+
+		// Given: 다른 클라이언트가 password 필드에 'Bank PIN' 라벨을 넣었다
+		const field = { id: 'password', label: 'Bank PIN' };
+
+		// When / Then: 한국어 카탈로그로 골라도 저장된 라벨이 나온다
+		expect(displayFieldLabel('login', field, ko.credentials)).toBe('Bank PIN');
+	});
+
 	it('저장 형식의 라벨은 표시 언어와 상관없이 영어로 남는다', () => {
 		expect.assertions(1);
 

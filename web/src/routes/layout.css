@@ -220,6 +220,14 @@
 	:lang(ja) :is(.font-serif, .page-title) {
 		font-family: "Instrument Serif", "Noto Serif JP Variable", Georgia, serif;
 	}
+	/* Mono text keeps JetBrains Mono for digits and Latin; Korean or Japanese words in
+	   it (remaining-time chips) fall back to the body face, not the system font. */
+	:lang(ko) .font-mono {
+		font-family: "JetBrains Mono Variable", "Pretendard Variable", ui-monospace, monospace;
+	}
+	:lang(ja) .font-mono {
+		font-family: "JetBrains Mono Variable", "Pretendard JP Variable", ui-monospace, monospace;
+	}
 	/* The mono micro-label spaces out capitals; CJK text needs neither the spacing nor
 	   the monospace fallback. */
 	:is(:lang(ko), :lang(ja)) .micro {

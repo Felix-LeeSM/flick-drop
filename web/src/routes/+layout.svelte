@@ -1,6 +1,5 @@
 <script lang="ts">
 import './layout.css';
-import { onMount } from 'svelte';
 import favicon from '#lib/assets/favicon.svg';
 import LanguageRow from '#lib/components/LanguageRow.svelte';
 import { initializeLocale } from '#lib/i18n/locale.svelte.js';
@@ -9,9 +8,10 @@ import { initializeTheme } from '#lib/state/theme.js';
 let { children } = $props();
 
 initializeTheme();
-// After hydration: prerendered pages ship English markup, and switching the language
-// before hydration matches it would leave stale text behind.
-onMount(initializeLocale);
+// Before any page mounts: a child's onMount runs before this layout's, so a page that
+// stores text at mount would otherwise capture English. Hydration replaces the
+// prerendered English text and attributes with the chosen language's values.
+initializeLocale();
 </script>
 
 <svelte:head>

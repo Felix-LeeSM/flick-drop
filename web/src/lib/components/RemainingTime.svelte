@@ -10,15 +10,8 @@ let {
 	class: className,
 	...rest
 }: { seconds: number } & HTMLAttributes<HTMLParagraphElement> = $props();
-// formatRemaining writes English unit letters ("6d 23h"); each is swapped for the current language's unit.
-const label = $derived(
-	t().manage.remaining(
-		formatRemaining(seconds).replace(
-			/(\d+)([dhms])/g,
-			(_, amount: string, unit: 'd' | 'h' | 'm' | 's') => amount + t().manage.timeUnits[unit]
-		)
-	)
-);
+// formatRemaining already writes units in the display language ("6d 23h", "6일 23시간").
+const label = $derived(t().manage.remaining(formatRemaining(seconds)));
 </script>
 
 <p class={cn('justify-self-start whitespace-nowrap rounded-full bg-muted px-2.5 py-0.5 font-mono text-xs leading-5', className)} {...rest}>

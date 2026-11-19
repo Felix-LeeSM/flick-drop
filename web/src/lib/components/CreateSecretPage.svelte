@@ -370,7 +370,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	let created: CreateSecretResponse;
 	if (mode === 'file') {
 		const sealed = await sealFile(identity, requireSelectedFile());
-		status = 'Creating link…';
+		status = t().create.status.creatingLink;
 		statusKind = 'saving';
 		const controller = abortController;
 		created = await api.createFileSecret(
@@ -391,7 +391,7 @@ async function createSelectedSecret(): Promise<CreateResult> {
 	} else {
 		const text = mode === 'text' ? plaintext : serializeCredential(credentialEnvelope);
 		const sealed = await sealText(identity, text);
-		status = 'Creating link…';
+		status = t().create.status.creatingLink;
 		statusKind = 'saving';
 		created = await api.createTextSecret(sealed, ttlSeconds, modelA);
 	}

@@ -173,12 +173,17 @@ export function credentialFieldText(
 	return Object.hasOwn(fields, fieldId) ? fields[fieldId] : undefined;
 }
 
-// A template field shows its label in the display language; a custom field or a
-// field id the template does not know shows the label stored in the payload.
+// A template field still carrying the template's English label shows that label in
+// the display language. Any other label (a custom field, a field id the template does
+// not know, or a label another client wrote) shows as stored in the payload.
 export function displayFieldLabel(
 	type: CredentialType,
 	field: { id: string; label: string },
 	text: CredentialsText = t().credentials
 ): string {
+	const templateField = getCredentialTemplate(type).fields.find(({ id }) => id === field.id);
+	if (templateField?.label !== field.label) {
+		return field.label;
+	}
 	return credentialFieldText(type, field.id, text)?.label ?? field.label;
 }
