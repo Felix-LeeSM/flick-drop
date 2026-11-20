@@ -183,8 +183,9 @@ live relay re-encryption, the long-poll order, and that logs omit the link key.
 
 ## Prototype Folders
 
-UI prototypes live in git-excluded folders under `web/src/routes/prototype/`
-(listed in `.git/info/exclude`), so they never reach CI or the repository.
+UI prototypes live in folders under `web/src/routes/prototype/` that are listed
+one by one in `.git/info/exclude`. Add a new folder to `.git/info/exclude`
+before creating it; otherwise git tracks it.
 
 - The local index `http://localhost:5173/prototype/` comes from the
   git-excluded `web/src/routes/prototype/+page.ts`, which lists each

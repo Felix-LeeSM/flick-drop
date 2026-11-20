@@ -7,6 +7,8 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 python3 -B - <<'PY'
+from __future__ import annotations
+
 import os
 import re
 import subprocess

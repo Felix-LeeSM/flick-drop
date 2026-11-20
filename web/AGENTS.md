@@ -29,7 +29,7 @@ Product and design principles:
 - Communicate failure and expiry states plainly without implying guaranteed physical erasure.
 - Project workflow: the main agent drafts visual and UI/UX design (layout, tokens, interaction, mockups) itself; subagents may review architecture or logic but do not produce the visual design.
 - Project workflow: keep the current teal-and-serif design system and improve within it; full redesigns were rejected on 2026-11-16 (`docs/log.md`). When the user picks a UI candidate, implement it and show it as a prototype without re-asking about conflicts with older UI rules or tests; update conflicting tests and name them in the report. Stop and ask only for security or data-loss issues.
-- UI wording follows `web/src/lib/i18n/README.md`: use user-perspective terms rather than system jargon, and never label a passphrase "additional". Never append "(optional)" to an input revealed by a toggle: the toggle already expresses the choice.
+- UI wording uses user-perspective terms, never calls a passphrase "additional" (`web/src/lib/i18n/README.md`), and never adds "(optional)" to a field a toggle reveals.
 
 Styling and prototyping gotchas:
 
@@ -48,7 +48,7 @@ Security invariants:
 - Encrypt text and files with age before upload (`web/src/lib/crypto/secret.ts`). Show decrypted content only after age authenticates the final chunk; never offer a partial download.
 - Keep passphrases and encryption keys out of `localStorage`, `sessionStorage`, IndexedDB, `history.state`, telemetry, and error reports. Permitted key-bearing fragments are Model B (`web/src/lib/crypto/fragment.ts`) and requester retrieval (`docs/architecture/request-links.md`); passphrases never enter URLs.
 - `contracts/sender-management-v1.md` defines `/m/{id}#manage={token}` without an encryption key. Pass the recipient URL from create to management only in browser memory: `src/lib/state/created-delivery.ts` holds one in-memory handoff consumed by `src/lib/components/ManageSecretPage.svelte`; never move it to browser storage or `goto()` state. A refreshed or new-device management visit offers status/cancellation without reconstructing that URL. `src/routes/m/[id]/+page.svelte` remounts when the ID or fragment changes.
-- Until the recipient link is handed off (a successful `UrlField` `oncopied`, a successful `NativeShareButton` `onshared`, opening the QR code, or a manual copy event), `ManageSecretPage.svelte` warns before leaving through SvelteKit `beforeNavigate`, as `contracts/sender-management-v1.md` requires.
+- Until the recipient link is handed off (a successful `UrlField` `oncopied`, a successful `NativeShareButton` `onshared`, opening the QR code, or a manual copy event), `ManageSecretPage.svelte` warns before leaving through SvelteKit `beforeNavigate`, as `contracts/sender-management-v1.md` requires; keep that warning.
 - `contracts/sender-management-v1.md` requires separate recipient-sharing and private-management-link actions. Never share the management page location as the recipient URL or send a management token to recipient `/open`.
 - The live relay receiver's age identity from `src/lib/crypto/pipe.ts:createPipeReceiverKey` stays in that receive attempt's memory only (`src/lib/components/ReceiveCodeModal.svelte:joinAndReceive`). Never put it in browser storage, URLs, requests, logs, or telemetry; `POST /api/pipe/join` sends only its `age1pq1…` recipient.
 - Treat API responses as ciphertext plus metadata until browser-side decrypt succeeds.
