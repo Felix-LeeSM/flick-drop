@@ -21,7 +21,8 @@ const (
 	ageTagBytes             = 16
 	agePayloadNonceBytes    = 16
 	// A 77-byte identity's scrypt file is about 230 bytes.
-	maxWrappedIdentityBytes   = 1024
+	maxWrappedIdentityBytes = 1024
+	// One hybrid header plus a filename of a few hundred bytes.
 	maxEncryptedFilenameBytes = 8 * 1024
 	maxContentTypeBytes       = 255
 )

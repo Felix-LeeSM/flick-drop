@@ -914,7 +914,8 @@ func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF 
 	return nil
 }
 
-// Printable ASCII only: returned in Flick-Content-Type, so it must not break the header.
+// Printable ASCII only: sent in Flick-Content-Type after the secret is consumed, so a bad
+// value would break the header and make the recipient's fetch fail on a burned secret.
 func validContentType(value string) bool {
 	if len(value) > maxContentTypeBytes {
 		return false

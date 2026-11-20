@@ -1,5 +1,5 @@
 // The server stores only the proof's hash; the proof cannot decrypt (the identity is age-scrypt wrapped).
-// Go twin: internal/clientcrypto/crypto.go:DeriveAccessProof; vectors: tests/fixtures/client-crypto-vectors.json.
+// Go twin: internal/clientcrypto/access.go:DeriveAccessProof; vectors: tests/fixtures/client-crypto-vectors.json.
 
 import { base64ToBytes, bytesToBase64 } from './encoding';
 

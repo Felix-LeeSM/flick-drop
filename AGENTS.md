@@ -87,10 +87,10 @@ contract, open decision log, or multi-step verification record.
 
 - Required quality gates live in CI and `scripts/ci/all.sh`, not in mandatory
   local git hooks.
-- Keep source comments minimal; only agents read this code. Write a comment
-  only for what the code cannot show (a security invariant, the reason for a
-  bound, an external-system workaround, an ordering requirement, a cross-file
-  twin) and keep it to one line. Skip godoc or JSDoc that restates a name,
+- Keep source comments minimal. Write a comment only for what the code cannot
+  show (a security invariant, the reason for a bound, an external-system
+  workaround, an ordering requirement, a cross-file twin) and keep it to one
+  line. Skip godoc or JSDoc that restates a name,
   step narration, section dividers, and history notes.
 - Keep early implementation explicit and readable. Add shared abstractions only
   when they reduce real duplication or stabilize a real contract.
