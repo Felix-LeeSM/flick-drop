@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/storage Guide
+description: S3-compatible object storage adapter, presigned PUT and OCI CORS constraints, named-backend registry, and reconciliation listing rules.
+tags: [agent-guide, go, storage, s3]
+---
+
 # `internal/storage/` Guide
 
 This package owns the S3-compatible object store for large secret payloads
@@ -21,9 +28,17 @@ Rules:
   rejects a body that is not exactly the reserved size. The returned
   `client.go:UploadInstruction.Headers` must be echoed verbatim by the client.
   Presigned POST is not used because Oracle's S3 Compatibility API does not
-  implement POST Object (explained in the `presigned.go:Client.PresignPUT` doc
-  comment). `presigned_test.go:TestPresignPUTSignatureCoversSize` is the unit
-  regression anchor.
+  implement POST Object (explained in `presigned.go:Client.PresignPUT`).
+  OCI Object Storage cannot store a bucket CORS rule (`PutBucketCors` answered
+  `MalformedXML` on the production OCI bucket during the presigned PUT switch,
+  PR #169) and answers preflights with its default
+  (`Access-Control-Allow-Origin: *`). The signed headers are only
+  `content-length;host`, both set by the browser itself (`Content-Length` is a
+  forbidden request header that `fetch()` derives from the body). Keep the
+  signed header set that small: any added non-safelisted request header must
+  pass the preflight's `Access-Control-Request-Headers`, which no bucket setting
+  can allow. `presigned_test.go:TestPresignPUTSignatureCoversSize` is
+  the unit regression anchor.
 - S3-compatible behavior must be verified against a real MinIO bucket
   (`minio_integration_test.go`, build tag `integration`;
   `TestMinIORejectsOversized` proves the signed `Content-Length` is enforced by
@@ -48,11 +63,9 @@ Rules:
 - Auth is a static key pair (MinIO dev / OCI Customer Secret Key prod). Instance
   principal is deferred because the AWS SDK cannot speak it directly.
 - Cleanup operations must be idempotent (a missing object on DELETE is not an error).
-
 - `list.go:Client.List` uses `ListObjectsV2` for bounded prefix pages. Listing
   failures return errors; `ErrInvalidCursor` permits the API reaper to restart
   a persisted pass. Listing errors must not expose private endpoint URLs.
-
 - `object.go:Client.PutStream` writes request finalize's verified stream to a
   server-only final key, spooling through a temporary file so the SDK signs a
   seekable body. Its `verify` callback runs after the spool and before the PUT,

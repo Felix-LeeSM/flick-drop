@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: PostgreSQL Maintenance
+description: Autovacuum settings, dead-tuple inspection, manual VACUUM and VACUUM FULL trade-offs, WAL disk usage checks, and residual ciphertext hygiene.
+tags: [runbook, postgres, vacuum]
+status: stable
+---
+
 # PostgreSQL Maintenance
 
 This runbook covers routine PostgreSQL upkeep for Flick: autovacuum, dead-tuple

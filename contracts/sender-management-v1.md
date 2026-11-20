@@ -1,3 +1,11 @@
+---
+type: Contract
+title: Sender Management Contract v1
+description: Accountless sender management capability tokens, status/revocation HTTP surface, opened-means-forgotten semantics, and late-PUT object reconciliation.
+tags: [contract, management, security]
+status: stable
+---
+
 # Sender Management Contract v1
 
 Status: accepted design for [#199](https://github.com/Felix-LeeSM/flick-drop/issues/199),

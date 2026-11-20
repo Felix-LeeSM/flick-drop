@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal Guide
+description: Go internal package map, API vs. worker database ownership rules, and package boundary principles.
+tags: [agent-guide, go, internal]
+---
+
 # `internal/` Guide
 
 These packages are code boundaries, not service boundaries.

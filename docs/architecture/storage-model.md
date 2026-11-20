@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Storage Model
+description: PostgreSQL vs. named S3-compatible object storage thresholds, capacity-weighted placement, request storage, deletion semantics, and late-upload reconciliation.
+tags: [architecture, storage, s3, postgres]
+status: stable
+---
+
 # Storage Model
 
 Flick stores only ciphertext and metadata on the server side.

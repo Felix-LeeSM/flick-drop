@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: CI and Testing
+description: PR checks, local entry points, Go and Playwright browser test suites, synthetic canary, image publish, and CLI release workflows.
+tags: [architecture, ci, testing, playwright]
+status: stable
+---
+
 # CI and Testing
 
 Flick separates fast PR checks from slower infrastructure smoke tests.
@@ -8,6 +16,7 @@ Flick separates fast PR checks from slower infrastructure smoke tests.
 PR checks
   shell
   repo structure
+  agent docs (OKF format, index, links, size limits)
   Kubernetes manifest structure
   env contract
   TTL drift
@@ -44,7 +53,9 @@ mise run smoke-nats
 mise run smoke-k3d
 ```
 
-The `check` task runs `scripts/ci/all.sh`: shell, repo-structure, Kubernetes
+The `check` task runs `scripts/ci/all.sh`: shell, repo-structure, agent-docs
+(`scripts/ci/agent-docs.sh`, enforcing OKF v0.2 frontmatter, `index.md`
+coverage, internal Markdown links, and document size limits), Kubernetes
 manifest structure, env-contract, TTL drift, contract, Go, MinIO storage
 integration, web, and local container image checks. The TTL drift check
 (`scripts/ci/ttl-drift.sh`) fails when the TTL defaults in
@@ -122,7 +133,11 @@ Expected coverage:
 Integration tests should use isolated databases and a real NATS instance
 when testing worker delivery paths. Since the M15 cutover (issues #421,
 #422) the database-backed tests create and drop an isolated Postgres schema
-from `FLICK_TEST_POSTGRES_URL` and skip when it is unset.
+from `FLICK_TEST_POSTGRES_URL` and skip when it is unset. On slow CI runners,
+`internal/requests` can occasionally hit the 2-minute timeout of the MinIO
+storage integration run (`scripts/ci/storage-integration.sh`:
+`go test -count=1 -timeout 2m -v -tags integration ./internal/storage/ ./internal/requests/`);
+for Go-unchanged PRs, re-running failed jobs resolves the runner flake.
 
 ## Web Tests
 
@@ -175,10 +190,12 @@ replace the complete create/open/file browser scenarios listed above.
 
 The create-page upload regression additionally requires a live API with the
 S3 backend, MinIO, and the default 1 MiB inline / 256 MiB maximum limits. Run it
-against an isolated local stack (it creates and consumes dummy file secrets):
+against an isolated local stack using `http://localhost:5173` (not `127.0.0.1`,
+because `scripts/dev/up.sh` sets `FLICK_PUBLIC_BASE_URL=http://localhost:5173`
+as the sole CORS origin; `CreateSecretPage.live.mjs` defaults to `127.0.0.1`):
 
 ```sh
-FLICK_WEB_URL=http://127.0.0.1:5173 pnpm --dir web test:storage-browser
+FLICK_WEB_URL=http://localhost:5173 pnpm --dir web test:storage-browser
 ```
 
 The check round-trips an inline file and a 2 MiB encrypted file, compares the
@@ -209,6 +226,11 @@ server. The current suites are:
 | `RequestUpload.browser.mjs` | Large request uploads (see [Large request uploads](#large-request-uploads)). |
 | `UnsupportedBrowser.browser.mjs` | The update notice for browsers missing a required feature, and its absence in a current browser. |
 
+### Local Web Check, Formatting, and 150% Layout Notes
+
+- **Local `pnpm --dir web check` with prototype folders:** `svelte-check` inspects `.mjs` files reachable through imports even when `web/tsconfig.json` excludes `src/**/*.mjs`, so local git-excluded prototype folders can fail `pnpm check` without affecting CI. Filter real errors with `pnpm --dir web check 2>&1 | rg ERROR | rg -v prototype`. Local `pnpm --dir web lint` (`biome ci .`, biome 2.5.0) also reports git-excluded prototype folders even though `web/biome.jsonc` enables `vcs.useIgnoreFile: true`, so run `pnpm --dir web exec biome format --write <files>` and `biome ci <files>` on the changed files before committing.
+- **Dialog and 150% text-scale layout limits:** `document.documentElement.scrollWidth <= innerWidth` does not detect overflow inside `position: fixed` dialogs or text spilling past a control's box; use `web/src/lib/components/dialog-fit.mjs:assertDialogFits` for dialog checks. Known 150% text-scale limits left open after `#419`: an assumed 290 px virtual keypad overlaps the Connect button at 150% (keypad fit is checked at 100%); at 320 px and 150%, sender code caps are tight; and `ReceiveCodeModal.svelte`'s `done-file`/`done-text` branches are unreachable when `CreateSecretPage.svelte` passes `onCodeReceived` (if ever mounted without `onCodeReceived`, add `min-w-0` and `title` or remove those branches).
+
 `pnpm --dir web test:pipe` runs `tests/e2e/pipe-relay.live.mjs`, a two-device
 live relay E2E against a running dev stack (`scripts/dev/up.sh`). It opens the
 web at `http://localhost:5173` by default (`FLICK_WEB_URL` overrides it) because
@@ -216,7 +238,10 @@ the API echoes CORS for exactly one origin, `FLICK_PUBLIC_BASE_URL`
 (`cmd/flick-api/main.go`, `internal/httpapi/router.go`), which `scripts/dev/up.sh` sets to
 `http://localhost:5173`. It covers
 sender confirmation with one denied device and the `#code=` deep link joining
-into waiting-room confirmation.
+into waiting-room confirmation. After navigating, the test clicks only after the
+page's `/api/config` response (`openHome`, `page.waitForResponse`; the call fires from `onMount`),
+because a click before hydration is lost silently; keep that barrier when adding
+steps.
 
 `ManageSecretPage.browser.mjs` extends the mocked browser suite with both access
 models, memory-only recipient handoff, separate copy/share/QR actions, reload,

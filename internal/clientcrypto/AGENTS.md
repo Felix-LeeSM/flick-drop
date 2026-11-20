@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/clientcrypto Guide
+description: Go client-side age encryption, Model A PBKDF2 access proof, fragment parity with web/src/lib/crypto, and golden vector contract rules.
+tags: [agent-guide, go, crypto]
+---
+
 # `internal/clientcrypto/` Guide
 
 Client-side encryption for non-browser clients. This is the Go mirror of

@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Event Contract
+description: NATS JetStream stream/consumer settings, job payload schema, outbox publishing and retention, worker lease/retry semantics, and reconciliation acks.
+tags: [architecture, nats, events, worker]
+status: stable
+---
+
 # Event Contract
 
 Flick uses NATS JetStream for API to worker jobs.

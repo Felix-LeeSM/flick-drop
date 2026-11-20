@@ -1,3 +1,11 @@
+---
+type: Reference
+title: Web i18n Guide
+description: English, Korean, and Japanese catalog structure, English-skeleton wording rules, and user-perspective terminology under web/src/lib/i18n/.
+tags: [reference, web, i18n]
+status: stable
+---
+
 # `web/src/lib/i18n/`
 
 Display language for the web app: English (`en`), Korean (`ko`), Japanese (`ja`).

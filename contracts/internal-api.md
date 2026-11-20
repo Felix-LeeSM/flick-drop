@@ -1,3 +1,11 @@
+---
+type: Contract
+title: Worker Cleanup Internal API
+description: Internal token-authenticated HTTP endpoints for inline payload cleanup and job-ID-fenced object reconciliation acknowledgements.
+tags: [contract, internal-api, worker]
+status: stable
+---
+
 # Worker cleanup API
 
 Both endpoints use `X-Flick-Internal-Token: <FLICK_INTERNAL_TOKEN>`, accept JSON,

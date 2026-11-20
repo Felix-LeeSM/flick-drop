@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/usage Guide
+description: Transactional daily aggregate usage_counters writer rules and privacy boundaries in the flick_api database.
+tags: [agent-guide, go, usage]
+---
+
 # `internal/usage/` Guide
 
 This package owns the `flick_api` `usage_counters` table: daily aggregate usage

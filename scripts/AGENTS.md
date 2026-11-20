@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: scripts Guide
+description: Shared CI, dev, smoke, and one-time ops script boundaries, static structure checks, and credential exclusion rules.
+tags: [agent-guide, scripts, ci]
+---
+
 # `scripts/` Guide
 
 Scripts are the shared local and CI entrypoints.

@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: cmd/flick Guide
+description: Entrypoint rules, input/passphrase security, default host policy, and release workflow for the flick CLI client.
+tags: [agent-guide, go, cli]
+---
+
 # `cmd/flick/` Guide
 
 This directory is the `flick` command-line client entrypoint.
@@ -21,6 +28,15 @@ process, not a service. It has no config file, no database, and no telemetry.
 
 Encryption, HTTP calls, and share-link handling belong in
 `internal/clientcrypto` and `internal/flickcli`.
+
+## Default host
+
+- `cmd/flick/main.go:defaultAPIURL` stays `http://localhost:8080` (matching
+  `DEFAULT_API_BASE_URL` in `web/src/lib/api/secrets.ts`). Never hardcode a
+  remote deployment host in source so third-party `go install` users do not
+  accidentally send secrets to someone else's server. Operators and users set
+  `FLICK_URL` in their shell or pass `-url` (the public demo
+  `https://flick.makana.cc/` in `README.md` is the only named domain exception).
 
 ## Input rules
 

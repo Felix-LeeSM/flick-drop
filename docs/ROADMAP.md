@@ -1,3 +1,11 @@
+---
+type: Roadmap
+title: Flick Roadmap
+description: MVP scope, historical implementation slices, GitHub product milestones (M8-M15), and post-M15 product decisions.
+tags: [roadmap, milestones]
+status: stable
+---
+
 # Roadmap
 
 ## MVP
@@ -247,9 +255,8 @@ API memory with nothing written to Postgres or object storage.
   receiver by a 3-digit verification number the receiver reads out.
 - Since #399 the receiving browser generates a fresh age key for each attempt
   and the sender encrypts to it, so the relay server cannot decrypt the stream.
-- Durable design: "Live Relay (Live Transfer)" in
-  [security model](architecture/security-model.md) and the live relay part of
-  [service topology](architecture/service-topology.md).
+- Durable design: [live relay architecture and security](architecture/live-relay.md)
+  and the live relay part of [service topology](architecture/service-topology.md).
 - Exclude WebRTC peer-to-peer transfer, device address books, and any stored
   copy of the payload.
 
@@ -291,3 +298,18 @@ shared ephemeral state.
 - Exclude multi-node HA (Patroni, Valkey Sentinel/Cluster, NATS clustering),
   WebRTC peer-to-peer transfer, breaking the `age` format or public HTTP
   contracts, and any Korea-region workload placement.
+
+### Post-M15 Decisions and Follow-Up Work (2026-11-12 / 2026-11-19)
+
+Completed:
+
+- Always-on IP and delivery ID masking in logs (`#396`, no opt-out flag).
+- N named S3-compatible object storage backends weighted by remaining capacity (`#455`).
+- Single public guide page `/guides/` (`#457`, old paths `301` to `/guides/#sending`).
+- English, Korean, and Japanese UI localization (`#459`, followed on `main` by `#461` for full localization, header globe switcher, and translated `/guides/`).
+
+Planned follow-ups:
+
+- Docker Compose self-host kit (build from source by default with MinIO, documenting public images as an operator option, Kubernetes as an appendix, and updated `.env.example`).
+- Explicit button-triggered file downloads (no unsolicited download) and no in-app browser warning banner.
+- Mark English phrases that remain on Korean and Japanese screens with `lang="en"` so screen readers and fonts treat them as English. `#461` localized titles, tabs, primary buttons, and `/guides/`, which removed most English text, so the remaining scope is whatever English those screens still show.

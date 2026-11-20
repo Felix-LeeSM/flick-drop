@@ -1,3 +1,11 @@
+---
+type: Reference
+title: Monitoring Stack (Opt-In)
+description: Lightweight k3s monitoring add-ons (kube-state-metrics, node-exporter, VictoriaMetrics, Loki, Alloy, alloy-cadvisor, Grafana), log privacy, and dashboard layout.
+tags: [reference, monitoring, k3s, grafana, loki]
+status: stable
+---
+
 # Monitoring (opt-in)
 
 Lightweight, opt-in observability add-ons for the flick cluster. These are **not**

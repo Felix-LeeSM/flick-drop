@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: OCI Free Tier Deployment
+description: Public-safe deployment checklist, private overlay skeleton, S3-compatible OCI/R2 setup, Cloudflare routing, smoke tests, and rollback for OCI Free Tier k3s.
+tags: [runbook, oci, k3s, cloudflare]
+status: stable
+---
+
 # OCI Free Tier Deployment
 
 This runbook describes a public-safe deployment path for running Flick on a

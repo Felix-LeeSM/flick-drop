@@ -1,3 +1,10 @@
+---
+type: Architecture
+title: Flick Service Concept
+description: Original product concept kept for orientation; docs/architecture/* is the source of truth.
+status: deprecated
+---
+
 # Flick Service Concept
 
 > **Status: original concept document, kept for orientation.** The durable

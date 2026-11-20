@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: docs Guide
+description: Routing rules for architecture decisions, operational runbooks, roadmap, and active or archived work notes.
+tags: [agent-guide, docs]
+---
+
 # `docs/` Guide
 
 Use docs as the durable source of truth for decisions, not as a dump of every

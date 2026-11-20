@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Deployment Target
+description: Generic k3s Kubernetes resources, Traefik retry/transport setup, initial OCI Always Free resource budgets, and multi-replica scaling boundaries.
+tags: [architecture, deploy, k3s, resources]
+status: stable
+---
+
 # Deployment Target
 
 Flick is designed for small self-hosted Kubernetes deployments and should be

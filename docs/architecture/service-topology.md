@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Service Topology
+description: Runtime services (flick-web, flick-api, flick-worker, nats, postgres, valkey), live-relay pod-to-pod flow, and outbox reliability.
+tags: [architecture, topology, services]
+status: stable
+---
+
 # Service Topology
 
 Flick starts as a small self-hosted MSA.
@@ -97,7 +105,7 @@ decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the
    pod's internal stream listener, which writes the bytes into that receiver's
    open `/receive` response.
 
-`docs/architecture/security-model.md` (Live Relay) defines what each credential
+`docs/architecture/live-relay.md` defines what each credential
 unlocks and why rejected receivers never burn a session.
 
 `FLICK_PIPE_RELAY_ENABLED=false` or an empty `FLICK_VALKEY_ADDR`

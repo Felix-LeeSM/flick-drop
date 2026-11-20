@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: .agents Guide
+description: Policy for repo-owned agent skills, PR review subagent contract, and keeping workflow rules in directory-local guides.
+tags: [agent-guide, skills]
+---
+
 # `.agents/` Guide
 
 This directory is for repo-owned agent skills or thin wrappers if they become

@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/events Guide
+description: NATS JetStream subjects, outbox publishing and retention pruning, idempotent consumers, and W3C trace propagation rules.
+tags: [agent-guide, go, nats, events]
+---
+
 # `internal/events/` Guide
 
 This package owns NATS JetStream publishing, consuming, subject names, outbox

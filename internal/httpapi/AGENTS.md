@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/httpapi Guide
+description: HTTP routing, middleware, DTO mapping, transaction boundary limits, and internal-token rules for public and internal API handlers.
+tags: [agent-guide, go, httpapi]
+---
+
 # `internal/httpapi/` Guide
 
 This package owns HTTP routing, middleware, handlers, and request/response

@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: PostgreSQL Cutover
+description: One-time downtime migration from SQLite volumes to PostgreSQL 17 using scripts/ops/migrate-sqlite-to-postgres.sh with bucket-protection tripwires.
+tags: [runbook, postgres, migration]
+status: stable
+---
+
 # PostgreSQL Cutover
 
 This runbook moves an existing installation from the SQLite layout (the

@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Database Schema
+description: PostgreSQL schema, ownership split between flick_api and flick_worker databases, request and reconciliation tables, and dialect rules.
+tags: [architecture, postgres, database, schema]
+status: stable
+---
+
 # Database Schema
 
 Flick splits ownership across two PostgreSQL logical databases on one

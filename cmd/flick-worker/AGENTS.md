@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: cmd/flick-worker Guide
+description: Process bootstrap order, worker database ownership, and NATS consumer entrypoint rules for flick-worker.
+tags: [agent-guide, go, worker]
+---
+
 # `cmd/flick-worker/` Guide
 
 This directory is the `flick-worker` process entrypoint.

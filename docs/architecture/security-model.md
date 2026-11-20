@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Security Model
+description: Client-side encryption, Model A/B access control, one-time request security, log masking, web response headers, sender management, and residual risk boundaries.
+tags: [architecture, security, crypto, logs, csp]
+status: stable
+---
+
 # Security Model
 
 Flick is designed around client-side encryption and short retention.
@@ -221,105 +229,23 @@ server never sees the note plaintext or memo identity.
 
 ## Live Relay (Live Transfer)
 
-The live relay (`/api/pipe/*`, `internal/piperelay`) streams an age file from
-one browser to another through API memory, hopping from the sender's API
-replica to the receiver's (`service-topology.md`); it writes nothing to the
-databases or object storage, and the waiting room's metadata lives in
-non-persistent Valkey. The stream is end-to-end encrypted against a passive
-server:
+Live Transfer (`/api/pipe/*`, `internal/piperelay`) streams an age-encrypted
+payload between browsers through API memory with waiting-room metadata in
+non-persistent Valkey, never writing to PostgreSQL or object storage. The full
+encryption model, Valkey data boundary, waiting-room confirmation rules, and
+residual risks live in [live-relay.md](live-relay.md).
 
-- The receiving browser generates a fresh hybrid ML-KEM-768 + X25519 age
-  identity for each receive attempt (`web/src/lib/crypto/pipe.ts`
-  `createPipeReceiverKey`, built on `web/src/lib/crypto/age.ts`
-  `generateSecretIdentity`). The identity stays in that attempt's browser
-  memory only (`web/src/lib/components/ReceiveCodeModal.svelte`
-  `joinAndReceive`): no browser storage, no URL, no request, no log.
-- `POST /api/pipe/join` carries only its recipient (public half) as
-  `{"recipient":"age1pq1..."}`. `internal/httpapi/piperelay.go` `joinPipe`
-  validates it at the HTTP boundary (`validPipeRecipient`: prefix `age1pq1`,
-  lowercase bech32 characters, at most `pipeRecipientMaxChars` 4,096
-  characters, then a full parse of the ML-KEM-768 + X25519 key with its
-  checksum in canonical form, as request links do; anything else is
-  `400 invalid_recipient`) and the coordinator stores it on that connection
-  in the session's Valkey room.
-- `GET /api/pipe/wait` hands recipients to the sender token holder only: each
-  waiting row carries its recipient, and once `status` is `ready` the
-  top-level `recipient` names the attached receiver's. Neither `/join` nor
-  `/status` nor `/receive` returns a recipient to any receiver.
-- The sender encrypts the stream and the filename to that recipient with age
-  (`web/src/lib/state/pipe-relay.svelte.ts` `streamPayload`, using
-  `encryptToRecipient` and `encryptPipeFilename`); age performs the key
-  agreement. The receiver decrypts with its identity (`decryptWith`,
-  `decryptPipeFilename`).
+## Rate Limiting (Shared Across API Replicas)
 
-The server issues no key material for a code transfer: no salt, no passphrase,
-and the 6-digit code only routes requests. A curious or passive server, its
-logs, a dump of its memory, or a dump of Valkey therefore hold recipients and
-(memory only) ciphertext but nothing that decrypts the stream. A code transfer takes no passphrase on either
-side; the link tab's passphrase never reaches it.
-
-**What Valkey holds.** The rendezvous lives in Valkey so any API replica can
-serve any call of a transfer (`internal/piperelay/room.go`). Valkey runs with
-`--save "" --appendonly no`, so nothing reaches disk. One room is a hash keyed by
-the HMAC-SHA-256 of the 6-digit code under `FLICK_RATELIMIT_KEY_SALT`, so a key
-dump does not reveal a code (a bare SHA-256 of 900,000 codes would). Its JSON
-state holds the SHA-256 of the sender token, each connection's ID,
-verification number, device label, public age recipient, and HMAC'd client key
-and network, the decline block list (HMAC'd client keys), the receiver
-replica's IP, the SHA-256 of the one-time stream secret, and timestamps. It
-never holds ciphertext, the encrypted filename, the code, the sender token, the
-stream secret, or a raw client hash; `internal/piperelay/stream_test.go`
-`TestStream_ValkeyHoldsNoCiphertextCodeOrToken` dumps every key mid-stream and
-checks the values for the ciphertext, the encrypted filename, the sender token,
-and the raw client hashes, and the key names for the code; the stream secret
-exists only inside `Send` and the outgoing request, so Valkey can hold no more
-than the SHA-256 that `Send` writes. A room expires one minute after its own
-deadline (the 3-minute window, or `maxTransferDuration` once streaming), and an
-ended room stays one minute as a tombstone so devices still waiting learn how it
-ended. Anyone who can read Valkey can read the connection IDs and recipients of
-live rooms, so a deployment keeps Valkey reachable from the API replicas only:
-`deploy/base/valkey.yaml` `NetworkPolicy/valkey` admits flick-api pods alone,
-and the pod has no volume.
-
-The encrypted bytes hop between replicas over the stream listener
-(`FLICK_INTERNAL_HTTP_PORT`, `internal/piperelay/stream.go`), which accepts a
-request only with `FLICK_INTERNAL_TOKEN` and the stream's one-time secret, and
-only while the receiver's `/receive` waits on that replica. In Kubernetes,
-`deploy/base/api.yaml` `NetworkPolicy/flick-api` also admits only other
-flick-api pods to that port. The sender's replica
-dials only an IP literal from the room on the fixed internal port, without
-redirects or an HTTP proxy, so a tampered room cannot aim it at another host or
-port. The hop is plain HTTP inside the cluster network; the bytes on it are the
-same age ciphertext the browsers exchange.
-
-Known limit: the key exchange is not authenticated against the server. An
-actively malicious server can swap in a recipient of its own on `/wait`, decrypt
-the stream, and re-encrypt it to the real receiver (a man-in-the-middle). The
-3-digit confirmation number does not detect this: the server draws it, and it is
-not derived from either key. Defending against an active server would need a
-check of the recipient over another channel; it is not implemented.
-
-Credentials and what they unlock:
-
-- `POST /api/pipe/init` returns the 6-digit code and a random sender token.
-  Only the sender token unlocks the sender calls (`/wait`, `/select`,
-  `/decline`, `/cancel`, `/send`). A wrong token answers `404` exactly like an
-  unknown code, so those calls are no code oracle, and knowing the 6-digit code
-  is not enough to watch the list, pick a device, cancel, or inject a stream.
-  With the right token, `/select` and `/decline` answer `409 not_pending` for a
-  connection that already left or never existed.
-- `POST /api/pipe/join` is the only call that accepts a bare 6-digit code. It is
-  rate-limited by `FLICK_OPEN_RATE_PER_MIN` per client network: the client IP
-  resolved through `FLICK_TRUSTED_PROXIES`, with an IPv6 address collapsed to
-  its /64 (`internal/httpapi/ratelimit.go` `clientNetwork`), because one IPv6
-  subscriber usually holds a whole /64 and could otherwise rotate through
-  2^64 fresh buckets. `/api/pipe/join` and `/api/v1/pipe/join` spend one
-  bucket. It returns an unguessable connection ID that `/status` and
-  `/receive` need.
-
-Every rate-limited endpoint keys its buckets by that same client network plus a
-scope (`internal/httpapi/ratelimit.go` `rateLimiter.middleware`), and each
-limiter instance in `internal/httpapi/router.go` picks one of two scopes:
+Secret open, sender management, request routes, and the live relay's `/init`,
+`/join`, and `/status` are rate-limited. Every rate-limited endpoint keys its
+buckets by client network plus a scope
+(`internal/httpapi/ratelimit.go` `rateLimiter.middleware`). The client network
+is the client IP resolved through `FLICK_TRUSTED_PROXIES`, with an IPv6 address
+collapsed to its /64 (`internal/httpapi/ratelimit.go` `clientNetwork`), because
+one IPv6 subscriber usually holds a whole /64 and could otherwise rotate through
+2^64 fresh buckets. Each limiter instance in `internal/httpapi/router.go` picks
+one of two scopes:
 
 - `perResourceID`: one bucket per client network and secret ID. Secret open
   (`openLimiter`) and the two management calls, status and revoke
@@ -341,95 +267,6 @@ replica's own in-process bucket for the next 5 seconds
 (`sharedBucketRetryAfter`): limits keep holding per replica, so a client can
 get at most one budget per replica during an outage, and every such decision
 counts in `flick_ratelimit_fallback_total`.
-
-**Waiting room confirmation.** Every live relay session is a
-waiting room. Every device that enters the right code is held as a pending
-connection, up to `MaxPendingConnections` (10) in
-`internal/piperelay/coordinator.go`. Each connection gets its own 3-digit
-verification number from crypto/rand, unique among the waiting connections and
-independent of the 6-digit code, so knowing the code reveals nothing about any
-device's number. The receiver reads its number to the sender over another
-channel (voice, chat); the sender sees every waiting connection with its
-number, a coarse device label such as "Safari on iPhone", and its wait time,
-then sends to the matching row. Every other waiting device ends with "The sender
-chose another device" and receives nothing. The check is the sender's eyes:
-there is no receiver-side typing or mutual confirmation, and it proves only that
-the stream goes to the device that showed that number. It does not defend
-against a compromised server, which draws the numbers and could swap the
-recipient (see the known limit above).
-
-A waiting receiver long-polls `/status` (up to 25 seconds per poll) and opens
-`/receive` only after `/status` reports it selected; `/receive` on a connection
-that is still waiting answers `409 awaiting_decision`. No waiting request is
-ever silent for long enough to be cut by a proxy idle limit (Cloudflare cuts at
-100 seconds). A waiting connection counts as present only while it polls: one
-with no open `/status` call for 35 seconds
-(`internal/piperelay/coordinator.go` `defaultPresenceTimeout`) drops out of the
-list, which frees its slot without a decline, a block, or a burn. A selected
-connection that does not open `/receive` within the same 35 seconds ends the
-session, like the chosen receiver leaving before the stream starts. One client
-network (an IPv4 address or an IPv6 /64) can hold at most 3 waiting
-connections per session (`MaxPendingPerNetwork`); the next one gets `409
-network_full`.
-
-One connection holds at most 2 open `/status` calls
-(`MaxStatusPollsPerConnection`; the next gets `409 poll_in_progress`), and
-`/status` is rate-limited to 120 calls a minute per client network
-(`internal/httpapi/piperelay.go` `pipeStatusRatePerMinute`), so a connection ID
-cannot pile up server goroutines and sockets.
-
-Residual risk: someone who holds the right 6-digit code can keep slots for the
-session's 3-minute window in two ways. They can keep polling `/status`, or they
-can skip polling and re-join roughly every 35 seconds as each idle connection
-drops, spending only `/join` rate-limit tokens. The per-network cap means
-filling all 10 slots takes at least 4 networks, and the sender sees every such
-row and can deny it, but a code holder with many networks can still crowd the
-room until the sender asks for a new code. Keying by IPv6 /64 also still hands
-a holder of a larger prefix (a /56 has 256 /64s, a /48 has 65,536) that many
-separate join buckets and per-network caps. A global or per-session cap on
-joins is a possible future hardening; it is not implemented.
-
-The sender can deny a single row. That device ends with "The sender declined
-this device", its slot reopens, and the session stays alive. The API also blocks
-the same client from rejoining the session: it keeps a SHA-256 of the client
-network (the client IP resolved through `FLICK_TRUSTED_PROXIES`, the same way as
-the rate limiter, with IPv6 collapsed to its /64) and the User-Agent
-(`internal/httpapi/piperelay.go` `pipeJoinClient`), HMAC'd again under
-`FLICK_RATELIMIT_KEY_SALT` in the session's Valkey room for the session's
-lifetime. The block is deliberately coarse. Another device behind the
-same NAT or IPv6 /64 with the same browser and OS string is blocked too for that
-one short session, and a determined person can change network or User-Agent to
-get back in; the sender can deny them again. The declined browser also
-remembers the decline in `sessionStorage` as a SHA-256 of the code plus the
-session's expiry time, computed once when `/join` answered
-(`web/src/lib/state/pipe-declined.ts` `sessionExpiresAt`), so a reload does not
-ask again and the memory lapses with that session. The entry never holds the
-code itself or any key, and a 6-digit code's hash is
-brute-forceable, so it is treated as no more secret than the code the user
-already typed on that device.
-
-**No burn on rejected receivers.** A wrong 6-digit code never reaches a session
-(the code is the lookup key), so a per-session failed-attempt counter can only
-ever count people who held the right code. Late, extra, declined, idle,
-room-full, and network-full receivers therefore never end a session or count
-against it; online code guessing is bounded only by the `/join` rate limit (per
-client network, as above) and the 3-minute window. An 11th waiting device gets
-`409 room_full` and the session stays alive. `/join` and `/select` answer `410
-expired` once the window closed, even before cleanup removes the session.
-
-**A started stream is never cut by a burn.** Sender cancel returns `409
-streaming` once bytes flow, and the rendezvous TTL rules skip streaming
-sessions until `maxTransferDuration` (10 minutes). Cancel, the TTL rules, and
-`/send` marking the stream started are all compare-and-set writes on the same
-Valkey room, so a cancel racing a starting stream either ends the session before
-any byte flows or loses with `409 streaming`. Only the stream itself failing,
-either side disconnecting, or a replica still streaming when its 50-second
-shutdown timeout ends cuts it.
-
-The API never logs 6-digit codes, verification numbers, sender tokens,
-connection IDs, client keys, recipients, or User-Agents. Device labels live in
-the session's Valkey room only, for the session's lifetime plus the one-minute
-tombstone.
 
 ## Structured Credentials
 

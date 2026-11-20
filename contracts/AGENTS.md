@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: contracts Guide
+description: Ownership and security rules for shared HTTP OpenAPI, age format, credential payload, NATS event, and internal API contracts.
+tags: [agent-guide, contracts]
+---
+
 # `contracts/` Guide
 
 This directory holds shared service contracts.

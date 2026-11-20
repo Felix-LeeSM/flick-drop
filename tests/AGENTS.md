@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: tests Guide
+description: Cross-component integration, browser e2e, and non-secret fixture boundaries under tests/.
+tags: [agent-guide, tests]
+---
+
 # `tests/` Guide
 
 Cross-component tests live here when they do not naturally belong inside Go or

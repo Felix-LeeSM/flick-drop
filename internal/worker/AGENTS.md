@@ -1,3 +1,10 @@
+---
+type: Agent Guide
+title: internal/worker Guide
+description: Worker job execution, flick_worker database ownership, idempotent retries, object-key masking, and cleanup acknowledgement rules.
+tags: [agent-guide, go, worker]
+---
+
 # `internal/worker/` Guide
 
 This package owns worker job execution, retry, idempotency, and dead-letter

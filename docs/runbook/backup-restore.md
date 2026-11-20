@@ -1,3 +1,11 @@
+---
+type: Runbook
+title: Backup and Restore
+description: Hot pg_dump backups, full-read verification, zero-replica database restores, JetStream/Valkey/S3 recovery, and PVC recreation drills.
+tags: [runbook, backup, restore, postgres]
+status: stable
+---
+
 # Backup And Restore
 
 This runbook describes how to back up and restore Flick state on the
