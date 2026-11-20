@@ -23,10 +23,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracer is shared by the store and reaper (same package). When tracing is off
-// (no OTLP endpoint) it resolves to OTel's no-op, so tracer.Start costs nothing.
-// Span attributes carry only safe metadata (kind, storage backend) — never
-// ciphertext, wrapped identities, access proofs, or keys.
+// Span attributes carry only safe metadata (kind, storage backend), never ciphertext, identities, proofs, or keys.
 var tracer = otel.Tracer("github.com/Felix-LeeSM/flick-drop/internal/secrets")
 
 const (
@@ -37,11 +34,7 @@ const (
 	maxFailedAccessAttempts = 5
 )
 
-// registerCreatedSeries pre-registers every kind/storage combination the store
-// can emit so the flick_secret_created_total children exist at 0 from process
-// start. A CounterVec child materializes only at its first Inc, so after every
-// api restart the series vanishes until the next delivery and the usage
-// dashboard reads "No data" (#374).
+// A CounterVec child exists only after its first Inc; without this the series vanishes after restart (#374).
 func registerCreatedSeries(objects *storage.Registry) {
 	backends := []string{StorageSQLite}
 	if objects != nil {
@@ -61,9 +54,6 @@ type KDFParams struct {
 	KeyLengthBits int    `json:"key_length_bits"`
 }
 
-// CreateInput carries an inline secret. Ciphertext is the age file for the body
-// (contracts/age-format-v1.md) and SizeBytes its exact length. EncryptedFilename
-// and WrappedIdentity are base64 age files the server stores unread.
 type CreateInput struct {
 	Kind              string
 	Ciphertext        []byte
@@ -77,11 +67,6 @@ type CreateInput struct {
 	MaxViews          int
 }
 
-// CreateLargeInput carries the metadata for a body the server never sees: the
-// client uploads the age file directly to the bucket via a presigned PUT, then
-// /finalize activates the secret. SizeBytes is the exact age file length, and
-// the presigned signature pins it, so an upload of any other size is rejected
-// by the bucket.
 type CreateLargeInput struct {
 	Kind              string
 	AccessKDF         KDFParams
@@ -108,8 +93,7 @@ type Secret struct {
 	Kind            string
 	StorageBackend  string
 	StorageKey      string
-	// Ciphertext holds an inline body. An S3 body opened by OpenTx arrives in
-	// Body instead, and the caller must close it.
+	// An S3 body opened by OpenTx arrives in Body instead; the caller must close it.
 	Ciphertext        []byte
 	Body              io.ReadCloser
 	AccessKDF         KDFParams
@@ -150,9 +134,7 @@ type StoreOptions struct {
 	MinTTLSeconds         int
 	MaxTTLSeconds         int
 	Objects               *storage.Registry
-	// Outbox, when set, enqueues the lockout object-delete in the access tx
-	// instead of calling the object store inline. Optional: a Store built
-	// without one (e.g. in tests) falls back to a best-effort inline delete.
+	// Without one (tests only), the lockout falls back to a best-effort inline delete.
 	Outbox outboxEnqueuer
 }
 
@@ -273,9 +255,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 	if err := usage.Increment(ctx, tx, now, usage.SecretCreatedMetric(input.Kind), 1); err != nil {
 		return Secret{}, err
 	}
-	// The inline payload persists in this same transaction, so the bytes are
-	// uploaded here. Large uploads count theirs in Finalize, where the object
-	// is confirmed.
+	// Large uploads count bytes in Finalize, where the object is confirmed.
 	if err := usage.Increment(ctx, tx, now, usage.BytesUploaded, input.SizeBytes); err != nil {
 		return Secret{}, err
 	}
@@ -302,10 +282,6 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (_ Secret, err er
 	}, nil
 }
 
-// CreateLarge stages a pending_upload secret backed by S3 and returns a
-// presigned PUT so the client uploads the ciphertext straight to the bucket.
-// The server never sees the ciphertext. /finalize flips the row to active once
-// the object is confirmed.
 func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ CreateLargeResult, err error) {
 	ctx, span := tracer.Start(ctx, "secrets.CreateLarge", trace.WithAttributes(
 		attribute.String("secret.kind", input.Kind),
@@ -335,12 +311,8 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 		return CreateLargeResult{}, err
 	}
 
-	// Placement: a random backend weighted by remaining space among those
-	// whose ceiling still fits (storage.Registry.Choose). The usage read happens before any write, so
-	// a rejection inserts no row and presigns nothing. The read runs outside a
-	// transaction (the write tx opens below), so concurrent placements can
-	// transiently overshoot a ceiling — the documented soft cap (storage-model.md).
-	// The chosen backend flows into the presign, the row, and the metric label.
+	// The usage read runs outside a tx, so concurrent placements can transiently overshoot a ceiling
+	// (the documented soft cap). A rejection inserts no row and presigns nothing.
 	backendUsage, err := db.StorageObjectBytes(ctx, s.db, s.now().UTC(), s.objects.Names())
 	if err != nil {
 		return CreateLargeResult{}, fmt.Errorf("read object usage: %w", err)
@@ -393,8 +365,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	if err != nil {
 		return CreateLargeResult{}, err
 	}
-	// The create counts the event; bytes_uploaded waits for Finalize to confirm
-	// the object landed, so an abandoned presigned upload never inflates it.
+	// bytes_uploaded waits for Finalize so an abandoned presigned upload never inflates it.
 	if err := usage.Increment(ctx, tx, now, usage.SecretCreatedMetric(input.Kind), 1); err != nil {
 		return CreateLargeResult{}, err
 	}
@@ -407,11 +378,7 @@ func (s *Store) CreateLarge(ctx context.Context, input CreateLargeInput) (_ Crea
 	return CreateLargeResult{ID: id, ExpiresAt: expiresAt, Upload: upload, ManagementToken: managementToken}, nil
 }
 
-// Finalize confirms a pending_upload secret: it HEADs the object to verify it
-// exists with exactly the declared age file length, then flips state to
-// active. Idempotent — finalizing an already-active secret is a no-op success.
-// The HEAD runs inside the transaction but the SELECT takes no row lock, so a
-// concurrent Revoke or open is never blocked by the bucket round-trip.
+// Idempotent. The SELECT takes no row lock, so the bucket HEAD never blocks a concurrent Revoke or open.
 func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	ctx, span := tracer.Start(ctx, "secrets.Finalize")
 	defer func() { telemetry.EndSpan(span, err) }()
@@ -460,10 +427,7 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	if err != nil {
 		return fmt.Errorf("head uploaded object: %w", err)
 	}
-	// The signed Content-Length should already make any other length impossible,
-	// but that is the bucket's promise, not ours. Check the exact length the row
-	// was staged for so activation never depends on a remote store enforcing the
-	// signature the way we expect.
+	// The bucket should already enforce the signed length; check anyway so activation never depends on it.
 	if !info.Exists || info.Size != sizeBytes {
 		return ErrObjectMissing
 	}
@@ -477,15 +441,9 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 		return err
 	}
 	if !activated {
-		// Another replica finalized this upload between this transaction's
-		// SELECT and the conditional UPDATE. Its commit already counted the
-		// bytes and dropped the in-flight gauge, so returning nil without
-		// incrementing is what keeps finalize replays from double-counting.
+		// The winning replica already counted the bytes; returning without incrementing avoids double-counting.
 		return nil
 	}
-	// The object is confirmed at exactly the staged length, so this is where the
-	// large upload's bytes actually landed. The idempotent paths above never
-	// reach here, so finalize replays cannot double-count.
 	if err := usage.Increment(ctx, tx, now, usage.BytesUploaded, sizeBytes); err != nil {
 		return err
 	}
@@ -495,20 +453,10 @@ func (s *Store) Finalize(ctx context.Context, id string) (err error) {
 	return nil
 }
 
-// activateSecretTx flips a pending_upload secret to active and reports whether
-// this transaction performed the flip. Guarding the affected-row count keeps
-// the pending→active flip race-safe across replicas: 0 rows means the row was
-// hard-deleted between Finalize's SELECT and this UPDATE (the expiration reaper
-// removes pending_upload orphans older than PendingTTL, and any concurrent
-// Revoke has the same effect — the client must learn the upload was reaped or
-// cancelled, not believe it finalized), the reaper already claimed it for
-// reclamation, or another replica already activated the row. The re-read
-// tells them apart: already-active is idempotent success (activated=false),
-// anything else is ErrNotFound. Extracted from
-// Finalize so the race guard is unit-testable in isolation.
+// 0 rows means reaped, revoked, reaper-claimed, or already activated by another replica;
+// the re-read treats already-active as idempotent success and anything else as ErrNotFound.
 func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (bool, error) {
-	// reclaim_enqueued_at is null: once another replica's reaper claimed the
-	// orphan and enqueued its object delete, finalize must not activate it.
+	// Once a reaper claimed the orphan and enqueued its delete, finalize must not activate it.
 	result, err := tx.ExecContext(ctx, `update secrets set state='active', updated_at=$1
 		where id=$2 and state='pending_upload' and reclaim_enqueued_at is null`, now, id)
 	if err != nil {
@@ -519,8 +467,7 @@ func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now
 		return false, fmt.Errorf("read activate row count: %w", err)
 	}
 	if affected != 1 {
-		// Under READ COMMITTED this re-read sees the concurrent commit that beat
-		// this UPDATE, so an already-active row reads as idempotent success.
+		// Under READ COMMITTED this re-read sees the concurrent commit that beat this UPDATE.
 		var state string
 		err := tx.QueryRowContext(ctx, `select state from secrets where id = $1`, id).Scan(&state)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -537,14 +484,8 @@ func (s *Store) activateSecretTx(ctx context.Context, tx *sql.Tx, id string, now
 	return true, nil
 }
 
-// PendingTTL is how long a pending_upload secret may wait for /finalize before
-// an orphan sweep reclaims it. Exposed for the sweep caller.
 func (s *Store) PendingTTL() time.Duration { return s.pendingTTL }
 
-// CountPendingUploads returns the number of secrets still awaiting /finalize.
-// The API-state metrics collector (telemetry.RegisterAPIStateCollector) reads
-// it on every scrape as flick_active_uploads. The state literal matches the
-// reaper's claim query.
 func (s *Store) CountPendingUploads(ctx context.Context) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `select count(*) from secrets where state = 'pending_upload'`).Scan(&n); err != nil {
@@ -598,10 +539,6 @@ func (s *Store) Metadata(ctx context.Context, id string) (Metadata, error) {
 	if consumedAt.Valid {
 		return Metadata{}, ErrConsumed
 	}
-	// Model A secrets expose access KDF so the browser can derive the proof.
-	// Model B secrets carry no access proof, so the column is NULL and
-	// metadata.AccessKDF stays zero — the caller treats an absent access block
-	// as passphrase-optional.
 	if accessKDFJSON.Valid {
 		if err := json.Unmarshal([]byte(accessKDFJSON.String), &metadata.AccessKDF); err != nil {
 			return Metadata{}, fmt.Errorf("decode access kdf params: %w", err)
@@ -634,10 +571,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, ErrExpired
 	}
 
-	// Model A secrets carry an access proof hash and must be authorized by a
-	// matching proof. Model B secrets (passphrase optional) carry none: the link
-	// is the capability, so no proof is verified. Because max_views stays 1, a
-	// captured fragment key can authorize at most a single open.
+	// Model B carries no proof: the link is the capability. max_views 1 limits a captured key to one open.
 	if secret.accessProofHash != "" {
 		if subtle.ConstantTimeCompare([]byte(secret.accessProofHash), []byte(accessProofHash)) != 1 {
 			if err := s.recordFailedAccessTx(ctx, tx, id, secret.StorageBackend, secret.StorageKey, now); err != nil {
@@ -647,10 +581,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		}
 	}
 
-	// Start the object read (for object-backend secrets) before marking consumed, so
-	// a bucket that cannot serve the body leaves the secret reopenable rather
-	// than consumed-but-unreadable. Only a failure after the first byte, while
-	// the caller streams, loses the secret.
+	// Open the body before marking consumed so an unservable bucket leaves the secret reopenable.
 	if err := s.openBody(ctx, &secret); err != nil {
 		return Secret{}, err
 	}
@@ -665,10 +596,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 		return Secret{}, ErrExpired
 	}
 
-	// Opened means forgotten: the secret row (its inline payload cascades) and
-	// its management record go in this transaction, so every later request for
-	// the ID gets the unknown-ID response. An inline body was already loaded
-	// into secret.Ciphertext. A lost race reads as unknown too.
+	// Opened means forgotten: every later request for the ID gets the unknown-ID response.
 	result, err := tx.ExecContext(ctx, `delete from secrets where id = $1 and consumed_at is null`, id)
 	if err != nil {
 		return Secret{}, fmt.Errorf("delete opened secret: %w", err)
@@ -683,9 +611,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	if _, err := tx.ExecContext(ctx, `delete from secret_management where secret_id = $1`, id); err != nil {
 		return Secret{}, fmt.Errorf("delete opened management record: %w", err)
 	}
-	// A bucket body may still be streaming. With its row gone, only this
-	// key-and-deadline record keeps reconciliation away until the stream
-	// deadline has certainly passed (reconciliation.go:protectObjectTx).
+	// With the row gone, only this record keeps reconciliation away until the stream deadline passes.
 	if secret.Body != nil {
 		if _, err := tx.ExecContext(ctx, `insert into secret_open_grace (object_key, grace_until) values ($1, $2)`,
 			secret.StorageKey, now.Add(openObjectGrace)); err != nil {
@@ -698,10 +624,7 @@ func (s *Store) OpenTx(ctx context.Context, tx *sql.Tx, id string, accessProofHa
 	return secret, nil
 }
 
-// openBody starts reading an S3-backed body. Inline (sqlite_blob) secrets
-// already carry their ciphertext from load. The object must be exactly the
-// length /finalize checked, because the caller announces that length before
-// streaming.
+// The caller announces the /finalize-checked length before streaming, so it must match exactly.
 func (s *Store) openBody(ctx context.Context, secret *Secret) error {
 	if secret.StorageBackend == StorageSQLite {
 		return nil
@@ -726,11 +649,7 @@ func (s *Store) openBody(ctx context.Context, secret *Secret) error {
 }
 
 func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string, storageBackend, storageKey string, now time.Time) error {
-	// One atomic statement increments and returns the post-increment state, so
-	// two concurrent final attempts cannot both read a pre-lockout count and
-	// double-record the lockout or its usage counter. Under READ COMMITTED the
-	// loser's UPDATE re-evaluates consumed_at is null after the winner commits
-	// and matches 0 rows.
+	// One atomic statement so concurrent final attempts cannot both read a pre-lockout count.
 	var failedAccessCount int
 	var consumedAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `update secrets
@@ -747,8 +666,7 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		now,
 	).Scan(&failedAccessCount, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 0 rows: since load, either a concurrent final attempt locked the row
-		// (consumed) or a concurrent open or revoke deleted it (unknown ID).
+		// 0 rows: a concurrent final attempt locked it, or a concurrent open or revoke deleted it.
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `select exists(select 1 from secrets where id = $1)`, id).Scan(&exists); err != nil {
 			return fmt.Errorf("re-read secret after failed access: %w", err)
@@ -769,13 +687,8 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 		if err := recordManagementOutcomeTx(ctx, tx, id, "locked"); err != nil {
 			return err
 		}
-		// Lock reached: purge the payload so it can never be read. S3-backed
-		// secrets have no inline row, so delete the object instead. Enqueue the
-		// delete in this tx (same pattern as the consumed-open path) rather than
-		// calling the object store inline: a synchronous S3 round-trip would hold
-		// this transaction's row locks across network I/O and silently leak the
-		// object on a transient failure. The worker retries the job; an orphan is
-		// also swept by the expiration reaper (issue #76).
+		// Enqueue the object delete in this tx: an inline S3 call would hold row locks across network I/O
+		// and leak the object on a transient failure.
 		switch {
 		case storageBackend == StorageSQLite:
 			if _, err := tx.ExecContext(ctx, `delete from secret_payloads where secret_id = $1`, id); err != nil {
@@ -797,9 +710,7 @@ func (s *Store) recordFailedAccessTx(ctx context.Context, tx *sql.Tx, id string,
 				return fmt.Errorf("enqueue locked object delete: %w", err)
 			}
 		case s.objects != nil:
-			// No outbox wired (test-only Store): best-effort inline delete. A
-			// failed delete must not roll back the lockout count — that would
-			// gift the attacker another attempt.
+			// A failed delete must not roll back the lockout count, which would gift the attacker another attempt.
 			objects, err := s.objects.For(storageBackend)
 			if err == nil {
 				_ = objects.Delete(ctx, storageKey)
@@ -841,12 +752,7 @@ func (s *Store) Cleanup(ctx context.Context, id string) (bool, error) {
 	return affected > 0, nil
 }
 
-// ReclaimTx hard-deletes a secret and its inline payload within the caller's
-// transaction. It is the reaper's row-cleanup path: orphan (pending_upload) and
-// expired secrets are removed here outright, unlike the payload-only Cleanup
-// path which preserves consumed metadata. Guarded by reclaim_enqueued_at IS
-// NOT NULL so only rows the reaper has claimed can be reaped. Idempotent: a
-// missing row is not an error.
+// Only rows the reaper has claimed can be reaped. A missing row is not an error.
 func (s *Store) ReclaimTx(ctx context.Context, tx *sql.Tx, id string) error {
 	if id == "" {
 		return ErrNotFound
@@ -914,17 +820,12 @@ func (s *Store) load(ctx context.Context, q queryer, id string) (Secret, sql.Nul
 	}
 	secret.StorageBackend = storageBackend.String
 	secret.StorageKey = storageKey.String
-	// Inline (sqlite_blob) secrets carry ciphertext in their secret_payloads
-	// bytea row; S3-backed secrets fetch it on demand from the object store, so
-	// an empty blob here is expected for pending/active object-backend rows.
 	if secret.StorageBackend == StorageSQLite && len(ciphertext) == 0 && !consumedAt.Valid {
 		return Secret{}, sql.NullTime{}, ErrNotFound
 	}
 	secret.Ciphertext = ciphertext
 
-	// Model A rows carry the access KDF, proof hash, and wrapped identity;
-	// Model B rows carry none (the identity travels in the URL fragment). The
-	// table CHECK enforces this; a mix here is corruption.
+	// The table CHECK enforces Model A/B columns; a mix here is corruption.
 	if accessKDFJSON.Valid != accessProofHash.Valid || accessProofHash.Valid != wrappedIdentity.Valid {
 		return Secret{}, sql.NullTime{}, ErrInvalidInput
 	}
@@ -956,17 +857,11 @@ func (s *Store) validateCreate(input CreateInput) error {
 	return s.validateCommon(input.Kind, input.TTLSeconds, input.MaxViews, input.AccessKDF, input.AccessProofHash, input.WrappedIdentity, input.EncryptedFilename, input.ContentType)
 }
 
-// validateCreateLarge mirrors validateCreate minus the body checks: the body
-// never touches the server for the large path.
 func (s *Store) validateCreateLarge(input CreateLargeInput) error {
-	// Text lives in the API database (docs/architecture/storage-model.md); only
-	// files are large enough to need the bucket.
 	if input.Kind == KindText {
 		return ErrInvalidInput
 	}
-	// The presigned signature pins this length, so a declared size past the cap
-	// has to be refused here — otherwise the client would receive a signature
-	// for an upload the bucket is meant to never accept.
+	// The signature pins this length, so an oversized declaration must be refused before signing.
 	if input.SizeBytes > s.maxObjectBytes {
 		return ErrPayloadTooLarge
 	}
@@ -987,10 +882,7 @@ func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF 
 		return ErrUnsupportedViews
 	}
 
-	// A secret is either Model A or Model B, never a mix.
-	// Model A (passphrase): access KDF, access proof hash, and wrapped identity
-	// all present. Model B (link only): all three absent — the identity travels
-	// in the URL fragment.
+	// A secret is either Model A (all three present) or Model B (all absent), never a mix.
 	hasProof := accessProofHash != ""
 	hasAccessKDF := accessKDF.Algorithm != ""
 	hasWrapped := wrappedIdentity != nil
@@ -1022,10 +914,8 @@ func (s *Store) validateCommon(kind string, ttlSeconds, maxViews int, accessKDF 
 	return nil
 }
 
-// validContentType bounds the sender-chosen media type, which the open response
-// returns in the Flick-Content-Type header: printable ASCII only, so it cannot
-// break the header or make the recipient's fetch reject an already-consumed
-// response.
+// Printable ASCII only: sent in Flick-Content-Type after the secret is consumed, so a bad
+// value would break the header and make the recipient's fetch fail on a burned secret.
 func validContentType(value string) bool {
 	if len(value) > maxContentTypeBytes {
 		return false
@@ -1038,8 +928,6 @@ func validContentType(value string) bool {
 	return true
 }
 
-// modelAColumns returns the access KDF JSON and proof hash for a Model A
-// secret, or NULLs for Model B.
 func modelAColumns(accessKDF KDFParams, accessProofHash string) (any, any, error) {
 	if accessProofHash == "" {
 		return nil, nil, nil

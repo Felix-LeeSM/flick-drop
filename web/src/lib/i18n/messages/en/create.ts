@@ -1,5 +1,3 @@
-// The create page (home): link and live-transfer sender form, file picker,
-// passphrase row, and the link-created panel.
 export const create = {
 	headTitle: 'Create secret - Flick',
 	tagline: 'end-to-end encrypted · burns after read',

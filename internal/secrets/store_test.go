@@ -125,8 +125,6 @@ func TestStoreCleanupDeletesPayload(t *testing.T) {
 	}
 }
 
-// 열람 트랜잭션이 secrets 행과 인라인 페이로드를 함께 지운다. 이전 릴리스가 남긴
-// delete_secret 작업이 뒤늦게 와도 Cleanup은 지울 것이 없다고 답할 뿐이다.
 func TestStoreOpenTxForgetsSecretAndPayload(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -357,8 +355,6 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 	now := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
 	store.SetNowForTest(func() time.Time { return now })
 
-	// Model B: no KDF, no access KDF, no access proof hash. The link is the
-	// capability; the decryption key travels in the URL fragment.
 	created, err := store.Create(ctx, CreateInput{
 		Kind:       KindText,
 		Ciphertext: testBody,
@@ -370,7 +366,6 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 		t.Fatalf("create model B secret: %v", err)
 	}
 
-	// Model B metadata exposes no access block.
 	metadata, err := store.Metadata(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("metadata model B: %v", err)
@@ -397,7 +392,6 @@ func TestStoreModelBSecretOpensWithoutProof(t *testing.T) {
 		t.Fatalf("commit model B open tx: %v", err)
 	}
 
-	// Model B is still one-time: a second open finds nothing.
 	tx, err = conn.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin second open tx: %v", err)
@@ -436,14 +430,11 @@ var (
 	testAccessKDF       = KDFParams{Algorithm: KDFPBKDF2SHA256, Salt: "access-salt", Iterations: 600000, KeyLengthBits: 256}
 )
 
-// ageBody returns n bytes shaped like an age file: the magic line, then
-// padding. The server only checks the magic and the length.
+// The server only checks the magic and the length.
 func ageBody(n int) []byte {
 	return append([]byte(string(ageMagic)), bytes.Repeat([]byte("x"), n-len(ageMagic))...)
 }
 
-// ageField is the base64 of an n-byte age-shaped file, as the API carries
-// encrypted filenames and wrapped identities.
 func ageField(n int) *string {
 	s := base64.StdEncoding.EncodeToString(ageBody(n))
 	return &s

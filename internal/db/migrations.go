@@ -6,21 +6,11 @@ import (
 	"fmt"
 )
 
-// apiMigrateLockKey keys the session-level advisory lock that serializes
-// MigrateAPI: two API replicas booting at once would otherwise race concurrent
-// DDL on the pg_type catalog. It is deliberately distinct from the worker's
-// workerMigrateLockKey so one service's migration never waits on the other's.
+// Serializes concurrent replica DDL on pg_type; distinct from workerMigrateLockKey.
 const apiMigrateLockKey = 0x464C49434B415049 // "FLICKAPI"
 
-// MigrateAPI creates the API-owned tables in the flick_api logical database.
-// It runs on every API start, so every statement is idempotent and the whole
-// run holds one advisory lock for its duration.
-//
-// The SQLite-era repair passes (AES-GCM/RSA table drops, CHECK-widening table
-// rebuilds, forgetOpenedSecrets backlog purge) do not exist here on purpose: a
-// Postgres database reaches this function either fresh or through the SQLite
-// cutover runbook, which migrates a current-release database that already
-// carries the final schema and has no legacy rows left.
+// Runs on every start: every statement is idempotent. No SQLite-era repair passes:
+// Postgres arrives fresh or via the cutover runbook with the final schema.
 func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	pinned, err := conn.Conn(ctx)
 	if err != nil {
@@ -36,10 +26,7 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 	}()
 
 	statements := []string{
-		// Bodies, filenames, and Model A wrapped identities are age files
-		// (contracts/age-format-v1.md); size_bytes is the exact body length.
-		// Model A rows carry the access KDF, proof hash, and wrapped identity;
-		// Model B rows carry none of them.
+		// Bodies, filenames, and Model A wrapped identities are age files (contracts/age-format-v1.md).
 		`create table if not exists secrets (
 			id text primary key,
 			kind text not null check (kind in ('text', 'file')),
@@ -73,8 +60,6 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			created_at timestamptz not null,
 			foreign key (secret_id) references secrets(id) on delete cascade
 		)`,
-		// Per-backend reconciliation state. A configured backend's row is seeded
-		// on its first reconciliation pass (secrets.Reaper.reconcileBackend).
 		`create table if not exists object_reconciliation_cursor_v2 (
 			backend text primary key constraint object_reconciliation_cursor_v2_backend_name check (backend ~ '^[a-z][a-z0-9]{0,15}$'),
 			continuation_token text not null default '',
@@ -87,8 +72,6 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			primary key (backend, object_key)
 		)`,
 		`create index if not exists idx_secrets_storage_key on secrets(storage_key)`,
-		// Covers both reaper conditions (active expiry + pending_upload orphan)
-		// in a single partial index over the rows still awaiting reclaim.
 		`create index if not exists idx_secrets_reclaim_pending
 			on secrets(state, expires_at, created_at)
 			where reclaim_enqueued_at is null and consumed_at is null`,
@@ -100,20 +83,14 @@ func MigrateAPI(ctx context.Context, conn *sql.DB) error {
 			outcome text check (outcome in ('opened', 'locked', 'cancelled', 'unavailable'))
 		)`,
 		`create index if not exists idx_secret_management_expires_at on secret_management(expires_at, secret_id)`,
-		// An opened secret's rows are deleted in the open transaction, but its
-		// bucket body may still be streaming to the recipient. This row alone
-		// keeps object reconciliation away from that body until grace_until; it
-		// holds no secret ID column, kind, or size (the managed key itself is
-		// managed/secrets/{id}).
+		// Keeps reconciliation off a body still streaming after open until grace_until;
+		// deliberately holds no secret ID, kind, or size.
 		`create table if not exists secret_open_grace (
 			object_key text primary key,
 			grace_until timestamptz not null
 		)`,
 		`create index if not exists idx_secret_open_grace_until on secret_open_grace(grace_until)`,
-		// Daily aggregate usage counters (internal/usage): counts only, no IDs,
-		// IPs, or content metadata. Secrets and requests rows are hard-deleted on
-		// expiry, so these rows are the durable usage history; they are never
-		// deleted and stay at one row per day per metric.
+		// Counts only, no IDs, IPs, or content metadata; never deleted.
 		`create table if not exists usage_counters (
 			day text not null,
 			metric text not null,

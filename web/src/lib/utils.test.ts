@@ -13,11 +13,7 @@ describe('formatBytes', () => {
 		expect(formatBytes(1024 * 1024)).toBe('1.00 MiB');
 	});
 
-	// 1,048,560 is what /api/config advertises with large-object storage off: the
-	// inline threshold minus the AES-GCM tag. Rounding up displayed it as
-	// "1024.0 KiB" — a size the server refuses, and a unit short of reading as
-	// 1 MiB. Both branches need a value that rounding would inflate; an exact
-	// 50 MiB would pass either way.
+	// 1,048,560 is /api/config's limit with storage off; exact 50 MiB would pass either way.
 	it('rounds down so a ceiling never reads larger than it is', () => {
 		expect(formatBytes(1_048_560)).toBe('1023.9 KiB');
 		expect(formatBytes(1_048_575)).toBe('1023.9 KiB');

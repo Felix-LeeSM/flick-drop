@@ -218,7 +218,6 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await owner.waitForURL('**/receive#receive=*');
 		await readyOwner(owner);
 		await owner.getByText('Checking automatically', { exact: true }).waitFor();
-		// Copy is the one primary action; Refresh, Share, QR and Cancel stay compact at phone width.
 		assert.equal(
 			(
 				await owner.getByRole('button', { name: 'Copy submission link', exact: true }).textContent()
@@ -261,7 +260,6 @@ test('two contexts create, share, submit and retrieve once with private-link rel
 		await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
 		await owner.getByRole('button', { name: 'Refresh status', exact: true }).click();
 		await owner.getByRole('button', { name: 'Open once', exact: true }).waitFor();
-		// A ready submission is no longer something to wait for.
 		assert.equal(await owner.getByText('Checking automatically', { exact: true }).count(), 0);
 		await owner.getByRole('button', { name: 'Open once', exact: true }).click();
 		assert.equal(
@@ -378,7 +376,6 @@ for (const fragment of [`#receive=${receiveToken}`, `#receive=${receiveToken}&ke
 			);
 			assert.equal(mock.calls.filter((call) => call.path.endsWith('/open')).length, 0);
 			await page.getByRole('alert').waitFor();
-			// Without a usable key the status reports the submission instead of offering to open it.
 			await page.getByText('A submission was accepted.', { exact: true }).waitFor();
 		} finally {
 			await context.close();
@@ -397,7 +394,6 @@ test('lost open is never replayed; server conflict wins a cancellation race', as
 			await readyOwner(page);
 			if (race) {
 				await page.getByRole('button', { name: 'Cancel request', exact: true }).click();
-				// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
 				await page
 					.getByRole('dialog')
 					.getByRole('button', { name: 'Cancel request', exact: true })
@@ -491,10 +487,8 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 		await owner.evaluate(() =>
 			window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
 		);
-		// The persisted pageshow makes the page call location.reload(), which tears
-		// down the dispatching context mid-call — so the evaluate may reject, and
-		// racing it against the Page load event loses the event in CI. Wait for the
-		// reloaded page to re-hydrate (the announcer re-attaches after hydration).
+		// The pageshow reload tears down the evaluate context and races the load event in CI,
+		// so wait for re-hydration (the announcer re-attaches).
 		await owner
 			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
@@ -520,8 +514,7 @@ test('persisted page restore reloads cleared owner/submitter state without repla
 		await sender.evaluate(() =>
 			window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
 		);
-		// Same as the owner part above: the pageshow-triggered reload tears down the
-		// dispatching context and races the load event, so wait for re-hydration.
+		// Same reload race as the owner part: wait for re-hydration.
 		await sender
 			.evaluate(() =>
 				window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
@@ -595,7 +588,7 @@ test('private requester status card keeps the refresh button clear of status tex
 		await page.evaluate(() => {
 			document.documentElement.style.fontSize = '150%';
 		});
-		// The status text and button animate their new size (transition-all); measure once it settles.
+		// transition-all animates the new size; measure once it settles.
 		await page.waitForFunction(
 			() =>
 				document.querySelector('[aria-label="Request status"]').getAnimations({ subtree: true })
@@ -645,7 +638,7 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 			await owner.goto(`${baseUrl}/request`);
 			await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 
-			// Multi-byte UTF-8 notes above 1024 bytes show an alert and disable creation before any POST.
+			// 342 three-byte characters exceed the 1024-byte note limit before any POST.
 			await owner.getByLabel('Note', { exact: true }).fill('가'.repeat(342));
 			await owner.getByText('Note must be at most', { exact: false }).waitFor();
 			assert.equal(
@@ -700,7 +693,6 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 				await sender.getByRole('tab', { name: 'Note', exact: true }).click();
 			}
 
-			// Stripping #mk= rejects before allowing submission.
 			const noMemoPage = await senderContext.newPage();
 			const stripped = new URL(submitLink);
 			stripped.hash = `submit=${hashParams.get('submit')}&fp=${hashParams.get('fp')}`;
@@ -708,7 +700,6 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 			await noMemoPage.getByText('Ask the requester for the complete submission link.').waitFor();
 			assert.equal(await noMemoPage.getByRole('button', { name: 'Encrypt and submit' }).count(), 0);
 
-			// Wrong/corrupted #mk= fails closed before allowing submission.
 			const corruptPage = await senderContext.newPage();
 			const corrupted = new URL(submitLink);
 			const badKey = `${memoKey.slice(0, -4)}AAAA`;
@@ -720,7 +711,6 @@ test('encrypted request note stays out of API and retrieval links, wraps at 360p
 				0
 			);
 
-			// Submitting a response clears the requester note from the screen.
 			await sender.getByLabel('Message', { exact: true }).fill('ok');
 			await sender.getByRole('button', { name: 'Encrypt and submit', exact: true }).click();
 			await sender.getByRole('heading', { name: 'Submission accepted', exact: true }).waitFor();
@@ -752,7 +742,6 @@ test('whitespace-only request note omits encrypted_note/#mk= and extra #mk= with
 		const submitLink = await owner.getByLabel('Submission link', { exact: true }).inputValue();
 		assert.equal(submitLink.includes('mk='), false);
 
-		// Extra #mk= on a link without server encrypted_note fails closed.
 		const sender = await senderContext.newPage();
 		const extra = new URL(submitLink);
 		extra.hash += `&mk=${vectors.identity}`;

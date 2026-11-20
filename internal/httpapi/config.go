@@ -8,11 +8,7 @@ type configResponse struct {
 	PipeRelayEnabled      bool  `json:"pipe_relay_enabled"`
 }
 
-// getConfig exposes the client-facing size limits so the browser can size-gate
-// file uploads and route large files to the S3 path (ciphertext omitted ->
-// presigned PUT -> /finalize). The values are advisory: the server re-enforces
-// both limits, so a tampered client value cannot bypass them. Kept flat so
-// future fields (e.g. TTL bounds) can be added non-destructively.
+// Advisory only: the server re-enforces both limits.
 func (s Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSON(w, http.StatusOK, configResponse{

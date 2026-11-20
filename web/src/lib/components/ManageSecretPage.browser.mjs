@@ -22,8 +22,7 @@ after(async () => {
 	await browser?.close();
 });
 
-// The server forgets an opened delivery and answers every management request
-// for it exactly like an unknown ID.
+// The server answers an opened delivery exactly like an unknown ID.
 const unknownId = {
 	status: 404,
 	json: { error: { code: 'management_unavailable', message: 'management link is unavailable' } }
@@ -100,11 +99,10 @@ for (const model of ['a', 'b']) {
 				await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
 				await page.getByLabel('Passphrase', { exact: true }).fill('synthetic private passphrase');
 			}
-			// The delivery tab shares the CTA's name, so the submit action is picked by its role in the form.
+			// The delivery tab shares the CTA name, so pick the submit button by role.
 			await page.locator('form button[type="submit"]').click();
 			await page.waitForURL(`**${privatePath}`);
 			await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
-			// Copy is the one primary action; Refresh, Share, QR and Cancel stay compact at phone width.
 			assert.equal(
 				(
 					await page.getByRole('button', { name: 'Copy recipient link', exact: true }).textContent()
@@ -183,13 +181,12 @@ for (const model of ['a', 'b']) {
 				})
 				.waitFor();
 			await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
-			// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
 			await page
 				.getByRole('dialog')
 				.getByRole('button', { name: 'Cancel delivery', exact: true })
 				.click();
 			await page.getByRole('heading', { name: 'Cancelled', exact: true }).waitFor();
-			// The closing modal keeps its own "Cancel delivery" button until its exit animation ends.
+			// The closing modal keeps its own Cancel button until its exit animation ends.
 			await page.getByRole('dialog').waitFor({ state: 'detached' });
 			assert.equal(
 				await page.getByRole('button', { name: 'Cancel delivery', exact: true }).count(),
@@ -219,19 +216,16 @@ test('leaving before the recipient link is handed off asks first, in-app links t
 			dialogs.push(dialog.type());
 			return dialog.dismiss();
 		});
-		// Given 링크를 아직 넘기지 않은 상태 When 새로고침하면 Then 브라우저가 먼저 묻고, 머무르면 링크가 남는다.
 		const asked = page.waitForEvent('dialog');
 		await page.evaluate(() => location.reload());
 		await asked;
 		assert.deepEqual(dialogs, ['beforeunload']);
 		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 1);
-		// Given 앱 안 링크(Create another) When 누르면 Then 확인을 묻고, 취소하면 머문다.
 		const confirmed = page.waitForEvent('dialog');
 		await page.getByRole('link', { name: 'Create another', exact: true }).click();
 		await confirmed;
 		await page.getByLabel('Share URL', { exact: true }).waitFor();
 		assert.deepEqual(dialogs, ['beforeunload', 'confirm']);
-		// Given 클립보드 쓰기가 실패하면 When 새로고침하면 Then 아직 넘기지 않았으니 다시 묻는다.
 		await page.evaluate(() => {
 			navigator.clipboard.writeText = () =>
 				Promise.reject(new DOMException('denied', 'NotAllowedError'));
@@ -241,7 +235,6 @@ test('leaving before the recipient link is handed off asks first, in-app links t
 		await page.evaluate(() => location.reload());
 		await askedAgain;
 		assert.deepEqual(dialogs, ['beforeunload', 'confirm', 'beforeunload']);
-		// Given Copy가 성공해 링크를 넘긴 뒤 When 새로고침하면 Then 묻지 않고 떠난다.
 		await page.evaluate(() => {
 			navigator.clipboard.writeText = (value) => {
 				window.copied.push(value);
@@ -265,7 +258,6 @@ test('an open that wins the cancellation race reads as an unavailable link', asy
 		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
 		assert.equal(await page.getByLabel('Share URL', { exact: true }).count(), 0);
 		await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
-		// The in-app ConfirmDialog replaced window.confirm; confirm in the modal.
 		await page
 			.getByRole('dialog')
 			.getByRole('button', { name: 'Cancel delivery', exact: true })
@@ -305,7 +297,6 @@ test('the creation session lands on the unavailable card once the delivery is op
 		await page.waitForURL(`**${privatePath}`);
 		await page.getByRole('heading', { name: 'Ready to open', exact: true }).waitFor();
 		assert.equal(await page.title(), 'Manage delivery - Flick');
-		// The recipient opens it; the next status check meets the unknown-ID response.
 		opened = true;
 		await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
 		await page.getByText('Management link unavailable.', { exact: true }).waitFor();
@@ -382,7 +373,7 @@ test('status card wraps the refresh button clear of a long title when text is en
 		await page.evaluate(() => {
 			document.documentElement.style.fontSize = '150%';
 		});
-		// The title and button animate their new size (transition-all); measure once it settles.
+		// transition-all animates the new size; measure once it settles.
 		await page.waitForFunction(
 			() =>
 				document.querySelector('[aria-label="Delivery status"]').getAnimations({ subtree: true })
@@ -426,13 +417,11 @@ test('QR and cancel dialogs fit a 320px phone screen when text is enlarged to 15
 		await page.evaluate(() => {
 			document.documentElement.style.fontSize = '150%';
 		});
-		// 13rem QR은 150%에서 320px 화면의 대화상자보다 넓고, 대화상자는 화면보다 길다.
 		await page.getByRole('button', { name: 'Show QR', exact: true }).click();
 		await page.getByRole('dialog', { name: 'Scan or copy' }).waitFor();
 		await assertDialogFits(page, 'QR');
 		await page.keyboard.press('Escape');
 		await page.getByRole('dialog').waitFor({ state: 'detached' });
-		// 확인 대화상자의 두 버튼은 줄을 바꾸지 않던 "Cancel delivery"가 버튼 밖으로 넘쳤다.
 		await page.getByRole('button', { name: 'Cancel delivery', exact: true }).click();
 		await page.getByRole('dialog').waitFor();
 		await assertDialogFits(page, 'Cancel delivery');

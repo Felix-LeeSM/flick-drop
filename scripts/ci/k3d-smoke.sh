@@ -24,11 +24,10 @@ fi
 cluster="${FLICK_K3D_CLUSTER:-flick-ci}"
 api_port="${FLICK_K3D_API_PORT:-18080}"
 web_port="${FLICK_K3D_WEB_PORT:-18081}"
-# One port-forward per API pod, so a test can pin each call to a replica.
+# One port-forward per API pod, so a call can pin a replica.
 pod_a_port="${FLICK_K3D_POD_A_PORT:-18083}"
 pod_b_port="${FLICK_K3D_POD_B_PORT:-18084}"
-# The k3d load balancer in front of the cluster ingress (Ingress/flick):
-# the only path that follows Service endpoints through a rollout.
+# The k3d load balancer is the only path that follows Service endpoints through a rollout.
 ingress_port="${FLICK_K3D_INGRESS_PORT:-18085}"
 ingress_host="flick.localhost"
 tmp_dir="$(mktemp -d)"
@@ -111,8 +110,7 @@ start_port_forward() {
   port_forward_pids+=("$!")
 }
 
-# A real hybrid age recipient (public key only; its identity was discarded).
-# /api/pipe/join and /api/requests parse it but never encrypt to it here.
+# Public key only (identity discarded); the API parses it but never encrypts to it here.
 recipient="age1pq1pksqxgktrkvek9erw0pn0nqxqmt4h9dmzkjstduqsaz7t7tmt8gzwmc3jqnu9q2zd2ts6es2v4wfnhqffl6mgc0yhyw3v6gfj2sgkude35y458r63gfjds4xyjcs6hsm0wm5dfnxry2xl26z55u6pnyz4aaxfzhzg5qe95th9xp4s5uq4n7gd3wql97ll33y5eyvad76tdxfzcgnag6eqpuuq8v2jg54zw74v0y32gwqwpdllc4hg8wc9q48qe4j6rpdcswy0jn5hg3ehdryczg47e37yjmc6vprm6dgte8fwrpce3n85xfvlzt550hqfy6w8zcg2q6m4anrtveern64drca28u8edtfjkvszkergmt2p9yj884yxfap7qgpxyw9xfsfwyp3490u9958753tfnm5zyl83p99z5gsn2vtvt986rmm0u5ek7k3cnekpwkcmhzu36j9v9key3ausn5nx3cnsw43cj3menmpjul0d9lszjyemqmrdqgqha88sq05jsztdxzkn26czzncjfszp2j8dtse5ugtwkdzakfzjdd2vshyrpxgjy9xnwqhetzc8krtqc0x3qkztxja69ukluz8egtuw6zzc70q2ws6gpcwla39n7j5d0cdpyu8vvwmvy4mtvggp4t4sf0a2yaxq4qh0cmrn863j9kvq0kzjpva6gq00392wh94ezyrrxz2kxfxeqptfpq2enanuclr852d2zpysnpwpk99z495jd5xxdzw83y0jz4pre2pun7yfvu4vc9ktq5avwevrg454ujtl2xukldz4yy25xavr7smzp4e208qpaj326y05vn3v4mykyr2e6qtey83vknj6zxr03srm73xt2cmf0gl42fc5vqq5sxrrf55rjwt350fx25qzjzvwuu3cn2vyafhv0cgj3sm3wmun6eycltuv8htrrf0xynrssy5sxq0cg7x38tjzpvwcaectd9s9f78x8envwfz3zsf5gc08qnksu2jdncvp62sg7xrgcsk7vdkh369euekvfnxcl99hfcp53r2545kfm79unme4kmp9r3p9dzlg2ukw9ts09p6rsxvpzhrm2f04xpm2778j905jw6dtfhmz2rwjzg4jhnxcfeq9dylqywfh3kzqyqr8kf2pr45vclhcvuv22z6n64xetq54h33hgdvwwg3ev3j53cjg9prrthkqs27yc3265d7t642pz5eru8thgvhxa9rzvx8g8xpksxgff3nq2kexy30vtr3kwev38ny2vrmxrlq2q32csphvk6mdctcat86ewrsh0afuup7sj65v46gkpxrhkw0g78wl0pg2zaul262pnxkjvycpjhakzhykqgph3ng3u664cccp0qyms892ca7kdtmehgne29l88rcedym84apdsftkk9fw3v2h8aehxxat7j4ympgckj8j4qstnd23swt94cduqamw5lvz2jjwua5z4qgfwjvglzfayu68cl7pyp8n9lhnuky2asrm4uk9k7e22lefjympks02xnngkdf9ny9psg0qgdjyqqt26umquncsc568q7fudq5645dmgd3rchxyccvxlp2kxcaey9lm29xxye6xvrlpyjhz9jn8vqm7m25cxerxvy6p3hq9jrapar3q46u2cv6k8x7z9edx5x7psu49f5mc2ku9x36hzcclrp2qzglcejxjv5m0tezktfwcf8rxpugfnct4n9zdj8j3glnqtyj9wuz5c3m6txk32mzcrs73xeu8yjujq7tkxrhe48ygthh57eexwg38pj3gznkc4epqddlq0pg6xkqghq82vcctynsydwnyc0d08yw60w2tvzc8d9qshluz8dnzxuyjpzvz7qgf3c85cggatyd8q6jfjxegwf5ajcpwml26q9429vvzmsr2d3g6xp3vycwnfvmkdh4d53l6ehr"
 
 export FLICK_IMAGE_PREFIX=flick-local
@@ -121,8 +119,7 @@ export FLICK_WEB_PUBLIC_API_BASE_URL=/
 scripts/ci/images.sh
 
 k3d cluster delete "$cluster" >/dev/null 2>&1 || true
-# Two nodes (server + agent), so the two API and web replicas spread across
-# nodes and pod-to-pod stream hops cross the overlay network.
+# Two nodes so pod-to-pod stream hops cross the overlay network.
 k3d cluster create "$cluster" --agents 1 --wait -p "$ingress_port:80@loadbalancer"
 k3d image import \
   flick-local/flick-api:ci \
@@ -130,8 +127,7 @@ k3d image import \
   flick-local/flick-web:ci \
   -c "$cluster"
 
-# deploy/base/traefik.yaml uses the Traefik CRDs, which k3s installs through
-# its helm-install-traefik-crd job after `k3d cluster create --wait` returns.
+# k3s installs the Traefik CRDs via helm-install-traefik-crd after `cluster create --wait` returns.
 for crd in serverstransports.traefik.io middlewares.traefik.io; do
   for _ in $(seq 1 60); do
     kubectl get crd "$crd" >/dev/null 2>&1 && break
@@ -174,12 +170,10 @@ wait_http "http://127.0.0.1:$web_port/healthz"
 wait_http "$pod_a_url/readyz"
 wait_http "$pod_b_url/readyz"
 
-# Assert the web security response headers on the real nginx image (the only CI
-# that runs it). The web is up, so the smoke runs rather than skipping.
+# The only CI run against the real nginx image.
 FLICK_WEB_BASE_URL="http://127.0.0.1:$web_port" scripts/smoke/web-headers.sh
 
-# The API checks only the age magic line and lengths, so a fixed age-shaped
-# body exercises create and the streamed open without a real encryption.
+# The API checks only the age magic line and lengths, so a fixed age-shaped body suffices.
 body="$tmp_dir/body.age"
 opened="$tmp_dir/opened.age"
 open_headers="$tmp_dir/open-headers.txt"
@@ -216,7 +210,6 @@ create_response="$(
 )"
 secret_id="$(printf '%s' "$create_response" | json_get id)"
 
-# Created on one replica, read and opened on the other: both share Postgres.
 metadata_response="$(curl -fsS "$pod_b_url/api/secrets/$secret_id")"
 printf '%s' "$metadata_response" | json_expect kind text
 
@@ -231,8 +224,6 @@ cmp "$body" "$opened"
 grep -qi '^flick-kind: text' "$open_headers"
 grep -qi '^flick-wrapped-identity: ' "$open_headers"
 
-# Request links: created on one replica, read with the submission token on the
-# other.
 request_response="$(
   curl -fsS \
     -H "Content-Type: application/json" \
@@ -245,9 +236,7 @@ submission_token="$(printf '%s' "$request_response" | json_get submission_token)
 curl -fsS -H "Authorization: Bearer $submission_token" "$pod_b_url/api/requests/$request_id" |
   json_expect can_submit true
 
-# Live transfer across replicas: the sender talks only to pod A, the receiver
-# only to pod B, so the ciphertext must hop pod to pod over the stream
-# listener (FLICK_INTERNAL_HTTP_PORT) and the room state must live in Valkey.
+# Sender on pod A, receiver on pod B: ciphertext must hop over the stream listener, room state in Valkey.
 init_response="$(curl -fsS -X POST "$pod_a_url/api/pipe/init")"
 code="$(printf '%s' "$init_response" | json_get code)"
 sender_token="$(printf '%s' "$init_response" | json_get sender_token)"
@@ -293,9 +282,7 @@ cmp "$pipe_payload" "$pipe_received"
 grep -qi '^flick-kind: file' "$pipe_headers"
 grep -qi '^flick-encrypted-filename: azNkLXNtb2tl' "$pipe_headers"
 
-# NetworkPolicies (deploy/base/{api,postgres,valkey}.yaml): a pod that is not
-# flick-api reaches the public API port but not the stream listener, Valkey,
-# or Postgres.
+# A non-flick-api pod reaches the public API port but not the stream listener, Valkey, or Postgres.
 pod_a_ip="$(kubectl -n flick get pod "$pod_a" -o jsonpath='{.status.podIP}')"
 kubectl -n flick run netpol-probe --rm -i --restart=Never --image=busybox:1.37 --command -- \
   sh -c "nc -z -w 3 $pod_a_ip 8080 \
@@ -303,8 +290,7 @@ kubectl -n flick run netpol-probe --rm -i --restart=Never --image=busybox:1.37 -
     && ! nc -z -w 3 valkey 6379 \
     && ! nc -z -w 3 postgres 5432"
 
-# Rolling restart without downtime: maxSurge 0 / maxUnavailable 1, preStop,
-# and readiness keep one ready replica behind the ingress the whole time.
+# maxSurge 0 / maxUnavailable 1, preStop, and readiness keep one ready replica the whole time.
 ingress_url="http://127.0.0.1:$ingress_port"
 wait_http_host() {
   for _ in $(seq 1 60); do

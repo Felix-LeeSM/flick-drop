@@ -18,55 +18,38 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// TTL bounds match contracts/openapi.yaml CreateSecretRequest.ttl_seconds and
-// the PUBLIC_FLICK_*_TTL_SECONDS values the web image is built with.
+// Match contracts/openapi.yaml ttl_seconds and the web image's PUBLIC_FLICK_*_TTL_SECONDS.
 const (
 	MinTTL     = 5 * time.Minute
 	MaxTTL     = 7 * 24 * time.Hour
 	DefaultTTL = time.Hour
 )
 
-// SendOptions describes one secret to create. Exactly one of Text or FileName
-// carries the payload.
+// Exactly one of Text or FileName carries the payload.
 type SendOptions struct {
-	// Text is the plaintext for a text secret.
 	Text string
-	// FileName is the original filename for a file secret; it is encrypted
-	// alongside the body and never sent in the clear.
+	// Encrypted alongside the body, never sent in the clear.
 	FileName string
-	// File is read once and encrypted as it is read, so the CLI never holds a
-	// whole file in memory. A non-empty FileName selects a file secret.
-	File io.Reader
-	// ContentType overrides the type guessed from the file extension.
+	// Read once and encrypted as read; never held whole in memory.
+	File        io.Reader
 	ContentType string
-	// Passphrase selects Model A when non-empty: it wraps the secret's age
-	// identity and the recipient must type it. Empty selects Model B, where the
-	// identity travels in the link fragment.
+	// Non-empty selects Model A; empty selects Model B (identity in the link fragment).
 	Passphrase string
-	// TTL is the secret's lifetime.
-	TTL time.Duration
-	// ShareOrigin is the web origin used to render the returned link. Empty
-	// falls back to the API base URL, which is the same host in a deployed
-	// Flick (deploy/base/ingress.yaml).
+	TTL        time.Duration
+	// Empty falls back to the API base URL (same host when deployed, deploy/base/ingress.yaml).
 	ShareOrigin string
 }
 
-// SendResult is what the caller prints. Link already carries the Model B
-// identity in its fragment when there is one.
 type SendResult struct {
 	ID        string
 	ExpiresAt string
 	Link      string
-	// Model is "passphrase" (Model A) or "link-key" (Model B).
-	Model string
-	// Uploaded reports whether the ciphertext went to object storage through a
-	// presigned PUT rather than inline in the create request.
+	// "passphrase" (Model A) or "link-key" (Model B).
+	Model    string
 	Uploaded bool
 }
 
-// Send encrypts locally and creates the secret. Every secret gets a fresh age
-// identity (contracts/age-format-v1.md). The server receives age files and
-// metadata — never the passphrase, the identity in the clear, or the plaintext.
+// The server receives age files and metadata, never the passphrase, the clear identity, or the plaintext.
 func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, error) {
 	if err := validateSendOptions(opts); err != nil {
 		return SendResult{}, err
@@ -82,8 +65,7 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 	var body []byte
 	var sealed *sealedFile
 	if isFile {
-		// Limits from /api/config count bytes before encryption; the server's
-		// caps on the age file already include the age overhead.
+		// Config limits count plaintext bytes; the server's caps include age overhead.
 		sealed, err = sealFile(identity, opts.File, limits.MaxFileBytes)
 		if err != nil {
 			return SendResult{}, err
@@ -121,10 +103,7 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 		}
 		req.EncryptedFilename = base64.StdEncoding.EncodeToString(filename)
 		req.SizeBytes = int(sealed.size)
-		// Above the inline threshold the body goes straight to object
-		// storage, so it is omitted here — that omission is what asks the
-		// server for a presigned upload. The presigned PUT is signed at
-		// exactly sealed.size, so the raw bytes are uploaded, not base64.
+		// Omitting the body asks for a presigned upload, signed at exactly sealed.size, so raw bytes are uploaded.
 		if sealed.plaintextBytes > limits.PayloadInlineMaxBytes {
 			large = true
 			req.Ciphertext = ""
@@ -151,9 +130,6 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 		if err := client.Upload(ctx, *created.Upload, sealed.file, sealed.size); err != nil {
 			return SendResult{}, err
 		}
-		// Until finalize succeeds the secret stays pending and cannot be
-		// opened, so a failure here is worth surfacing rather than returning a
-		// link that will not work.
 		if err := client.FinalizeSecret(ctx, created.ID); err != nil {
 			return SendResult{}, err
 		}
@@ -169,8 +145,7 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 		Model:     "link-key",
 		Uploaded:  large,
 	}
-	// Model A keeps the identity out of the link: in the fragment it would
-	// defeat the passphrase entirely.
+	// The identity never goes in a Model A link: it would defeat the passphrase.
 	if opts.Passphrase != "" {
 		result.Model = "passphrase"
 		result.Link = BuildShareLink(origin, created.ID, nil)
@@ -180,9 +155,6 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 	return result, nil
 }
 
-// addPassphrase sets the Model A fields: the PBKDF2 access proof that gates the
-// open, and the identity wrapped in an age scrypt file under the same
-// passphrase.
 func addPassphrase(req *CreateSecretRequest, identity *age.HybridIdentity, passphrase string) error {
 	verifier, err := clientcrypto.NewAccessVerifier(passphrase)
 	if err != nil {
@@ -197,16 +169,13 @@ func addPassphrase(req *CreateSecretRequest, identity *age.HybridIdentity, passp
 	return nil
 }
 
-// sealedFile is a file secret's age file, staged in a temporary file so a large
-// upload streams from disk. It holds only ciphertext.
+// Holds only ciphertext.
 type sealedFile struct {
 	file           *os.File
 	size           int64
 	plaintextBytes int64
 }
 
-// sealFile encrypts src to identity, 64 KiB at a time, and refuses more than
-// limit bytes of input.
 func sealFile(identity *age.HybridIdentity, src io.Reader, limit int64) (*sealedFile, error) {
 	staged, err := os.CreateTemp("", "flick-send-*.age")
 	if err != nil {
@@ -241,8 +210,6 @@ func (s *sealedFile) fill(identity *age.HybridIdentity, src io.Reader, limit int
 	return err
 }
 
-// bytes reads the staged age file for an inline create, which only happens
-// below the inline limit.
 func (s *sealedFile) bytes() ([]byte, error) {
 	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -255,7 +222,6 @@ func (s *sealedFile) remove() {
 	os.Remove(s.file.Name())
 }
 
-// seal returns plaintext as an age file encrypted to identity.
 func seal(identity *age.HybridIdentity, plaintext []byte) ([]byte, error) {
 	var out bytes.Buffer
 	w, err := clientcrypto.EncryptTo(&out, identity)

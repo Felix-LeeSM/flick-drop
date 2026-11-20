@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# Regression harness for scripts/ops/migrate-sqlite-to-postgres.sh.
-#
-# Builds SQLite fixtures from the final SQLite release schemas
-# (scripts/ops/testdata/sqlite-*-schema.sql, dumped from the old MigrateAPI /
-# MigrateWorker), creates throwaway Postgres databases with the HEAD schema via
-# `flick-api migrate` / `flick-worker migrate`, runs the cutover, and checks
-# the result against values written by hand from the fixture, not values read
-# back through the script. Then checks that the script refuses bad input.
-#
-# Needs: go, sqlite3, docker, xxd, and a running postgres:17 container
-# (CUTOVER_TEST_CONTAINER, default flick-pr3-main-postgres-1) published on
-# 127.0.0.1:CUTOVER_TEST_PG_PORT (default 15435) with superuser postgres /
-# CUTOVER_TEST_PG_PASSWORD (default flick). It creates and drops the
-# databases cutover_test_api and cutover_test_worker.
+# Needs go, sqlite3, docker, xxd, and a postgres:17 container (CUTOVER_TEST_CONTAINER, CUTOVER_TEST_PG_PORT,
+# CUTOVER_TEST_PG_PASSWORD). Expected values are written by hand from the fixture, never read back.
 set -euo pipefail
 export LC_ALL=C
 
@@ -53,7 +41,6 @@ check() { # name expected actual
 	if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected [$2], got [$3])"; fi
 }
 
-# Empty HEAD-schema targets, created the way the runbook does it.
 fresh_targets() {
 	drop_targets
 	pg postgres -c "create database $API_DB" >/dev/null
@@ -168,23 +155,20 @@ insert into job_attempts (id, job_id, attempt, started_at, finished_at, result, 
 update sqlite_sequence set seq = 7 where name = 'job_attempts';
 insert into dead_letters values ('job-2', 'object_delete', '{"job_id":"job-2","note":"한국어 ✓"}', 'boom: 500', '2026-11-16T10:05:00.000000000Z');
 EOF
-	# Production files arrive checkpointed (PRAGMA wal_checkpoint(TRUNCATE)).
+	# Production files arrive checkpointed.
 	sqlite3 "$dir/api.db" 'pragma wal_checkpoint(truncate)' >/dev/null
 	sqlite3 "$dir/worker.db" 'pragma wal_checkpoint(truncate)' >/dev/null
 }
 
-# ---------------------------------------------------------------------------
 printf 'Building flick-api and flick-worker from %s\n' "$ROOT"
 (cd "$ROOT" && go build -o "$WORK/flick-api" ./cmd/flick-api && go build -o "$WORK/flick-worker" ./cmd/flick-worker)
 make_fixture "$WORK/good"
 
-# 1. Happy path
 fresh_targets
 out=$(run_cutover "$WORK/good/api.db" "$WORK/good/worker.db" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | sed 's/^/      /'
 if [ "$rc" = 0 ] && grep -q '^OK: every table matches SQLite' <<<"$out"; then pass 'cutover loads and verifies'; else fail "cutover loads and verifies (exit $rc)"; fi
 
-# 2. Loaded values, against literals from the fixture above
 check 'all 12 api tables loaded, legacy v1 tables absent' \
 	'3|1|3|2|1|2|4|1|2|1|3|3|true' \
 	"$(pg $API_DB -c "select (select count(*) from secrets where state = 'active') || '|' || (select count(*) from secret_open_grace) || '|' ||
@@ -225,7 +209,6 @@ check 'reconciliation cursors replace the migrate seeds' 'r2_object::0|s3_object
 check 'new job_attempts row takes id 8 (past MAX(id)=5 and sqlite_sequence=7), no 23505' '8' \
 	"$(pg $WORKER_DB -c "insert into job_attempts (job_id, attempt, started_at, result) values ('job-1', 2, now(), 'running') returning id")"
 
-# 3. Refusals
 expect_fail '(a) refuses a non-empty target' 'refusing to load into a non-empty database' \
 	run_cutover "$WORK/good/api.db" "$WORK/good/worker.db"
 check '(a) refused run left the loaded rows untouched' '4|4' \

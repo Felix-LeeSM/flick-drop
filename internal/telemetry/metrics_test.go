@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// scrape touches every instrument so it has a sample, then asserts the
-// Prometheus exposition format emits each family with the expected label
-// vector. This proves three things at once: the instrument is declared,
-// registered on DefaultRegistry (an unregistered collector would panic at
-// Inc), and actually surfaced on /metrics.
 func TestMetricsHandlerExposesFormat(t *testing.T) {
 	SecretCreated.WithLabelValues("text", "sqlite_blob").Inc()
 	SecretOpened.Inc()
@@ -47,9 +42,7 @@ func TestMetricsHandlerExposesFormat(t *testing.T) {
 	}
 }
 
-// Security invariant (security-model.md: "Logs and metrics must not include
-// plaintext, passphrases, derived keys, or ciphertext bodies"). The exposition
-// must never carry those terms — only safe cardinality labels.
+// Security invariant: the exposition never carries secret-material terms.
 func TestMetricsHandlerNoSecretTerms(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()

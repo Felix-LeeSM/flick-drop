@@ -1,7 +1,5 @@
 // biome-ignore-all lint/style/useNamingConvention: field keys are the stored credential field ids (full_name).
-// Display text for credential templates and the credential form and view.
-// Field labels here are for display only: the stored payload (FLCR1: JSON)
-// keeps the English label from web/src/lib/credentials/templates.ts.
+// Display only: the stored payload keeps the English label from web/src/lib/credentials/templates.ts.
 export const credentials = {
 	templates: {
 		login: {

@@ -1,7 +1,5 @@
-// tests/fixtures/age/vectors.json holds one block made by this module and one
-// made by internal/clientcrypto/age.go. Both suites open both blocks, so a
-// format choice that moves on one side (identity type, work factor, how the
-// identity is wrapped) fails here or in internal/clientcrypto/age_test.go.
+// tests/fixtures/age/vectors.json holds blocks from this module and internal/clientcrypto/age.go;
+// both suites open both, so a format drift on either side fails.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -35,8 +33,7 @@ const fromBase64 = (value: string) => new Uint8Array(Buffer.from(value, 'base64'
 const patternFile = (n: number) => new Uint8Array(n).map((_, i) => i % 251);
 const decoder = new TextDecoder();
 
-// contracts/age-format-v1.md: header, 16-byte nonce, plaintext, and one 16-byte
-// tag per 64 KiB chunk (at least one chunk, even for an empty file).
+// Header, 16-byte nonce, plaintext, one 16-byte tag per 64 KiB chunk (at least one chunk).
 function ciphertextSize(header: number, plaintext: number): number {
 	return header + 16 + plaintext + 16 * Math.max(1, Math.ceil(plaintext / 65_536));
 }

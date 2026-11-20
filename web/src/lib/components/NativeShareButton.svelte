@@ -12,7 +12,6 @@ let {
 }: {
 	recipientUrl: string;
 	class?: string;
-	// Runs only after the share sheet reports a completed share.
 	onshared?: () => void;
 } = $props();
 let supported = $state(false);

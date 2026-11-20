@@ -10,16 +10,13 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   exit 0
 fi
 
-# Resolve the executable before exporting fixture settings: tool-manager shims
-# may reload .mise.toml and replace FLICK_STORAGE_MINIO_ENDPOINT when invoking Go.
+# Resolve go first: mise shims may reload .mise.toml and replace FLICK_STORAGE_MINIO_ENDPOINT.
 go_binary="$(go env GOROOT)/bin/go"
 project="flick-storage-ci-$(date +%s)-$$"
 container="$project-minio"
 image="$project:local"
 tmp_dir="$(mktemp -d)"
-# The overlay replaces images only. Entry point and command come from this
-# fixture on purpose: the base compose.yaml serves the development stack and
-# may switch MinIO images freely without breaking this fixture.
+# Entry point and command come from this fixture so compose.yaml may switch MinIO images freely.
 cat >"$tmp_dir/compose.yaml" <<YAML
 services:
   minio:
@@ -49,13 +46,12 @@ trap 'exit 143' TERM
 
 docker build --tag "$image" - <scripts/ci/Dockerfile.minio
 
-# compose run ignores the service's fixed host ports; Docker chooses a free
-# loopback port, and the unique project owns all containers and volumes.
+# compose run ignores fixed host ports; Docker picks a free loopback port.
 "${compose[@]}" run -d --no-deps --use-aliases \
   --name "$container" --publish 127.0.0.1::9000 minio
 address="$(docker port "$container" 9000/tcp)"
 
-# Never inherit a developer's real bucket or credentials for the CI fixture.
+# Never inherit a developer's real bucket or credentials.
 export FLICK_STORAGE_MINIO_ENDPOINT="http://$address"
 export FLICK_STORAGE_MINIO_REGION=us-east-1
 export FLICK_STORAGE_MINIO_BUCKET=flick-dev
@@ -66,7 +62,6 @@ curl --fail --silent --show-error --output /dev/null --max-time 2 \
   --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
   --retry-max-time 60 "$FLICK_STORAGE_MINIO_ENDPOINT/minio/health/ready"
 
-# Fail on provisioning errors instead of the development service's retry loop.
 "${compose[@]}" run --rm --no-deps -T --entrypoint /bin/sh createbuckets -ec '
   mc alias set flick http://minio:9000 minioadmin minioadmin
   mc mb --ignore-existing flick/flick-dev

@@ -63,28 +63,20 @@ let downloadSize = $state(0);
 let status = $state('');
 let statusKind = $state<StatusKind>('idle');
 let isOpening = $state(false);
-// Lock stage card shown in place of the open form while an open runs; null shows the form.
 let openStage = $state<StagePhase | null>(null);
 let isLoading = $state(true);
 let canRetryLoad = $state(false);
 let hasOpened = $state(false);
-// True when the link itself is unusable (incomplete / not found / burned) so the only
-// sensible next step is to create a new secret. Stays false for passphrase typos,
-// which are retryable via the open form.
+// The link itself is unusable (incomplete, missing, burned); passphrase typos stay retryable.
 let linkUnusable = $state(false);
 let copyState = $state<'idle' | 'copied'>('idle');
-// Model A (passphrase) vs Model B (link-bearer). Determined by prefetching
-// metadata on mount: Model A secrets expose an access block, Model B do not.
+// Model A metadata carries an access block; Model B does not.
 let accessModel = $state<'a' | 'b' | 'unknown'>('unknown');
 let linkIdentity = $state<string | null>(null);
-// Metadata loaded on mount or explicit retry and reused on open — the Model A KDF lives here,
-// so openPassphraseSecret no longer re-fetches it (one fewer round-trip).
 let metadata = $state<GetSecretMetadataResponse | null>(null);
-// Set once the server has answered the open: from then on the secret is burned,
-// and a decryption failure is final rather than retryable.
+// Set once the server answered the open: the secret is burned, so a decrypt failure is final.
 let consumedOnServer = false;
-// True once the open response body itself failed (the connection dropped while
-// it streamed), as opposed to the bytes arriving and failing to decrypt.
+// The open body stream dropped, as opposed to the bytes failing to decrypt.
 let transportBroken = false;
 
 onMount(() => {
@@ -108,8 +100,7 @@ async function loadModel(): Promise<void> {
 				linkUnusable = true;
 				return;
 			}
-			// A messenger that cut or altered the link leaves a key that fails its
-			// checksum. Catch it here, before Open burns the secret for nothing.
+			// Catch a cut or altered link by its checksum before Open burns the secret.
 			if (!(await isIntactKey(identity))) {
 				status = t().open.linkDamaged;
 				statusKind = 'error';
@@ -122,8 +113,7 @@ async function loadModel(): Promise<void> {
 	} catch (error) {
 		status = error instanceof SecretApiError ? error.message : t().open.loadFailed;
 		statusKind = 'error';
-		// Missing/burned secrets and unusable fragment keys cannot recover through
-		// metadata retry. Network, rate-limit, and server failures can.
+		// Only network, rate-limit, and server failures recover through metadata retry.
 		linkUnusable = accessModel === 'b' || isUnavailable(error);
 		canRetryLoad = !linkUnusable;
 	} finally {
@@ -148,7 +138,6 @@ const canOpen = $derived(
 
 let secretHeading = $state<HTMLHeadingElement | null>(null);
 
-// Move focus to the secret heading when the result view replaces the form.
 $effect(() => {
 	if (hasOpened) {
 		secretHeading?.focus();
@@ -164,10 +153,7 @@ function submitOpen(event: SubmitEvent): void {
 	void openSecret();
 }
 
-// The server has already burned the secret, so each message names what broke and
-// the one thing left to do: ask the sender again. A Model B key reaching this point
-// already passed isIntactKey, so a decrypt failure is damaged ciphertext rather than
-// a damaged link, and both models share one message.
+// A Model B key here already passed isIntactKey, so a decrypt failure means damaged ciphertext.
 function consumedFailureMessage(): string {
 	if (transportBroken) {
 		return t().open.transportDropped;
@@ -202,21 +188,16 @@ async function openSecret(): Promise<void> {
 		} else {
 			await openPassphraseSecret();
 		}
-		// The ring keeps its minimum and plays the unlock beat before the content shows.
 		await holdMinimumStage(stageStartedAt);
 		openStage = 'finishing';
 		await sleep(STAGE_FINISH_MS);
 		passphrase = '';
 		revealPassphrase = false;
 		hasOpened = true;
-		// The secret is burned server-side; the key is now useless. Drop the
-		// reference. ponytail: JS can't securely zero a string/Blob, so this is
-		// best-effort reference-dropping for GC, not a memory wipe.
+		// Best-effort: JS cannot zero a string/Blob, so only drop the reference for GC.
 		linkIdentity = null;
 	} catch (error) {
 		if (consumedOnServer) {
-			// The server has already burned the secret, so retrying can only
-			// answer "consumed". Say what happened and what to do instead.
 			status = consumedFailureMessage();
 			linkUnusable = true;
 		} else {
@@ -224,7 +205,6 @@ async function openSecret(): Promise<void> {
 			linkUnusable = isUnavailable(error);
 		}
 		statusKind = 'error';
-		// The ring drains with the error before the form returns to show it as an alert.
 		await holdMinimumStage(stageStartedAt);
 		openStage = 'failing';
 		await sleep(STAGE_FAIL_MS);
@@ -237,8 +217,7 @@ async function openSecret(): Promise<void> {
 	}
 }
 
-// The stage card replaced the form, taking the focused control with it; put focus
-// back where a retry starts (the passphrase field, else Open while it is usable).
+// The stage card took the focused control with it; refocus where a retry starts.
 async function refocusForm(): Promise<void> {
 	await tick();
 	document
@@ -248,8 +227,7 @@ async function refocusForm(): Promise<void> {
 		?.focus();
 }
 
-// Model B: the link is the capability. Open without a proof and decrypt with
-// the fragment identity.
+// Model B: the link is the capability; open without a proof.
 async function openLinkBearerSecret(): Promise<void> {
 	const identity = linkIdentity;
 	if (!identity) {
@@ -260,9 +238,7 @@ async function openLinkBearerSecret(): Promise<void> {
 	await render(identity, opened);
 }
 
-// Model A: the passphrase-derived proof opens the secret, and the same
-// passphrase unwraps the identity the response carries. Reuses the metadata
-// fetched on mount instead of a second round-trip.
+// Model A: the passphrase-derived proof opens it; the same passphrase unwraps the identity.
 async function openPassphraseSecret(): Promise<void> {
 	if (!metadata?.access) {
 		throw new Error('expected access metadata for Model A secret');
@@ -286,8 +262,6 @@ async function isIntactKey(identity: string): Promise<boolean> {
 	}
 }
 
-// Passes the open response body through, recording whether reading it failed:
-// a dropped connection, not a decryption failure.
 function watchTransport(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
 	const reader = body.getReader();
 	return new ReadableStream({

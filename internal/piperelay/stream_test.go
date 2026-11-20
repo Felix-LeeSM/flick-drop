@@ -16,8 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// 송신자와 수신자가 서로 다른 레플리카에 붙어도 암호문은 수신자 쪽 레플리카로
-// 곧장 흘러가고, 파일 헤더도 그 경로로 함께 간다.
 func TestStream_CrossReplicaTransferReachesTheReceiverReplica(t *testing.T) {
 	network := newPodNetwork(t)
 	senderPod := network.startPod(CoordinatorOptions{})
@@ -47,7 +45,7 @@ func TestStream_CrossReplicaTransferReachesTheReceiverReplica(t *testing.T) {
 	if ready.Recipient != recipientOf(1) {
 		t.Fatalf("ready recipient = %q", ready.Recipient)
 	}
-	payload := bytes.Repeat([]byte("cross replica ciphertext chunk 0123456789\n"), 32*1024) // ~1.3 MiB
+	payload := bytes.Repeat([]byte("cross replica ciphertext chunk 0123456789\n"), 32*1024)
 	n, err := senderPod.Send(ctx, init.Code, init.SenderToken, SessionMetadata{Kind: "file", EncryptedFilename: "ZW5jcnlwdGVk"}, bytes.NewReader(payload))
 	if err != nil || n != int64(len(payload)) {
 		t.Fatalf("Send = %d, %v; want %d bytes", n, err, len(payload))
@@ -64,8 +62,6 @@ func TestStream_CrossReplicaTransferReachesTheReceiverReplica(t *testing.T) {
 	}
 }
 
-// 롤링 업데이트로 방을 만든 레플리카가 내려가도 대기방은 Valkey에 남아, 다른
-// 레플리카가 이어서 선택부터 전송까지 끝낸다.
 func TestStream_RoomOutlivesTheReplicaThatCreatedIt(t *testing.T) {
 	network := newPodNetwork(t)
 	oldPod := network.startPod(CoordinatorOptions{})
@@ -97,8 +93,6 @@ func TestStream_RoomOutlivesTheReplicaThatCreatedIt(t *testing.T) {
 	}
 }
 
-// Valkey에는 방 메타데이터만 있다: 스트리밍 도중에도 키 이름에 6자리 코드가 없고,
-// 값 어디에도 암호문·송신자 토큰·암호화된 파일 이름·원시 클라이언트 해시가 없다.
 func TestStream_ValkeyHoldsNoCiphertextCodeOrToken(t *testing.T) {
 	network := newPodNetwork(t)
 	coord := network.startPod(CoordinatorOptions{})
@@ -168,8 +162,6 @@ func TestStream_ValkeyHoldsNoCiphertextCodeOrToken(t *testing.T) {
 	}
 }
 
-// 종료 신호를 받은 레플리카는 열려 있는 Status·Wait 롱폴을 곧바로 현재 상태로
-// 돌려보내, 브라우저가 다른 레플리카로 다시 폴링하게 한다. 방은 그대로다.
 func TestStream_DrainAnswersOpenLongPollsAtOnce(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -216,8 +208,6 @@ func TestStream_DrainAnswersOpenLongPollsAtOnce(t *testing.T) {
 	}
 }
 
-// 스트림 리스너는 내부 토큰과 그 스트림의 1회용 비밀이 모두 맞아야 받는다. 틀린
-// 요청은 기다리는 수신자를 건드리지 않고, 진짜 송신은 그 뒤에도 그대로 도착한다.
 func TestStream_ListenerRequiresTokenAndStreamSecret(t *testing.T) {
 	network := newPodNetwork(t)
 	coord := network.startPod(CoordinatorOptions{})
@@ -275,8 +265,6 @@ func TestStream_ListenerRequiresTokenAndStreamSecret(t *testing.T) {
 	}
 }
 
-// 수신자가 스트림 도중 떠나면 송신 쪽 레플리카는 io.ErrClosedPipe를 받는다(HTTP는
-// 502 receiver_disconnected). 세션은 끝난다.
 func TestStream_ReceiverLeavingMidStreamFailsTheSender(t *testing.T) {
 	network := newPodNetwork(t)
 	senderPod := network.startPod(CoordinatorOptions{})
@@ -299,7 +287,6 @@ func TestStream_ReceiverLeavingMidStreamFailsTheSender(t *testing.T) {
 		buf := make([]byte, 5)
 		_, _ = io.ReadFull(pr, buf)
 		close(gotFirst)
-		// 수신자 브라우저가 탭을 닫았다.
 		_ = pr.Close()
 		cleanup()
 	}()
@@ -315,7 +302,6 @@ func TestStream_ReceiverLeavingMidStreamFailsTheSender(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	<-gotFirst
-	// 수신자가 사라진 뒤에도 송신자는 계속 보낸다. 쓰기는 결국 실패하거나 버려진다.
 	go func() {
 		for {
 			if _, err := writer.Write(bytes.Repeat([]byte("x"), 64*1024)); err != nil {
@@ -338,9 +324,7 @@ func TestStream_ReceiverLeavingMidStreamFailsTheSender(t *testing.T) {
 	}
 }
 
-// flakyReads는 방 읽기(HMGET)를 remaining번 Valkey 타임아웃처럼 실패시키는 훅이다.
-// 레이트리미터와 함께 쓰는 클라이언트는 재시도 없이 250ms에 끊기므로, 대기 중에 한 번
-// 읽기가 실패하는 일은 운영에서 실제로 일어난다.
+// 레이트리미터용 클라이언트는 재시도 없이 250ms에 끊기므로 운영에서도 읽기 한 번 실패가 일어난다.
 type flakyReads struct{ remaining atomic.Int32 }
 
 func (f *flakyReads) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -360,7 +344,6 @@ func (f *flakyReads) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.P
 	return next
 }
 
-// flakyPod는 방 읽기를 일부러 실패시킬 수 있는 레플리카를 띄운다.
 func flakyPod(t *testing.T, network *podNetwork) (*Coordinator, *flakyReads) {
 	t.Helper()
 	flaky := &flakyReads{}
@@ -370,7 +353,6 @@ func flakyPod(t *testing.T, network *podNetwork) (*Coordinator, *flakyReads) {
 	return network.startPod(CoordinatorOptions{Valkey: valkey}), flaky
 }
 
-// selectedReceiver는 receiverPod에서 들어온 수신자 하나를 senderPod가 고른 상태를 만든다.
 func selectedReceiver(t *testing.T, ctx context.Context, senderPod, receiverPod *Coordinator) (InitResult, JoinResult) {
 	t.Helper()
 	init, err := senderPod.Init(ctx)
@@ -387,9 +369,7 @@ func selectedReceiver(t *testing.T, ctx context.Context, senderPod, receiverPod 
 	return init, join
 }
 
-// 송신자가 수신자를 기다리는 동안 방 읽기가 한 번 실패해도 전송은 이어진다. 실패를
-// 그대로 돌려주면 송신자는 이미 송신 자리를 차지해 다시 보낼 수 없고(409), 수신자는
-// 창이 닫힐 때까지 기다린다.
+// 실패를 그대로 돌려주면 송신 자리는 이미 차지돼 다시 보낼 수 없다(409).
 func TestStream_SenderSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 	network := newPodNetwork(t)
 	senderPod, flaky := flakyPod(t, network)
@@ -419,13 +399,10 @@ func TestStream_SenderSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	// Given: 송신자가 자리를 차지했고 다음 방 읽기 한 번이 실패한다.
 	flaky.remaining.Store(1)
 
-	// When: 수신자가 붙어 송신 레플리카가 방을 다시 읽는다.
 	received := startReceive(ctx, receiverPod, init.Code, join.ConnectionID)
 
-	// Then: 실패한 읽기는 다음 재동기화에서 다시 읽히고 전송이 끝난다.
 	select {
 	case got := <-sent:
 		if got.err != nil || got.n != int64(len(payload)) {
@@ -442,7 +419,6 @@ func TestStream_SenderSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 	}
 }
 
-// 수신자가 스트림을 기다리는 동안 방 읽기가 한 번 실패해도 세션을 닫지 않는다.
 func TestStream_ReceiverSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 	network := newPodNetwork(t)
 	senderPod := network.startPod(CoordinatorOptions{})
@@ -453,7 +429,6 @@ func TestStream_ReceiverSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 
 	received := startReceive(ctx, receiverPod, init.Code, join.ConnectionID)
 	waitUntil(t, senderPod, init, func(s WaitSnapshot) bool { return s.ReceiverReady })
-	// Given: 수신자의 다음 재동기화 읽기가 실패한다.
 	flaky.remaining.Store(1)
 	deadline := time.Now().Add(2*resyncInterval + time.Second)
 	for flaky.remaining.Load() >= 1 {
@@ -463,11 +438,9 @@ func TestStream_ReceiverSurvivesOneFailedReadWhileWaiting(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// When: 송신자가 보낸다.
 	payload := []byte("ciphertext after a valkey hiccup")
 	n, err := senderPod.Send(ctx, init.Code, init.SenderToken, SessionMetadata{}, bytes.NewReader(payload))
 
-	// Then: 수신자는 아직 기다리고 있어 전체를 받는다.
 	if err != nil || n != int64(len(payload)) {
 		t.Fatalf("Send = %d, %v; want %d bytes", n, err, len(payload))
 	}

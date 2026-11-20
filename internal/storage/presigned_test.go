@@ -61,8 +61,6 @@ func TestPresignPUTShape(t *testing.T) {
 	if q.Get("X-Amz-Expires") != "300" {
 		t.Fatalf("expires = %q, want 300", q.Get("X-Amz-Expires"))
 	}
-	// The whole point of signing Content-Length: a body of any other size fails
-	// authentication at the bucket instead of landing and being caught later.
 	signed := q.Get("X-Amz-SignedHeaders")
 	if !strings.Contains(signed, "content-length") {
 		t.Fatalf("signed headers = %q, want content-length included", signed)
@@ -72,8 +70,6 @@ func TestPresignPUTShape(t *testing.T) {
 	}
 }
 
-// A different size must produce a different signature — otherwise the length
-// would not actually be bound to it.
 func TestPresignPUTSignatureCoversSize(t *testing.T) {
 	c := testPresignClient(t)
 	ctx := context.Background()

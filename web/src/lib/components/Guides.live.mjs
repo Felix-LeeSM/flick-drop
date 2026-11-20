@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
 
-// Serve the built app with nginx and a real same-origin API for this suite.
 const baseUrl = process.env.FLICK_WEB_URL ?? 'http://127.0.0.1:5173';
 const paths = ['/guides/'];
 let browser;

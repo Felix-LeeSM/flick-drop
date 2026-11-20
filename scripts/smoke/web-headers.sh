@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Asserts the web app's security response headers are present on the HTML
-# response. Run against the nginx-served build (a deployed pod, port-forward, or
-# the ingress) — the vite dev server does not emit these. Skips when the target
-# is unreachable so it is safe to call from any environment.
-#
-#   FLICK_WEB_BASE_URL=http://127.0.0.1:18091 bash scripts/smoke/web-headers.sh
+# Run against the nginx build (vite dev does not emit these); skips when the target is unreachable.
 
 web_base="${FLICK_WEB_BASE_URL:-http://flick.localhost}"
 
@@ -37,8 +32,7 @@ require "X-Content-Type-Options"       '^x-content-type-options:[[:space:]]*nosn
 require "Referrer-Policy"              '^referrer-policy:[[:space:]]*no-referrer'
 require "Permissions-Policy"           '^permissions-policy:'
 
-# connect-src is the exfiltration control; a wildcard or scheme-only source
-# (`*`, `http:`, `https:`) would defeat it. Concrete origins (scheme://host) pass.
+# connect-src is the exfiltration control: a wildcard or scheme-only source defeats it.
 connect_src="$(printf '%s' "$headers" | grep -ioE 'connect-src[^;]*' || true)"
 if printf '%s' "$connect_src" | grep -qE '(^|[[:space:]])(\*|https?:)([[:space:]]|$)'; then
 	echo "web-headers: OVER-PERMISSIVE connect-src ($connect_src)" >&2

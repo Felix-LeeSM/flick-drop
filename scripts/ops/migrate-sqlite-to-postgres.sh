@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
-# One-time data cutover: copies every row of the last SQLite release's api.db
-# and worker.db into the flick_api and flick_worker PostgreSQL databases, then
-# proves the copy is complete. Procedure: docs/runbook/postgres-cutover.md.
-#
-# Why it is strict: flick-api's object reconciler deletes bucket objects that
-# no database row references. An empty or partial flick_api database attached
-# to the live bucket deletes live objects, so this script refuses any schema
-# drift, unexpected value format, or non-empty target, loads each database in
-# one transaction that re-checks row counts before COMMIT, and exits non-zero
-# unless every table's ordered row digest matches between SQLite and Postgres.
-#
-# Requirements: bash 3.2+, sqlite3 CLI, a psql command per target (any prefix:
-# plain psql, docker exec, kubectl exec), shasum or sha256sum. No SQLite Go
-# driver is involved. The script prints row counts, byte sums, and table-level
-# SHA-256 digests only; it never prints payloads, tokens, or per-row hashes.
+# The object reconciler deletes objects no row references, so a partial flick_api DB deletes live
+# objects: refuse any drift or non-empty target, and never print payloads, tokens, or per-row hashes.
 set -euo pipefail
 export LC_ALL=C
 
@@ -42,18 +29,8 @@ die() {
 	exit 1
 }
 
-# ---------------------------------------------------------------------------
-# Table spec: the single source of truth for both schemas.
-#   db table column sqlite_decl_type pg_type sqlite_notnull pk_position
-# sqlite_decl_type/sqlite_notnull/pk_position must equal pragma table_info of
-# the final SQLite release (scripts/ops/testdata/sqlite-*-schema.sql).
-# pg_type must equal information_schema.columns of the HEAD migrations
-# (internal/db/migrations.go:MigrateAPI, internal/db/migrations_worker.go:
-# MigrateWorker); a Postgres column is NOT NULL when sqlite_notnull=1 or it is
-# part of the primary key. pg_type "-" marks a SQLite-only legacy table that
-# the final release never reads; it is schema-checked and counted, not loaded.
-# Tables are loaded in this order (parents before children).
-# ---------------------------------------------------------------------------
+# Fields: db table column sqlite_decl_type pg_type sqlite_notnull pk_position. Must match
+# testdata/sqlite-*-schema.sql and internal/db migrations; pg_type "-" = legacy, checked not loaded.
 SPEC='
 api secrets id text text 0 1
 api secrets kind text text 1 0
@@ -162,12 +139,10 @@ worker dead_letters error text text 1 0
 worker dead_letters created_at datetime timestamptz 1 0
 '
 
-# MigrateAPI seeds these with one ('', 0) row per backend; the load replaces
-# the seed rows with the SQLite rows.
+# MigrateAPI seeds one ('', 0) row per backend; the load replaces them.
 SEEDED_TABLES='object_reconciliation_cursor_v2 request_reconciliation_cursor_v2'
 
-# Aggregate checks named in the cutover plan, asserted before COMMIT and
-# reported after: label|sqlite expression|postgres expression.
+# label|sqlite expression|postgres expression
 AGGREGATES_api='
 secrets SUM(size_bytes)|select coalesce(sum(size_bytes), 0) from secrets|select coalesce(sum(size_bytes), 0) from secrets
 secrets state=active|select count(*) from secrets where state = '"'"'active'"'"'|select count(*) from secrets where state = '"'"'active'"'"'
@@ -180,9 +155,6 @@ AGGREGATES_worker='
 job_attempts MAX(id)|select coalesce(max(id), 0) from job_attempts|select coalesce(max(id), 0) from job_attempts
 '
 
-# ---------------------------------------------------------------------------
-# Arguments
-# ---------------------------------------------------------------------------
 MODE=all
 ONLY=
 API_SQLITE=
@@ -226,17 +198,12 @@ else
 	die "neither sha256sum nor shasum is on PATH"
 fi
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 sqlite_path() { if [ "$1" = api ]; then printf '%s' "$API_SQLITE"; else printf '%s' "$WORKER_SQLITE"; fi; }
 
-# Read-only query; NULL prints as an empty field, columns are comma-separated.
 sqlite_q() {
 	sqlite3 -readonly -batch -bail -noheader -list -separator , -nullvalue '' "$(sqlite_path "$1")" "$2"
 }
 
-# Runs the target's psql prefix with SQL from stdin.
 run_psql() {
 	local db=$1 line
 	shift
@@ -279,24 +246,20 @@ join_by() { # sep words...
 	printf '%s' "$out"
 }
 
-# Column list in spec order, quoted.
 quoted_columns() {
 	local col rest out=''
 	while read -r col rest; do out=${out:+$out, }\"$col\"; done < <(spec_columns "$1" "$2")
 	printf '%s' "$out"
 }
 
-# ORDER BY over the primary key; text keys sort bytewise on both sides
-# (SQLite BINARY collation, Postgres "C").
+# Text keys sort bytewise on both sides (SQLite BINARY, Postgres "C").
 order_by() { # db table engine
 	spec_columns "$1" "$2" | awk '$5 > 0' | sort -k5,5n | while read -r col _ pg rest; do
 		if [ "$3" = pg ] && [ "$(kind_of "$pg")" = t ]; then printf '"%s" collate "C"\n' "$col"; else printf '"%s"\n' "$col"; fi
 	done | paste -sd, -
 }
 
-# SQLite timestamp shape written by the last SQLite release: RFC 3339 UTC with
-# "Z" and 0-9 fraction digits (time.RFC3339Nano, the fixed 9-digit
-# managementTimeFormat/timeFormat, and strftime('%f000000')).
+# RFC 3339 UTC "Z" with 0-9 fraction digits, as the last SQLite release wrote.
 ts_ok_sqlite() {
 	local c=$1 d='[0-9]'
 	local base="$d$d$d$d-$d$d-$d${d}T$d$d:$d$d:$d$d"
@@ -304,13 +267,8 @@ ts_ok_sqlite() {
 		"$c" "$c" "$base" "$c" "$base" "$c" "$c" "$c"
 }
 
-# SQLite hex(NULL) returns '' rather than NULL, so every hex() of a nullable
-# column sits behind an explicit NULL test.
-#
-# Canonical per-row text used for the digest. Each engine renders it from its
-# own stored values: NULL -> N, integer -> decimal, text -> x + hex(UTF-8
-# bytes), blob -> x + hex(bytes), timestamp -> UTC with exactly 6 fraction
-# digits (the load truncates SQLite nanoseconds to Postgres microseconds).
+# SQLite hex(NULL) returns '', so every hex() of a nullable column sits behind a NULL test.
+# Timestamps render with exactly 6 fraction digits (the load truncates ns to Postgres us).
 canonical_sqlite() {
 	local col pg rest c parts=()
 	while read -r col _ pg rest; do
@@ -347,7 +305,6 @@ digest_pg() {
 		run_psql "$1" | sha256
 }
 
-# Postgres non-empty test: a seeded table counts only rows other than seeds.
 pg_nonempty_count_sql() {
 	if is_seeded "$1"; then
 		printf "select count(*) from \"%s\" where not (backend in ('s3_object', 'r2_object') and continuation_token = '' and generation = 0)" "$1"
@@ -356,9 +313,6 @@ pg_nonempty_count_sql() {
 	fi
 }
 
-# ---------------------------------------------------------------------------
-# Pre-flight: SQLite source
-# ---------------------------------------------------------------------------
 check_sqlite() {
 	local db=$1 path t col pg nn pk bad
 	path=$(sqlite_path "$db")
@@ -389,8 +343,7 @@ check_sqlite() {
 		fi
 	done
 
-	# Value shapes: every stored value must have the type and timestamp format
-	# the last release wrote, or the load would silently reinterpret it.
+	# A value of another shape would be silently reinterpreted by the load.
 	for t in $(spec_tables "$db" loaded); do
 		local cols=() checks=()
 		while read -r col _ pg nn pk; do
@@ -421,9 +374,6 @@ check_sqlite() {
 	printf '%s: SQLite schema and value formats match the final SQLite release (%s)\n' "$db" "$path"
 }
 
-# ---------------------------------------------------------------------------
-# Pre-flight: Postgres target
-# ---------------------------------------------------------------------------
 check_target() {
 	local db=$1 expected actual t n
 	psql_q "$db" 'select 1' >/dev/null || die "$db: cannot connect with the --$db-psql command"
@@ -453,9 +403,6 @@ check_target() {
 	printf '%s: Postgres target has the HEAD schema and no data\n' "$db"
 }
 
-# ---------------------------------------------------------------------------
-# Load: one transaction per database, streamed into psql on stdin
-# ---------------------------------------------------------------------------
 emit_load_sql() {
 	local db=$1 t col pg rest c tables=() checks=()
 	for t in $(spec_tables "$db" loaded); do
@@ -489,8 +436,7 @@ emit_load_sql() {
 				convert+=("$c::bigint")
 				;;
 			ts)
-				# Keep at most 6 fraction digits (truncate, never round) so the
-				# stored instant is exactly the one the digest expects.
+				# Truncate, never round, so the stored instant matches the digest.
 				exports+=("$c")
 				convert+=("regexp_replace($c, '^([0-9-]{10}T[0-9:]{8}(\\.[0-9]{1,6})?)[0-9]*Z\$', '\\1Z')::timestamptz")
 				;;
@@ -500,8 +446,7 @@ emit_load_sql() {
 
 		printf 'CREATE TEMP TABLE "%s" (%s) ON COMMIT DROP;\n' "$stg" "$(join_by ', ' "${stg_cols[@]}")"
 		printf 'COPY "%s" FROM STDIN WITH (FORMAT csv);\n' "$stg"
-		# Every exported field is hex, decimal, or an RFC 3339 timestamp, so the
-		# CSV needs no quoting; an empty field is NULL ('' exports as "x").
+		# Every field is hex, decimal, or RFC 3339, so no CSV quoting; empty = NULL ('' exports as "x").
 		sqlite_q "$db" "select $(join_by ', ' "${exports[@]}") from \"$t\"" || exit 1
 		printf '\\.\n'
 		printf 'INSERT INTO "%s" (%s) OVERRIDING SYSTEM VALUE SELECT %s FROM "%s";\n' \
@@ -511,9 +456,8 @@ emit_load_sql() {
 	done
 
 	if [ "$db" = worker ]; then
-		# job_attempts.id is GENERATED ALWAYS AS IDENTITY. Without this the next
-		# worker insert starts at 1 and fails with 23505. AUTOINCREMENT never
-		# reuses ids, so the floor is the larger of MAX(id) and sqlite_sequence.
+		# Identity column: without this the next insert starts at 1 and hits 23505. AUTOINCREMENT
+		# never reuses ids, so the floor is max(MAX(id), sqlite_sequence).
 		local seq
 		seq=$(sqlite_q "$db" "select coalesce((select seq from sqlite_sequence where name = 'job_attempts'), 0)") || exit 1
 		printf "SELECT setval(pg_get_serial_sequence('job_attempts', 'id'), greatest(coalesce(max(id), 0), %s, 1), greatest(coalesce(max(id), 0), %s) > 0) FROM job_attempts;\n" "$seq" "$seq"
@@ -534,18 +478,13 @@ aggregates() { if [ "$1" = api ]; then printf '%s\n' "$AGGREGATES_api"; else pri
 load_db() {
 	local db=$1
 	printf '%s: loading in one transaction...\n' "$db"
-	# errexit does not apply inside this pipeline, so emit_load_sql exits
-	# explicitly when sqlite3 fails. It then never prints COMMIT, and Postgres
-	# rolls the transaction back when psql reaches end of input.
+	# errexit does not apply in this pipeline: on sqlite3 failure COMMIT is never printed, so it rolls back.
 	local rc=0
 	emit_load_sql "$db" | run_psql "$db" >/dev/null || rc=$?
 	[ "$rc" = 0 ] || die "$db: load failed (exit $rc) and was rolled back; the target database is unchanged"
 	printf '%s: committed\n' "$db"
 }
 
-# ---------------------------------------------------------------------------
-# Verify: per-table row count and ordered full-row digest, plus aggregates
-# ---------------------------------------------------------------------------
 FAILED=0
 verify_db() {
 	local db=$1 t s_count p_count s_digest p_digest status
@@ -582,15 +521,11 @@ verify_db() {
 		floor=$(sqlite_q "$db" "select max(coalesce((select max(id) from job_attempts), 0), coalesce((select seq from sqlite_sequence where name = 'job_attempts'), 0))")
 		next=$(psql_q "$db" "select coalesce(pg_sequence_last_value(pg_get_serial_sequence('job_attempts', 'id')::regclass) + 1, 1)")
 		status=ok
-		# A non-numeric answer also lands in the MISMATCH branch.
 		if ! [ "$next" -gt "$floor" ] 2>/dev/null; then status=MISMATCH; FAILED=1; fi
 		printf '  %-36s %10s %10s  %-12s %s\n' 'job_attempts next id > used ids' "$floor" "$next" '' "$status"
 	fi
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 for db in $DATABASES; do check_sqlite "$db"; done
 if [ "$MODE" = check ]; then
 	for db in $DATABASES; do check_target "$db"; done

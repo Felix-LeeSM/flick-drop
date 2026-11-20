@@ -1,22 +1,10 @@
-# kube-state-metrics exposes pod-status metrics (kube_pod_status_phase,
-# kube_pod_container_status_restarts_total, kube_pod_status_ready,
-# kube_pod_status_reason, ...) in Prometheus text format for the flick cluster.
-#
-# Scoped to the pods and nodes collectors (--resources=pods,nodes) so RBAC stays
-# read-only on two object kinds and memory stays small. The nodes collector
-# feeds kube_node_status_condition, the dashboard's node Ready signal. Expand
-# --resources and the ClusterRole together when more object kinds are needed.
-#
-# This is an opt-in add-on: it is NOT referenced by deploy/base/kustomization.yaml.
-# Apply it separately after the base with `kubectl apply -k deploy/base/monitoring`.
+# Scoped to --resources=pods,nodes so RBAC stays read-only on two kinds; expand it and the ClusterRole together.
+# Opt-in: not referenced by deploy/base/kustomization.yaml.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kube-state-metrics
 ---
-# Cluster-wide read on pods and nodes only. kube-state-metrics lists/watches pods across
-# all namespaces; the binding subject is the ServiceAccount in the flick
-# namespace (set by the kustomization).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -54,8 +42,7 @@ spec:
         app.kubernetes.io/name: kube-state-metrics
     spec:
       serviceAccountName: kube-state-metrics
-      # Unlike the flick app pods, kube-state-metrics must reach the API server,
-      # so it keeps its projected ServiceAccount token.
+      # Must reach the API server, so it keeps its projected ServiceAccount token.
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -65,7 +52,6 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kube-state-metrics
-          # Pinned for reproducible rollouts; bump deliberately.
           image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.14.0
           imagePullPolicy: IfNotPresent
           args:
@@ -77,9 +63,7 @@ spec:
               containerPort: 8080
             - name: telemetry
               containerPort: 8081
-          # /livez lives on the metrics port; timeoutSeconds must exceed the
-          # default 1s or a GC pause / in-flight scrape trips the probe and
-          # crash-loops the pod. 5s matches the upstream KSM standard manifest.
+          # timeoutSeconds must exceed the default 1s or a GC pause crash-loops the pod (upstream KSM uses 5s).
           livenessProbe:
             httpGet:
               path: /livez
@@ -95,8 +79,7 @@ spec:
             initialDelaySeconds: 5
             timeoutSeconds: 5
             periodSeconds: 10
-          # Measured ~42Mi RSS for the pods collector on a ~12-pod cluster;
-          # request covers steady state, limit leaves Go GC headroom.
+          # Measured ~42Mi RSS for the pods collector on a ~12-pod cluster.
           resources:
             requests:
               cpu: 10m

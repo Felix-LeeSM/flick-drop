@@ -1,8 +1,4 @@
-// The access_proof block of tests/fixtures/client-crypto-vectors.json is also
-// checked by internal/clientcrypto (DeriveAccessProof). A failure here means the
-// browser and the Go CLI derive different proofs for the same passphrase, so
-// one client could not open the other's Model A secrets. Do not regenerate the
-// fixture to make it pass.
+// Vectors shared with internal/clientcrypto DeriveAccessProof; never regenerate the fixture to pass.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

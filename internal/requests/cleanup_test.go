@@ -111,7 +111,6 @@ func TestRequestReconciliationFailsClosedAndRollsBack(t *testing.T) {
 			}
 			switch failure {
 			case "lookup":
-				// cascade: request_payloads carries the only foreign key to requests.
 				if _, err := f.db.Exec(`drop table requests cascade`); err != nil {
 					t.Fatal(err)
 				}
@@ -164,9 +163,7 @@ func TestLargeTransitionsRollBackOutboxAndCommitFailures(t *testing.T) {
 				if operation == "reserve" {
 					table, event = "requests", "update of state"
 				}
-				// 문장 실패는 예약 전이 문장만 노린다(when new.state='uploading');
-				// 커밋 실패는 when 없이 같은 행 사건마다 유예 FK 위반 행을 쌓아
-				// COMMIT 시점에 실패시킨다.
+				// 문장 실패는 예약 전이 문장만 노리고, 커밋 실패는 유예 FK 위반 행을 쌓아 COMMIT에서 실패시킨다.
 				if failure == "statement" {
 					when := ""
 					if operation == "reserve" {
@@ -224,9 +221,6 @@ func TestLargeTransitionsRollBackOutboxAndCommitFailures(t *testing.T) {
 	}
 }
 
-// An opened object whose stream never reported back (FinishOpen did not run)
-// stays protected by its consumed row for the open grace, then the purge and
-// reconciliation release it.
 func TestOpenedObjectProtectedForStreamGrace(t *testing.T) {
 	ctx := context.Background()
 	f, o := largeFixture(t)
@@ -239,7 +233,6 @@ func TestOpenedObjectProtectedForStreamGrace(t *testing.T) {
 	for _, event := range outboxKeys(t, f.db) {
 		o.Delete(ctx, event.ObjectKey)
 	}
-	// Open just before the request deadline, so expiry lands mid-stream.
 	openedAt := c.ExpiresAt.Add(-time.Second)
 	f.store.now = func() time.Time { return openedAt }
 	if _, err := f.store.Open(ctx, c.ID, c.RetrievalToken); err != nil {
@@ -283,8 +276,6 @@ func TestOpenedObjectProtectedForStreamGrace(t *testing.T) {
 	}
 }
 
-// Reconciliation alone also releases an unfinished open once the grace
-// passes, while the request itself is still live.
 func TestReconciliationReleasesUnfinishedOpenAfterGrace(t *testing.T) {
 	ctx := context.Background()
 	f, o := largeFixture(t)
@@ -295,8 +286,7 @@ func TestReconciliationReleasesUnfinishedOpenAfterGrace(t *testing.T) {
 	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
 		t.Fatal(err)
 	}
-	// The staging copy is already queued by Finalize; only the final key is
-	// left for reconciliation to judge.
+	// The staging copy is already queued by Finalize.
 	for _, event := range outboxKeys(t, f.db) {
 		o.Delete(ctx, event.ObjectKey)
 	}

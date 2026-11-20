@@ -1,15 +1,11 @@
-# One PostgreSQL 17 instance holding both logical databases: flick_api (owned
-# by the flick_api role, written only by flick-api) and flick_worker (owned by
-# flick_worker, written only by flick-worker). docs/architecture/database-schema.md
-# "Ownership" is the contract; scripts/dev/postgres-init.sql is the local twin.
+# scripts/dev/postgres-init.sql is the local twin.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
 spec:
   replicas: 1
-  # The data volume is ReadWriteOnce: the old pod must stop before the new one
-  # mounts it.
+  # ReadWriteOnce: the old pod must stop before the new one mounts it.
   strategy:
     type: Recreate
   selector:
@@ -22,7 +18,6 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        # The postgres user of the official Alpine image.
         fsGroup: 70
         runAsGroup: 70
         runAsNonRoot: true
@@ -35,8 +30,7 @@ spec:
           image: postgres:17-alpine
           imagePullPolicy: IfNotPresent
           env:
-            # A subdirectory, because a fresh volume's root may hold
-            # lost+found and initdb refuses a non-empty directory.
+            # A fresh volume's root may hold lost+found, and initdb refuses a non-empty directory.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
             - name: POSTGRES_PASSWORD
@@ -44,8 +38,7 @@ spec:
                 secretKeyRef:
                   name: flick-db-admin
                   key: POSTGRES_PASSWORD
-            # Read only by the init script on the first start of an empty
-            # volume; changing them later does not change the roles.
+            # Read only on the first start of an empty volume; later changes do not change the roles.
             - name: FLICK_API_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -90,7 +83,6 @@ spec:
             - name: postgres-init
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
-            # Unix socket and lock files; the root filesystem is read-only.
             - name: run
               mountPath: /var/run/postgresql
             - name: tmp
@@ -102,8 +94,7 @@ spec:
         - name: postgres-init
           configMap:
             name: postgres-init
-            # Executable, so the image entrypoint runs the script in its own
-            # shell instead of sourcing it into the entrypoint's.
+            # Executable, so the entrypoint runs it in its own shell instead of sourcing it.
             defaultMode: 0555
         - name: run
           emptyDir:
@@ -117,10 +108,7 @@ kind: ConfigMap
 metadata:
   name: postgres-init
 data:
-  # Runs once, on the first start of an empty data volume. The passwords come
-  # from Secret/flick-db-api and Secret/flick-db-worker; psql reads them from
-  # the environment with \getenv, so they never appear in this ConfigMap or in
-  # a process argument list.
+  # psql reads the passwords via \getenv, so they never appear here or in a process argument list.
   10-flick-init.sh: |
     #!/bin/sh
     set -eu
@@ -147,8 +135,6 @@ spec:
       port: 5432
       targetPort: postgres
 ---
-# Only flick-api and flick-worker reach PostgreSQL. Each still logs in with
-# its own role, so neither can open the other's database.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

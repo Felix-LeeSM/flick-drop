@@ -1,7 +1,5 @@
-// Runs the Model A scrypt step (work factor 18, about 256 MiB and a second or
-// more on a phone) off the main thread so the page stays responsive. The
-// passphrase stays in this tab: postMessage between a page and its own
-// dedicated worker never leaves the browser.
+// Model A scrypt (work factor 18, ~256 MiB) off the main thread; postMessage to a dedicated
+// worker never leaves the browser.
 
 import { unwrapIdentity, wrapIdentity } from './age';
 

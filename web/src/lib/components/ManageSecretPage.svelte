@@ -33,7 +33,6 @@ const statusCopy = $derived<Record<ManagementStatus, { title: string; detail: st
 	cancelled: t().manage.statuses.cancelled,
 	unavailable: t().manage.statuses.unavailable
 });
-// The dot only decorates the title: green while openable, amber while uploading, grey once final.
 function statusDot(status: ManagementStatus): string {
 	if (status === 'active') {
 		return 'bg-success ring-4 ring-success/20';
@@ -43,10 +42,7 @@ function statusDot(status: ManagementStatus): string {
 let token = '';
 let snapshot = $state<ManagementSnapshot | null>(null);
 let recipientUrl = $state('');
-// The recipient link exists only in this tab's memory. Until the sender copies,
-// shares, or shows it as a QR code, leaving the page (a reload, a mobile tab
-// the OS discards while the sender switches to a messenger) would lose it for
-// good, so the browser asks first.
+// The recipient link lives only in this tab; ask before leaving until it is handed off.
 let recipientLinkHandedOff = $state(false);
 function handOffRecipientLink(): void {
 	recipientLinkHandedOff = true;
@@ -158,8 +154,7 @@ async function cancelPendingDelivery(): Promise<void> {
 	if (!pending || pending.signal.aborted) {
 		return;
 	}
-	// Re-entry guard: keep the delivery and refresh buttons disabled for the
-	// whole revoke, like the old confirm-blocking flow did via refresh's busy.
+	// Re-entry guard: keep buttons disabled for the whole revoke.
 	busy = true;
 	try {
 		const result = await api.revoke(secretId, token, pending.signal);
@@ -175,9 +170,7 @@ async function cancelPendingDelivery(): Promise<void> {
 	}
 }
 
-// beforeNavigate covers in-app links (Create another, the logo) as well as a
-// reload or tab close: cancelling a 'leave' navigation shows the browser's own
-// unload prompt.
+// Cancelling a leave navigation shows the browser's own unload prompt.
 beforeNavigate((navigation) => {
 	if (recipientUrl === '' || recipientLinkHandedOff) {
 		return;
@@ -263,8 +256,6 @@ onMount(() => {
 			{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
 		</section>
 		{#if recipientUrl}
-			<!-- A successful copy or share, opening the QR code, or a manual copy of the
-			     field counts as handing the link off, which ends the leave warning. -->
 			<section aria-labelledby="recipient-link-heading" class="grid gap-2.5" oncopy={handOffRecipientLink}>
 				<h2 id="recipient-link-heading" class="text-[0.9375rem] font-medium">{t().manage.sendToRecipient}</h2>
 				<UrlField value={recipientUrl} id="share-url" copyLabel={t().manage.copyRecipientLink} prominent oncopied={handOffRecipientLink} />

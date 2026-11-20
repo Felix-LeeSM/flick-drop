@@ -12,12 +12,9 @@ import (
 const (
 	DefaultConsumerDurable = "flick-worker"
 	DefaultConsumerBatch   = 8
-	// The worker owns the failure budget and durable dead letters. Broker
-	// deliveries include crashes and active duplicates, which are not failures.
+	// The worker owns the failure budget; broker redeliveries include crashes and duplicates.
 	DefaultMaxDeliver = -1
-	// AckWait must outlast JobTimeout (30s): the handler's own retry budget
-	// owns failure handling, so a broker redelivery that lands mid-job would
-	// collide with the live lease on the same receipt.
+	// Must outlast JobTimeout (30s) so a broker redelivery never collides with a live job lease.
 	DefaultAckWait    = 45 * time.Second
 	DefaultFetchWait  = 2 * time.Second
 	DefaultRetryDelay = 5 * time.Second

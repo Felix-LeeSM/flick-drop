@@ -18,17 +18,13 @@ import (
 )
 
 type mockObjectStore struct {
-	objects map[string][]byte
-	// presignedSize records the length the store asked to be signed, so tests can
-	// assert it is exactly the declared age file length.
+	objects       map[string][]byte
 	presignedSize int64
-	// openErr fails Open; openSizeDelta skews the length Open reports.
 	openErr       error
 	openSizeDelta int64
 	opened        []*trackedBody
 }
 
-// trackedBody records whether the store closed a body it was handed.
 type trackedBody struct {
 	io.Reader
 	closed bool
@@ -112,9 +108,7 @@ func newLargeTestStore(t *testing.T, conn *sql.DB, objects storage.ObjectStore) 
 	return store
 }
 
-// createFinalizedS3Secret makes an active S3-backed Model A secret. The access
-// proof means a wrong proof on open trips the failed-access lockout path, whose
-// payload purge is the object delete this file exercises.
+// The access proof lets a wrong proof trip the lockout, whose purge is the object delete.
 func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mock *mockObjectStore) string {
 	t.Helper()
 	res, err := store.CreateLarge(ctx, CreateLargeInput{
@@ -129,7 +123,6 @@ func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mo
 	if err != nil {
 		t.Fatalf("create large: %v", err)
 	}
-	// Finalize checks the exact staged length.
 	mock.objects["managed/secrets/"+res.ID] = ageBody(1000)
 	if err := store.Finalize(ctx, res.ID); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -137,8 +130,6 @@ func createFinalizedS3Secret(t *testing.T, ctx context.Context, store *Store, mo
 	return res.ID
 }
 
-// driveToLockout runs the wrong-proof opens that trip the lockout on the final
-// attempt, committing each like the real handler does on ErrInvalidAccess.
 func driveToLockout(t *testing.T, ctx context.Context, conn *sql.DB, store *Store, id string) {
 	t.Helper()
 	for attempt := 1; attempt <= maxFailedAccessAttempts; attempt++ {
@@ -155,9 +146,6 @@ func driveToLockout(t *testing.T, ctx context.Context, conn *sql.DB, store *Stor
 	}
 }
 
-// With an outbox wired, the lockout purge enqueues a KindDeleteOCIObject job in
-// the access tx instead of calling the object store inline — so a transient S3
-// failure can't both pin the single DB connection and silently leak the object.
 func TestStoreOpenTxLockoutEnqueuesObjectDeleteWithOutbox(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -193,14 +181,11 @@ func TestStoreOpenTxLockoutEnqueuesObjectDeleteWithOutbox(t *testing.T) {
 	if job.Reason != events.ReasonConsumed {
 		t.Errorf("job reason = %q, want %q", job.Reason, events.ReasonConsumed)
 	}
-	// The delete is the worker's job; nothing touched the bucket inline.
 	if _, ok := mock.objects["managed/secrets/"+id]; !ok {
 		t.Errorf("object deleted inline, want left for the enqueued worker job")
 	}
 }
 
-// Without an outbox (test-only Store), the lockout falls back to a best-effort
-// inline delete so the locked payload is still purged.
 func TestStoreOpenTxLockoutDeletesObjectInlineWithoutOutbox(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -258,8 +243,6 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 		t.Fatalf("large secret should not write an inline payload")
 	}
 
-	// client uploads the age file straight to the bucket. Finalize verifies the
-	// exact staged length.
 	ciphertext := ageBody(1000)
 	mock.objects["managed/secrets/"+res.ID] = ciphertext
 
@@ -274,7 +257,6 @@ func TestCreateLargeFinalizeGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get large secret: %v", err)
 	}
-	// Get reads metadata only; the bucket body is streamed by OpenTx.
 	if got.Ciphertext != nil || got.Body != nil {
 		t.Fatalf("Get returned an S3 body (%d inline bytes)", len(got.Ciphertext))
 	}
@@ -372,11 +354,6 @@ func TestFinalizeOversized(t *testing.T) {
 	}
 }
 
-// TestActivateSecretTxReturnsNotFoundWhenRowGone covers the reaper hard-delete
-// race: if a pending_upload row is removed between Finalize's SELECT and its
-// UPDATE, the UPDATE matches 0 rows and the guard must surface ErrNotFound
-// rather than a silent success. The guard is exercised directly on a
-// transaction whose target row does not exist.
 func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -394,8 +371,6 @@ func TestActivateSecretTxReturnsNotFoundWhenRowGone(t *testing.T) {
 	}
 }
 
-// 다른 레플리카의 reaper가 먼저 회수를 claim하면(reclaim_enqueued_at 설정, 객체
-// 삭제 job enqueue) finalize는 그 행을 활성화하지 않고 ErrNotFound를 돌려준다.
 func TestActivateSecretTxRefusesReaperClaimedRow(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -465,9 +440,6 @@ func TestActivateSecretTxFlipsPendingToActive(t *testing.T) {
 	}
 }
 
-// Given: 다른 트랜잭션이 이미 pending_upload 행을 active로 바꾼 뒤
-// When: 후발 finalize 트랜잭션이 같은 행에 조건부 활성화를 실행하면
-// Then: 0행이고 재조회 결과 이미 active이므로 idempotent 성공(activated=false, nil)을 답한다
 func TestActivateSecretTxIsIdempotentWhenAlreadyActive(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -511,8 +483,6 @@ func TestActivateSecretTxIsIdempotentWhenAlreadyActive(t *testing.T) {
 	}
 }
 
-// The presigned upload pins Content-Length, and size_bytes is the exact age
-// file length, so the store must sign exactly the declared size.
 func TestCreateLargeSignsExactSize(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -533,9 +503,6 @@ func TestCreateLargeSignsExactSize(t *testing.T) {
 	}
 }
 
-// A declared size past the object cap must be refused
-// before signing — otherwise the client gets a signature for an upload the
-// bucket is meant to never accept.
 func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -568,8 +535,6 @@ func TestCreateLargeRejectsSizePastTheObjectCap(t *testing.T) {
 	}
 }
 
-// SizeBytes is attacker-controlled; the largest value must be refused as too
-// large, not reach the presigner and surface as a 500.
 func TestCreateLargeRejectsOverflowingSize(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -588,8 +553,6 @@ func TestCreateLargeRejectsOverflowingSize(t *testing.T) {
 	}
 }
 
-// Finalize must not activate an object whose length differs from what was
-// staged, even though the bucket signature should already have refused it.
 func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -603,7 +566,6 @@ func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 		t.Fatalf("create large: %v", err)
 	}
 
-	// Within the object cap, but not the length this secret was staged for.
 	for _, n := range []int{99, 101} {
 		mock.objects["managed/secrets/"+res.ID] = ageBody(n)
 		if err := store.Finalize(ctx, res.ID); !errors.Is(err, ErrObjectMissing) {
@@ -615,8 +577,6 @@ func TestFinalizeRejectsWrongObjectLength(t *testing.T) {
 	}
 }
 
-// CreateLarge shares the age field rules with Create: Model A carries a
-// wrapped identity, Model B does not, and only files carry a filename.
 func TestCreateLargeValidatesAgeFields(t *testing.T) {
 	ctx := context.Background()
 	store := newLargeTestStore(t, openTestDB(t, ctx), newMockObjectStore())
@@ -661,8 +621,6 @@ func openS3(t *testing.T, ctx context.Context, conn *sql.DB, store *Store, id st
 	return opened, nil
 }
 
-// A bucket that cannot start serving the body must leave the secret
-// reopenable: OpenTx opens the object before it marks the secret consumed.
 func TestStoreOpenTxS3OpenFailureLeavesSecretOpenable(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
@@ -687,8 +645,6 @@ func TestStoreOpenTxS3OpenFailureLeavesSecretOpenable(t *testing.T) {
 	opened.Body.Close()
 }
 
-// The handler announces size_bytes as Content-Length before streaming, so an
-// object of any other length is refused, its body closed, and the secret kept.
 func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
 	for _, delta := range []int64{-1, 1} {
 		t.Run(strconv.FormatInt(delta, 10), func(t *testing.T) {
@@ -720,15 +676,11 @@ func TestStoreOpenTxS3RefusesLengthMismatch(t *testing.T) {
 	}
 }
 
-// testBackend and otherTestBackend name the object backends test registries
-// configure; any name matching storage.ValidBackendName works.
 const (
 	testBackend      = "oci"
 	otherTestBackend = "r2"
 )
 
-// testRegistry wraps a test double as a single uncapped backend named
-// testBackend. The error is unreachable for a non-nil store.
 func testRegistry(objects storage.ObjectStore) *storage.Registry {
 	registry, err := storage.NewRegistry(storage.Backend{Name: testBackend, Store: objects})
 	if err != nil {
@@ -737,9 +689,6 @@ func testRegistry(objects storage.ObjectStore) *storage.Registry {
 	return registry
 }
 
-// dualLargeTestStore builds a store over testBackend and otherTestBackend,
-// each an independent mock with its own byte ceiling, so a test can tell which
-// backend a secret was placed on.
 func dualLargeTestStore(t *testing.T, conn *sql.DB, testCeiling, otherCeiling int64) (*Store, *mockObjectStore, *mockObjectStore) {
 	t.Helper()
 	first := newMockObjectStore()
@@ -784,8 +733,7 @@ func largeCreateInput() CreateLargeInput {
 	}
 }
 
-// Placement is random among backends with room, so each test leaves exactly
-// one candidate to keep the outcome deterministic.
+// Placement is random, so each test leaves exactly one candidate.
 func TestCreateLargeRoutesToTheOnlyBackendThatFits(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string

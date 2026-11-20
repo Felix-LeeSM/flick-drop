@@ -1,18 +1,4 @@
-# VictoriaMetrics single-node: the storage + query layer for the opt-in
-# monitoring stack. It scrapes the flick API, the flick worker, kube-state-metrics,
-# node-exporter, and itself, stores the series on a PVC, and serves vmui + the query API on
-# :8428. Full Prometheus is avoided on a ~1GB node; vmsingle is the low-footprint
-# substitute.
-#
-# Scrape targets use static DNS / dns_sd rather than Kubernetes service
-# discovery, so vmsingle needs no API access and no RBAC (mirrors node-exporter):
-#   - flick-api / flick-worker / node-exporter: headless Services, so an A-record
-#     dns_sd lookup returns every pod IP and each replica is scraped on its own
-#     (a ClusterIP would hand each scrape to one random replica).
-#   - kube-state-metrics: a single replica, scraped by stable Service DNS
-#     (resolv.conf search domain resolves the short name).
-#
-# Opt-in: applied with the rest of deploy/base/monitoring, NOT the base.
+# Scrapes via static DNS / dns_sd (headless Services for per-replica targets), so it needs no RBAC.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -85,8 +71,7 @@ metadata:
   name: vmsingle
 spec:
   replicas: 1
-  # Recreate, not RollingUpdate: the PVC is ReadWriteOnce, so a second pod cannot
-  # mount the volume while the old one is terminating.
+  # Recreate: the PVC is ReadWriteOnce, so a second pod cannot mount it during termination.
   strategy:
     type: Recreate
   selector:
@@ -97,20 +82,17 @@ spec:
       labels:
         app.kubernetes.io/name: vmsingle
     spec:
-      # vmsingle uses static/dns_sd scraping, so it never calls the API server.
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
-        # fsGroup makes the PVC (and the secret token file) group-readable by the
-        # non-root user; the scratch-based VM image creates no user of its own.
+        # fsGroup makes the PVC and token file readable by the non-root user; the scratch image has no user.
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: vmsingle
-          # Pinned for reproducible rollouts; bump deliberately.
           image: victoriametrics/victoria-metrics:v1.111.0
           imagePullPolicy: IfNotPresent
           args:
@@ -118,7 +100,6 @@ spec:
             - --retentionPeriod=14d
             - --promscrape.config=/etc/vm/scrape.yml
             - --httpListenAddr=:8428
-            # Keep VM's heap inside the container limit on a small node.
             - --memory.allowedPercent=70
           ports:
             - name: http
@@ -128,8 +109,7 @@ spec:
               path: /health
               port: http
             initialDelaySeconds: 5
-            # Match the rest of the cluster: the default 1s timeout trips on a GC
-            # pause or in-flight scrape and crash-loops the pod.
+            # The default 1s timeout trips on a GC pause and crash-loops the pod.
             timeoutSeconds: 5
             periodSeconds: 20
           readinessProbe:
@@ -139,8 +119,7 @@ spec:
             initialDelaySeconds: 5
             timeoutSeconds: 5
             periodSeconds: 10
-          # Sized for the ~1GB edge node; VM trades memory for query speed, so the
-          # limit leaves headroom while --memory.allowedPercent caps actual use.
+          # --memory.allowedPercent caps actual use below the limit on the ~1GB edge node.
           resources:
             requests:
               cpu: 50m

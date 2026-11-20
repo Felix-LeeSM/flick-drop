@@ -21,9 +21,7 @@ func main() {
 	logger := telemetry.NewLogger()
 	telemetry.SetStandardLogger(logger)
 
-	// "flick-worker migrate" applies the flick_worker schema and exits without
-	// starting metrics or NATS, for the one-time SQLite cutover
-	// (docs/runbook/postgres-cutover.md).
+	// Exits without starting metrics or NATS.
 	migrateOnly := len(os.Args) == 2 && os.Args[1] == "migrate"
 	if len(os.Args) > 1 && !migrateOnly {
 		log.Fatalf("usage: flick-worker [migrate]")
@@ -52,9 +50,6 @@ func main() {
 		}
 	}()
 
-	// Bearer-gated /metrics so the scraped series carry the worker's job
-	// counters alongside the API's. Disabled when the address is explicitly
-	// empty; the token is the shared FLICK_METRICS_TOKEN.
 	if cfg.WorkerMetricsAddr != "" && !migrateOnly {
 		metricsServer := telemetry.NewMetricsServer(cfg.WorkerMetricsAddr, cfg.MetricsToken)
 		go func() {

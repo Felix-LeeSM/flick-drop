@@ -53,7 +53,6 @@ let opened = $state(false);
 let openLost = $state(false);
 let decryptFailed = $state(false);
 let content = $state<OpenedRequestContent | null>(null);
-// Submitters can choose credential templates; they arrive as FLCR1 text like credential secrets.
 const credential = $derived(content?.kind === 'text' ? parseCredential(content.text) : null);
 let downloadUrl = $state('');
 let qrOpen = $state(false);
@@ -231,8 +230,7 @@ async function cancelPendingRequest(): Promise<void> {
 	if (!signal || signal.aborted) {
 		return;
 	}
-	// Re-entry guard: keep the request and refresh buttons disabled for the
-	// whole revoke, like the old confirm-blocking flow did via refresh's busy.
+	// Re-entry guard: keep buttons disabled for the whole revoke.
 	busy = true;
 	try {
 		await api.revoke(requestId, token, signal);
@@ -391,7 +389,7 @@ onMount(() => {
 		{#if expired}<p role="status">{t().request.receive.expiredBody}</p>
 		{:else if unavailable}<p role="status">{t().request.receive.unavailableBody}</p>
 			{:else if snapshot}
-				<!-- The waiting line repeats the heading: hidden, but still announced when polling changes it. -->
+				<!-- Visually hidden while waiting, but announced when polling changes it. -->
 
 				<p
 					role="status"

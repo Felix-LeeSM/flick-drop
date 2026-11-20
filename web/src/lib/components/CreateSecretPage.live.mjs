@@ -1,4 +1,3 @@
-// Runs against an isolated live API + MinIO, not mocked upload responses.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
@@ -26,13 +25,11 @@ async function prepare(page, bytes) {
 		mimeType: 'application/octet-stream',
 		buffer: bytes
 	});
-	// The passphrase field appears only after the option is checked (it ships OFF).
 	await page.getByRole('switch', { name: 'Protect with a passphrase' }).click();
 	await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
 }
 
-// The Delivery tab is also named "Create link"; the form's submit button is the
-// one that starts the upload.
+// The Delivery tab is also named "Create link"; target the submit button.
 function createLinkButton(page) {
 	return page.locator('button[type="submit"]', { hasText: 'Create link' });
 }
@@ -72,8 +69,7 @@ for (const [name, size] of [
 				await page.getByRole('status').filter({ hasText: 'Finalizing link' }).waitFor();
 				assert.equal(await page.getByLabel('Share URL').count(), 0);
 				const events = await page.evaluate(() => window.uploadEvents);
-				// The upload is the age file: the plaintext plus a header and a
-				// 16-byte tag per 64 KiB chunk (contracts/age-format-v1.md).
+				// age file: header + 16-byte tag per 64 KiB chunk (contracts/age-format-v1.md).
 				const ageBytes = size + 16 * Math.ceil(size / 65_536);
 				assert.ok(
 					events.some(
@@ -85,8 +81,7 @@ for (const [name, size] of [
 					)
 				);
 				release.resolve();
-				// The stage card's done beat must render before the handoff:
-				// setting shareUrl earlier flips hasResult and skips "Link ready".
+				// Done beat must render before handoff; setting shareUrl earlier skips "Link ready".
 				await page.getByText('Link ready').waitFor();
 			}
 			await page.getByRole('heading', { name: 'Link created' }).waitFor();
@@ -113,9 +108,7 @@ test('cancelled upload never finalizes or publishes a share URL', async () => {
 		await session.send('Network.emulateNetworkConditions', {
 			offline: false,
 			latency: 20,
-			// The throttle exists to keep the upload in flight long enough to cancel;
-			// the download side stays fast so the fresh context still hydrates the
-			// dev page (dozens of unbundled Vite modules) within the config timeout.
+			// Throttle upload only so it stays cancellable; fast download lets the unbundled dev page hydrate in time.
 			downloadThroughput: 16 * 1024 * 1024,
 			uploadThroughput: 128 * 1024
 		});

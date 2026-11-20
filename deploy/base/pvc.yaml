@@ -1,5 +1,4 @@
-# flick-api and flick-worker own no volume: both databases live in the
-# postgres pod, so either Deployment can run more than one replica.
+# flick-api and flick-worker own no volume so they can run more than one replica.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

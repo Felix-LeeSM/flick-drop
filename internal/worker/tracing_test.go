@@ -12,12 +12,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// Process must continue the producer's trace: when the job payload carries a
-// trace context, the worker.Process span belongs to that trace and is a child of
-// the enqueuing span. Installs a recording provider + W3C propagator globally
-// (the package tracer delegates to it); restored after.
 func TestProcessContinuesProducerTrace(t *testing.T) {
-	// Mutates global otel state (provider + propagator); do not t.Parallel.
+	// Mutates global otel state; do not t.Parallel.
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	prevTP := otel.GetTracerProvider()

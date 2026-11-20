@@ -1,7 +1,6 @@
 package config
 
-// Default config values; the single source of truth referenced by Load and the
-// default-assertion tests.
+// Source of truth for scripts/ci/ttl-drift.sh.
 const (
 	defaultPayloadInlineMaxBytes int64 = 1048576   // 1 MiB
 	defaultMaxFileBytes          int64 = 268435456 // 256 MiB

@@ -131,8 +131,7 @@ func TestManagementMigrationPreservesExistingSecrets(t *testing.T) {
 	}
 }
 
-// 두 API 레플리카가 동시에 부팅하면 MigrateAPI가 동시에 돈다. advisory lock이
-// 직렬화하지 않으면 동시 DDL이 pg_type 카탈로그에서 충돌해 한쪽 부팅이 실패한다.
+// Without the advisory lock, concurrent replica DDL collides on pg_type.
 func TestMigrateAPIConcurrentBootsSerialize(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestAPIDatabase(t)
@@ -161,7 +160,6 @@ func TestMigrateAPIConcurrentBootsSerialize(t *testing.T) {
 func TestMigrateAPIPreservesRequestReconciliationProgress(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestAPIDatabase(t)
-	// The reconciler seeds a backend's cursor on its first pass.
 	if _, err := conn.ExecContext(ctx, `insert into request_reconciliation_cursor_v2 (backend) values ('r2')`); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +195,6 @@ func TestMigrateAPIPreservesReconciliationProgress(t *testing.T) {
 	if err := MigrateAPI(ctx, conn); err != nil {
 		t.Fatal(err)
 	}
-	// The reconciler seeds a backend's cursor on its first pass.
 	if _, err := conn.ExecContext(ctx, `insert into object_reconciliation_cursor_v2 (backend) values ('oci')`); err != nil {
 		t.Fatal(err)
 	}

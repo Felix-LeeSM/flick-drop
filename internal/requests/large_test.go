@@ -97,8 +97,6 @@ func (o *requestObjects) List(_ context.Context, prefix, cursor string, limit in
 	return page, nil
 }
 
-// testBackend and otherTestBackend name the object backends test registries
-// configure; any name matching storage.ValidBackendName works.
 const (
 	testBackend      = "oci"
 	otherTestBackend = "r2"
@@ -148,8 +146,6 @@ func reserve(t *testing.T, f fixture, o *requestObjects, c Created, in UploadInp
 }
 func attemptInput(in UploadInput) AttemptInput { return AttemptInput{in.Generation, in.AttemptToken} }
 
-// reopenLarge returns a fresh pool over the shared test schema, the Postgres
-// analogue of reopening the same database file after an API restart.
 func reopenLarge(t *testing.T, f fixture) *Store {
 	t.Helper()
 	conn, err := db.OpenPostgres(context.Background(), f.url)
@@ -233,8 +229,6 @@ func TestLargeReservationFinalizeAndOneTimeOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal("historical receipt lost", err)
 	}
-	// While the body streams, the consumed row keeps its final key and no
-	// delete is queued for it.
 	var key sql.NullString
 	var consumedAt sql.NullTime
 	if err := f.db.QueryRow(`select final_key, consumed_at from requests where id=$1`, c.ID).Scan(&key, &consumedAt); err != nil || key.String != final || !consumedAt.Valid {
@@ -317,7 +311,6 @@ func TestLargeValidationAndStorageFailureDoesNotAccept(t *testing.T) {
 			c := f.create(t)
 			in, data := largeInput()
 			if kind == "magic" {
-				// The checksum matches; only the age header is wrong.
 				in, data = largeInputOf(bytes.Repeat([]byte{9}, 40))
 			}
 			upload, final, _ := reserve(t, f, o, c, in, data)
@@ -512,9 +505,7 @@ func TestLargeBoundariesConflictAndDisabledRetrieval(t *testing.T) {
 			in, _ := largeInput()
 			in.SizeBytes = size
 			_, err := f.store.Reserve(ctx, c.ID, c.SubmissionToken, in)
-			// Sizes at or below the inline limit may take the large path too:
-			// the browser routes on the smaller age-adjusted limit from
-			// /api/config.
+			// The browser routes on the smaller age-adjusted limit, so small sizes may take the large path.
 			switch size {
 			case int64(len(AgeMagic)) - 1:
 				requireError(t, err, ErrInvalid)
@@ -624,8 +615,6 @@ func TestLargeConcurrentReservationVersusInlineOrLarge(t *testing.T) {
 	}
 }
 
-// A losing finalizer that reads a re-PUT upload must not write those bytes
-// over the accepted final object: verification runs before the write.
 func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
 	ctx := context.Background()
 	f, o := largeFixture(t)
@@ -652,7 +641,6 @@ func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
 	if _, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in)); err != nil {
 		t.Fatal(err)
 	}
-	// The presigned PUT is still valid; the submitter replaces the upload.
 	o.write(upload, ageBody(len(data), 3))
 	close(release)
 	requireError(t, <-loser, ErrInvalid)
@@ -661,8 +649,6 @@ func TestLargeLosingFinalizerCannotOverwriteAcceptedBytes(t *testing.T) {
 	}
 }
 
-// Finalize copies beyond maxCopies wait for a slot before they open the bucket
-// read, and give up with their context; a freed slot lets the copy run.
 func TestLargeFinalizeWaitsForACopySlotBeforeOpening(t *testing.T) {
 	f, o := largeFixture(t)
 	c := f.create(t)
@@ -692,8 +678,6 @@ func TestLargeFinalizeWaitsForACopySlotBeforeOpening(t *testing.T) {
 	}
 }
 
-// Concurrent finalizes for the same request attempt must perform exactly one
-// copy (one Open, one PutStream) and yield the same receipt to both callers.
 func TestLargeConcurrentFinalizeDeduplicatesCopy(t *testing.T) {
 	ctx := context.Background()
 	f, o := largeFixture(t)
@@ -733,20 +717,15 @@ func TestLargeConcurrentFinalizeDeduplicatesCopy(t *testing.T) {
 		res1 <- result{r, err}
 	}()
 
-	// Wait until the first call enters PutStream (meaning it has acquired the lock,
-	// registered in finalizing map, and started the copy).
 	<-putStarted
 
-	// Now launch the second finalize for the same attempt.
 	go func() {
 		r, err := f.store.Finalize(ctx, c.ID, c.SubmissionToken, attemptInput(in))
 		res2 <- result{r, err}
 	}()
 
-	// Give the second goroutine time to enter Finalize and block on call.done.
 	time.Sleep(20 * time.Millisecond)
 
-	// Release the leader's PUT.
 	close(releasePut)
 
 	r1 := <-res1
@@ -776,7 +755,6 @@ func TestLargeConcurrentFinalizeDeduplicatesCopy(t *testing.T) {
 	}
 }
 
-// Concurrent finalizes for different requests copy in parallel up to maxCopies.
 func TestLargeConcurrentFinalizeDifferentRequestsCopyInParallel(t *testing.T) {
 	ctx := context.Background()
 	f, o := largeFixture(t)
@@ -829,8 +807,6 @@ func TestLargeConcurrentFinalizeDifferentRequestsCopyInParallel(t *testing.T) {
 	}
 }
 
-// dualFixture configures testBackend and otherTestBackend, each an independent
-// mock with its own byte ceiling, so a test can tell where a reserve landed.
 func dualFixture(t *testing.T, testCeiling, otherCeiling int64) (fixture, *requestObjects, *requestObjects) {
 	t.Helper()
 	f := newFixture(t)
@@ -863,8 +839,7 @@ func reservedBackend(t *testing.T, f fixture, id string) string {
 	return backend
 }
 
-// Placement is random among backends with room, so each case leaves exactly
-// one candidate to keep the outcome deterministic. largeInput is 49 bytes.
+// Placement is random, so each case leaves exactly one candidate. largeInput is 49 bytes.
 func TestReserveRoutesToTheOnlyBackendThatFits(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string

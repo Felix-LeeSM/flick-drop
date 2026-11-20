@@ -168,7 +168,6 @@ func TestCleanupHandlerCallsClientForSecretCleanupKinds(t *testing.T) {
 		t.Fatalf("new cleanup handler: %v", err)
 	}
 
-	// Empty reason falls back to the delete kind's default (consumed).
 	if err := handler.HandleJob(context.Background(), cleanupEvent(events.KindDeleteSecret, "")); err != nil {
 		t.Fatalf("handle default-reason cleanup: %v", err)
 	}
@@ -395,8 +394,6 @@ func TestCleanupHandlerFailsUnknownBackendPermanently(t *testing.T) {
 	}
 }
 
-// testBackend and otherTestBackend name the object backends test handlers
-// configure; any name matching storage.ValidBackendName works.
 const (
 	testBackend      = "oci"
 	otherTestBackend = "r2"
@@ -404,7 +401,6 @@ const (
 
 // 전송 실패 오류 문구에 시크릿 ID가 담긴 요청 URL이 들어가지 않는다(worker 로그·job 테이블로 감).
 func TestCleanupClientTransportErrorOmitsSecretID(t *testing.T) {
-	// Given: 연결이 항상 실패하는 전송
 	client, err := NewCleanupClient(CleanupClientOptions{
 		BaseURL:       "http://api.example",
 		InternalToken: "internal-test",
@@ -416,10 +412,8 @@ func TestCleanupClientTransportErrorOmitsSecretID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// When: cleanup을 호출한다
 	_, err = client.CleanupSecret(context.Background(), CleanupRequest{SecretID: "secret-id-123", JobID: "job-1", Reason: "expired"})
 
-	// Then: 오류는 나지만 문구에 시크릿 ID가 없다
 	if err == nil {
 		t.Fatal("transport failure must surface as an error")
 	}

@@ -12,9 +12,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/storage"
 )
 
-// OpenStreamTimeout bounds one opened request body's stream, and
-// openObjectGrace outlasts it: reconciliation and the expiry purge leave a
-// just-opened object alone that long. Same values as internal/secrets/age.go.
+// openObjectGrace must outlast OpenStreamTimeout. Same values as internal/secrets/age.go.
 const (
 	OpenStreamTimeout = 30 * time.Minute
 	openObjectGrace   = OpenStreamTimeout + 5*time.Minute
@@ -48,8 +46,7 @@ func enqueueRequestKeysTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer
 	return nil
 }
 
-// The transition fences the former generation permanently before its cleanup
-// can commit. Generation exhaustion does not wrap or allow another submission.
+// Fences the former generation permanently before its cleanup can commit; exhaustion never wraps.
 func endReservationTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, id string, generation int, now time.Time) error {
 	if err := enqueueRequestKeysTx(ctx, tx, outbox, id, events.ReasonOrphan, now); err != nil {
 		return err
@@ -65,11 +62,7 @@ func endReservationTx(ctx context.Context, tx *sql.Tx, outbox OutboxEnqueuer, id
 	return requireTransition(changed)
 }
 
-// PurgeExpiredTx shares the existing API reaper transaction. Both request expiry
-// and reservation expiry have independent bounded batches; each batch claims its
-// rows with FOR UPDATE SKIP LOCKED, so concurrent API replicas reap disjoint
-// rows instead of blocking on each other's in-flight batch, and outbox failure
-// rolls back metadata deletion and generation invalidation together.
+// FOR UPDATE SKIP LOCKED lets API replicas reap disjoint rows; outbox failure rolls back the deletion.
 func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int, outboxes ...OutboxEnqueuer) error {
 	var outbox OutboxEnqueuer
 	if len(outboxes) != 0 {
@@ -105,8 +98,7 @@ func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int, o
 			return err
 		}
 	}
-	// A request whose object may still be streaming keeps its row, and so its
-	// final_key protection, until the open grace passes.
+	// A possibly streaming object keeps its row, and its final_key protection, until the open grace passes.
 	rows, err = tx.QueryContext(ctx, `select id from requests
 		where expires_at <= $1 and not (state = 'consumed' and final_key is not null and consumed_at > $2)
 		order by expires_at, id limit $3
@@ -139,9 +131,7 @@ func PurgeExpiredTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int, o
 	return nil
 }
 
-// ReconcileOnce owns only managed/requests/, scanned per configured backend.
-// Cursor and per-key pending claims survive restarts and are independent of
-// managed/secrets/ listing progress — and of each other, per backend.
+// Owns only managed/requests/; cursors are per backend and independent of managed/secrets/.
 func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 	if s.opts.Objects == nil {
 		return 0, nil
@@ -168,7 +158,6 @@ func (s *Store) ReconcileOnce(ctx context.Context, limit int) (int, error) {
 func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStore, backend string, limit int) (int, error) {
 	var cursor string
 	var generation int64
-	// A backend added to FLICK_STORAGE_BACKENDS gets its cursor on first visit.
 	if _, err := s.db.ExecContext(ctx, `insert into request_reconciliation_cursor_v2 (backend) values ($1) on conflict do nothing`, backend); err != nil {
 		return 0, err
 	}
@@ -200,10 +189,7 @@ func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStor
 	}
 	tx := &writeTx{Tx: transaction, conn: conn}
 	defer tx.close()
-	// The generation-fenced cursor update is this scan's claim: concurrent API
-	// replicas list from the same cursor, but only the replica whose update
-	// matches the generation commits the page; the loser updates zero rows and
-	// abandons its copy without enqueueing anything.
+	// The generation-fenced cursor update is this scan's claim: a losing replica updates zero rows and enqueues nothing.
 	result, err := tx.ExecContext(ctx, `update request_reconciliation_cursor_v2 set continuation_token = $1, generation = generation + 1 where backend = $2 and generation = $3`, page.NextCursor, backend, generation)
 	if err != nil {
 		return 0, err
@@ -222,10 +208,7 @@ func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStor
 			continue
 		}
 		var protected bool
-		// A deadline-expired generation can never accept again, even if its reaper
-		// transition is delayed. Any DB error must fail closed, never mean absent.
-		// A just-opened object is protected for the stream grace whatever the
-		// request deadline, since its body may still be streaming.
+		// Any DB error must fail closed, never mean absent. A just-opened object is protected for the stream grace.
 		err := tx.QueryRowContext(ctx, `select exists (select 1 from requests
 			where (state = 'consumed' and final_key = $1 and consumed_at > $2)
 				or (expires_at > $3 and ((state = 'submitted' and final_key = $1)
@@ -260,7 +243,6 @@ func (s *Store) reconcileBackend(ctx context.Context, objects storage.ObjectStor
 		}
 		count++
 	}
-	// No request deadline applies to the scan transaction itself.
 	if err := s.commit(tx, time.Time{}); err != nil {
 		return 0, err
 	}

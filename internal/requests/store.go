@@ -29,40 +29,32 @@ type finalizeCall struct {
 }
 
 type Store struct {
-	db   *sql.DB
-	opts Options
-	now  func() time.Time
-	// copies holds one slot per running finalize copy; see maxCopies.
+	db     *sql.DB
+	opts   Options
+	now    func() time.Time
 	copies chan struct{}
-	// finalizeMu guards finalizing, which coalesces concurrent finalizes
-	// for the same request attempt into a single copy.
+	// Coalesces concurrent finalizes of the same attempt into a single copy.
 	finalizeMu sync.Mutex
 	finalizing map[string]*finalizeCall
 }
 
-// maxCopies bounds concurrent finalize copies. Each spools one object (about
-// 256 MiB at the default cap) to /tmp, and deploy/base/api.yaml sizes the /tmp
-// emptyDir for this many.
+// Each copy spools ~256 MiB to /tmp; deploy/base/api.yaml sizes the emptyDir for this many.
 const maxCopies = 2
 
 type OutboxEnqueuer interface {
 	EnqueueTx(context.Context, *sql.Tx, events.JobEvent) (events.OutboxRecord, error)
 }
 
-// Options bounds request bodies in age file bytes, the unit size_bytes uses.
+// Sizes are age file bytes, the unit size_bytes uses.
 type Options struct {
-	// Objects resolves each row to the backend it was placed on. Nil means
-	// object storage is disabled for this deployment.
-	Objects *storage.Registry
-	Outbox  OutboxEnqueuer
-	// PayloadInlineMaxBytes caps an inline age file (FLICK_PAYLOAD_INLINE_MAX_BYTES).
+	// Nil means object storage is disabled.
+	Objects               *storage.Registry
+	Outbox                OutboxEnqueuer
 	PayloadInlineMaxBytes int64
-	// MaxObjectBytes caps an uploaded age file: the largest one a
-	// FLICK_MAX_FILE_BYTES input produces (secrets.MaxCiphertextBytes).
-	MaxObjectBytes    int64
-	MinTTLSeconds     int
-	DefaultTTLSeconds int
-	MaxTTLSeconds     int
+	MaxObjectBytes        int64
+	MinTTLSeconds         int
+	DefaultTTLSeconds     int
+	MaxTTLSeconds         int
 }
 
 func NewStore(db *sql.DB, opts Options) (*Store, error) {
@@ -124,9 +116,7 @@ type Payload struct {
 	Ciphertext string          `json:"ciphertext"`
 }
 
-// Opened is a consumed request's age body and metadata. Body yields exactly
-// SizeBytes; the caller must close it, then call FinishOpen with ObjectKey when
-// it is set so the object is deleted after the stream.
+// The caller must close Body, then call FinishOpen when ObjectKey is set.
 type Opened struct {
 	Kind      string
 	SizeBytes int64
@@ -194,8 +184,6 @@ type record struct {
 	reservationExpires                           time.Time
 }
 
-// Both DB and transactions expose QueryRowContext; the helper keeps read and
-// write authorization/deadline checks identical without reading any payload.
 type rowReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -272,12 +260,7 @@ func (s *Store) Owner(ctx context.Context, id, token string) (OwnerStatus, error
 	return OwnerStatus{r.publicKey, r.fingerprint, r.expires, r.state}, nil
 }
 
-// writeTx pins the transaction's pool connection: begin takes the request row
-// lock through a no-op UPDATE on this connection, every later statement of the
-// transaction reuses it, and close releases both handles together on every
-// early-return path. Postgres rolls a failed COMMIT back server-side and
-// database/sql recycles the connection itself, so commit carries no manual
-// rollback.
+// Postgres rolls a failed COMMIT back server-side, so commit carries no manual rollback.
 type writeTx struct {
 	*sql.Tx
 	conn *sql.Conn
@@ -303,12 +286,8 @@ func (s *Store) begin(ctx context.Context, id, token string, owner bool) (*write
 		return nil, record{}, err
 	}
 	tx := &writeTx{Tx: transaction, conn: conn}
-	// Lock the request row before reading: the no-op UPDATE conflicts with any
-	// concurrent writer on the same row (submit, open, revoke, reservation
-	// expiry), and under READ COMMITTED a blocked writer re-reads the committed
-	// row after the lock wait instead of building on a stale snapshot. Check
-	// the clock after the lock, so a blocked writer cannot reuse a pre-expiry
-	// decision.
+	// The no-op UPDATE locks the row so a blocked writer re-reads it under READ COMMITTED.
+	// Check the clock after the lock so a blocked writer cannot reuse a pre-expiry decision.
 	column := "submission_token_hash"
 	if owner {
 		column = "retrieval_token_hash"
@@ -363,7 +342,6 @@ func (s *Store) validateSubmission(in SubmitInput) ([]byte, []byte, []byte, erro
 	if int64(len(in.Ciphertext)) > (s.opts.PayloadInlineMaxBytes+2)/3*4 {
 		return nil, nil, nil, ErrTooLarge
 	}
-	// size_bytes is the exact age file length.
 	ciphertext, err := canonicalBase64(in.Ciphertext, int(in.SizeBytes), int(in.SizeBytes))
 	if err != nil || !isAgeFile(ciphertext) {
 		return nil, nil, nil, ErrInvalid
@@ -376,8 +354,7 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	if err != nil {
 		return Receipt{}, err
 	}
-	// Hash canonical immutable fields, excluding token and JSON formatting. The
-	// generation is independently fenced. The digest survives payload deletion.
+	// Excludes token and JSON formatting. The digest survives payload deletion.
 	immutable, _ := json.Marshal(Payload{in.Kind, in.SizeBytes, envelope, in.Ciphertext})
 	bodyHash := sha256.Sum256(immutable)
 	tx, row, err := s.begin(ctx, id, token, false)
@@ -414,9 +391,7 @@ func (s *Store) Submit(ctx context.Context, id, token string, in SubmitInput) (R
 	if _, err := tx.ExecContext(ctx, `insert into request_payloads (request_id, ciphertext) values ($1, $2)`, id, ciphertext); err != nil {
 		return Receipt{}, err
 	}
-	// Only the waiting -> submitted transition counts: the replay branch above
-	// re-accepts an identical submission without a new state change, so a
-	// retried submit cannot double-count.
+	// Only waiting -> submitted counts; the replay branch must not double-count.
 	if err := usage.Increment(ctx, tx.Tx, s.now().UTC(), usage.RequestSubmitted, 1); err != nil {
 		return Receipt{}, err
 	}
@@ -462,9 +437,7 @@ func (s *Store) Attempt(ctx context.Context, id, token string, generation int, a
 	return Receipt{generation, state}, nil
 }
 
-// Open consumes a submitted request. An S3 body is opened before the
-// consuming transaction, so a storage failure leaves the request openable; the
-// object stays protected by consumed_at until FinishOpen or the stream grace.
+// The S3 body opens before the consuming tx, so a storage failure leaves the request openable.
 func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 	tx, row, err := s.begin(ctx, id, token, true)
 	if err != nil {
@@ -502,9 +475,7 @@ func (s *Store) Open(ctx context.Context, id, token string) (Opened, error) {
 		return opened, nil
 	}
 
-	// Object I/O must not hold the consuming transaction's row lock. Cancellation
-	// or another open can commit meanwhile; only the later conditional
-	// transaction consumes.
+	// Object I/O must not hold the consuming tx's row lock; only the later conditional tx consumes.
 	tx.close()
 	if s.opts.Objects == nil {
 		return Opened{}, ErrStorage
@@ -542,8 +513,7 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 	if row.state != "submitted" {
 		return ErrConflict
 	}
-	// final_key stays set: it protects the object while the body streams, and
-	// FinishOpen or the stream grace releases it.
+	// final_key stays set to protect the object while the body streams.
 	changed, err := tx.ExecContext(ctx, `update requests set state = 'consumed', consumed_at = $1, encrypted_note = null, kind = null, size_bytes = null, envelope_json = null, ciphertext_sha256 = null where id = $2 and state = 'submitted' and final_key = $3`, s.now().UTC(), id, key.String)
 	if err != nil {
 		return err
@@ -561,9 +531,7 @@ func (s *Store) consumeObject(ctx context.Context, id, token string, key sql.Nul
 	return nil
 }
 
-// FinishOpen queues the opened object's delete once its stream has ended, and
-// drops the key from the request. It is safe to repeat. The backend comes from
-// the row itself: the consuming transition never clears storage_backend.
+// Safe to repeat. The consuming transition never clears storage_backend.
 func (s *Store) FinishOpen(ctx context.Context, id, key string) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {

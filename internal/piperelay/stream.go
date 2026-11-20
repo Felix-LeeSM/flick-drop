@@ -13,36 +13,25 @@ import (
 	"time"
 )
 
-// The pod-to-pod stream hop. The receiver's /receive waits on the replica
-// that holds its connection; the sender's /send, on whichever replica it
-// landed, POSTs the ciphertext to that replica's stream listener
-// (FLICK_INTERNAL_HTTP_PORT) at the IP the receiver's replica advertised in
-// Valkey. The bytes go request body -> io.Pipe -> receiver response and never
-// touch Valkey.
+// Pod-to-pod stream hop: ciphertext goes request body -> io.Pipe -> receiver response, never through Valkey.
 const (
-	// StreamPathPrefix is the stream listener route, followed by the room ID
-	// (an HMAC, never the 6-digit code).
-	StreamPathPrefix = "/internal/pipe/stream/"
-	// InternalTokenHeader carries FLICK_INTERNAL_TOKEN on the stream hop.
+	// Followed by the room ID (an HMAC, never the 6-digit code).
+	StreamPathPrefix    = "/internal/pipe/stream/"
 	InternalTokenHeader = "X-Flick-Internal-Token"
-	// StreamSecretHeader carries the one-use secret the sender's replica drew
-	// for this stream; Valkey holds only its SHA-256.
+	// One-use secret; Valkey holds only its SHA-256.
 	StreamSecretHeader = "X-Flick-Pipe-Stream-Secret"
 	kindHeader         = "Flick-Kind"
 	filenameHeader     = "Flick-Encrypted-Filename"
-	// streamHopDeadline bounds the stream request on both replicas, like the
-	// public /send and /receive (internal/httpapi/piperelay.go).
+	// Matches the public /send and /receive deadline (internal/httpapi/piperelay.go).
 	streamHopDeadline = 15 * time.Minute
 	streamDialTimeout = 5 * time.Second
 )
 
-// streamSlot is the chosen receiver's /receive waiting on this replica.
 type streamSlot struct {
-	// handoff is unbuffered: the stream handler hands a pipe over only while
-	// Receive is still waiting to take it.
+	// Unbuffered: a pipe is handed over only while Receive is still waiting.
 	handoff chan streamHandoff
 	claimed atomic.Bool
-	// done closes when Receive stops waiting or its caller finished reading.
+	// Closes when Receive stops waiting or its caller finished reading.
 	done     chan struct{}
 	doneOnce sync.Once
 }
@@ -82,13 +71,8 @@ func (c *Coordinator) slot(id roomID) *streamSlot {
 	return c.slots[id]
 }
 
-// Receive attaches the chosen connection and returns the pipe the sender's
-// stream arrives on. Only the connection the sender selected may call it: a
-// still-waiting one gets ErrAwaitingDecision (it keeps polling Status), and a
-// declined or not-chosen one gets its own answer. A rejected receiver never
-// counts against the session. The chosen receiver leaving before the stream
-// arrives ends the session: nobody else can take over. The caller must call
-// the returned cleanup once it stopped reading.
+// The chosen receiver leaving before the stream arrives ends the session: nobody else can take over.
+// The caller must call the returned cleanup once it stopped reading.
 func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.PipeReader, SessionMetadata, func(), error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -104,8 +88,7 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 	if err := receiveAnswer(&r, connID); err != nil {
 		return nil, SessionMetadata{}, nil, err
 	}
-	// The slot exists before the room advertises this replica, so the
-	// sender's stream can never arrive before Receive is ready to take it.
+	// The slot exists before the room advertises this replica, so the stream never arrives before Receive is ready.
 	slot, opened := c.openSlot(id)
 	if !opened {
 		return nil, SessionMetadata{}, nil, ErrAlreadyConnected
@@ -152,8 +135,7 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 		}
 		current, err := c.view(ctx, id)
 		if errors.Is(err, ErrUnavailable) && time.Now().Before(r.ExpiresAt) {
-			// One failed read retries at the next resync instead of ending
-			// a transfer that is still on track.
+			// One failed read retries at the next resync instead of ending a transfer still on track.
 			continue
 		}
 		if err != nil {
@@ -166,12 +148,9 @@ func (c *Coordinator) Receive(ctx context.Context, rawCode, connID string) (*io.
 	}
 }
 
-// receiveAnswer rejects every Receive except the chosen connection's first.
 func receiveAnswer(r *room, connID string) error {
 	conn := r.conn(connID)
 	if conn != nil && conn.loserResult() != nil {
-		// A connection the sender already settled keeps its own answer, even
-		// after the session ends.
 		return conn.loserResult()
 	}
 	switch {
@@ -187,8 +166,6 @@ func receiveAnswer(r *room, connID string) error {
 	return nil
 }
 
-// Send waits for the chosen receiver, starts the stream, and copies body to
-// the receiver's replica. Only the sender token holder can send, once.
 func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, meta SessionMetadata, body io.Reader) (int64, error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -210,9 +187,7 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 	if err != nil {
 		return 0, err
 	}
-	// The claim makes every later Send answer ErrAlreadyConnected, so any
-	// failure from here on ends the session rather than leaving the receiver
-	// waiting for a sender that cannot come back.
+	// After the claim every later Send answers ErrAlreadyConnected, so any failure must end the session.
 	abandon := func(err error) (int64, error) {
 		c.endRoom(ctx, id, causeClosed)
 		return 0, err
@@ -222,10 +197,8 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 		return abandon(err)
 	}
 
-	// The stream starts only if nothing ended the session first. Cancel and
-	// the lazy end rules write the same room with compare-and-set, so a
-	// session either ends before its stream starts or streams before anything
-	// can end it.
+	// Cancel and the lazy end rules write the same room with compare-and-set, so a session either ends
+	// before its stream starts or streams before anything can end it.
 	secret, err := randomToken(tokenLengthBytes)
 	if err != nil {
 		return abandon(err)
@@ -244,12 +217,8 @@ func (c *Coordinator) Send(ctx context.Context, rawCode, senderToken string, met
 	return c.stream(ctx, id, r, secret, meta, body)
 }
 
-// waitForReceiver blocks Send until the chosen receiver opened Receive. It
-// re-reads the room on every change and at the next deadline, so the lazy end
-// rules (room.go settle) end a session whose chosen receiver never opens
-// Receive presenceTimeout after Select, and one whose window closed, without
-// waiting for the cleaner. A failed read retries at the next resync until
-// expiresAt. Send ends the session on every error this returns.
+// Re-reads on every change and at the next deadline so the lazy end rules apply without the cleaner.
+// Send ends the session on every error this returns.
 func (c *Coordinator) waitForReceiver(ctx context.Context, id roomID, expiresAt time.Time) error {
 	changed, unwatch := c.hub.watch(id)
 	defer unwatch()
@@ -282,9 +251,7 @@ func (c *Coordinator) waitForReceiver(ctx context.Context, id roomID, expiresAt 
 	}
 }
 
-// countingReader counts the bytes the stream request read from the sender
-// and remembers the sender's own read error. The HTTP transport may still be
-// reading after Do returns, so both fields are atomic.
+// Atomic: the HTTP transport may still be reading after Do returns.
 type countingReader struct {
 	src     io.Reader
 	n       atomic.Int64
@@ -307,12 +274,8 @@ func (r *countingReader) err() error {
 	return nil
 }
 
-// stream POSTs body to the receiver's replica. The target is only ever an IP
-// literal from the room and this deployment's fixed internal port, so a
-// tampered room cannot point the request at a host name or another port. It
-// returns io.ErrClosedPipe when the receiver side failed (the HTTP layer
-// answers 502 receiver_disconnected), the sender's read error when the
-// sender's own upload failed, and ErrExpired past MaxTransferDuration.
+// The target is only an IP literal from the room and the fixed internal port, so a tampered room
+// cannot redirect it. io.ErrClosedPipe means the receiver side failed.
 func (c *Coordinator) stream(ctx context.Context, id roomID, r room, secret string, meta SessionMetadata, body io.Reader) (int64, error) {
 	ip, err := netip.ParseAddr(r.ReceiverIP)
 	if err != nil {
@@ -346,8 +309,7 @@ func (c *Coordinator) stream(ctx context.Context, id roomID, r room, secret stri
 	}
 	n := counted.n.Load()
 	if delivered {
-		// The receiver's cleanup already ended the room; this only covers a
-		// receiver replica that could not reach Valkey.
+		// Covers a receiver replica that could not reach Valkey.
 		c.endRoom(ctx, id, causeClosed)
 		return n, nil
 	}
@@ -365,11 +327,7 @@ func (c *Coordinator) stream(ctx context.Context, id roomID, r room, secret stri
 	}
 }
 
-// InternalHandler serves the stream listener (FLICK_INTERNAL_HTTP_PORT). It
-// answers only StreamPathPrefix + room ID and requires both the internal
-// token and the stream's one-use secret. It responds 200 only after the whole
-// body reached the receiver's response, so the sender's replica can tell a
-// completed transfer from a receiver that left.
+// Responds 200 only after the whole body reached the receiver, so the sender can tell completion from a receiver that left.
 func (c *Coordinator) InternalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+StreamPathPrefix+"{room}", c.serveStream)
@@ -411,8 +369,7 @@ func (c *Coordinator) serveStream(w http.ResponseWriter, r *http.Request) {
 
 var errStreamForbidden = errors.New("piperelay: stream secret does not match a streaming room")
 
-// acceptStream hands the incoming stream to the waiting Receive and copies it
-// through. It returns nil only after the receiver's caller finished reading.
+// Returns nil only after the receiver's caller finished reading.
 func (c *Coordinator) acceptStream(ctx context.Context, id roomID, secret string, meta SessionMetadata, body io.Reader) error {
 	slot := c.slot(id)
 	if slot == nil {

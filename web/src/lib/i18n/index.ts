@@ -5,8 +5,7 @@ import { ko } from './messages/ko';
 
 const catalogs: Record<Locale, Messages> = { en, ko, ja };
 
-// The catalog of the current language. Reading it inside markup or $derived
-// re-renders the text when the language changes.
+// Read inside markup or $derived so text re-renders on language change.
 export function t(): Messages {
 	return catalogs[getLocale()];
 }

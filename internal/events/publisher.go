@@ -53,10 +53,7 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 	}
 
 	now := p.now().UTC()
-	// One transaction fences the whole batch: ClaimDueTx takes SKIP LOCKED row
-	// locks, the publish happens while the locks are held, and the marks
-	// commit atomically. A concurrent replica's claim skips these rows, and a
-	// crash rolls everything back to the due pool.
+	// One tx fences the batch: SKIP LOCKED claim, publish under the locks, atomic marks.
 	tx, err := p.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("begin outbox publish batch: %w", err)
@@ -85,9 +82,6 @@ func (p *OutboxPublisher) PublishDue(ctx context.Context, limit int) (PublishRes
 	if err := tx.Commit(); err != nil {
 		return PublishResult{}, fmt.Errorf("commit outbox publish batch: %w", err)
 	}
-	// Count the batch's outcomes for /metrics. The backlog gauge
-	// (flick_outbox_pending) is read from the database at scrape time
-	// (telemetry.RegisterAPIStateCollector).
 	if result.Published > 0 {
 		telemetry.OutboxPublished.WithLabelValues("published").Add(float64(result.Published))
 	}

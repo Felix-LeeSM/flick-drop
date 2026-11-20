@@ -23,7 +23,6 @@ const corsHeaders = {
 	'Access-Control-Expose-Headers': 'Flick-Kind, Flick-Encrypted-Filename'
 };
 
-// Opens the receive dialog from the Live transfer tab's "Enter it here" link.
 async function openReceiveDialog(page) {
 	await page
 		.getByRole('group', { name: 'Delivery method' })
@@ -32,8 +31,7 @@ async function openReceiveDialog(page) {
 	await page.getByRole('button', { name: 'Enter it here' }).click();
 }
 
-// Routes every /api/ call through handle(path, route); /api/config and CORS
-// preflights are answered here.
+// Answers /api/config and CORS preflights; hands every other /api/ call to handle(path, route).
 async function routeApi(page, handle) {
 	await page.route(
 		(url) => url.pathname.startsWith('/api/'),
@@ -54,7 +52,6 @@ function errorJson(code) {
 	return { error: { code, message: code } };
 }
 
-// 보내는 쪽 대기 화면은 받는 사람에게 헤더의 Code를 누르라고 안내한다.
 test('The header Code button opens the Receive dialog from the default link tab', async () => {
 	const page = await browser.newPage();
 	try {
@@ -83,11 +80,9 @@ test('The code tab Enter-it-here button opens the Receive dialog', async () => {
 		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
 		await assert.doesNotReject(dialog.waitFor({ state: 'visible' }));
 
-		// Code input field is present
 		const codeInput = page.locator('#pipe-code-input');
 		await assert.doesNotReject(codeInput.waitFor({ state: 'visible' }));
 
-		// Close dialog
 		await page.getByRole('button', { name: 'Close' }).click();
 		await dialog.waitFor({ state: 'hidden' });
 	} finally {
@@ -165,8 +160,7 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 			[false, false, false, true, false, false]
 		);
 		assert.ok(caps.every((cap) => cap.hidden === 'true' && cap.covered && cap.inside));
-		// Forced colors drop the ring, so the focused cap also carries an outline that stays
-		// transparent until forced colors repaint it.
+		// Forced colors drop the ring; a transparent outline on the focused cap repaints visible.
 		const outline = () =>
 			input.evaluate((field) => {
 				const style = getComputedStyle(field.parentElement.querySelectorAll('span.rounded-lg')[3]);
@@ -179,11 +173,9 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 		assert.notEqual(color, 'rgba(0, 0, 0, 0)');
 		await page.emulateMedia({ forcedColors: 'none' });
 
-		// A code transfer is encrypted to this device's own key, so the receiver
-		// asks for no passphrase.
+		// A code transfer is encrypted to this device's own key, so no passphrase is asked.
 		assert.equal(await dialog.getByLabel('Passphrase', { exact: true }).count(), 0);
 
-		// The sender's screen shows the code as "741-928"; pasting it whole still connects.
 		await input.fill('741-928');
 		await dialog.getByText('STEP 2 OF 2', { exact: true }).waitFor();
 		await dialog.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
@@ -199,9 +191,8 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 	}
 });
 
-// 휴대폰 숫자 키패드가 덮는 화면 아래쪽 높이의 추정값이다. Playwright는 가상 키보드를 흉내 내지 못하므로
-// 코드 입력 단계의 Connect 버튼이 이 높이보다 위에 남는지로 잰다. 글자 150%에서는 대화상자가 길어져
-// 키패드가 Connect를 덮으므로(6자리를 치면 자동으로 연결된다) 화면 안에 들어오는지만 잰다.
+// Playwright는 가상 키보드를 흉내 내지 못해, 숫자 키패드 높이 추정값 위에 Connect가 남는지로 잰다.
+// 글자 150%에서는 키패드가 Connect를 덮으므로(6자리 입력 시 자동 연결) 화면 안에 들어오는지만 잰다.
 const phoneKeypadHeight = 290;
 for (const viewport of [
 	{ width: 320, height: 568 },
@@ -249,7 +240,6 @@ for (const viewport of [
 			await assertDialogFits(page, '150% code entry');
 			await page.locator('#pipe-code-input').fill('741928');
 			await dialog.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
-			// 번호 확인 단계의 4rem 숫자 3개와 줄을 바꾸지 않는 끊기 버튼이 대화상자를 넓혔다.
 			await assertDialogFits(page, '150% number check');
 		} finally {
 			await page.close();
@@ -268,7 +258,6 @@ test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF
 		const tabs = page.getByRole('group', { name: 'Delivery method' });
 		const createSubmit = page.locator('form button[type="submit"]');
 
-		// The link tab's CTA stays disabled until there is something to send.
 		assert.equal(await createSubmit.isDisabled(), true);
 
 		const passphraseSwitch = page.getByRole('switch', {
@@ -284,12 +273,9 @@ test('CreateSecretPage: tab CTAs gate on payload and passphrase switch ships OFF
 		);
 		assert.equal(await startPipe.isDisabled(), true);
 
-		// Typing a message enables the tab's CTA.
 		await page.getByLabel('Message', { exact: true }).fill('Confidential live stream payload');
 		assert.equal(await startPipe.isDisabled(), false);
 
-		// On the link tab, the passphrase switch blocks the CTA until a
-		// passphrase exists.
 		await tabs.getByRole('button', { name: 'Create link' }).click();
 		assert.equal(await createSubmit.isDisabled(), false);
 		await passphraseSwitch.click();
@@ -339,12 +325,10 @@ test('Receiver error state: displays actionable error on 404/expired code', asyn
 		const codeInput = page.locator('#pipe-code-input');
 		await codeInput.fill('999999');
 
-		// Transitions to error view
 		const errorTitle = page.getByRole('heading', { name: 'Transfer Failed' });
 		await assert.doesNotReject(errorTitle.waitFor({ state: 'visible' }));
 		await page.getByText('Invalid or expired 6-digit code.').waitFor();
 
-		// Try again button resets form
 		const tryAgainBtn = page.getByRole('button', { name: 'Try again' });
 		await tryAgainBtn.click();
 		await assert.doesNotReject(codeInput.waitFor({ state: 'visible' }));
@@ -431,12 +415,10 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 			.click();
 		await page.getByRole('button', { name: 'Start live transfer' }).click();
 
-		// The 6-digit code stays on screen above the list.
 		await page.getByLabel('Transfer code 741-928').waitFor();
 		const list = page.getByRole('list', { name: 'Waiting devices' });
 		const count = page.getByText('5 of 10 devices waiting');
 		await count.waitFor();
-		// Devices joining or leaving are announced politely.
 		assert.equal(await count.getAttribute('aria-live'), 'polite');
 		await list.getByRole('listitem').first().waitFor();
 		assert.equal(await list.getByRole('listitem').count(), 3);
@@ -452,7 +434,6 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 		await fewer.click();
 		assert.equal(await list.getByRole('listitem').count(), 3);
 
-		// Every row has a named Deny icon button and Send button, and the time is never cut off.
 		await page.getByRole('button', { name: 'Deny connection 1' }).waitFor();
 		await page.getByRole('button', { name: 'Send to connection 1, number 101' }).waitFor();
 		const timeClipped = await list
@@ -465,12 +446,8 @@ test('Sender waiting list: three rows show, the rest fold behind "Show N more"',
 	}
 });
 
-// An in-memory stand-in for the /api/pipe waiting room shared by every page in
-// the test: it hands out per-connection numbers, keeps each receiver's age
-// recipient for the sender's list, long-polls the sender and the waiting
-// receivers (/status), and forwards the sender's real ciphertext to the chosen
-// receiver only once that receiver opens /receive after "selected". It records
-// any request that carries an age identity, which must never leave a browser.
+// In-memory /api/pipe waiting room shared by every page in the test. Records any request
+// carrying an age identity, which must never leave a browser.
 function createRelayMock() {
 	const leakedIdentities = [];
 	const joinBodies = [];
@@ -683,11 +660,9 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		const sender = await openPage();
 		const message = 'Real-time live relay transfer test';
 		await sender.getByLabel('Message', { exact: true }).fill(message);
-		// A passphrase left on in the link tab must not reach the code transfer:
-		// the receiver below enters none and still decrypts.
+		// A link-tab passphrase must not reach the code transfer: the receiver enters none and decrypts.
 		await sender.getByRole('switch', { name: 'Protect with a passphrase' }).click();
 		const deliveryMethod = sender.getByRole('group', { name: 'Delivery method' });
-		// An empty link-tab passphrase doesn't block the code send either.
 		await deliveryMethod.getByRole('button', { name: 'Live transfer' }).click();
 		assert.equal(
 			await sender.getByRole('button', { name: 'Start live transfer' }).isEnabled(),
@@ -702,7 +677,6 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		await sender.getByRole('button', { name: 'Start live transfer' }).click();
 		await sender.getByLabel('Transfer code 741-928').waitFor();
 
-		// Three devices enter the same code; each shows its own number.
 		const receivers = [];
 		for (let i = 0; i < 3; i++) {
 			const receiver = await openPage();
@@ -717,7 +691,6 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 
 		await sender.getByText('3 of 10 devices waiting').waitFor();
 
-		// Deny one row: only that device ends, the code stays live.
 		await sender.getByRole('button', { name: 'Deny connection 1' }).click();
 		const impostorDialog = impostor.getByRole('dialog');
 		await impostorDialog
@@ -726,7 +699,6 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 		assert.equal(await impostorDialog.getByRole('button', { name: 'Enter a new code' }).count(), 0);
 		await sender.getByText('2 of 10 devices waiting').waitFor();
 
-		// The declined browser remembers the decline: closing and re-entering the code asks nothing.
 		const joinsBefore = relay.joinCalls.get(impostor);
 		await impostorDialog.locator('button:has-text("Close")').click();
 		await impostorDialog.waitFor({ state: 'hidden' });
@@ -737,12 +709,10 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			.waitFor();
 		assert.equal(relay.joinCalls.get(impostor), joinsBefore);
 
-		// Send to the row whose number the intended receiver reads out.
 		await sender
 			.getByRole('button', { name: `Send to connection 2, number ${intendedNumber}` })
 			.click();
 
-		// Receiving hands off from the modal to the full-page Secret view.
 		await intended.getByRole('heading', { name: 'Secret', exact: true }).waitFor();
 		assert.equal(await intended.getByRole('dialog').count(), 0);
 		await intended.getByText('Live transfer · Code 741-928').waitFor();
@@ -756,8 +726,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 			.waitFor();
 		await sender.getByRole('heading', { name: 'Transfer complete', exact: true }).waitFor();
 		await sender.getByText('transfer complete', { exact: true }).waitFor();
-		// Each device sent only its own fresh recipient on /join, and no request
-		// from any page carried an age identity.
+		// No request from any page may carry an age identity.
 		assert.equal(relay.joinBodies.length, 3);
 		for (const body of relay.joinBodies) {
 			assert.deepEqual(Object.keys(body), ['recipient']);
@@ -772,8 +741,7 @@ test('Waiting room: three receivers, sender denies one and sends to the number r
 	}
 });
 
-// A sender-only waiting room for the list tests below: /init opens a
-// confirmation session and the caller answers /wait, /select, and /decline.
+// Sender-only waiting room: the caller answers /wait, /select, and /decline.
 function senderRoomJson(version, count) {
 	return {
 		status: 'waiting',
@@ -1269,8 +1237,6 @@ test('Received live credential copies formatted text at 360px and receiving canc
 			assert.ok(copied.includes('Username: live-user'));
 			assert.ok(copied.includes(unbrokenSecret));
 
-			// Start waiting as a sender, then receive via header Enter Code: cancels the active wait
-			// and keeps file drops disabled while the received view is shown.
 			const secondRelay = createRelayMock();
 			const senderContext = await browser.newContext();
 			try {
@@ -1314,7 +1280,6 @@ test('Received live credential copies formatted text at 360px and receiving canc
 					(await receiver.getByLabel('Received content').textContent())?.trim(),
 					'Peer override secret'
 				);
-				// File drops behind PipeReceivedSecretView must be ignored (neither prevented nor attached).
 				const dropBlocked = await receiver.evaluate(() => {
 					const transfer = new DataTransfer();
 					transfer.items.add(

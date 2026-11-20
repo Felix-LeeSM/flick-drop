@@ -8,25 +8,18 @@ import (
 	"filippo.io/age"
 )
 
-// FragmentKeyPrefix marks the Model B identity inside a share URL fragment
-// (`#key=AGE-SECRET-KEY-PQ-1...`). Mirrors web/src/lib/crypto/fragment.ts.
+// Mirrors web/src/lib/crypto/fragment.ts.
 const FragmentKeyPrefix = "key="
 
-// maxKeyFragmentChars bounds parsing. A hybrid identity is 77 characters;
-// anything much longer is a spoofed fragment, not a key (DoS guard, #89).
+// A hybrid identity is 77 characters; longer is a spoofed fragment (DoS guard).
 const maxKeyFragmentChars = 128
 
-// identityPattern is uppercase bech32 after the prefix, as in the browser.
 var identityPattern = regexp.MustCompile(`^` + IdentityPrefix + `[02-9AC-HJ-NP-Z]+$`)
 
-// EncodeKeyFragment returns the fragment body without the leading '#', so the
-// caller assigns it to URL.Fragment.
 func EncodeKeyFragment(id *age.HybridIdentity) string {
 	return FragmentKeyPrefix + id.String()
 }
 
-// DecodeKeyFragment reads the identity back out of a share URL fragment. It
-// accepts the fragment with or without its leading '#'.
 func DecodeKeyFragment(fragment string) (*age.HybridIdentity, error) {
 	stripped := strings.TrimPrefix(fragment, "#")
 	encoded, found := strings.CutPrefix(stripped, FragmentKeyPrefix)

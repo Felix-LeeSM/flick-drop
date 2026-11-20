@@ -34,8 +34,7 @@ after(async () => {
 });
 async function create(owner, sender) {
 	await owner.goto(`${baseUrl}/request`);
-	// The announcer mounts after hydration; clicking before it lands submits the
-	// form as a plain GET instead of running the request-creation handler.
+	// Wait for hydration: an earlier click submits the form as a plain GET.
 	await owner.locator('#svelte-announcer').waitFor({ state: 'attached' });
 	await owner.getByRole('button', { name: 'Create request', exact: true }).click();
 	const submit = await owner.getByLabel('Submission link', { exact: true }).inputValue();
@@ -155,7 +154,6 @@ if (!disabled) {
 			const competitor = await senderContext.newPage();
 			await competitor.goto(links.submit);
 			await competitor.getByRole('heading', { name: 'Request unavailable', exact: true }).waitFor();
-			// Instructions already fence ordinary UI contenders; direct inline contention uses valid wire metadata.
 			const conflict = await request(senderContext, links, '/submit', {
 				...vectors.file.payload,
 				generation: attempt.generation,

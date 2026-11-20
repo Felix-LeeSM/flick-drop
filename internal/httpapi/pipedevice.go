@@ -2,11 +2,7 @@ package httpapi
 
 import "strings"
 
-// pipeDeviceLabel turns a User-Agent into a coarse label such as "Safari on
-// iPhone" so the live relay sender can tell waiting receivers apart. It is a
-// display hint, not an identity: any client can send any User-Agent. The raw
-// User-Agent is never stored, returned, or logged; only this label is kept in
-// memory for the session.
+// Display hint, not identity. The raw User-Agent is never stored, returned, or logged.
 func pipeDeviceLabel(userAgent string) string {
 	browser := pipeBrowserName(userAgent)
 	platform := pipePlatformName(userAgent)
@@ -22,9 +18,7 @@ func pipeDeviceLabel(userAgent string) string {
 	}
 }
 
-// pipeBrowserName checks the more specific tokens first: Edge, Opera, and
-// Samsung Internet all also claim "Chrome" and "Safari", and Chrome on iOS
-// (CriOS) also claims "Safari".
+// Edge, Opera, Samsung Internet also claim Chrome and Safari; CriOS also claims Safari. Order matters.
 func pipeBrowserName(ua string) string {
 	switch {
 	case strings.Contains(ua, "Edg/"), strings.Contains(ua, "EdgA/"), strings.Contains(ua, "EdgiOS/"):
@@ -44,8 +38,7 @@ func pipeBrowserName(ua string) string {
 	}
 }
 
-// pipePlatformName checks iPhone/iPad before macOS (their User-Agents say
-// "like Mac OS X") and Android before Linux.
+// iPhone/iPad before macOS ("like Mac OS X"), Android before Linux.
 func pipePlatformName(ua string) string {
 	switch {
 	case strings.Contains(ua, "iPhone"):

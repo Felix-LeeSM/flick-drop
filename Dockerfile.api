@@ -29,8 +29,6 @@ RUN apk add --no-cache ca-certificates tzdata \
 WORKDIR /app
 COPY --from=build /out/flick-api /usr/local/bin/flick-api
 
-# State lives in PostgreSQL (FLICK_DATABASE_URL, required at boot); the image
-# carries no data volume.
 ENV FLICK_API_ADDR=:8080
 
 EXPOSE 8080

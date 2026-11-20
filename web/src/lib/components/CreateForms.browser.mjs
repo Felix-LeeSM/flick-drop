@@ -1,9 +1,7 @@
 // biome-ignore-all lint/style/useNamingConvention: API fixtures use canonical wire-format names.
 // biome-ignore-all lint/suspicious/noMisplacedAssertion: Node test helpers run only within awaited tests.
-// Run against a local Vite server with the default 5-minute / 7-day TTL bounds.
-// FLICK_BROWSER_DEFAULT_TTL_SECONDS must match an overridden build-time default.
-// Every API call is intercepted; no deliveries are stored. Optional blank-form
-// screenshots: FLICK_BROWSER_SCREENSHOT_DIR=/tmp/flick-create-forms.
+// Needs a local Vite server; FLICK_BROWSER_DEFAULT_TTL_SECONDS must match an overridden default.
+// Optional screenshots: FLICK_BROWSER_SCREENSHOT_DIR=/tmp/flick-create-forms.
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,8 +58,7 @@ async function fixture(page, hold = false) {
 			assert.equal(request.method(), 'POST');
 			const body = request.postDataJSON();
 			if (path === '/api/secrets') {
-				// age carries its own nonces and the passphrase file its own scrypt salt;
-				// the create contract has no top-level nonce or kdf.
+				// age carries its own nonces and scrypt salt; the contract has no top-level nonce or kdf.
 				assert.equal(body.nonce, undefined);
 				assert.equal(body.kdf, undefined);
 				assert.match(
@@ -69,13 +66,11 @@ async function fixture(page, hold = false) {
 					/^age-encryption\.org\/v1\n/
 				);
 			}
-			// Retain only the lifetime: keys and ciphertext are irrelevant to this regression.
 			ttls.push(body.ttl_seconds);
 			entered();
 			if (hold) {
 				await pending;
 			}
-			// A deterministic rejection keeps the form visible without creating private links.
 			return route.fulfill({
 				status: 400,
 				json: { error: { code: 'invalid_request', message: 'Synthetic rejection' } }
@@ -203,8 +198,6 @@ for (const form of forms) {
 			await submitButton(page).click();
 			await mock.started;
 			if (form.name === 'sender') {
-				// P2 stage card: the create folds the form away while the POST
-				// runs; a duplicate submit still cannot fire a second request.
 				assert.equal(
 					await page.getByRole('region', { name: 'Creating your link' }).isVisible(),
 					true
@@ -262,19 +255,16 @@ function stable(actual, expected) {
 	});
 }
 
-// The underline tablist holding the type tabs (prototype round 30, T8).
 const typeTablist = (page) => page.getByRole('tablist', { name: 'Secret type', exact: true });
 const typeTabs = (page) => typeTablist(page).getByRole('tab');
 const typeTab = (page, name) => typeTablist(page).getByRole('tab', { name, exact: true });
-// Same shape as boxes(), but keyed on the tab role: the tabs are role="tab", which
-// getByRole('button') does not match.
+// Tabs are role="tab", which getByRole('button') does not match.
 const tabBoxes = (page) =>
 	typeTabs(page).evaluateAll((tabs) => {
 		const scrollLeft = tabs[0]?.closest('[role="tablist"]').scrollLeft ?? 0;
 		return tabs.map((tab) => {
 			const { x, y, width, height } = tab.getBoundingClientRect();
-			// x adds the row's own scroll position back: focusing an off-screen tab
-			// legitimately scrolls the row into view, and that must not read as a move.
+			// Add scrollLeft back: focusing an off-screen tab scrolls the row, which is not a move.
 			return {
 				name: tab.textContent.trim(),
 				x: x + scrollX + scrollLeft,
@@ -285,9 +275,6 @@ const tabBoxes = (page) =>
 		});
 	});
 
-// One row at every width: exactly one active tab in the fixed order, the underline
-// sits under the active tab, and the row never widens the page — the tablist
-// scrolls horizontally where six labels do not fit.
 async function typeRow(page, selected) {
 	// A selection animates the underline; measure once the transition settles.
 	await page.waitForFunction(
@@ -328,9 +315,6 @@ async function typeRow(page, selected) {
 	assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 }
 
-// #335: the selected type tab must point at the visible editor panel via
-// aria-controls, and the role="tabpanel" must name its tab back via
-// aria-labelledby — checked together so no mode can ship half the contract.
 async function assertTypePanelWiring(page, name) {
 	const tab = typeTab(page, name);
 	const tabId = await tab.getAttribute('id');
@@ -375,7 +359,6 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 				// Custom is the tightest fit on the narrowest phone; picking it scrolls the row.
 				await typeTab(page, 'Custom').click();
 				await typeRow(page, 'Custom');
-				// Reduced motion swaps the sliding underline for an immediate move.
 				const transitions = await typeTabs(page).evaluateAll((tabs) =>
 					tabs.map((tab) => getComputedStyle(tab).transitionProperty)
 				);
@@ -454,8 +437,7 @@ test('a file dropped outside the zone switches to the File tab and attaches', as
 		assert.equal(await typeTab(page, 'File').getAttribute('aria-selected'), 'true');
 		await editorVisible(page, 'File');
 		await page.getByText('dropped.txt', { exact: true }).waitFor();
-		// Already on the File tab: a second page-wide drop accumulates instead
-		// of replacing the first attachment.
+		// Already on the File tab: a second drop accumulates.
 		await dropOnPage('second.txt');
 		await page.getByText('second.txt', { exact: true }).waitFor();
 		assert.equal(await page.getByText('dropped.txt', { exact: true }).count(), 1);
@@ -467,7 +449,6 @@ test('a file dropped outside the zone switches to the File tab and attaches', as
 for (const width of [320, 360]) {
 	test(`${width}px picked file names truncate inside the page at 100% and 150% text`, async () => {
 		const page = await browser.newPage({ viewport: { width, height: 740 } });
-		// 파일 목록 줄은 42자 이름만으로도 360px 페이지를 넓혔고, 200자 이름은 지우기 버튼을 화면 밖으로 밀었다.
 		const names = ['2026-Q3-financial-statements-final-v2.xlsx', `${'F'.repeat(200)}.bin`];
 		try {
 			await fixture(page);
@@ -488,9 +469,7 @@ for (const width of [320, 360]) {
 						.getByRole('button', { name: `Remove ${name}`, exact: true })
 						.boundingBox();
 					assert.ok(remove.x + remove.width <= width, `${scale} ${name.length}-character name`);
-					// 지우기 버튼은 손가락으로 누를 수 있는 44×44px 이상이다.
 					assert.ok(remove.width >= 44 && remove.height >= 44, `${scale} remove button 44px`);
-					// 잘린 이름 전체는 title로 남는다.
 					assert.equal(await page.getByText(name, { exact: true }).getAttribute('title'), name);
 				}
 				assert.equal(
@@ -505,7 +484,6 @@ for (const width of [320, 360]) {
 	});
 }
 
-// 폴더 하나를 임시 디렉터리에 만든다: 최상위 파일 하나와 하위 폴더 안의 파일 하나.
 async function tempFolder(name) {
 	const root = await mkdtemp(join(tmpdir(), 'flick-folder-'));
 	const folder = join(root, name);
@@ -693,8 +671,6 @@ for (const width of [375, 1280]) {
 						};
 					})
 				);
-				// The wordmark shrank twice in page-level edits; the shared header pins it.
-				// The toggle keeps its 36px tap target at every width.
 				const frame = frames.at(-1);
 				assert.deepEqual([frame.badge.width, frame.badge.height, frame.wordmark], [32, 32, '27px']);
 				assert.equal(frame.toggle.height, 36);
@@ -712,8 +688,7 @@ for (const width of [375, 1280]) {
 				}
 				await valueInput(page).focus();
 				stable(await boxes(lifetime), initial);
-				// iOS Safari zooms into focused fields under 16px, so the value and unit fields keep
-				// 16px at every width and are scaled down to the preset chips' text size.
+				// iOS Safari zooms into focused fields under 16px; keep 16px and scale down.
 				const sizes = await valueInput(page).evaluate((input) => {
 					const scale = getComputedStyle(input.parentElement).scale;
 					const factor =
@@ -728,7 +703,6 @@ for (const width of [375, 1280]) {
 				});
 				assert.deepEqual([sizes.field, sizes.unit], ['16px', '16px']);
 				assert.equal(sizes.rendered, sizes.preset);
-				// Tapping the chip beside the digits still focuses the value field.
 				const edge = await valueInput(page).evaluate((input) => {
 					input.blur();
 					const chip = input.closest('div').getBoundingClientRect();
@@ -760,21 +734,16 @@ for (const width of [320, 375]) {
 		const page = await browser.newPage({ viewport: { width, height: 700 } });
 		try {
 			await fixture(page);
-			// Both directions: the home page's link label ("Request a secret") is longer than the
-			// request page's ("Send a secret"), and the longer one is the one that used to overflow.
 			for (const form of forms) {
 				await openForm(page, form);
-				// Header sizes are in rem, so a larger text setting widens the wordmark and the link.
 				await page.evaluate(() => {
 					document.documentElement.style.fontSize = '150%';
 				});
-				// The buttons animate their new size (transition-all); measure once it settles.
+				// Wait for the transition-all resize to settle.
 				await page.waitForFunction(
 					() => document.querySelector('header').getAnimations({ subtree: true }).length === 0
 				);
-				// Scoped to the header's own elements, not document.documentElement.scrollWidth, so an
-				// overflow elsewhere on the page cannot fail this header check. (The type selector used
-				// to overflow here at large text sizes; its cells now share the row's width.)
+				// Scoped to header elements so an overflow elsewhere cannot fail this check.
 				const header = await page.evaluate(() => {
 					const box = (element) => element?.getBoundingClientRect().toJSON();
 					const root = document.querySelector('header');
@@ -924,9 +893,7 @@ for (const theme of ['light', 'dark']) {
 				await page.evaluate(() => document.documentElement.classList.contains('dark')),
 				theme === 'dark'
 			);
-			// The solid foreground at half opacity — visibly off in both themes — and
-			// disabled:shadow-none drops the cta glow: disabled:shadow-none resets the
-			// shadow variables, so every remaining box-shadow layer reads as transparent.
+			// disabled:shadow-none resets the shadow variables, so every box-shadow layer reads transparent.
 			const style = await button.evaluate((element) => {
 				const probe = document.createElement('span');
 				probe.style.backgroundColor = 'var(--foreground)';
@@ -965,14 +932,10 @@ test('the passphrase switch reveals its field with in-field generate and reveal 
 		const toggle = page.getByRole('switch', { name: 'Protect with a passphrase' });
 		await toggle.click();
 		await field.waitFor({ state: 'visible' });
-		// The placeholder names the field; the switch row above is its context.
 		assert.equal(await field.getAttribute('placeholder'), 'Add a passphrase');
-		// The field starts at the row's left edge — the switch row has no indent.
 		const rowLabel = await page.locator('label[for="use-passphrase"]').boundingBox();
 		const box = await field.boundingBox();
 		assert.ok(Math.abs(box.x - rowLabel.x) < 1);
-		// The in-field actions sit inside the field's right edge: reveal last,
-		// generate immediately to its left.
 		const reveal = await page.getByRole('button', { name: 'Show passphrase' }).boundingBox();
 		assert.equal(reveal.x + reveal.width, box.x + box.width);
 		const generate = await page.getByRole('button', { name: 'Generate passphrase' }).boundingBox();
@@ -994,7 +957,6 @@ test('Generate fills a revealed passphrase that never reaches the API', async ()
 		const first = await field.inputValue();
 		// Four groups of four Crockford base32 symbols: 80 random bits.
 		assert.match(first, /^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$/);
-		// The sender has to copy it, so it shows instead of staying masked.
 		assert.equal(await field.getAttribute('type'), 'text');
 		await generate.click();
 		const generated = await field.inputValue();
@@ -1027,7 +989,7 @@ test('passphrase row explains itself through the info popover', async () => {
 			() => getComputedStyle(document.querySelector('#passphrase-privacy')).visibility === 'visible'
 		);
 
-		// Switching to the code tab has no confirmation toggle because confirmation is always on.
+		// Code sends always confirm, so there is no confirmation toggle.
 		await page
 			.getByRole('group', { name: 'Delivery method' })
 			.getByRole('button', { name: 'Live transfer' })
@@ -1053,7 +1015,6 @@ test('delivery tabs swap the heading and slide their underline', async () => {
 		assert.equal(await codeTab.getAttribute('aria-pressed'), 'true');
 		assert.equal(await linkTab.getAttribute('aria-pressed'), 'false');
 		assert.equal((await heading.textContent()).trim(), 'Send a secret');
-		// The underline indicator slides under the active tab (each tab owns half the row).
 		await page.waitForFunction(
 			() =>
 				document.querySelector('[aria-label="Delivery method"]').getAnimations({

@@ -1,13 +1,8 @@
-// Client-facing size limits, fetched from the server at boot via GET /api/config.
-// The server re-enforces both limits, so these values are advisory — a fetch
-// failure (offline, misconfigured origin) must not break the app, so it falls
-// back to the plaintext equivalents of internal/config/defaults.go.
+// Advisory limits from GET /api/config (the server re-enforces them); a fetch
+// failure falls back to internal/config/defaults.go.
 
-// Inline storage bounds the age file, so this is the largest input whose age
-// file fits 1 MiB: secrets.MaxPlaintextBytes(1048576) in internal/secrets/age.go
-// (4 KiB header allowance, 16-byte nonce, 16 bytes per 64 KiB chunk).
+// Largest input whose age file fits 1 MiB inline (internal/secrets/age.go MaxPlaintextBytes).
 export const DEFAULT_PAYLOAD_INLINE_MAX_BYTES = 1_044_208;
-// The large-file limit already counts bytes before encryption; no overhead.
 export const DEFAULT_MAX_FILE_BYTES = 268_435_456; // 256 MiB
 
 export type ClientLimits = {
@@ -32,8 +27,6 @@ function positiveInt(raw: unknown, fallback: number): number {
 	return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-// getConfig resolves the client-facing limits. It never throws: any network or
-// parsing failure yields the built-in defaults so the create flow stays usable.
 export async function getConfig(
 	baseUrl: string,
 	fetcher: typeof fetch = fetch
@@ -57,9 +50,7 @@ export async function getConfig(
 	}
 }
 
-// A consuming request must know the server's actual bounds before decrypting.
-// Advisory defaults are useful for creation, but could discard a larger valid
-// one-time response if a custom deployment's config request temporarily fails.
+// Consuming opens need the server's real bounds: defaults could reject a larger valid one-time response.
 export async function getVerifiedConfig(
 	baseUrl: string,
 	fetcher: typeof fetch = fetch,

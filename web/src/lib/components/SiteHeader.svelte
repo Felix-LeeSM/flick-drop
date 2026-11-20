@@ -13,12 +13,6 @@ import ReceiveCodeModal from '#lib/components/ReceiveCodeModal.svelte';
 import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 import { t } from '#lib/i18n/index.js';
 
-// Every page renders this header, so the wordmark and the one optional link keep one size and place.
-// With large text the link and toggle wrap below the wordmark instead of widening the page.
-// The link and toggle can also wrap onto separate rows from each other: a long link label at a
-// large text-size setting must not push the toggle past the viewport edge either.
-// The code action and the link read as underlined text, but each keeps the toggle's 36px row height
-// as its tap target.
 let {
 	link,
 	showEnterCode = false,
@@ -31,7 +25,6 @@ let {
 	onCodeReceived?: (payload: ReceivedPipePayload) => void;
 } = $props();
 let initialReceiveCode = $state('');
-// "Enter Code" and the page link are the header's two text actions and share one look.
 const headerActionClass =
 	'inline-flex h-9 items-center rounded-sm text-xs font-medium whitespace-nowrap text-foreground underline decoration-primary decoration-2 underline-offset-[6px] focus-visible:outline-2';
 

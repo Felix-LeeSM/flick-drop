@@ -81,8 +81,7 @@ describe('sealing and opening secrets', () => {
 	});
 });
 
-// Vitest runs in node, where Worker is undefined, so these take the direct
-// path at the fixed work factor 18 (about a second per scrypt run).
+// Node has no Worker, so these run scrypt directly at work factor 18 (~1 s each).
 describe('Model A identity wrapping', () => {
 	it('round-trips and rejects a wrong passphrase', { timeout: 60_000 }, async () => {
 		expect.assertions(2);

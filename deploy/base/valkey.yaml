@@ -1,8 +1,5 @@
-# Valkey holds the shared rate-limit buckets and the live-transfer waiting
-# rooms (docs/architecture/security-model.md, "What Valkey holds"). It persists
-# nothing: --save "" and --appendonly no keep every key in memory only, and the
-# pod has no volume. A restart empties it; the API falls back to per-replica
-# rate limiting and answers /api/pipe/* with 503 until it is back.
+# Memory only (no volume, --save "", --appendonly no); on restart the API falls back to per-replica
+# rate limiting and answers /api/pipe/* with 503.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,7 +18,6 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        # The valkey user of the official Alpine image.
         runAsGroup: 999
         runAsNonRoot: true
         runAsUser: 999
@@ -37,9 +33,7 @@ spec:
             - ""
             - --appendonly
             - "no"
-            # Below the container limit. noeviction makes a full Valkey refuse
-            # writes (the API answers 503 or falls back) instead of silently
-            # dropping a live waiting room.
+            # noeviction refuses writes when full instead of silently dropping a live waiting room.
             - --maxmemory
             - 96mb
             - --maxmemory-policy
@@ -84,9 +78,7 @@ spec:
       port: 6379
       targetPort: valkey
 ---
-# Valkey has no password; this policy keeps it reachable from flick-api pods
-# only (anyone who can read it can read live rooms' connection IDs and
-# recipients).
+# Valkey has no password, and its keys expose live rooms' connection IDs and recipients.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

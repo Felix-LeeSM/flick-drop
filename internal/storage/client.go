@@ -1,5 +1,4 @@
-// Package storage owns the S3-compatible object store for large secret
-// payloads. The server sees only ciphertext and safe metadata.
+// Package storage: the server sees only ciphertext and safe metadata.
 package storage
 
 import (
@@ -13,10 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Config configures the S3-compatible object store. Endpoint/PathStyle target
-// MinIO (dev) and OCI S3-compat (prod); an empty Endpoint uses the AWS default
-// host. Auth is always a static key pair (OCI Customer Secret Key in prod).
-// Instance principal is deferred because the AWS SDK cannot speak it directly.
+// Auth is a static key pair only; the AWS SDK cannot speak OCI instance principal.
 type Config struct {
 	Enabled         bool
 	Endpoint        string
@@ -27,10 +23,8 @@ type Config struct {
 	PathStyle       bool
 }
 
-// UploadInstruction is a presigned upload returned to the client. The browser
-// sends the raw ciphertext as the request body to URL with Method, echoing
-// Headers verbatim — they are part of the signature, so changing one (notably
-// Content-Length) makes the object store reject the upload.
+// Headers are part of the signature; the browser must echo them verbatim (notably
+// Content-Length) or the object store rejects the upload.
 type UploadInstruction struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
@@ -38,7 +32,6 @@ type UploadInstruction struct {
 	Headers   map[string]string `json:"headers"`
 }
 
-// ObjectInfo describes an object. Exists is false for a 404.
 type ObjectInfo struct {
 	Key         string
 	Exists      bool
@@ -46,22 +39,18 @@ type ObjectInfo struct {
 	ContentType string
 }
 
-// ObjectStore is the surface the secrets store depends on for large payloads.
 type ObjectStore interface {
 	List(ctx context.Context, prefix, cursor string, limit int) (ObjectPage, error)
 	PresignPUT(ctx context.Context, key string, size int64, ttl time.Duration) (UploadInstruction, error)
 	Head(ctx context.Context, key string) (ObjectInfo, error)
-	// Open starts reading an object and returns its body with the length the
-	// store reports. The caller must close the body.
+	// The caller must close the body.
 	Open(ctx context.Context, key string) (io.ReadCloser, int64, error)
 	Delete(ctx context.Context, key string) error
 }
 
-// RequestObjectStore adds server-only final writes for request links.
 type RequestObjectStore interface {
 	ObjectStore
-	// PutStream writes exactly size bytes read from body to key, only if
-	// verify accepts them once they are all read.
+	// verify runs after all size bytes are read and before the write.
 	PutStream(ctx context.Context, key string, body io.Reader, size int64, verify func() error) error
 }
 
@@ -71,8 +60,6 @@ type Client struct {
 	now func() time.Time
 }
 
-// New builds an S3 client. Returns an error when disabled so callers can treat
-// object storage as optional wiring.
 func New(cfg Config) (*Client, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("storage backend is disabled")
@@ -102,7 +89,6 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// SetNowForTest injects a deterministic clock for presigned policy timestamps.
 func (c *Client) SetNowForTest(now func() time.Time) { c.now = now }
 
 var _ ObjectStore = (*Client)(nil)

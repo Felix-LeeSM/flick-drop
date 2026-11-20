@@ -6,16 +6,12 @@ import (
 	"fmt"
 )
 
-// legacyStorageBackendRunbook is where an operator learns how to rename the
-// fixed backend identifiers used before FLICK_STORAGE_BACKENDS.
 const legacyStorageBackendRunbook = "docs/runbook/storage-backend-rename.md"
 
-// storageBackendNameCheck is the SQL form of storage.ValidBackendName.
+// SQL form of storage.ValidBackendName.
 const storageBackendNameCheck = `'^[a-z][a-z0-9]{0,15}$'`
 
-// namedStorageBackendChecks are the constraints a fresh schema creates inline
-// (migrations.go, requests.go). An upgraded database gets them here after its
-// legacy enum checks are dropped.
+// A fresh schema creates these inline (migrations.go, requests.go).
 var namedStorageBackendChecks = []struct{ table, name, check string }{
 	{"secrets", "secrets_storage_backend_name", `storage_backend = 'sqlite_blob' or storage_backend ~ ` + storageBackendNameCheck},
 	{"requests", "requests_storage_backend_name", `storage_backend = 'sqlite_blob' or storage_backend ~ ` + storageBackendNameCheck},
@@ -25,18 +21,8 @@ var namedStorageBackendChecks = []struct{ table, name, check string }{
 	{"request_reconciliation_cursor_v2", "request_reconciliation_cursor_v2_backend_name", `backend ~ ` + storageBackendNameCheck},
 }
 
-// retireLegacyStorageBackendChecks moves a database created before
-// FLICK_STORAGE_BACKENDS onto backend-name checks. The old schema allowed only
-// the fixed identifiers 's3_object' and 'r2_object'; rows and pending delete
-// events still carrying them must be renamed to configured backend names first
-// (legacyStorageBackendRunbook), so this refuses to run while any remain. An
-// unpublished object delete with no backend at all predates named backends and
-// is refused the same way. Reconciliation cursors are only scan positions and
-// pending claims only fence a queued delete, so legacy cursor and claim rows
-// are dropped: the next reconciliation pass re-finds a surviving orphan under
-// its new backend name and queues a fresh delete, while a key any live row
-// holds stays protected. A fresh or already-upgraded database passes through
-// as a no-op.
+// Refuses while rows or pending delete events still carry 's3_object'/'r2_object' or no
+// backend; drops legacy cursor and claim rows, since reconciliation re-finds surviving orphans.
 func retireLegacyStorageBackendChecks(ctx context.Context, conn *sql.Conn) error {
 	var legacy bool
 	err := conn.QueryRowContext(ctx, `select
@@ -86,11 +72,8 @@ func retireLegacyStorageBackendChecks(ctx context.Context, conn *sql.Conn) error
 	return nil
 }
 
-// dropLegacyStorageBackendChecks drops every check constraint that still
-// enumerates 's3_object'. Postgres named those inline checks itself
-// (secrets_storage_backend_check, requests_check1, ...), so they are found by
-// definition rather than by name. docs/runbook/storage-backend-rename.md runs
-// the same block before renaming rows.
+// Postgres named the inline checks itself, so they are found by definition; the
+// storage-backend-rename runbook runs the same block before renaming rows.
 const dropLegacyStorageBackendChecks = `do $$
 declare c record;
 begin

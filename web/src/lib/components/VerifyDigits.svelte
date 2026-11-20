@@ -1,13 +1,9 @@
 <script lang="ts">
 import { cn } from '#lib/utils.js';
 
-// The live relay's 3-digit verification number, drawn per receiver connection
-// by the server (internal/piperelay/coordinator.go generateVerifyCode). The
-// receiver's dialog and the sender's waiting list show it in the same key-cap
-// shape, so people compare shape to shape.
+// Server-drawn per receiver: internal/piperelay/coordinator.go generateVerifyCode.
 type Props = {
 	code: string;
-	/** Accessible name; the caps themselves are hidden from assistive tech. */
 	label: string;
 	size?: 'lg' | 'sm';
 };
@@ -24,7 +20,6 @@ let { code, label, size = 'lg' }: Props = $props();
 		<span
 			class={cn(
 				'grid place-items-center border-2 border-primary/40 bg-primary/8 font-mono font-extrabold text-primary shadow-xs',
-				// With enlarged text in a phone-width dialog, the large caps stay square and shrink to fit.
 				size === 'lg' ? 'aspect-square w-16 min-w-0 rounded-xl text-4xl' : 'size-8 rounded-lg text-base'
 			)}
 			aria-hidden="true"

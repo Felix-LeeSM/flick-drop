@@ -3,7 +3,6 @@ import { generatePassphrase } from './passphrase';
 
 const FORMAT = /^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$/;
 
-// Replaces the next random fill with the given bytes.
 function nextRandomBytes(values: number[]) {
 	return vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce((array) => {
 		(array as Uint8Array).set(values);

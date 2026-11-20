@@ -27,9 +27,6 @@ func TestParseLevel(t *testing.T) {
 	}
 }
 
-// Given a logger built on stackHandler over a JSON handler,
-// when an Info record and an Error record are logged,
-// then only the Error line carries a non-empty goroutine stack.
 func TestStackHandlerAddsStackToErrorRecordsOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(stackHandler{slog.NewJSONHandler(&buf, nil)})
@@ -63,9 +60,6 @@ func TestStackHandlerAddsStackToErrorRecordsOnly(t *testing.T) {
 	}
 }
 
-// Given a logger derived via logger.WithAttrs,
-// when it logs an Error record,
-// then the stack decoration survives the derivation.
 func TestStackHandlerSurvivesWithAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(stackHandler{slog.NewJSONHandler(&buf, nil)}).With("caller", "test")

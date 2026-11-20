@@ -15,14 +15,13 @@ import (
 )
 
 func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
-	// Opened secrets keep no outcome (TestOpenedObjectStaysProtectedForStreamGraceWithoutSecretRow
-	// and httpapi TestOpenedSecretIsIndistinguishableFromUnknownID); locked is retained.
+	// Opened secrets keep no outcome; locked is retained.
 	for _, outcome := range []string{"locked"} {
 		t.Run(outcome, func(t *testing.T) {
 			ctx := context.Background()
 			conn := openTestDB(t, ctx)
 			store := newTestStore(t, conn)
-			// timestamptz는 마이크로초 정밀도라 마감 경계 확인도 마이크로초 단위다.
+			// timestamptz는 마이크로초 정밀도다.
 			now := time.Date(2026, 10, 8, 1, 0, 0, 123000, time.UTC)
 			store.SetNowForTest(func() time.Time { return now })
 			input := CreateInput{Kind: KindText, Ciphertext: testBody, SizeBytes: testBodyLen, TTLSeconds: 600,
@@ -69,7 +68,6 @@ func TestManagementOutcomesAndBoundedRetention(t *testing.T) {
 			if status, err := store.Revoke(ctx, created.ID, created.ManagementToken); !errors.Is(err, ErrNotCancellable) || status.Status != outcome {
 				t.Fatalf("terminal cancellation: %v %v", status, err)
 			}
-			// Capability reads remain valid until the exact original deadline.
 			now = created.ExpiresAt.Add(-time.Microsecond)
 			if _, err := store.Management(ctx, created.ID, created.ManagementToken); err != nil {
 				t.Fatal(err)
@@ -170,7 +168,6 @@ func TestManagementCapabilitiesAndTransactionRollback(t *testing.T) {
 	if _, err := conn.Exec(`drop function reject_forget`); err != nil {
 		t.Fatal(err)
 	}
-	// A legacy row without a management record keeps its old recipient flow.
 	if _, err := conn.Exec(`delete from secret_management where secret_id = $1`, second.ID); err != nil {
 		t.Fatal(err)
 	}

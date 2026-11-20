@@ -27,8 +27,7 @@ patches:
       - op: replace
         path: /stringData/FLICK_RATELIMIT_KEY_SALT
         value: k3d-smoke-ratelimit-salt
-  # Disposable smoke-only passwords; URL-safe because each pod places its
-  # password in a postgres:// DSN (deploy/base/secret.yaml).
+  # Disposable smoke-only passwords; URL-safe because each lands in a postgres:// DSN.
   - target:
       kind: Secret
       name: flick-db-api

@@ -1,8 +1,5 @@
-// Model A access proof: a PBKDF2 value derived from the passphrase that gates
-// the one-time open. The server stores only its hash; the proof cannot decrypt
-// anything (the identity is wrapped separately with age scrypt, see age.ts).
-// internal/clientcrypto/crypto.go:DeriveAccessProof is the Go twin, and both
-// check the access_proof block of tests/fixtures/client-crypto-vectors.json.
+// The server stores only the proof's hash; the proof cannot decrypt (the identity is age-scrypt wrapped).
+// Go twin: internal/clientcrypto/access.go:DeriveAccessProof; vectors: tests/fixtures/client-crypto-vectors.json.
 
 import { base64ToBytes, bytesToBase64 } from './encoding';
 

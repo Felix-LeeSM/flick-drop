@@ -6,16 +6,9 @@ import (
 	"fmt"
 )
 
-// workerMigrateLockKey keys the session-level advisory lock that serializes
-// MigrateWorker: two worker replicas (or a rolling restart overlap) booting at
-// the same time would otherwise race concurrent DDL on the pg_type catalog.
-// The value is an arbitrary constant; it only needs to be stable across
-// releases and distinct from any other lock key in this module.
+// Serializes concurrent replica DDL on pg_type; must stay stable across releases.
 const workerMigrateLockKey = 0x464C49434B574B52 // "FLICKWKR"
 
-// MigrateWorker creates the worker-owned tables in the flick_worker logical
-// database. It runs on every worker start, so every statement is idempotent
-// and the whole run holds one advisory lock for its duration.
 func MigrateWorker(ctx context.Context, conn *sql.DB) error {
 	pinned, err := conn.Conn(ctx)
 	if err != nil {
@@ -23,8 +16,7 @@ func MigrateWorker(ctx context.Context, conn *sql.DB) error {
 	}
 	defer pinned.Close()
 
-	// Session-level lock on the pinned connection: the pool would otherwise
-	// hand the unlock statement to a different session than the lock holder.
+	// Pinned connection: the pool could hand the unlock to a different session.
 	if _, err := pinned.ExecContext(ctx, `select pg_advisory_lock($1)`, workerMigrateLockKey); err != nil {
 		return fmt.Errorf("acquire worker migration advisory lock: %w", err)
 	}

@@ -26,11 +26,8 @@ for (const [feature, remove] of Object.entries(missingFeatures)) {
 	test(`a browser without ${feature} is told to update before opening anything`, async () => {
 		const page = await browser.newPage();
 		try {
-			// Given 기능 하나가 없는 오래된 브라우저
 			await page.addInitScript(remove);
-			// When 아무 페이지나 열면
 			await page.goto(`${baseUrl}/s/anything`);
-			// Then 맨 위에 업데이트 안내가 뜬다
 			await page.getByRole('alert').filter({ hasText: notice }).waitFor();
 		} finally {
 			await page.close();

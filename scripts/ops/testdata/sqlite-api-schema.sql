@@ -12,8 +12,6 @@ CREATE TABLE secrets (
 			max_views integer not null default 1 check (max_views > 0),
 			view_count integer not null default 0 check (view_count >= 0),
 			failed_access_count integer not null default 0 check (failed_access_count >= 0),
-			-- M3 large uploads land in S3 first; a secret starts as pending_upload
-			-- and flips to active once /finalize confirms the object exists.
 			state text not null default 'active' check (state in ('active', 'pending_upload')),
 			expires_at datetime not null,
 			consumed_at datetime,

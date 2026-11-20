@@ -48,9 +48,7 @@ let {
 }: Props = $props();
 
 let remainingSeconds = $state(180);
-// Lock stage: once bytes start streaming the code view gives way to the progress
-// ring, which keeps its minimum and plays the lock (or failure) beat before the
-// completed view or the error card shows. The relay reports 25/50/100.
+// The ring plays its lock or failure beat before the result shows; the relay reports 25/50/100.
 let streamStartedAt: number | null = null;
 let stagePhase = $state<StagePhase>('waiting');
 let stageSettled = $state(false);
@@ -89,7 +87,6 @@ let qrOpen = $state(false);
 let copied = $state(false);
 
 let timerInterval: number | null = null;
-// Drives the waiting list's "12s ago" labels.
 let now = $state(Date.now());
 
 onMount(() => {
@@ -132,8 +129,6 @@ const firstHalf = $derived(formattedCode.slice(0, 3));
 const secondHalf = $derived(formattedCode.slice(4));
 
 const statusText = $derived(statusTextProp ?? t().live.waiting.defaultStatus);
-// The relay's progress statuses in the current language; anything else is a
-// notice (an error or a failed pick) shown under the waiting list.
 const normalStatusMessages = $derived(
 	new Set([
 		'',
@@ -148,7 +143,6 @@ const normalStatusMessages = $derived(
 );
 const waitingNotice = $derived(normalStatusMessages.has(statusText) ? '' : statusText);
 
-// Direct receive URL that can be encoded in QR code
 let directReceiveUrl = $derived(
 	typeof window === 'undefined'
 		? `https://flick.drop/#code=${code}`
@@ -175,7 +169,6 @@ let directReceiveUrl = $derived(
 			{onCancel}
 		/>
 	{:else if completed}
-		<!-- The ring already played the lock beat, so the completed view skips a second check. -->
 		<section class="grid gap-6">
 			<div class="grid gap-1.5">
 				<p class="micro flex items-center gap-1.5 text-success">
@@ -193,8 +186,7 @@ let directReceiveUrl = $derived(
 			</Button>
 		</section>
 	{:else if failed && (stageSettled || !streaming)}
-		<!-- A broken stream or an ended session (expired, server error) leaves a dead
-		     code; the code view would offer a code that no longer works. -->
+		<!-- An ended session leaves a dead code, so the code view is not offered. -->
 		<section class="grid gap-6" role="alert">
 			<div class="grid gap-1.5">
 				<p class="micro text-destructive">{t().live.waiting.endedLabel}</p>

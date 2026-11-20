@@ -38,7 +38,6 @@ export const buttonVariants = tv({
 			'icon-lg': 'size-10',
 			seg: 'h-9 gap-1.5 rounded-lg px-3 text-[0.8125rem] font-medium',
 			pill: 'h-9 gap-1.5 rounded-full px-3.5 font-mono text-xs',
-			// With enlarged text on a narrow screen, a long label wraps inside the button instead of overflowing it.
 			cta: 'min-h-12 w-full gap-2 whitespace-normal rounded-[10px] px-4 py-2 text-center text-[0.9375rem]'
 		}
 	},

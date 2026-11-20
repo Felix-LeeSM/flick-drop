@@ -11,36 +11,24 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// SharePath is the web route a share link points at.
 const SharePath = "/s/"
 
-// ShareLink is a parsed share URL. Identity is nil for Model A links, where the
-// recipient supplies a passphrase instead.
+// Identity is nil for Model A links.
 type ShareLink struct {
-	// Origin is the scheme://host the link was served from. In a deployed
-	// Flick this is also the API base URL — the ingress serves /api and / on
-	// the same host (deploy/base/ingress.yaml), and the web image is built with
-	// PUBLIC_FLICK_API_BASE_URL=/. A split dev setup needs --url to override it.
+	// Also the API base URL when deployed (deploy/base/ingress.yaml); a split dev setup needs --url.
 	Origin   string
 	ID       string
 	Identity *age.HybridIdentity
 }
 
-// ParseShareLink accepts a full share URL or a bare secret ID. A bare ID has no
-// origin, so the caller must supply one.
-//
-// The fragment identity is parsed here and never sent anywhere: it is the
-// Model B decryption key, and putting it in a request would hand the server the ability
-// to decrypt the payload it stores.
+// The fragment identity is the Model B key; never put it in a request.
 func ParseShareLink(raw string) (ShareLink, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return ShareLink{}, errors.New("a share link or secret ID is required")
 	}
 
-	// No scheme means a bare secret ID. Anything containing a slash at this
-	// point is a malformed URL, not an ID, and saying so beats a confusing
-	// "secret not found" after a pointless round trip.
+	// A slash here means a malformed URL, not an ID; fail before a pointless round trip.
 	if !strings.Contains(trimmed, "://") {
 		if strings.ContainsAny(trimmed, "/#?") {
 			return ShareLink{}, fmt.Errorf("%q is neither a full share link nor a secret ID", raw)
@@ -73,9 +61,7 @@ func ParseShareLink(raw string) (ShareLink, error) {
 		ID:     id,
 	}
 	if parsed.Fragment != "" {
-		// url.Parse percent-decodes into Fragment; RawFragment holds the
-		// original when they differ. The identity is uppercase bech32, which
-		// never needs escaping, so either form parses — prefer the raw one.
+		// The identity is uppercase bech32, so Fragment and RawFragment both parse; prefer the raw one.
 		fragment := parsed.RawFragment
 		if fragment == "" {
 			fragment = parsed.Fragment
@@ -89,8 +75,6 @@ func ParseShareLink(raw string) (ShareLink, error) {
 	return link, nil
 }
 
-// BuildShareLink renders the URL to hand to a recipient. identity is nil for
-// Model A.
 func BuildShareLink(origin, id string, identity *age.HybridIdentity) string {
 	link := strings.TrimRight(origin, "/") + SharePath + url.PathEscape(id)
 	if identity != nil {

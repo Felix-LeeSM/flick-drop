@@ -21,7 +21,6 @@ const staged = {
 	}
 };
 
-// Only the native transport boundary is replaced; the API's orchestration runs.
 class UploadRequest {
 	status = 204;
 	upload = { onprogress: null as ((event: Partial<ProgressEvent>) => void) | null };

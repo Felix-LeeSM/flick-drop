@@ -107,9 +107,7 @@ func TestRevokeRollsBackOutboxAndCommitFailures(t *testing.T) {
 			if failure == "outbox" {
 				store.outbox = &fakeOutbox{err: errors.New("enqueue failed")}
 			} else {
-				// A deferred constraint trigger fires at COMMIT, so the DELETE
-				// succeeds and only the commit fails — the same boundary the
-				// SQLite deferred-FK probe used to hit.
+				// A deferred constraint trigger fires at COMMIT, so only the commit fails.
 				if _, err = conn.Exec(`create function fail_cancellation() returns trigger language plpgsql as $fn$
 					begin
 						raise exception 'injected cancellation commit failure';
@@ -169,8 +167,6 @@ func (o blockingObjects) Head(ctx context.Context, key string) (storage.ObjectIn
 func TestRevokeWinsAgainstInFlightObjectRead(t *testing.T) {
 	for _, operation := range []string{"open", "finalize"} {
 		t.Run(operation, func(t *testing.T) {
-			// Two pools over the same schema stand in for two API replicas: the
-			// revoker must win while the other replica's object I/O is in flight.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			database := openTestAPIDatabase(t)
@@ -281,8 +277,6 @@ func TestRevokeRacesOpenAndProofLockout(t *testing.T) {
 					t.Fatalf("cancel winner: %v %v %v", status, err, openErr)
 				}
 			case operation == "open":
-				// An opened delivery is forgotten: the losing cancellation and
-				// later reads see the unknown-ID result.
 				if openErr != nil || !errors.Is(cancelErr, ErrManagementUnavailable) || !errors.Is(err, ErrManagementUnavailable) {
 					t.Fatalf("open winner: %v %v %v", openErr, cancelErr, err)
 				}
@@ -295,8 +289,6 @@ func TestRevokeRacesOpenAndProofLockout(t *testing.T) {
 	}
 }
 
-// 취소 경합에서 열람이 먼저 커밋되면 Revoke는 모르는 ID와 같은
-// ErrManagementUnavailable을 돌려준다(HTTP 404 management_unavailable).
 func TestRevokeAfterCommittedOpenIsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)

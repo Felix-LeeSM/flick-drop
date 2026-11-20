@@ -51,10 +51,7 @@ func (s *OutboxStore) SetNowForTest(now func() time.Time) {
 	s.now = now
 }
 
-// CountPending reports how many outbox events still wait to be published
-// (state 'pending'). Rows awaiting a failed attempt's retry are excluded —
-// the publisher tick re-claims them when due, and the pending gauge reads the
-// queue's real backlog, not its retry debt.
+// Excludes rows awaiting retry so the gauge reads the real backlog, not retry debt.
 func (s *OutboxStore) CountPending(ctx context.Context) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `select count(*) from outbox_events where state = 'pending'`).Scan(&n); err != nil {
@@ -81,8 +78,7 @@ func (s *OutboxStore) Enqueue(ctx context.Context, event JobEvent) (OutboxRecord
 }
 
 func (s *OutboxStore) EnqueueTx(ctx context.Context, tx *sql.Tx, event JobEvent) (OutboxRecord, error) {
-	// Capture the enqueuing span's trace context into the payload now, while the
-	// span is still active — the async publisher runs after it has ended (#133).
+	// Capture now: the async publisher runs after this span has ended.
 	injectTraceContext(ctx, &event)
 	payloadJSON, err := event.JSON()
 	if err != nil {
@@ -118,13 +114,8 @@ func (s *OutboxStore) EnqueueTx(ctx context.Context, tx *sql.Tx, event JobEvent)
 	}, nil
 }
 
-// ClaimDueTx claims up to limit rows that are due inside the caller's
-// transaction using FOR UPDATE SKIP LOCKED: concurrent API replicas each take
-// a disjoint set of due rows, rows locked by another replica's in-flight
-// publish batch are skipped instead of blocking, and the claim (the row
-// locks) lasts until the publisher marks and commits. The caller publishes
-// while the locks are held, so a crash rolls the batch back and every row
-// returns to the due pool.
+// FOR UPDATE SKIP LOCKED: replicas claim disjoint rows. The caller publishes while the
+// locks are held, so a crash rolls the batch back to the due pool.
 func (s *OutboxStore) ClaimDueTx(ctx context.Context, tx *sql.Tx, dueAt time.Time, limit int) ([]OutboxRecord, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be positive")
@@ -178,9 +169,6 @@ func (s *OutboxStore) MarkPublished(ctx context.Context, id string) error {
 	return requireAffected(result)
 }
 
-// markOutboxPublishedTx marks a claimed row inside the publisher's batch
-// transaction. The claim already holds the row lock, so the state guard is a
-// formality that keeps standalone and batched marks on one code path.
 func markOutboxPublishedTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
 	result, err := tx.ExecContext(ctx, `update outbox_events
 		set state = $1, published_at = $2, last_error = null, updated_at = $3
@@ -223,15 +211,10 @@ func markOutboxFailedTx(ctx context.Context, tx *sql.Tx, id string, publishErr e
 	return requireAffected(result)
 }
 
-// PublishedRetention is how long a published outbox row stays for diagnosis.
-// Payloads name object keys (managed/secrets/{id}) and secret IDs, and the
-// JetStream work-queue stream drops messages once acknowledged, so pruning
-// these rows is what lets the API forget an opened secret.
+// Payloads name object keys and secret IDs; pruning them lets the API forget an opened secret.
 const PublishedRetention = time.Hour
 
-// PurgePublishedTx deletes up to limit outbox rows published at least
-// PublishedRetention before now. Pending and failed rows stay: they are still
-// due for delivery or needed to diagnose a broken publish.
+// Pending and failed rows stay: still due, or needed to diagnose a broken publish.
 func PurgePublishedTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
 	cutoff := now.Add(-PublishedRetention)
 	if _, err := tx.ExecContext(ctx, `delete from outbox_events where id in (

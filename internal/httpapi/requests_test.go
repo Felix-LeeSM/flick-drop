@@ -65,7 +65,7 @@ func createHTTPRequest(t *testing.T, router http.Handler) requests.Created {
 	return c
 }
 
-// requestAgeBody is age-shaped: the API checks only the header magic.
+// The API checks only the header magic.
 func requestAgeBody(size int, b byte) []byte {
 	return append([]byte(requests.AgeMagic), bytes.Repeat([]byte{b}, size-len(requests.AgeMagic))...)
 }
@@ -75,8 +75,6 @@ func requestSubmission() requests.SubmitInput {
 	return requests.SubmitInput{Generation: 1, AttemptToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), Kind: "text", SizeBytes: 60, Envelope: envelope, Ciphertext: base64.StdEncoding.EncodeToString(requestAgeBody(60, 4))}
 }
 
-// assertOpenedBody checks an open response: the raw age body with its
-// metadata in headers.
 func assertOpenedBody(t *testing.T, r *httptest.ResponseRecorder, kind string, want []byte) {
 	t.Helper()
 	body, _ := io.ReadAll(r.Body)
@@ -142,7 +140,6 @@ func TestRequestHTTPFlowAndRoleSeparation(t *testing.T) {
 	if receipt.State != "accepted" {
 		t.Fatal("lost-response receipt missing")
 	}
-	// Preview GET/HEAD cannot open or revoke.
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		assertRequestStatus(t, performJSON(t, router, method, path+"/open", nil, auth(c.RetrievalToken)), 405, "")
 	}
@@ -201,10 +198,7 @@ func TestRequestHTTPRejectsMalformedBodies(t *testing.T) {
 	assertRequestStatus(t, resp, 404, "request_unavailable")
 }
 
-// injectInsertFailure aborts request_payloads inserts with a raised plpgsql
-// exception — the Postgres analogue of the SQLite raise(abort) trigger. The
-// statement fails inside the submit transaction, so it must roll back with it.
-// The returned func drops the trigger mid-test; cleanup also calls it.
+// The statement fails inside the submit transaction, so it must roll back with it.
 func injectInsertFailure(t *testing.T, conn *sql.DB) func() {
 	t.Helper()
 	if _, err := conn.Exec(`create function flick_test_fail_submit_fn() returns trigger language plpgsql as $fn$
@@ -322,7 +316,6 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 	_ = createHTTPRequest(t, router)
 	noteCiphertext := base64.StdEncoding.EncodeToString(requestAgeBody(80, 7))
 
-	// Invalid encrypted notes are rejected before persistence.
 	for _, bad := range []any{"", base64.StdEncoding.EncodeToString([]byte("not-age")), nil} {
 		resp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
 			"public_key":     requestTestKey,
@@ -339,7 +332,6 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 	var created requests.Created
 	decodeBody(t, resp, &created)
 
-	// Submission instructions include encrypted_note; owner status omits it.
 	instResp := performJSON(t, router, http.MethodGet, "/api/requests/"+created.ID, nil, auth(created.SubmissionToken))
 	assertRequestStatus(t, instResp, http.StatusOK, "")
 	var inst requests.Instructions
@@ -353,14 +345,12 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 		t.Fatalf("owner status exposed encrypted_note: %s", ownerResp.Body.String())
 	}
 
-	// Revoking clears encrypted_note from SQLite.
 	assertRequestStatus(t, performJSON(t, router, http.MethodPost, "/api/requests/"+created.ID+"/revoke", nil, auth(created.RetrievalToken)), 200, "")
 	var stored sql.NullString
 	if err := conn.QueryRow(`select encrypted_note from requests where id = $1`, created.ID).Scan(&stored); err != nil || stored.Valid {
 		t.Fatalf("encrypted_note survived revoke: %+v err=%v", stored, err)
 	}
 
-	// Submitted GET hides encrypted_note; HTTP open clears encrypted_note in SQLite.
 	openResp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
 		"public_key":     requestTestKey,
 		"encrypted_note": noteCiphertext,
@@ -379,7 +369,6 @@ func TestRequestEncryptedNoteHTTPRoundTripAndWipe(t *testing.T) {
 		t.Fatalf("encrypted_note survived HTTP open: %+v err=%v", stored, err)
 	}
 
-	// Bodies above 16 KiB cap on POST /api/requests return 413 payload_too_large.
 	hugeResp := performJSON(t, router, http.MethodPost, "/api/requests", map[string]any{
 		"public_key":     requestTestKey,
 		"encrypted_note": strings.Repeat("A", 16385),

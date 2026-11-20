@@ -60,7 +60,6 @@ let {
 }: Props = $props();
 
 // verify: this device shows its own number while the sender picks.
-// declined / not-chosen / room-full end this code for this device.
 type ReceiveState =
 	| 'input'
 	| 'connecting'
@@ -77,7 +76,6 @@ let rawCode = $state('');
 let codeFocused = $state(false);
 
 let currentState = $state<ReceiveState>('input');
-// Entering the code is step 1; waiting on the sender's pick and the transfer is step 2.
 const step = $derived(
 	currentState === 'input'
 		? 1
@@ -86,19 +84,13 @@ const step = $derived(
 			: undefined
 );
 const ringVisible = $derived(currentState === 'connecting' || currentState === 'streaming');
-// Unlock ring while connected: it keeps its minimum and plays the unlock (or
-// failure) beat before the received content or the error view shows.
 let ringPhase = $state<StagePhase>('waiting');
-// True once the content is decrypted: the relay has burned it, so the remaining
-// ring beat is pacing only and Cancel would throw the secret away.
+// The relay has burned decrypted content, so Cancel would throw the secret away.
 let decrypted = $state(false);
 let errorMessage = $state('');
-// The ring's status while connected; read from the catalog on render.
 let statusKey = $state<'connectingStatus' | 'decryptingStatus' | null>(null);
-// This device's own server-drawn number, shown while the sender picks.
 let verifyCode = $state('');
 
-// Result payloads
 let receivedText = $state('');
 let receivedFileName = $state('');
 let receivedFileSize = $state(0);
@@ -152,8 +144,7 @@ $effect(() => {
 
 function handleCodeInput(event: Event): void {
 	const target = event.target as HTMLInputElement;
-	// Digits only, so a pasted "741-928" still fills all six caps. The field is invisible, so write
-	// the cleaned value back: a stray letter left in it would otherwise swallow the next Backspace.
+	// Digits only so a pasted "741-928" fills all caps; write back so a stray letter cannot swallow Backspace.
 	const sanitized = target.value.replace(/\D/g, '').slice(0, 6);
 	target.value = sanitized;
 	rawCode = sanitized;
@@ -163,7 +154,6 @@ function handleCodeInput(event: Event): void {
 	}
 }
 
-// The rejections that end this code for this device with their own screen.
 function terminalState(err: unknown): ReceiveState | undefined {
 	if (!(err instanceof PipeRelayError)) {
 		return undefined;
@@ -180,8 +170,6 @@ function terminalState(err: unknown): ReceiveState | undefined {
 	}
 }
 
-// One receive attempt's timing: when its ring started and the local clock time
-// the session window closes, fixed when the join response arrived.
 type ReceiveAttempt = {
 	normalized: string;
 	signal: AbortSignal;
@@ -230,8 +218,7 @@ async function startReceive(): Promise<void> {
 async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	const { normalized, signal } = attempt;
 	const targetBaseUrl = apiBaseUrl || DEFAULT_API_BASE_URL;
-	// A fresh key per attempt: only its recipient goes to the API, and the
-	// identity lives in this function's memory until the attempt ends.
+	// Fresh key per attempt: only the recipient goes to the API; the identity stays in memory.
 	const { identity, recipient } = await createPipeReceiverKey();
 	const join = await joinPipe(targetBaseUrl, normalized, recipient, fetch, signal);
 	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
@@ -248,7 +235,6 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 		fetch,
 		signal
 	);
-	// The ring starts when the chosen device's stream arrives.
 	attempt.stageStartedAt = performance.now();
 	currentState = 'streaming';
 	statusKey = 'decryptingStatus';
@@ -278,15 +264,12 @@ async function endReceive(attempt: ReceiveAttempt, err: unknown): Promise<void> 
 		await rememberDeclinedCode(attempt.normalized, attempt.sessionExpiresAt);
 	}
 	errorMessage = err instanceof Error ? err.message : t().live.receive.failedFallback;
-	// Only a visible ring plays the failure beat; the number view ends at once.
 	if (!ringVisible || (await settleRing(attempt.stageStartedAt, 'failing', attempt.signal))) {
 		currentState = endState;
 	}
 }
 
-// Keeps the decrypted content and marks it received; null when the receive was
-// cancelled meanwhile. When handing off to the page view, the file Blob transfers
-// to PipeReceivedSecretView without triggering an unsolicited modal download.
+// Hands the file Blob to PipeReceivedSecretView without an unsolicited modal download.
 async function storeReceived(
 	result: Awaited<ReturnType<typeof receivePipeStream>>,
 	decryptedStream: ReadableStream<Uint8Array>,
@@ -326,8 +309,6 @@ async function storeReceived(
 	};
 }
 
-// The sender encrypts the filename separately; a missing or unreadable one falls
-// back to a generic name rather than failing the received file.
 async function decryptFilename(
 	encryptedFilename: string | undefined,
 	identity: string
@@ -342,8 +323,7 @@ async function decryptFilename(
 	}
 }
 
-// Holds the ring for its minimum, then plays the ending beat. False when the
-// receive was cancelled or reset meanwhile.
+// False when the receive was cancelled or reset meanwhile.
 async function settleRing(
 	startedAt: number,
 	ending: 'finishing' | 'failing',
@@ -410,7 +390,7 @@ async function copyText(): Promise<void> {
 					{t().live.receive.declinedDescription}
 				</Dialog.Description>
 			{:else}
-				<!-- The dialog keeps one name in every other step; the visible heading names the step. -->
+				<!-- One dialog name for every other step; the visible heading names the step. -->
 				<Dialog.Title class="sr-only">{t().live.receive.dialogTitle}</Dialog.Title>
 				<Dialog.Description class="sr-only">
 					{t().live.receive.dialogDescription}
@@ -449,8 +429,7 @@ async function copyText(): Promise<void> {
 				<div class="grid gap-5 text-center">
 					<div class="grid gap-2">
 						<Label for="pipe-code-input" class="sr-only">{t().live.receive.codeInputLabel}</Label>
-						<!-- Six key caps mirror one transparent input laid over them, so typing, pasting,
-						     and the phone's number pad all go through a single real field. -->
+						<!-- Key caps mirror one transparent input so typing, paste, and the number pad share one field. -->
 						<div class="relative flex items-center justify-center gap-1.5">
 							{#each [0, 1, 2, 3, 4, 5] as slot (slot)}
 								{@const digit = rawCode[slot] ?? ''}
@@ -507,7 +486,6 @@ async function copyText(): Promise<void> {
 				</div>
 			{:else if currentState === 'connecting' || currentState === 'streaming'}
 				<div class="grid place-items-center gap-4 text-center">
-					<!-- The same unlock ring as opening a link; the receiver has no byte progress, so it creeps. -->
 					<ProgressRingLock mode="unlock" phase={ringPhase} />
 					<div class="grid gap-1">
 						<p
@@ -592,7 +570,6 @@ async function copyText(): Promise<void> {
 					</Button>
 				</div>
 			{:else if currentState === 'not-chosen'}
-				<!-- Ends plainly without calling it an attack: the sender picked another device. -->
 				<div class="grid place-items-center gap-3 py-2 text-center" role="status">
 					<div class="grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
 						<LogOutIcon class="size-6" aria-hidden="true" />

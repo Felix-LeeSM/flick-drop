@@ -5,10 +5,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
 
-		<!-- Link preview. Static and brand-only: the /s/{id} shell is served to
-		     crawlers without SSR, and secrets are E2E-encrypted + burn on open, so
-		     no per-secret preview is possible or safe. A crawler fetching a link
-		     never consumes it (burn happens only on the Open button's POST). -->
+		<!-- Static brand-only preview: secrets are E2E-encrypted, and only the Open POST burns one. -->
 		<meta property="og:type" content="website" />
 		<meta property="og:site_name" content="Flick" />
 		<meta property="og:title" content="Flick — one-time encrypted secret" />
@@ -30,11 +27,8 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
-		<!-- Tailwind 4 needs @property and color-mix (Safari 16.4+, Chrome 111+,
-		     Firefox 128+). Older browsers, often an outdated iOS in-app browser, get
-		     a half-styled page whose Open button may never enable. This plain ES5
-		     check runs before the app and says so plainly, while the page underneath
-		     stays usable where it still works. The check opens or consumes nothing. -->
+		<!-- Tailwind 4 needs @property and color-mix (Safari 16.4+, Chrome 111+, Firefox 128+);
+		     this ES5 check warns older browsers (often iOS in-app) and consumes nothing. -->
 		<script>
 			// biome-ignore lint/complexity/useArrowFunction: ES5 so browsers older than the app still parse it.
 			(function () {

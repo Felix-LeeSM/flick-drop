@@ -1,5 +1,3 @@
-// Sender's management page (ManageSecretPage.svelte), its cancel dialog
-// (ConfirmDialog.svelte), and the remaining-time chip (RemainingTime.svelte).
 export const manage = {
 	headTitle: 'Manage delivery',
 	statuses: {

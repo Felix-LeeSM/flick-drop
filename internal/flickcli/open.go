@@ -17,64 +17,37 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// PassphraseFunc supplies a passphrase on demand. It is called only when the
-// secret turns out to be Model A, so opening a link-key secret never prompts.
+// Called only for Model A secrets, so a link-key secret never prompts.
 type PassphraseFunc func() (string, error)
 
-// OpenOptions describes one open. The open is destructive on the server side:
-// a successful call consumes the secret, and there is no second chance.
 type OpenOptions struct {
 	Link ShareLink
-	// Passphrase is called only for Model A secrets, after the metadata probe
-	// and before the consuming open.
+	// Called after the metadata probe and before the consuming open.
 	Passphrase PassphraseFunc
-	// OutputPath writes the payload to this exact path, for a text or a file
-	// secret alike. Empty means text goes to the caller's stdout and a file is
-	// written under its decrypted name in OutputDir.
+	// Empty: text goes to stdout and a file lands under its decrypted name in OutputDir.
 	OutputPath string
-	// OutputDir is where a file secret lands when OutputPath is empty.
-	OutputDir string
+	OutputDir  string
 }
 
-// OpenResult reports what was recovered. A text secret's Plaintext is always
-// populated, even when writing it out failed, so a caller can still salvage a
-// payload the server has already destroyed. A file secret is streamed to disk
-// and never held whole in memory, so it has no Plaintext.
+// Plaintext is set for text even when the write failed, for salvage; file secrets stream to disk and have none.
 type OpenResult struct {
 	Kind        string
 	Plaintext   []byte
 	Filename    string
 	ContentType string
-	// WrittenPath is the file actually written, which may differ from the
-	// requested name when a collision was avoided. Empty means nothing was
-	// written and the caller owns the payload.
+	// May differ from the requested name after a collision. Empty: nothing written, the caller owns the payload.
 	WrittenPath string
-	// RescuedPath is set with ErrWriteAfterConsume when a file secret was
-	// fully decrypted to a staging file that could not be moved into place.
-	// That file is the only remaining copy.
+	// Set with ErrWriteAfterConsume: the staging file is the only remaining copy.
 	RescuedPath string
-	// FilenameUnreadable reports that the secret carried a name that did not
-	// decrypt, as opposed to carrying none. The payload is written either way,
-	// but the two must not look alike to the recipient: the only causes are
-	// corruption and tampering, and that is worth a word on stderr.
+	// A name that failed to decrypt (corruption or tampering), as opposed to no name.
 	FilenameUnreadable bool
 }
 
-// ErrWriteAfterConsume marks the one unrecoverable-looking case: the secret was
-// consumed on the server and then could not be written locally. Whatever
-// survived is in OpenResult.Plaintext (text) or OpenResult.RescuedPath (a
-// file), and the caller must surface it rather than discard it — the server
-// has no second copy. A file whose write failed mid-stream has neither.
+// The server has no second copy: callers must surface OpenResult.Plaintext or RescuedPath.
 var ErrWriteAfterConsume = errors.New("secret was opened and consumed but could not be written")
 
-// Open consumes the secret and decrypts it locally.
-//
-// Order matters and is not incidental. Everything that can fail is done before
-// the consuming open: the metadata probe, the passphrase prompt, the check that
-// a link-key secret actually carries its identity, and — because a secret destroyed
-// on the server and then dropped on the floor locally is the worst outcome this
-// client has — reserving the output destination. Once OpenSecret returns, the
-// payload exists only in this process.
+// Order matters: everything that can fail (probe, passphrase, identity check, reserving the
+// output) runs before the consuming open; afterwards the payload exists only in this process.
 func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, error) {
 	if opts.Link.ID == "" {
 		return OpenResult{}, errors.New("no secret ID to open")
@@ -104,18 +77,14 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		)
 	}
 
-	// A text secret is decrypted in memory, so its size is checked against the
-	// deployment's inline limit before anything is consumed: the reported size
-	// comes from the server and is otherwise the only bound.
+	// The server-reported size is the only bound on an in-memory text decrypt, so check before consuming.
 	if metadata.Kind != "file" {
 		if limit := ageFileBytes(client.Config(ctx).PayloadInlineMaxBytes); int64(metadata.SizeBytes) > limit {
 			return OpenResult{}, fmt.Errorf("text secret reports %d bytes, more than the %d this deployment stores inline", metadata.SizeBytes, limit)
 		}
 	}
 
-	// Reserved before the open, not after: a missing directory, a name already
-	// taken, or a read-only volume must cost nothing. Discarded if the open
-	// itself fails, so a refused open leaves no empty file behind.
+	// Reserved before the open so a bad path costs nothing; discarded if the open fails.
 	reserved, err := reserveDestination(opts, metadata.Kind)
 	if err != nil {
 		return OpenResult{}, err
@@ -130,8 +99,6 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	defer opened.Body.Close()
 
 	if metadata.NeedsPassphrase() {
-		// The verified open returns the identity wrapped under the same
-		// passphrase that produced the access proof.
 		if opened.WrappedIdentity == nil {
 			reserved.discard()
 			return OpenResult{}, errors.New("open response carries no wrapped identity for a passphrase secret")
@@ -147,23 +114,15 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 		return openText(opts, reserved, identity, opened, result)
 	}
 
-	// The name is read only when it decides where the payload lands: with
-	// -output the caller already named the path, and the held handle ignores
-	// the name entirely. Nor is a name that fails an error: encrypted_filename
-	// is optional in contracts/openapi.yaml, the body is separately
-	// authenticated, and the server has destroyed its copy — losing the secret
-	// over a missing label is the worse outcome. placeFile falls back to
-	// "flick-file" for an empty name.
+	// A name that fails to decrypt is not an error: encrypted_filename is optional, the body is
+	// separately authenticated, and the server copy is already gone.
 	if opts.OutputPath == "" && opened.EncryptedFilename != "" {
 		name, err := openFilename(identity, opened.EncryptedFilename)
 		result.Filename = name
 		result.FilenameUnreadable = err != nil
 	}
 
-	// The file is decrypted into a staging file beside its destination and
-	// moved into place only after age authenticates the final chunk, so a
-	// truncated or altered body never leaves partial plaintext where the user
-	// asked for the secret.
+	// Staged and moved into place only after age authenticates the final chunk, so no partial plaintext lands.
 	staged, err := reserved.stage(opts)
 	if err != nil {
 		reserved.discard()
@@ -181,7 +140,6 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	}
 	if result.WrittenPath, err = reserved.place(opts, result.Filename, staged); err != nil {
 		if result.WrittenPath != "" {
-			// Saved; only the staging link could not be cleaned up.
 			return result, err
 		}
 		result.RescuedPath = staged.Name()
@@ -190,20 +148,13 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	return result, nil
 }
 
-// openText decrypts a text secret in memory: it is bounded by the inline limit
-// and goes to stdout or a small file, and a failed write can still rescue it.
 func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdentity, opened OpenedSecret, result OpenResult) (OpenResult, error) {
-	// unseal returns only after age authenticates the final chunk, so a
-	// truncated or altered body yields an error, never partial output.
 	plaintext, err := unsealReader(identity, opened.Body)
 	if err != nil {
-		// Nothing was recovered, so the reserved path must not be left behind
-		// as an empty file where the user asked for a secret.
 		reserved.discard()
 		return OpenResult{}, consumedError(err)
 	}
 	result.Plaintext = plaintext
-	// A text secret with no -output belongs on the caller's stdout.
 	if opts.OutputPath == "" {
 		return result, nil
 	}
@@ -214,22 +165,16 @@ func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdent
 	return result, nil
 }
 
-// consumedError explains a body that failed to download or decrypt after the
-// server consumed the secret, so the user does not retry a link that is gone.
+// Tells the user not to retry a link that is already gone.
 func consumedError(err error) error {
 	return fmt.Errorf("the secret was opened and is gone from the server, but its contents could not be read: %w", err)
 }
 
-// ageFileBytes is the largest age file an n-byte input produces, per the size
-// formula in contracts/age-format-v1.md (internal/secrets.MaxCiphertextBytes,
-// which this client must not import): a 4 KiB header allowance, a 16-byte
-// nonce, and a 16-byte tag per started 64 KiB chunk.
+// Twin of internal/secrets.MaxCiphertextBytes (contracts/age-format-v1.md), which this client must not import.
 func ageFileBytes(n int64) int64 {
 	return 4096 + 16 + n + 16*max(1, (n+65535)/65536)
 }
 
-// stagingWriteError marks a local write failure while decrypting into the
-// staging file, as opposed to the body failing to decrypt.
 type stagingWriteError struct{ err error }
 
 func (e *stagingWriteError) Error() string { return e.err.Error() }
@@ -244,7 +189,6 @@ func (w stagingWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// decryptInto streams body through age into staged and syncs it.
 func decryptInto(staged *os.File, identity *age.HybridIdentity, body io.Reader) error {
 	r, err := clientcrypto.DecryptWith(body, identity)
 	if err != nil {
@@ -259,7 +203,6 @@ func decryptInto(staged *os.File, identity *age.HybridIdentity, body io.Reader) 
 	return nil
 }
 
-// unseal decrypts an age file encrypted to identity.
 func unseal(identity *age.HybridIdentity, file []byte) ([]byte, error) {
 	return unsealReader(identity, bytes.NewReader(file))
 }
@@ -272,7 +215,6 @@ func unsealReader(identity *age.HybridIdentity, src io.Reader) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-// openFilename decrypts the base64 age file carrying a file secret's name.
 func openFilename(identity *age.HybridIdentity, encoded string) (string, error) {
 	file, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
@@ -288,10 +230,7 @@ func openFilename(identity *age.HybridIdentity, encoded string) (string, error) 
 	return string(name), nil
 }
 
-// destination is an output path claimed before the secret is consumed. For an
-// explicit -output it holds an open, exclusively created file; for a file
-// secret written under its decrypted name it holds only a checked directory,
-// since the name is not known until after decryption.
+// Explicit -output holds an exclusively created file; otherwise only a checked directory, since the name comes after decryption.
 type destination struct {
 	file *os.File
 	path string
@@ -303,8 +242,6 @@ func (d *destination) close() {
 	}
 }
 
-// discard removes a reserved file that will never be written, so a refused open
-// does not leave an empty file where the user asked for a secret.
 func (d *destination) discard() {
 	if d.file != nil {
 		d.file.Close()
@@ -320,8 +257,7 @@ func (d *destination) writeText(payload []byte) error {
 	return d.file.Sync()
 }
 
-// stage creates the staging file in the directory the payload will land in,
-// so moving it into place is a rename or link on the same file system.
+// Same directory as the destination, so placing is a rename or link on one file system.
 func (d *destination) stage(opts OpenOptions) (*os.File, error) {
 	dir := opts.OutputDir
 	if d.file != nil {
@@ -333,9 +269,6 @@ func (d *destination) stage(opts OpenOptions) (*os.File, error) {
 	return os.CreateTemp(dir, ".flick-partial-*")
 }
 
-// place moves a fully decrypted staging file to its destination. An explicit
-// -output replaces the empty file reserved for it; otherwise the decrypted
-// name is used without ever overwriting an existing file.
 func (d *destination) place(opts OpenOptions, filename string, staged *os.File) (string, error) {
 	if err := staged.Close(); err != nil {
 		return "", err
@@ -351,12 +284,9 @@ func (d *destination) place(opts OpenOptions, filename string, staged *os.File) 
 	return placeFile(opts, filename, staged.Name())
 }
 
-// reserveDestination claims the output before anything destructive happens.
 func reserveDestination(opts OpenOptions, kind string) (*destination, error) {
 	if opts.OutputPath != "" {
-		// O_EXCL: an explicit -output is the caller's stated path, so a
-		// collision is an error rather than a silent overwrite. Truncating here
-		// would destroy a local file to make room for the secret.
+		// O_EXCL: never truncate a local file to make room for the secret.
 		file, err := os.OpenFile(opts.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
@@ -369,9 +299,7 @@ func reserveDestination(opts OpenOptions, kind string) (*destination, error) {
 	if kind != "file" {
 		return &destination{}, nil
 	}
-	// The filename is only known after decryption, so the directory is what can
-	// be checked in advance. Catching a typo here costs nothing; catching it
-	// after the open would cost the secret.
+	// Catching a bad directory after the open would cost the secret.
 	if err := checkWritableDir(opts.OutputDir); err != nil {
 		return nil, err
 	}
@@ -397,11 +325,7 @@ func checkWritableDir(dir string) error {
 	return os.Remove(probe.Name())
 }
 
-// placeFile links the staged file to its decrypted name without ever
-// overwriting an existing file, then removes the staging name. The name comes
-// from the sender, so it is reduced to its base name first: a payload named
-// "../../.ssh/authorized_keys" must land in the output directory as
-// "authorized_keys", not escape it.
+// The name comes from the sender: reduced to its base name so "../../.ssh/authorized_keys" cannot escape.
 func placeFile(opts OpenOptions, filename, staged string) (string, error) {
 	target := filepath.Join(opts.OutputDir, safeFilename(filename))
 
@@ -410,12 +334,10 @@ func placeFile(opts OpenOptions, filename, staged string) (string, error) {
 		if attempt > 0 {
 			candidate = numberedPath(target, attempt)
 		}
-		// A hard link fails if the name exists, which is the no-overwrite
-		// guarantee O_EXCL gave the old write path.
+		// A hard link fails if the name exists: the no-overwrite guarantee.
 		err := os.Link(staged, candidate)
 		if err != nil && !errors.Is(err, os.ErrExist) {
-			// Some file systems (FAT, exFAT, some network mounts) have no
-			// hard links; copy into an exclusively created file instead.
+			// FAT, exFAT, and some network mounts have no hard links.
 			err = copyExclusive(staged, candidate)
 		}
 		if errors.Is(err, os.ErrExist) {
@@ -425,8 +347,6 @@ func placeFile(opts OpenOptions, filename, staged string) (string, error) {
 			return "", err
 		}
 		if err := os.Remove(staged); err != nil {
-			// The payload is in place; the staging name is a second link to
-			// it that must not linger unannounced.
 			return candidate, fmt.Errorf("saved %s, but could not remove the staging link %s: %w", candidate, staged, err)
 		}
 		return candidate, nil
@@ -457,11 +377,8 @@ func copyExclusive(src, dst string) error {
 	return out.Close()
 }
 
-// safeFilename reduces a sender-supplied name to something that can only land
-// inside the output directory.
 func safeFilename(name string) string {
-	// Windows-style separators survive filepath.Base on Unix, so they are
-	// normalized first — a sender is not bound by the recipient's OS.
+	// Backslashes survive filepath.Base on Unix; a sender is not bound by the recipient's OS.
 	cleaned := filepath.Base(strings.ReplaceAll(name, `\`, "/"))
 	if cleaned == "." || cleaned == ".." || cleaned == string(filepath.Separator) || cleaned == "" {
 		return "flick-file"

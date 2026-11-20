@@ -117,14 +117,10 @@ func TestProcessorMarksFailedJobForRetry(t *testing.T) {
 	}
 }
 
-// Given the default slog routes to a JSON handler over a buffer,
-// when a job handler fails to its retry limit,
-// then an Error record carries the job kind and a goroutine stack.
 func TestProcessorFailedJobLogsErrorWithStack(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
-	// Mirror production wiring: cmd/flick-worker sets the default logger from
-	// telemetry.NewLogger, whose handler chain includes the stack decorator.
+	// Mirror cmd/flick-worker: the default logger includes the stack decorator.
 	slog.SetDefault(slog.New(telemetry.NewStackHandler(slog.NewJSONHandler(&buf, nil))))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
@@ -167,10 +163,8 @@ func TestProcessorFailedJobLogsErrorWithStack(t *testing.T) {
 	}
 }
 
-// 열람된 객체의 삭제가 실패해도 worker DB(시도·영수증·데드레터)와 로그에 객체 키나
-// 시크릿 ID가 남지 않는다. 버킷 SDK 오류 문자열이 키를 품어도 가려진다.
+// 버킷 SDK 오류 문자열이 키를 품어도 worker DB와 로그에 키·시크릿 ID가 남지 않는다.
 func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
-	// Given: 오류 문구에 키를 담는 버킷과 열람 뒤 삭제 작업
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -195,7 +189,6 @@ func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// When: 재시도 한도까지 실패해 데드레터가 된다
 	for range 2 {
 		_, _ = processor.Process(ctx, payload)
 		if _, err := store.db.ExecContext(ctx, `update job_receipts set updated_at = '2000-01-01T00:00:00Z'`); err != nil {
@@ -203,7 +196,6 @@ func TestFailedOpenedObjectDeleteStoresAndLogsNoKey(t *testing.T) {
 		}
 	}
 
-	// Then: 저장된 행 어디에도, 로그에도 ID가 없고 데드레터는 남아 있다
 	var stored string
 	if err := store.db.QueryRowContext(ctx, `select
 		(select coalesce(string_agg(coalesce(last_error, '') || state, ''), '') from job_receipts) ||

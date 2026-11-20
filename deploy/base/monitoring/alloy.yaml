@@ -1,14 +1,5 @@
-# Grafana Alloy DaemonSet: tails container logs through the Kubernetes API
-# (loki.source.kubernetes streams pods/log — no privileges, no root, no node
-# filesystem access) and ships the lines to Loki. Each replica only discovers
-# pods on its own node (spec.nodeName field selector), so a 2-node cluster
-# stores each line exactly once. Keeps only the flick namespace, the
-# cert-manager namespace (TLS renewal failures), and the kube-system traefik pod — traefik's access log is the cluster's entry-point
-# record (client IP, path, status), which is exactly the access-log search the
-# admin needs; every other namespace's logs stay on their containers.
-#
-# Traefik access logging itself is enabled node-side (ops overlay), so until
-# that lands only flick app containers appear here.
+# Each replica discovers only its own node's pods (spec.nodeName), so each line is stored once.
+# Keeps only flick, cert-manager, and the kube-system traefik pod (the access-log record).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -22,9 +13,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  # loki.source.kubernetes streams the pods/log subresource (GET .../pods/{name}/log);
-  # a "pods" rule alone does not cover it, and without this rule every log
-  # request 403s while discovery and probes stay green.
+  # A "pods" rule alone does not cover pods/log; without this every log request 403s while probes stay green.
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -168,9 +157,7 @@ spec:
             - run
             - /etc/alloy/config.alloy
             - --storage.path=/var/lib/alloy/data
-            # The default HTTP listen address is 127.0.0.1, which the readiness
-            # probe (dialing the pod IP) cannot reach — pods stay NotReady and
-            # the rollout wedges.
+            # The default 127.0.0.1 listen address is unreachable to the readiness probe; the rollout wedges.
             - --server.http.listen-addr=0.0.0.0:12345
           env:
             - name: NODE_NAME

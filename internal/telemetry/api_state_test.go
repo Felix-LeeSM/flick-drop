@@ -10,8 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// 스크랩할 때마다 DB 질의 결과를 그대로 게이지로 내보낸다. 라벨은 설정된 백엔드
-// 이름뿐이다(키를 설정 이름으로 제한하는 일은 db.StorageObjectBytes가 맡는다).
 func TestAPIStateCollectorReportsDatabaseValues(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(apiStateCollector{queries: APIStateQueries{
@@ -39,7 +37,7 @@ flick_storage_bytes_used{storage="r2"} 0
 	}
 }
 
-// 질의 하나가 실패하면 그 시계열만 빠지고 나머지와 /metrics 응답은 그대로 나간다.
+// A failed query drops only its series; the rest of /metrics still serves.
 func TestAPIStateCollectorDropsOnlyTheFailedSeries(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(apiStateCollector{queries: APIStateQueries{

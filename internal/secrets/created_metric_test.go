@@ -8,11 +8,7 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// NewStore pre-registers every kind/storage combination — inline plus each
-// configured backend name — so flick_secret_created_total exists at 0 from
-// process start; otherwise the series vanishes after every api restart until
-// the next delivery and the usage dashboard reads "No data" (#374). The backend
-// names are unique to this test so no other test's create can satisfy it.
+// Backend names are unique to this test so no other test's create can satisfy it.
 func TestSecretCreatedChildrenPreRegistered(t *testing.T) {
 	registry, err := storage.NewRegistry(
 		storage.Backend{Name: "metrica", Store: newMockObjectStore(), MaxTotalBytes: 1},

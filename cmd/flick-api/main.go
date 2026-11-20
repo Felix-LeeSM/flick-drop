@@ -23,18 +23,14 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/telemetry"
 )
 
-// shutdownTimeout bounds how long SIGTERM waits for in-flight requests,
-// mostly live transfers. It stays under the pod's 60-second
-// terminationGracePeriodSeconds minus its 5-second preStop sleep.
+// Must stay under terminationGracePeriodSeconds (60s) minus the 5s preStop sleep.
 const shutdownTimeout = 50 * time.Second
 
 func main() {
 	logger := telemetry.NewLogger()
 	telemetry.SetStandardLogger(logger)
 
-	// "flick-api migrate" applies the flick_api schema and exits before object
-	// storage, NATS, the reconciler, or the listeners start, for the one-time
-	// SQLite cutover (docs/runbook/postgres-cutover.md).
+	// Exits before storage, NATS, the reconciler, or listeners start.
 	migrateOnly := len(os.Args) == 2 && os.Args[1] == "migrate"
 	if len(os.Args) > 1 && !migrateOnly {
 		log.Fatalf("usage: flick-api [migrate]")
@@ -63,8 +59,6 @@ func main() {
 		}
 	}()
 
-	// OpenPostgres fails fast on an empty DSN: the API owns the flick_api
-	// Postgres database and has no local fallback file.
 	conn, err := db.OpenPostgres(ctx, cfg.APIDatabaseURL)
 	if err != nil {
 		log.Fatalf("open api database: %v", err)
@@ -99,8 +93,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("create outbox store: %v", err)
 	}
-	// The object cap is the largest age file a MaxFileBytes plaintext can
-	// produce; CreateLarge refuses to presign a declared length above it.
 	maxObjectBytes := secrets.MaxCiphertextBytes(cfg.MaxFileBytes)
 	secretStore, err := secrets.NewStore(conn, secrets.StoreOptions{
 		PayloadInlineMaxBytes: cfg.PayloadInlineMaxBytes,
@@ -113,8 +105,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("create secret store: %v", err)
 	}
-	// The API-state gauges read the shared database on every scrape, so each
-	// replica reports the same cluster-wide value.
 	telemetry.RegisterAPIStateCollector(telemetry.APIStateQueries{
 		PendingUploads: secretStore.CountPendingUploads,
 		OutboxPending:  outboxStore.CountPending,
@@ -157,10 +147,7 @@ func main() {
 		log.Fatalf("create request store: %v", err)
 	}
 
-	// Valkey shares rate-limit buckets and live-transfer rooms across
-	// replicas. It is optional: empty FLICK_VALKEY_ADDR, or Valkey down at
-	// runtime, keeps each replica on its own in-process rate-limit buckets,
-	// and /readyz never depends on it.
+	// Valkey is optional: without it each replica keeps in-process rate-limit buckets, and /readyz never depends on it.
 	var valkey *redis.Client
 	if cfg.ValkeyAddr != "" {
 		valkey = httpapi.NewValkeyClient(cfg.ValkeyAddr)
@@ -168,10 +155,7 @@ func main() {
 		log.Printf("flick-api rate limiter shares buckets through valkey")
 	}
 
-	// Live transfer needs Valkey: any replica may hold either side of a
-	// transfer. Without it /api/pipe/* answers 503 and /api/config reports
-	// pipe_relay_enabled=false. The stream listener carries ciphertext from
-	// the sender's replica to the receiver's replica.
+	// Live transfer needs Valkey: either side may land on any replica. Without it /api/pipe/* answers 503.
 	var pipeCoordinator *piperelay.Coordinator
 	var streamServer *http.Server
 	switch {
@@ -191,15 +175,13 @@ func main() {
 		}
 		defer pipeCoordinator.Close()
 		streamServer = &http.Server{
-			// Bound to the advertised address only (FLICK_POD_IP, 127.0.0.1
-			// outside Kubernetes), never every interface.
+			// Never bind every interface.
 			Addr:              netip.AddrPortFrom(cfg.PodIP, cfg.InternalHTTPPort).String(),
 			Handler:           pipeCoordinator.InternalHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 			MaxHeaderBytes:    64 << 10,
-			// No ReadTimeout or WriteTimeout: the stream handler sets its own
-			// 15-minute deadlines (internal/piperelay/stream.go).
+			// No Read/WriteTimeout: the stream handler sets its own deadlines (internal/piperelay/stream.go).
 		}
 		log.Printf("flick-api live pipe relay enabled (max_concurrent=%d, stream listener %s)", cfg.PipeMaxConcurrent, streamServer.Addr)
 	}
@@ -227,12 +209,8 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
-		// WriteTimeout intentionally unset: an S3-backed /open streams up to
-		// MaxFileBytes of ciphertext back through the API and sets its own
-		// deadline (secrets.OpenStreamTimeout); a server-wide one would abort
-		// legitimate large downloads on slow links.
-		// ReadHeaderTimeout is the Slowloris defense; idle keep-alives are reaped
-		// by IdleTimeout.
+		// No WriteTimeout: a large /open streams ciphertext and sets its own deadline (secrets.OpenStreamTimeout).
+		// ReadHeaderTimeout is the Slowloris defense.
 	}
 
 	reaper, err := secrets.NewReaper(conn, secretStore, outboxStore, secrets.ReaperOptions{
@@ -297,12 +275,8 @@ func main() {
 	case <-ctx.Done():
 	}
 
-	// Shutdown order for a rolling update (terminationGracePeriodSeconds 60
-	// after a 5-second preStop): waiting-room long-polls answer at once so
-	// browsers re-poll through another replica, then the API listener drains
-	// in-flight /send and /receive for up to shutdownTimeout. The stream
-	// listener closes only after that: a /receive still waiting here needs it
-	// open for the sender's replica to dial in.
+	// Order matters: long-polls answer first so browsers re-poll another replica, then the API drains;
+	// the stream listener closes last because a draining /receive needs the sender's replica to dial in.
 	if pipeCoordinator != nil {
 		pipeCoordinator.Drain()
 	}

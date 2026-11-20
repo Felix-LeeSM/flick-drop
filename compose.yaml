@@ -1,8 +1,4 @@
 services:
-  # Single PostgreSQL 17 instance owning both Flick logical databases. The
-  # init script creates the flick_api and flick_worker roles and databases so
-  # the ownership boundary from docs/architecture/database-schema.md holds
-  # locally too.
   postgres:
     image: postgres:17-alpine
     environment:
@@ -18,9 +14,7 @@ services:
       timeout: 3s
       retries: 10
 
-  # Non-persistent by contract: rate-limit keys and live-transfer rendezvous
-  # state only, never ciphertext. --save "" --appendonly no enforces the
-  # zero-disk privacy boundary from docs/architecture/security-model.md.
+  # Never ciphertext; --save "" --appendonly no keeps it off disk (security-model.md).
   valkey:
     image: valkey/valkey:8.1-alpine
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
@@ -44,9 +38,7 @@ services:
     volumes:
       - nats-data:/data
 
-  # MinIO pulled its own images in 2025: minio/minio and minio/mc are gone from
-  # Docker Hub and quay.io rejects anonymous pulls, so the dev stack runs the
-  # last community image, which bundles the mc client for bucket provisioning.
+  # minio/minio left Docker Hub and quay.io rejects anonymous pulls; this last community image bundles mc.
   minio:
     image: bitnamilegacy/minio:latest
     ports:
@@ -58,7 +50,6 @@ services:
     volumes:
       - minio-data:/bitnami/minio/data
 
-  # One-shot bucket provisioner: waits for MinIO, then creates the dev bucket.
   createbuckets:
     image: bitnamilegacy/minio:latest
     depends_on:

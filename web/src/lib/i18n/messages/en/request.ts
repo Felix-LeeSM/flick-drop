@@ -1,4 +1,3 @@
-// Request flow: create a request, submit to it, retrieve the submission.
 export const request = {
 	shared: {
 		badge: 'end-to-end encrypted · one-time request',
@@ -166,7 +165,6 @@ export const request = {
 				'The server did not release content for this opening. The request may have changed in another tab.'
 		}
 	},
-	// Messages the request API client and upload state throw; the pages show them as-is.
 	api: {
 		invalidResponse: 'Could not verify the server response.',
 		linkUnavailable: 'Request link unavailable.',

@@ -1,5 +1,3 @@
-// Shared chrome: header, language row, delivery tabs, theme toggle, sponsor slot,
-// and the link, stage, and lifetime widgets used on more than one page.
 export const common = {
 	enterCode: 'Enter Code',
 	siteNav: 'Site',
@@ -16,7 +14,6 @@ export const common = {
 		label: 'Sponsored',
 		opensNewTab: ' (opens in a new tab)'
 	},
-	// Shared link widgets: UrlField, NativeShareButton, QrModal, QrCode.
 	urlField: {
 		label: 'Share URL',
 		copyToClipboard: 'Copy to clipboard',
@@ -34,14 +31,12 @@ export const common = {
 		close: 'Close',
 		codeLabel: 'QR code for the secret share link'
 	},
-	// LockStageCard and StageSteps, shared by create, open, and live transfer.
 	stage: {
 		creatingLink: 'Creating your link',
 		openingSecret: 'Opening your secret',
 		cancel: 'Cancel',
 		progressSteps: 'Progress steps'
 	},
-	// LifetimePicker and the countdown in web/src/lib/lifetime.ts:formatRemaining.
 	lifetime: {
 		label: 'Expires after',
 		group: 'Lifetime',

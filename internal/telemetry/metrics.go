@@ -1,9 +1,3 @@
-// Metrics are process-global Prometheus instruments, registered exactly once
-// per process through DefaultRegistry. They carry only safe cardinality labels
-// (kind, storage backend, job kind, outcome, reason) — never IDs, ciphertext,
-// passphrases, or derived keys, per docs/architecture/security-model.md
-// ("Logs and metrics must not include plaintext, passphrases, derived keys, or
-// ciphertext bodies").
 package telemetry
 
 import (
@@ -17,15 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// DefaultRegistry is the single Prometheus registry a process serves on
-// /metrics. Today only the API process mounts /metrics; the worker process
-// does not yet run an HTTP server, so worker-side counters (e.g.
-// flick_jobs_processed_total) are not currently observable until the worker
-// exposes its own /metrics.
 var DefaultRegistry = prometheus.NewRegistry()
 
-// metricLabels bounds the label cardinality the gate will ever see. Adding a
-// label value without extending these would surface as an unbounded series.
 const (
 	labelKindStorageKind = "kind"
 	labelStorage         = "storage"
@@ -36,8 +23,6 @@ const (
 )
 
 var (
-	// SecretCreated counts secrets created, partitioned by content kind and
-	// storage backend so inline-vs-S3 and text-vs-file volume is visible.
 	SecretCreated = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "flick_secret_created_total",
@@ -46,9 +31,7 @@ var (
 		[]string{labelKindStorageKind, labelStorage},
 	)
 
-	// SecretOpened counts successful one-time opens (OpenTx returning a payload).
-	// Failed access attempts are not counted here: they are an attack signal, not
-	// a delivery signal, and surfacing them as a counter would invite abuse.
+	// Failed access attempts are deliberately not counted: an attack signal, not delivery.
 	SecretOpened = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "flick_secret_opened_total",
@@ -56,10 +39,7 @@ var (
 		},
 	)
 
-	// SecretReaped counts rows hard-deleted by the expiration reaper, by why
-	// they were reclaimable: "expired" (active past TTL) or "orphan"
-	// (pending_upload never finalized). The two classes share a batch slot, so
-	// this label shows which path dominates.
+	// "expired" (active past TTL) or "orphan" (pending_upload never finalized).
 	SecretReaped = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "flick_secret_reaped_total",
@@ -68,9 +48,7 @@ var (
 		[]string{labelReason},
 	)
 
-	// JobsProcessed counts worker jobs by kind and terminal outcome. "succeeded"
-	// and "failed" are per-attempt; "dead" marks a job that exhausted retries and
-	// entered the dead-letter table.
+	// "succeeded"/"failed" are per-attempt; "dead" exhausted retries.
 	JobsProcessed = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "flick_jobs_processed_total",
@@ -79,10 +57,6 @@ var (
 		[]string{labelJobKind, labelOutcome},
 	)
 
-	// RequestCreated/Submitted/Consumed count the request-link lifecycle so the
-	// scraped series carry the same story as the durable usage_counters rows.
-	// Like SecretCreated they are process-local counters (reset on restart);
-	// VictoriaMetrics rate() absorbs the reset.
 	RequestCreated = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "flick_request_created_total",
@@ -104,8 +78,6 @@ var (
 		},
 	)
 
-	// OutboxPublished counts outbox events handed to NATS, by outcome: the
-	// queue's throughput as seen from its producer side.
 	OutboxPublished = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "flick_outbox_published_total",
@@ -114,10 +86,7 @@ var (
 		[]string{labelOutcome},
 	)
 
-	// RateLimitFallbacks counts requests a rate limiter judged with its
-	// per-process bucket because the shared Valkey bucket failed, by limiter
-	// name (internal/httpapi/ratelimit.go). Non-zero means replicas are each
-	// enforcing their own budget.
+	// Non-zero means replicas each enforce their own per-process budget.
 	RateLimitFallbacks = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "flick_ratelimit_fallback_total",
@@ -141,18 +110,11 @@ func init() {
 	)
 }
 
-// MetricsHandler serves the Prometheus text exposition format for
-// DefaultRegistry. Mounted on /metrics by the API process (see
-// internal/httpapi) and by the worker's dedicated metrics server.
 func MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{})
 }
 
-// NewMetricsServer builds a standalone bearer-gated /metrics HTTP server for a
-// process with no other listener — the worker. The token is the same
-// FLICK_METRICS_TOKEN credential the API serves under (one scrape credential
-// per deployment), compared in constant time; an empty configured token fails
-// closed with 401 so a misconfigured deploy never exposes metrics.
+// Empty configured token fails closed with 401.
 func NewMetricsServer(addr, token string) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -174,9 +136,7 @@ func NewMetricsServer(addr, token string) *http.Server {
 	}
 }
 
-// checkBearerToken compares the "Bearer <token>" tail against want with the
-// same constant-time digest comparison the API uses
-// (httpapi.secureTokenEqual); an empty want never matches.
+// Same constant-time digest compare as httpapi.secureTokenEqual.
 func checkBearerToken(got, want string) bool {
 	if got == "" || want == "" {
 		return false

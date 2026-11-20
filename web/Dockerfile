@@ -3,8 +3,7 @@
 ARG NODE_IMAGE=node:24.15.0-alpine
 ARG WEB_RUNTIME_IMAGE=nginx:1.29-alpine
 
-# The build output is static and architecture-independent, so it always runs
-# natively on the build platform; only the nginx runtime stage is per-platform.
+# Static output is arch-independent, so build natively; only nginx is per-platform.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /app
 
@@ -33,11 +32,8 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY nginx-templates/ /etc/nginx/templates/
 COPY --from=build /app/build /usr/share/nginx/html
 
-# The CSP is templated at start by the base image's envsubst entrypoint; render
-# it into a dedicated snippet dir the non-root nginx user owns (the default
-# /etc/nginx/conf.d is root-owned, so envsubst would skip it). FLICK_CSP_CONNECT_SRC
-# defaults to empty, keeping connect-src 'self' unless a deployment sets its
-# object-store origin.
+# envsubst skips root-owned /etc/nginx/conf.d, so render the CSP into a dir nginx owns.
+# Empty FLICK_CSP_CONNECT_SRC keeps connect-src 'self'.
 ENV NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/snippets \
 	FLICK_CSP_CONNECT_SRC=""
 

@@ -51,8 +51,7 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 	if err := consumer.EnsureConsumer(ctx, stream, subject, durable, 3); err != nil {
 		t.Fatalf("ensure consumer: %v", err)
 	}
-	// Upgrading an existing deployment must remove the broker delivery limit;
-	// only the worker knows which deliveries were real handler failures.
+	// An upgrade must clear the old broker delivery limit; the worker owns the failure budget.
 	if err := consumer.EnsureConsumer(ctx, stream, subject, durable, 0); err != nil {
 		t.Fatalf("upgrade consumer: %v", err)
 	}
@@ -80,8 +79,7 @@ func TestNATSJetStreamConsumerIntegration(t *testing.T) {
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d, want 1", len(messages))
 	}
-	// Retry more than the former limit, then complete. The first retry uses
-	// the real delayed NAK; the rest use immediate NAK to keep this test short.
+	// First retry uses the real delayed NAK; the rest use immediate NAK to keep the test short.
 	for retry := range 4 {
 		if retry == 0 {
 			err = messages[0].Nak()

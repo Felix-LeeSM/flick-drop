@@ -30,13 +30,11 @@ let { open = $bindable(false), url }: Props = $props();
 				>
 					<XIcon class="size-4" aria-hidden="true" />
 				</Dialog.Close>
-				<!-- Side padding keeps an enlarged title clear of the close button in the top-right corner. -->
 				<Dialog.Title class="mt-0.5 px-6 font-serif text-2xl">{t().common.qr.title}</Dialog.Title>
 			</div>
 			<Dialog.Description class="text-sm text-muted-foreground">
 				{t().common.qr.description}
 			</Dialog.Description>
-			<!-- With enlarged text the 13rem QR outgrows a phone-width dialog, so it shrinks to the dialog width. -->
 			<QrCode value={url} class="mx-auto aspect-square w-52 max-w-full rounded-lg bg-white p-2.5 shadow-xs" />
 			<UrlField value={url} class="h-12" />
 			<Dialog.Close class={cn(buttonVariants({ variant: 'outline' }), 'h-12 w-full')}>

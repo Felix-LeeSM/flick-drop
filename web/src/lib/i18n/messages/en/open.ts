@@ -1,4 +1,3 @@
-// Recipient page that opens a one-time secret (OpenSecretPage.svelte).
 export const open = {
 	headTitle: 'Open secret',
 	headerCreate: 'Create',

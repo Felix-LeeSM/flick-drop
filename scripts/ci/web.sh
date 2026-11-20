@@ -28,9 +28,7 @@ run_if_present lint
 run_if_present test
 run_if_present build
 
-# The CSP (web/nginx-templates/csp.conf.template) blocks data: fonts, so the
-# build must emit every font as a file. web/vite.config.ts build.assetsInlineLimit
-# keeps fonts out of the inline path.
+# The CSP blocks data: fonts; web/vite.config.ts build.assetsInlineLimit keeps them out of the inline path.
 if [ -d build ] && grep -rlq 'data:font/' build; then
   echo "web: build inlines a data: font that the CSP blocks:" >&2
   grep -rl 'data:font/' build >&2

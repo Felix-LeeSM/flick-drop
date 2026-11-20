@@ -7,16 +7,12 @@ import (
 	"time"
 )
 
-// Test-local storage_backend column values: two configured backend names and
-// the inline value.
 const (
 	s3Backend     = "oci"
 	r2Backend     = "r2"
 	sqliteBackend = StorageInline
 )
 
-// seedUsageRows inserts one row per scenario. Backend is the storage_backend
-// column value; size is size_bytes in bytes.
 type usageSecret struct {
 	backend    string
 	size       int64
@@ -111,30 +107,20 @@ func TestStorageObjectBytesPerBackend(t *testing.T) {
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 
 	insertUsageSecrets(t, conn, []usageSecret{
-		// Active objects count in full.
 		{s3Backend, 100, "active", ""},
-		// Consumed within the 35-minute open grace still counts: the bucket
-		// object may outlive the row's consumed flag.
+		// Consumed within the 35-minute open grace still counts.
 		{s3Backend, 200, "active", "2026-11-09T11:50:00.123456789Z"},
-		// Consumed past the grace no longer counts.
 		{s3Backend, 400, "active", "2026-11-09T11:20:00Z"},
-		// Staged pending_upload secrets count (the staging object exists).
 		{s3Backend, 80, "pending_upload", ""},
-		// The secondary backend aggregates separately.
 		{r2Backend, 50, "active", ""},
-		// Inline blobs never live in a bucket and never count.
 		{sqliteBackend, 999, "active", ""},
 	})
 
 	insertUsageRequests(t, conn, []usageRequest{
-		// Uploading rows carry both keys and count twice (staging + possible
-		// final object): the safe over-count direction.
+		// Uploading rows count twice (staging + possible final): the safe over-count.
 		{s3Backend, "uploading", 10, "managed/requests/a/upload", "managed/requests/a/final"},
-		// Submitted rows hold one final object.
 		{s3Backend, "submitted", 20, "", "managed/requests/b/final"},
-		// The secondary backend aggregates separately.
 		{r2Backend, "submitted", 30, "", "managed/requests/c/final"},
-		// Waiting and inline rows carry no object keys and contribute nothing.
 		{s3Backend, "waiting", 0, "", ""},
 		{sqliteBackend, "waiting", 0, "", ""},
 	})
@@ -143,8 +129,6 @@ func TestStorageObjectBytesPerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StorageObjectBytes: %v", err)
 	}
-	// A configured backend with no rows reports zero, and only configured
-	// names appear.
 	if got, ok := usage["unused"]; !ok || got != 0 || len(usage) != 3 {
 		t.Fatalf("usage = %v, want exactly the three configured names", usage)
 	}

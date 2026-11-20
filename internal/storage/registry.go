@@ -6,37 +6,26 @@ import (
 	"regexp"
 )
 
-// backendNamePattern is the shape of an operator-chosen backend name. The name
-// is stored in the secrets/requests storage_backend columns and in delete
-// events, and its upper-case form names the backend's environment variables
-// (FLICK_STORAGE_<NAME>_*), so it stays short, lower-case, and free of
-// underscores. The inline value 'sqlite_blob' can never match it.
+// Stored in storage_backend columns and delete events; upper-cased into FLICK_STORAGE_<NAME>_*,
+// so no underscores. Can never match the inline value 'sqlite_blob'.
 var backendNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,15}$`)
 
-// ValidBackendName reports whether name can name an object backend.
 func ValidBackendName(name string) bool { return backendNamePattern.MatchString(name) }
 
-// Backend is one configured object store. MaxTotalBytes caps the cumulative
-// object bytes placed on it (see db.StorageObjectBytes); 0 means unlimited and
-// is allowed only when the backend is the only one.
+// MaxTotalBytes 0 means unlimited, allowed only for a sole backend.
 type Backend struct {
 	Name          string
 	Store         ObjectStore
 	MaxTotalBytes int64
 }
 
-// Registry holds the configured object backends in configuration order. A
-// registry is built at process wiring from each backend's own configuration;
-// no registry at all means object storage is disabled. It is read-only after
-// construction and safe for concurrent use.
+// Read-only after construction; safe for concurrent use. A nil registry means object storage is disabled.
 type Registry struct {
 	backends []Backend
 	byName   map[string]Backend
 }
 
-// NewRegistry validates and wraps the configured backends: at least one, each
-// with a valid unique name and a store, and every one capped when there are
-// several (weighted placement needs a finite free space per backend).
+// Several backends must all be capped: weighted placement needs finite free space.
 func NewRegistry(backends ...Backend) (*Registry, error) {
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("at least one object backend is required")
@@ -63,8 +52,7 @@ func NewRegistry(backends ...Backend) (*Registry, error) {
 	return &Registry{backends: backends, byName: byName}, nil
 }
 
-// For resolves the backend a row or delete job names. An unknown name is an
-// error so callers never silently read from or delete in the wrong bucket.
+// Unknown names are errors so callers never read or delete in the wrong bucket.
 func (r *Registry) For(backend string) (ObjectStore, error) {
 	b, ok := r.byName[backend]
 	if !ok {
@@ -73,8 +61,6 @@ func (r *Registry) For(backend string) (ObjectStore, error) {
 	return b.Store, nil
 }
 
-// Each visits every configured backend in configuration order. The visit stops
-// on the first error.
 func (r *Registry) Each(fn func(backend string, store ObjectStore) error) error {
 	for _, b := range r.backends {
 		if err := fn(b.Name, b.Store); err != nil {
@@ -84,7 +70,6 @@ func (r *Registry) Each(fn func(backend string, store ObjectStore) error) error 
 	return nil
 }
 
-// Names lists the configured backend names in configuration order.
 func (r *Registry) Names() []string {
 	names := make([]string, len(r.backends))
 	for i, b := range r.backends {
@@ -93,9 +78,7 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// ForRequest resolves a backend supporting server-side final writes (request
-// finalize's PutStream). Every built-in backend implements it; the check keeps
-// a future read-only backend from failing finalize deep inside a transaction.
+// The check keeps a future read-only backend from failing finalize deep inside a transaction.
 func (r *Registry) ForRequest(backend string) (RequestObjectStore, error) {
 	store, err := r.For(backend)
 	if err != nil {
@@ -108,18 +91,12 @@ func (r *Registry) ForRequest(backend string) (RequestObjectStore, error) {
 	return req, nil
 }
 
-// Choose picks the backend for a new object of size bytes. usage maps backend
-// -> bytes already plausibly in the bucket (see db.StorageObjectBytes). Among
-// the backends whose ceiling still fits the object, it picks at random with a
-// weight equal to each one's remaining space, so fuller buckets receive fewer
-// new objects and no backend is "first". It returns "" when no backend has
-// room.
+// Weighted by remaining space so fuller buckets get fewer objects. Returns "" when none has room.
 func (r *Registry) Choose(usage map[string]int64, size int64) string {
 	return r.chooseWith(usage, size, rand.Int64N)
 }
 
-// chooseWith is Choose with the random source injected: randN(n) returns a
-// value in [0, n).
+// randN(n) returns a value in [0, n).
 func (r *Registry) chooseWith(usage map[string]int64, size int64, randN func(int64) int64) string {
 	if len(r.backends) == 1 {
 		b := r.backends[0]

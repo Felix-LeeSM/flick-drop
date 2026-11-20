@@ -4,11 +4,7 @@ import type { Snippet } from 'svelte';
 import { Label } from '#lib/components/ui/label/index.js';
 import { Switch } from '#lib/components/ui/switch/index.js';
 
-// One opt-in protection row (prototype round 30, U2): the label toggles the
-// switch, and the info button beside it pops the explanation on hover or
-// keyboard focus. The info button is a sibling of the label, not a child —
-// inside it, popover clicks would toggle the switch and the nesting would
-// break HTML phrasing rules.
+// The info button is a sibling of the label: inside it, popover clicks would toggle the switch.
 let {
 	id,
 	checked = $bindable(false),
@@ -28,7 +24,6 @@ let {
 	describedBy: string;
 	disabled?: boolean;
 	details: Snippet;
-	// Rendered under the row while the switch is on, e.g. the passphrase field.
 	field?: Snippet;
 } = $props();
 </script>

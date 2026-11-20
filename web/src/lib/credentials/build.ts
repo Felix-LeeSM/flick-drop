@@ -35,7 +35,6 @@ export function buildEnvelope(
 	};
 }
 
-// A credential worth sending has at least one non-blank title, note, or field value.
 export function hasCredentialContent(envelope: CredentialEnvelope): boolean {
 	return (
 		(envelope.title ?? '').trim().length > 0 ||
@@ -104,7 +103,7 @@ function buildCustomField(
 
 	return {
 		id,
-		// A new custom field's starting label is user-editable text, so it follows the display language.
+		// Starting label is user-editable text, so it follows the display language.
 		label: options.label ?? t().credentials.defaultFieldLabel(nextIndex),
 		value: options.value ?? '',
 		secret: options.secret ?? false

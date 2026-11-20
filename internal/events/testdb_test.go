@@ -12,10 +12,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
-// openAPITestDatabase opens an isolated Postgres schema for one test and runs
-// MigrateAPI in it. Without FLICK_TEST_POSTGRES_URL the test skips: the
-// compose/CI service provides the URL (scripts/dev/postgres-init.sql,
-// .github/workflows/ci.yml).
 func openAPITestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
@@ -35,8 +31,7 @@ func openAPITestDatabase(t *testing.T) *sql.DB {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	// pgx v5 passes unknown URL query parameters to the server as runtime
-	// parameters, so every pooled connection lands in the test schema.
+	// pgx v5 forwards unknown URL query params as runtime params, so every pooled conn uses the test schema.
 	scoped, err := url.Parse(baseURL)
 	if err != nil {
 		_ = admin.Close()
@@ -46,8 +41,7 @@ func openAPITestDatabase(t *testing.T) *sql.DB {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
+	// Production pool settings, not a raw sql.Open.
 	conn, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()

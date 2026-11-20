@@ -9,8 +9,6 @@ import (
 )
 
 func TestRevokeHTTPContract(t *testing.T) {
-	// An opened delivery answers like an unknown ID
-	// (TestOpenedSecretIsIndistinguishableFromUnknownID).
 	for _, outcome := range []string{"cancelled", "locked"} {
 		t.Run(outcome, func(t *testing.T) {
 			f := newTestRouterFixture(t, Options{OpenRatePerMinute: 100})
@@ -120,8 +118,7 @@ func TestObjectReconciliationAcknowledgementIsAuthenticatedAndFenced(t *testing.
 		t.Fatal("missing internal token accepted")
 	}
 	headers := map[string]string{"X-Flick-Internal-Token": "test-token"}
-	// A claim is fenced by backend too, so an acknowledgement without one is
-	// malformed rather than "the primary".
+	// Without a backend the acknowledgement is malformed, not "the primary".
 	noBackend := map[string]string{"job_id": "new-job", "object_key": "managed/secrets/key"}
 	if resp = performJSON(t, f.router, http.MethodPost, path, noBackend, headers); resp.Code != http.StatusBadRequest {
 		t.Fatalf("ack without backend: %d, want 400", resp.Code)

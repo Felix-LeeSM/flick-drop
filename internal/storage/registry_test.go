@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// stubStore satisfies ObjectStore without implementing anything: placement
-// only resolves backends through the registry, never calling store methods.
 type stubStore struct{ ObjectStore }
 
 func threeBackends(t *testing.T) *Registry {
@@ -22,9 +20,7 @@ func threeBackends(t *testing.T) *Registry {
 	return r
 }
 
-// 무작위 값이 [0, n)의 각 구간에 떨어질 때 남은 용량 비례 구간이 그대로 선택된다.
 func TestChooseWeightsByRemainingSpace(t *testing.T) {
-	// Given: 남은 용량 oci 700, r2 100, minio 200 (합 1000)
 	r := threeBackends(t)
 	usage := map[string]int64{"oci": 300, "r2": 900, "minio": 800}
 
@@ -35,10 +31,8 @@ func TestChooseWeightsByRemainingSpace(t *testing.T) {
 		{0, "oci"}, {699, "oci"}, {700, "r2"}, {799, "r2"}, {800, "minio"}, {999, "minio"},
 	}
 	for _, c := range cases {
-		// When: 무작위 값이 roll로 고정된다
 		var gotN int64
 		got := r.chooseWith(usage, 50, func(n int64) int64 { gotN = n; return c.roll })
-		// Then: 구간 [0,700)은 oci, [700,800)은 r2, [800,1000)은 minio
 		if gotN != 1000 {
 			t.Fatalf("roll range = %d, want the summed free space 1000", gotN)
 		}
@@ -48,17 +42,13 @@ func TestChooseWeightsByRemainingSpace(t *testing.T) {
 	}
 }
 
-// 객체가 들어가지 않는 백엔드는 가중치 합에서도 빠진다.
 func TestChooseSkipsBackendsWithoutRoom(t *testing.T) {
-	// Given: r2는 남은 용량 100이라 200바이트 객체가 안 들어간다
 	r := threeBackends(t)
 	usage := map[string]int64{"oci": 500, "r2": 900, "minio": 800}
 
-	// When: 가장 큰 무작위 값을 고른다
 	var gotN int64
 	got := r.chooseWith(usage, 200, func(n int64) int64 { gotN = n; return n - 1 })
 
-	// Then: 후보는 oci(500)와 minio(200)뿐이고 마지막 구간은 minio다
 	if gotN != 700 || got != "minio" {
 		t.Fatalf("range %d, backend %q; want 700 and minio", gotN, got)
 	}
@@ -73,7 +63,6 @@ func TestChooseReportsFull(t *testing.T) {
 	}
 }
 
-// 백엔드가 하나면 상한 0은 무제한이다.
 func TestChooseSingleBackendZeroCeilingIsUnlimited(t *testing.T) {
 	r, err := NewRegistry(Backend{Name: "minio", Store: stubStore{}})
 	if err != nil {

@@ -37,16 +37,10 @@ type JobEvent struct {
 	SecretID  string `json:"secret_id,omitempty"`
 	ObjectKey string `json:"object_key,omitempty"`
 	Reason    string `json:"reason,omitempty"`
-	// Backend names the configured object backend the object lives on (a
-	// FLICK_STORAGE_BACKENDS name, storage.ValidBackendName). Required for
-	// object deletes. A backend name is safe event metadata — never a private
-	// bucket name.
+	// A FLICK_STORAGE_BACKENDS name, required for object deletes; never a private bucket name.
 	Backend     string    `json:"backend,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
-	// TraceContext carries the W3C trace-context of the span that enqueued this
-	// job, injected by the outbox at enqueue time so the worker can continue the
-	// producer's trace across the async outbox -> NATS hop (#133). Telemetry IDs
-	// only — never secret content. Absent when tracing is disabled.
+	// W3C trace context of the enqueuing span; telemetry IDs only, never secret content.
 	TraceContext map[string]string `json:"trace_context,omitempty"`
 }
 

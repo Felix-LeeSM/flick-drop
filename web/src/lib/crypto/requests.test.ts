@@ -22,7 +22,6 @@ beforeAll(async () => {
 	keys = await generateRequestKeys();
 });
 
-// What the API returns from open: the body as a stream, the filename header decoded.
 function opened(sealed: SealedRequest): OpenedRequestBody {
 	return {
 		kind: sealed.kind,

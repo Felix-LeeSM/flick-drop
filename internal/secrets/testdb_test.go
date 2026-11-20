@@ -13,9 +13,6 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/db"
 )
 
-// testAPIDatabase owns one isolated Postgres schema per test. Tests that
-// simulate API restarts or concurrent replicas open several pools over the
-// same schema; the schema is dropped when the test finishes.
 type testAPIDatabase struct {
 	url string
 }
@@ -41,8 +38,7 @@ func openTestAPIDatabase(t *testing.T) *testAPIDatabase {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	// pgx v5 passes unknown URL query parameters to the server as runtime
-	// parameters, so every pooled connection lands in the test schema.
+	// pgx v5 passes unknown URL query parameters as runtime parameters, so every pooled connection lands in the test schema.
 	scoped, err := url.Parse(baseURL)
 	if err != nil {
 		_ = admin.Close()
@@ -52,8 +48,6 @@ func openTestAPIDatabase(t *testing.T) *testAPIDatabase {
 	query.Set("search_path", schema)
 	scoped.RawQuery = query.Encode()
 
-	// OpenPostgres (not a raw sql.Open) so test pools use the production pool
-	// settings.
 	pool, err := db.OpenPostgres(ctx, scoped.String())
 	if err != nil {
 		_ = admin.Close()
@@ -74,8 +68,6 @@ func openTestAPIDatabase(t *testing.T) *testAPIDatabase {
 	return &testAPIDatabase{url: scoped.String()}
 }
 
-// openPool returns a fresh pool over the shared test schema, the Postgres
-// analogue of reopening the same SQLite file after an API restart.
 func (d *testAPIDatabase) openPool(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -89,8 +81,6 @@ func (d *testAPIDatabase) openPool(t *testing.T) *sql.DB {
 	return conn
 }
 
-// openTestDB keeps the pre-Postgres helper signature: one fresh schema and one
-// pool per test, migrated with the same MigrateAPI the API runs at boot.
 func openTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 

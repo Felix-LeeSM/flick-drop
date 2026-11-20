@@ -1,13 +1,5 @@
-// Package flickcli implements the `flick` command-line client: the API calls,
-// share-link handling, and the send/open flows. cmd/flick only parses flags and
-// dispatches into here.
-//
-// The client is a peer of the SvelteKit app in web/src/lib/api, not a wrapper
-// around the server's internals: it speaks the same public HTTP contract in
-// contracts/openapi.yaml and does all encryption locally through
-// internal/clientcrypto. It must never import internal/secrets, internal/db, or
-// internal/storage — the CLI is an outside caller and gains nothing the browser
-// could not also do.
+// Package flickcli is an outside client of contracts/openapi.yaml, a peer of web/src/lib/api.
+// It must never import internal/secrets, internal/db, or internal/storage.
 package flickcli
 
 import (
@@ -26,39 +18,27 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// Default limits, in bytes before encryption, mirror web/src/lib/api/config.ts.
-// The inline ceiling is the largest input whose age file fits the server's
-// 1 MiB default: secrets.MaxPlaintextBytes(1048576) in internal/secrets/age.go.
-// They are the fallback when GET /api/config is unreachable; the server
-// re-enforces both, so these are advisory.
+// Mirror web/src/lib/api/config.ts; fallback when GET /api/config is unreachable. The server re-enforces both.
 const (
 	DefaultPayloadInlineMaxBytes = 1_044_208
 	DefaultMaxFileBytes          = 268_435_456 // 256 MiB
 )
 
-// Client talks to one Flick deployment.
 type Client struct {
 	baseURL string
 	http    *http.Client
 }
 
-// NewClient builds a client for the given API base URL. Trailing slashes are
-// trimmed so path joining stays predictable.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		// Generous but bounded: a 256 MiB transfer on a slow link needs room,
-		// and no timeout at all turns a hung bucket into a hung terminal. It
-		// matches the API's 30-minute open stream limit.
+		// Matches the API's 30-minute open stream limit.
 		httpClient = &http.Client{Timeout: 30 * time.Minute}
 	}
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
 }
 
-// BaseURL is the deployment this client points at.
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// APIError carries the server's error code so callers can react to `consumed`
-// or `invalid_access` without matching on message text.
 type APIError struct {
 	Code    string
 	Status  int
@@ -72,14 +52,12 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-// Limits are the client-facing size limits from GET /api/config.
 type Limits struct {
 	PayloadInlineMaxBytes int64 `json:"payload_inline_max_bytes"`
 	MaxFileBytes          int64 `json:"max_file_bytes"`
 }
 
-// DefaultLimits is what the client falls back to when /api/config cannot be
-// read. Matching the browser's fallback keeps routing decisions identical.
+// Matching the browser's fallback keeps routing decisions identical.
 func DefaultLimits() Limits {
 	return Limits{
 		PayloadInlineMaxBytes: DefaultPayloadInlineMaxBytes,
@@ -87,9 +65,7 @@ func DefaultLimits() Limits {
 	}
 }
 
-// Config fetches the deployment's size limits. Like the browser client it never
-// fails the caller: an unreachable or malformed config yields the defaults, and
-// the server re-enforces the real limits anyway.
+// Never fails, like the browser client: the server re-enforces the real limits.
 func (c *Client) Config(ctx context.Context) Limits {
 	limits := DefaultLimits()
 	var fetched Limits
@@ -105,12 +81,7 @@ func (c *Client) Config(ctx context.Context) Limits {
 	return limits
 }
 
-// CreateSecretRequest mirrors contracts/openapi.yaml CreateSecretRequest. The
-// API rejects unknown fields, and omitempty on Ciphertext is what selects the
-// large-upload path: omitting it asks the server for a presigned PUT.
-//
-// Ciphertext, EncryptedFilename, and WrappedIdentity are base64 age files.
-// SizeBytes is the exact length of the body age file.
+// The API rejects unknown fields; omitting Ciphertext asks for a presigned PUT.
 type CreateSecretRequest struct {
 	Kind              string                       `json:"kind"`
 	Ciphertext        string                       `json:"ciphertext,omitempty"`
@@ -123,8 +94,6 @@ type CreateSecretRequest struct {
 	MaxViews          int                          `json:"max_views"`
 }
 
-// PresignedUpload is a signed request for sending ciphertext straight to the
-// object store, so the server never handles the bytes.
 type PresignedUpload struct {
 	URL       string            `json:"url"`
 	Method    string            `json:"method"`
@@ -142,8 +111,7 @@ type accessMetadata struct {
 	KDF clientcrypto.KDFParams `json:"kdf"`
 }
 
-// SecretMetadata is the pre-open probe. Access is nil for Model B secrets,
-// which is how the CLI knows whether to ask for a passphrase at all.
+// Access is nil for Model B secrets.
 type SecretMetadata struct {
 	ID        string          `json:"id"`
 	Kind      string          `json:"kind"`
@@ -152,11 +120,8 @@ type SecretMetadata struct {
 	ExpiresAt string          `json:"expires_at"`
 }
 
-// NeedsPassphrase reports whether this is a Model A secret, which cannot be
-// opened without deriving an access proof from a passphrase.
 func (m SecretMetadata) NeedsPassphrase() bool { return m.Access != nil }
 
-// AccessKDF is the KDF block the access proof must be derived under.
 func (m SecretMetadata) AccessKDF() clientcrypto.KDFParams {
 	if m.Access == nil {
 		return clientcrypto.KDFParams{}
@@ -164,22 +129,14 @@ func (m SecretMetadata) AccessKDF() clientcrypto.KDFParams {
 	return m.Access.KDF
 }
 
-// OpenedSecret is what a successful open returns: the raw age body and the
-// metadata the API sends in Flick-* headers (contracts/openapi.yaml
-// openSecret). The open is destructive: the server consumes the secret in the
-// same operation, so a failure to write the result locally loses it for good.
 type OpenedSecret struct {
 	Kind        string
 	ContentType string
 	ExpiresAt   string
-	// EncryptedFilename is the base64 age file for file secrets, empty
-	// otherwise. It stays encoded so a damaged name costs only the name: by
-	// the time it is read the secret is already consumed.
+	// Kept encoded so a damaged name costs only the name; the secret is already consumed when it is read.
 	EncryptedFilename string
-	// WrappedIdentity is the Model A age scrypt file, nil for Model B.
-	WrappedIdentity []byte
-	// Body streams the age file. It yields exactly the size_bytes the
-	// metadata probe reported, or an error. The caller must Close it.
+	WrappedIdentity   []byte
+	// Yields exactly the probed size_bytes or an error. The caller must Close it.
 	Body io.ReadCloser
 }
 
@@ -195,9 +152,7 @@ func (c *Client) SecretMetadata(ctx context.Context, id string) (SecretMetadata,
 	return resp, err
 }
 
-// OpenSecret consumes the secret. accessProof is empty for Model B. sizeBytes
-// is the exact body length from the metadata probe; a body of any other length
-// fails while it is read, so a substituted body cannot run on without bound.
+// A body of any other length than sizeBytes fails while read, so a substituted body cannot run unbounded.
 func (c *Client) OpenSecret(ctx context.Context, id, accessProof string, sizeBytes int) (OpenedSecret, error) {
 	body := map[string]string{}
 	if accessProof != "" {
@@ -237,8 +192,6 @@ func openedSecret(resp *http.Response, sizeBytes int) (OpenedSecret, error) {
 	return opened, nil
 }
 
-// exactBody reads exactly remaining bytes from body and fails on a shorter or
-// longer stream.
 type exactBody struct {
 	body      io.ReadCloser
 	remaining int64
@@ -271,7 +224,6 @@ func (b *exactBody) Read(p []byte) (int, error) {
 
 func (b *exactBody) Close() error { return b.body.Close() }
 
-// headerBytes decodes an optional base64 Flick-* header.
 func headerBytes(header http.Header, name string) ([]byte, error) {
 	value := header.Get(name)
 	if value == "" {
@@ -284,8 +236,6 @@ func headerBytes(header http.Header, name string) ([]byte, error) {
 	return decoded, nil
 }
 
-// FinalizeSecret activates a large secret after its ciphertext has landed in
-// the bucket. Until this call succeeds the secret is not openable.
 func (c *Client) FinalizeSecret(ctx context.Context, id string) error {
 	var resp struct {
 		ID        string `json:"id"`
@@ -300,10 +250,7 @@ func (c *Client) FinalizeSecret(ctx context.Context, id string) error {
 	return nil
 }
 
-// Upload sends the raw age file to the presigned URL. Unlike the browser, a Go
-// client may set Content-Length, so every signed header is echoed verbatim —
-// Content-Length is part of the signature and a body of any other length is
-// rejected at the bucket. body is read once, as it is sent.
+// Content-Length is part of the signature, so every signed header is echoed verbatim.
 func (c *Client) Upload(ctx context.Context, upload PresignedUpload, body io.Reader, size int64) error {
 	req, err := http.NewRequestWithContext(ctx, upload.Method, upload.URL, body)
 	if err != nil {
@@ -311,8 +258,7 @@ func (c *Client) Upload(ctx context.Context, upload PresignedUpload, body io.Rea
 	}
 	for name, value := range upload.Headers {
 		if strings.EqualFold(name, "Content-Length") {
-			// net/http derives Content-Length from ContentLength, not the
-			// header map; setting it here would be ignored.
+			// net/http takes Content-Length from ContentLength; the header map entry is ignored.
 			continue
 		}
 		req.Header.Set(name, value)
@@ -350,8 +296,6 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
-// send makes a JSON request and returns a 2xx response for the caller to read
-// and close. Any other status becomes an *APIError.
 func (c *Client) send(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
@@ -388,8 +332,7 @@ func readAPIError(resp *http.Response) error {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	// A non-JSON body (a proxy's HTML error page, say) still has to produce a
-	// usable error, so decoding failures fall through to the status code.
+	// A non-JSON body (a proxy's HTML error page) falls through to the status code.
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&envelope)
 	code := envelope.Error.Code
 	if code == "" {

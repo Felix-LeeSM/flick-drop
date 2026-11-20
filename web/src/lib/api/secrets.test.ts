@@ -25,13 +25,11 @@ const accessVerifier: AccessVerifierPayload = {
 	proof: 'proof-base64'
 };
 
-// Stand-in bytes: the client moves age files without looking inside them.
 const textBody = new Uint8Array([10, 20, 30, 40, 50]);
 const wrappedIdentity = new Uint8Array([7, 8, 9]);
 const modelA: PassphraseEnvelope = { access: accessVerifier, wrappedIdentity };
 
-// 'AAECAw==' is base64 for [0,1,2,3]. plaintextBytes drives routing; body.size
-// is what the server is told and what the bucket signs.
+// plaintextBytes drives routing; body.size is what the server is told and the bucket signs.
 function sealedFile(plaintextBytes = 1000): SealedFile {
 	return {
 		body: new Blob([new Uint8Array([0, 1, 2, 3])]),
@@ -47,8 +45,7 @@ const created = (id: string) =>
 		headers: { 'Content-Type': 'application/json' }
 	});
 
-// Fields that would carry a key, a passphrase, plaintext, or the retired
-// AES-GCM envelope. None may appear at the top level of a create request.
+// Fields that would carry a key, passphrase, plaintext, or the retired AES-GCM envelope.
 const sensitiveFields = [
 	'passphrase',
 	'plaintext',
@@ -243,8 +240,7 @@ describe('secret API client', () => {
 		const identity = await generateSecretIdentity();
 		const url = createShareUrl('https://drop.example.com/app?x=1', 'sec_abc', identity);
 
-		// The decryption key must travel in the fragment only — the core Model B
-		// invariant. A regression swapping url.hash for url.search would fail here.
+		// The key must travel in the fragment only (Model B invariant).
 		expect(new URL(url).hash).toBe(`#key=${identity}`);
 		expect(url.split('#')[0]).toBe('https://drop.example.com/s/sec_abc');
 		expect(url.split('#')[0]).not.toContain(identity);
@@ -368,12 +364,9 @@ describe('file secret routing', () => {
 
 		const fetcher = vi
 			.fn<typeof fetch>()
-			// 1. stage the pending secret — no upload bytes yet. Content-Length is
-			// dropped (forbidden for scripts to set); any other signed header travels.
+			// Content-Length is dropped (scripts cannot set it); other signed headers travel.
 			.mockResolvedValueOnce(stagedLarge('4', { 'x-amz-meta-probe': 'signed' }))
-			// 2. upload the ciphertext to the object store.
 			.mockResolvedValueOnce(new Response(null, { status: 204 }))
-			// 3. finalize.
 			.mockResolvedValueOnce(Response.json({ id: 'large-id', finalized: true }));
 
 		const client = createSecretApiClient({
@@ -387,7 +380,6 @@ describe('file secret routing', () => {
 			expires_at: '2026-06-17T01:00:00Z'
 		});
 
-		// Stage call: ciphertext omitted, Model A envelope and size present.
 		const stageBody = JSON.parse(fetcher.mock.calls[0][1]?.body as string) as Record<
 			string,
 			unknown
@@ -395,7 +387,6 @@ describe('file secret routing', () => {
 		expect(stageBody).not.toHaveProperty('ciphertext');
 		expect(stageBody).toMatchObject({ size_bytes: 4, wrapped_identity: 'BwgJ' });
 
-		// Upload call: the raw age body as a Blob, at the signed length.
 		const [uploadUrl, uploadInit] = fetcher.mock.calls[1];
 		expect(uploadUrl).toBe('https://object-store.local/bucket/large-id?X-Amz-Signature=abc');
 		expect(uploadInit?.method).toBe('PUT');
@@ -405,15 +396,12 @@ describe('file secret routing', () => {
 		);
 		expect(uploadInit?.headers).toEqual({ 'x-amz-meta-probe': 'signed' });
 
-		// Finalize call.
 		expect(fetcher.mock.calls[2][0]).toBe('http://api.local/api/secrets/large-id/finalize');
 		expect(fetcher).toHaveBeenCalledTimes(3);
 	});
 
-	// With large-object storage disabled the server clamps max_file_bytes to just
-	// under the inline threshold, so the two limits arrive nearly equal. A payload
-	// sitting exactly on that ceiling must still take the inline path — routing it
-	// to S3 would call a backend that is not there.
+	// With S3 disabled the two limits arrive nearly equal; a payload exactly on the
+	// ceiling must stay inline, since no S3 backend exists.
 	it('keeps the inline path when the bound has been clamped to the threshold', async () => {
 		expect.assertions(2);
 
@@ -433,8 +421,7 @@ describe('file secret routing', () => {
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	});
 
-	// Content-Length is inside the signature, so a body of another length would
-	// come back as a bare 403 from the bucket. Catch the drift locally instead.
+	// Content-Length is signed: catch a length drift locally instead of a bare bucket 403.
 	it('refuses to upload when the signed length does not match the ciphertext', async () => {
 		expect.assertions(2);
 
@@ -448,7 +435,6 @@ describe('file secret routing', () => {
 		await expect(client.createFileSecret(sealedFile(1000), 3600)).rejects.toMatchObject({
 			code: 'upload_failed'
 		});
-		// Staged only — no upload attempt, no finalize.
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	});
 
@@ -474,7 +460,6 @@ describe('file secret routing', () => {
 		const fetcher = vi
 			.fn<typeof fetch>()
 			.mockResolvedValueOnce(stagedLarge('4'))
-			// The aborted upload leg rejects the way fetch() does on AbortSignal.
 			.mockRejectedValueOnce(new DOMException('The operation was aborted.', 'AbortError'));
 		const client = createSecretApiClient({
 			baseUrl: 'http://api.local/',
@@ -483,8 +468,6 @@ describe('file secret routing', () => {
 		});
 
 		const controller = new AbortController();
-		// Aborted uploads must resolve to a SecretApiError, never leak the raw
-		// DOMException as an unhandled crash.
 		await expect(
 			client.createFileSecret(sealedFile(1000), 3600, undefined, controller.signal)
 		).rejects.toMatchObject({ code: 'upload_cancelled' });

@@ -1,18 +1,11 @@
-# Grafana: the admin's single observability view (usage counters, queue
-# health, node/pod status, access-log search). Not part of the public product
-# surface: the ingress host is a placeholder (grafana.localhost) that the ops
-# overlay replaces with grafana.<domain> plus cert-manager TLS, and login is
-# Grafana's own admin credential — anonymous access is disabled here, so a
-# deployed Grafana behind a not-yet-patched placeholder host can still only be
-# opened with the admin password.
+# Anonymous access is disabled, so a deployed Grafana behind the placeholder host still needs the admin password.
 apiVersion: v1
 kind: Secret
 metadata:
   name: grafana-admin
 type: Opaque
 stringData:
-  # Ops overlay replaces both before use; the password must be strong because
-  # the ingress is internet-facing once patched.
+  # The password must be strong: the ingress is internet-facing once patched.
   GF_SECURITY_ADMIN_USER: "admin"
   GF_SECURITY_ADMIN_PASSWORD: "replace-me-before-use"
 ---
@@ -355,19 +348,10 @@ spec:
                   key: GF_SECURITY_ADMIN_PASSWORD
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "false"
-            # The `Flick cluster: nodes and pods` dashboard (cluster.json) uses the
-            # Treemap panel. /run.sh downloads it from grafana.com on every start
-            # into /var/lib/grafana/plugins (the `data` emptyDir) and runs with
-            # `bash -e`, so an unreachable grafana.com crash-loops the pod until
-            # the download works; no stored data is lost because the emptyDir is
-            # re-provisioned anyway. Unpinned on purpose: grafana.com lists no
-            # version history for this plugin (versions: []), so a `@version`
-            # suffix fails with `404: Plugin not found` and crash-loops the pod
-            # at startup (#372). The unpinned id installs the catalog's latest,
-            # which the dashboards are built against.
+            # Unpinned on purpose: grafana.com lists no versions for this plugin, so `@version` 404s and
+            # crash-loops the pod (#372). /run.sh downloads it every start; an unreachable grafana.com crash-loops too.
             - name: GF_INSTALL_PLUGINS
               value: "marcusolsson-treemap-panel"
-            # Ops overlay patches this to https://grafana.<domain>.
             - name: GF_SERVER_ROOT_URL
               value: "http://grafana.localhost"
           ports:
@@ -405,8 +389,7 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/grafana
-            # readOnlyRootFilesystem leaves no writable /tmp; SQLite and CSV
-            # export temp files need one (same pattern as vmsingle).
+            # readOnlyRootFilesystem leaves no /tmp; SQLite and CSV export need one.
             - name: tmp
               mountPath: /tmp
       volumes:

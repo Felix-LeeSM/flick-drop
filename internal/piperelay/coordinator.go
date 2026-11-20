@@ -36,8 +36,7 @@ var (
 	ErrPollInProgress   = errors.New("piperelay: connection already has the maximum open status polls")
 	ErrInvalidCode      = errors.New("piperelay: code must be a 6-digit numeric string")
 	ErrExpired          = errors.New("piperelay: rendezvous session expired")
-	// ErrUnavailable wraps a Valkey failure. The HTTP layer answers 503, the
-	// same as a server without Valkey.
+	// The HTTP layer answers 503, the same as a server without Valkey.
 	ErrUnavailable = errors.New("piperelay: live relay state store unavailable")
 )
 
@@ -46,146 +45,98 @@ const (
 	defaultTTL                 = 3 * time.Minute
 	defaultCleanInterval       = 30 * time.Second
 	defaultMaxTransferDuration = 10 * time.Minute
-	// defaultPresenceTimeout is how long a joined connection stays in the room
-	// without an open Status poll, and how long a chosen connection may take to
-	// open Receive. Status holds at most 25 seconds in the HTTP layer
-	// (internal/httpapi/piperelay.go pipeWaitMaxHold), so a receiver that keeps
-	// polling is never idle this long.
+	// Idle time without a Status poll, and the chosen connection's deadline to open Receive.
+	// Must exceed the 25s Status hold (internal/httpapi/piperelay.go pipeWaitMaxHold).
 	defaultPresenceTimeout = 35 * time.Second
 	defaultNamespace       = "pipe:"
-	// endedRetention is how long an ended room stays in Valkey as a tombstone
-	// (so a caller already in the session learns how it ended), and how long a
-	// room key outlives its own deadline.
+	// Ended-room tombstone lifetime, and how long a room key outlives its deadline.
 	endedRetention = time.Minute
-	// resyncInterval bounds how long a waiter goes without re-reading its
-	// room. Pub/Sub wakes it at once; this only covers a message lost while
-	// the subscription reconnects.
+	// Covers a Pub/Sub message lost while the subscription reconnects.
 	resyncInterval = 2 * time.Second
-	// endRoomTimeout bounds the Valkey write that ends a room from a cleanup
-	// path whose request context is already gone.
+	// For cleanup paths whose request context is already gone.
 	endRoomTimeout          = 2 * time.Second
 	tokenLengthBytes        = 32
 	connectionIDLengthBytes = 16
-	// MaxPendingConnections caps the receivers one session holds undecided at
-	// once. The next joiner gets ErrRoomFull; the session itself stays alive.
+	// The next joiner gets ErrRoomFull; the session stays alive.
 	MaxPendingConnections = 10
-	// MaxPendingPerNetwork caps the undecided receivers from one client network
-	// (an IPv4 address or an IPv6 /64, derived by the HTTP layer) in one
-	// session, so one network cannot fill the room alone.
+	// Per client network (IPv4 address or IPv6 /64), so one network cannot fill the room.
 	MaxPendingPerNetwork = 3
-	// MaxStatusPollsPerConnection caps the concurrent Status calls of one
-	// connection. Two leave room for a client whose previous poll has not
-	// finished closing yet; the next one gets ErrPollInProgress, so one
-	// connection ID cannot pile up goroutines and sockets.
+	// Two leave room for a previous poll still closing; caps goroutines and sockets per connection ID.
 	MaxStatusPollsPerConnection = 2
 )
 
-// SessionMetadata carries lightweight, non-secret file/text descriptor headers.
-// It travels only on the pod-to-pod stream request, never through Valkey.
+// Non-secret; travels only on the pod-to-pod stream request, never through Valkey.
 type SessionMetadata struct {
 	Kind              string // e.g. "text" or "file"
-	EncryptedFilename string // base64-encoded encrypted filename (if file)
+	EncryptedFilename string
 }
 
-// InitResult is what the sender gets back from Init. SenderToken is the only
-// credential for the sender-side calls (Wait, Select, Decline, Cancel, Send).
+// SenderToken is the only credential for sender-side calls.
 type InitResult struct {
 	Code        string
 	SenderToken string
 	ExpiresIn   int
 }
 
-// JoinResult is what a receiver gets back from Join. VerifyCode is its unique
-// 3-digit confirmation number to read to the sender.
 type JoinResult struct {
 	ConnectionID string
 	VerifyCode   string
 	Device       string
-	// ExpiresIn is the seconds left in the rendezvous window.
-	ExpiresIn int
+	ExpiresIn    int
 }
 
-// PendingConnection is one undecided receiver as the sender sees it.
 type PendingConnection struct {
 	ID         string
 	Index      int
 	VerifyCode string
 	Device     string
-	// Recipient is the age public key this receiver generated in its browser;
-	// the sender encrypts to it when it picks this connection.
-	Recipient string
-	JoinedAt  time.Time
+	Recipient  string
+	JoinedAt   time.Time
 }
 
-// WaitSnapshot is the sender's view of a session at Version.
 type WaitSnapshot struct {
-	Version uint64
-	// ReceiverReady is true once the chosen receiver is attached and Send can stream.
+	Version       uint64
 	ReceiverReady bool
-	// Pending lists undecided receivers in join order.
-	Pending []PendingConnection
-	// Recipient is the attached receiver's age public key once ReceiverReady
-	// is true, and empty before.
+	// In join order.
+	Pending   []PendingConnection
 	Recipient string
 }
 
-// ClientKey identifies a receiving client for the per-session decline block.
-// The HTTP layer derives it as a hash of the client IP and User-Agent; this
-// package never sees either value, and stores it in Valkey only after a
-// second HMAC under CoordinatorOptions.KeySalt.
+// A hash of client IP and User-Agent from the HTTP layer; stored in Valkey only after a second HMAC under KeySalt.
 type ClientKey [32]byte
 
-// ClientNetwork identifies a receiving client's network (IPv4 address or IPv6
-// /64) for the MaxPendingPerNetwork cap. The HTTP layer derives it as a hash;
-// this package never sees the address, and stores it in Valkey only after a
-// second HMAC under CoordinatorOptions.KeySalt.
+// A hash of the IPv4 address or IPv6 /64; stored in Valkey only after a second HMAC under KeySalt.
 type ClientNetwork [32]byte
 
-// JoinClient is what Join knows about a receiving client.
 type JoinClient struct {
-	// Device is the coarse label shown to the sender, such as "Safari on iPhone".
 	Device string
-	// Recipient is the age public key the receiver generated in its browser
-	// (the HTTP layer validates its shape). The coordinator only stores it and
-	// hands it to the sender; the matching identity never leaves the browser.
+	// The matching identity never leaves the browser.
 	Recipient string
 	Key       ClientKey
 	Network   ClientNetwork
 }
 
-// CoordinatorOptions configures the coordinator.
 type CoordinatorOptions struct {
-	// Valkey holds every rendezvous room, shared by all API replicas.
 	Valkey *redis.Client
-	// KeySalt is the HMAC-SHA-256 key for room IDs and client hashes in
-	// Valkey (FLICK_RATELIMIT_KEY_SALT).
+	// HMAC-SHA-256 key for room IDs and client hashes in Valkey (FLICK_RATELIMIT_KEY_SALT).
 	KeySalt string
-	// InternalToken authenticates the pod-to-pod stream request
-	// (FLICK_INTERNAL_TOKEN).
+	// FLICK_INTERNAL_TOKEN.
 	InternalToken string
-	// AdvertiseIP is the IP literal the sender's pod dials to reach this
-	// pod's stream listener (FLICK_POD_IP; 127.0.0.1 outside Kubernetes).
+	// FLICK_POD_IP; 127.0.0.1 outside Kubernetes.
 	AdvertiseIP netip.Addr
-	// InternalPort is the stream listener port, the same on every pod
-	// (FLICK_INTERNAL_HTTP_PORT).
+	// FLICK_INTERNAL_HTTP_PORT, the same on every pod.
 	InternalPort uint16
-	// StreamTransport dials peer pods. Nil uses a direct transport that never
-	// goes through an HTTP proxy. Tests map fake pod IPs to local listeners.
-	StreamTransport http.RoundTripper
-	// Namespace prefixes every Valkey key; defaultNamespace ("pipe:") unless
-	// a test isolates itself.
+	// Nil uses a direct transport that never goes through an HTTP proxy.
+	StreamTransport     http.RoundTripper
 	Namespace           string
 	MaxConcurrent       int
 	TTL                 time.Duration
 	CleanInterval       time.Duration
 	MaxTransferDuration time.Duration
-	// PresenceTimeout defaults to defaultPresenceTimeout (35 seconds).
-	PresenceTimeout time.Duration
+	PresenceTimeout     time.Duration
 }
 
-// Coordinator runs live relay rendezvous across API replicas. Room state
-// lives in Valkey (room.go) so any replica answers any call; the ciphertext
-// itself goes from the sender's replica straight to the receiver's replica
+// Room state lives in Valkey so any replica answers any call; ciphertext goes replica to replica
 // over HTTP (stream.go) and never enters Valkey.
 type Coordinator struct {
 	valkey              *redis.Client
@@ -214,8 +165,6 @@ type Coordinator struct {
 	workers   sync.WaitGroup
 }
 
-// NewCoordinator validates opts, subscribes to room events, and starts the
-// background cleaner.
 func NewCoordinator(opts CoordinatorOptions) (*Coordinator, error) {
 	switch {
 	case opts.Valkey == nil:
@@ -255,8 +204,7 @@ func NewCoordinator(opts CoordinatorOptions) (*Coordinator, error) {
 		closed:              make(chan struct{}),
 	}
 
-	// One pattern subscription per process; go-redis reconnects it (and
-	// re-subscribes) on its own when Valkey restarts.
+	// go-redis re-subscribes on its own when Valkey restarts.
 	c.pubsub = c.valkey.PSubscribe(context.Background(), c.namespace+"ev:*")
 	events := c.pubsub.Channel()
 	c.workers.Add(2)
@@ -278,7 +226,6 @@ func orDefault[T comparable](value, fallback T) T {
 	return value
 }
 
-// NormalizeCode strips spaces and dashes, validating that the remainder is 6 digits.
 func NormalizeCode(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	normalized := strings.ReplaceAll(trimmed, "-", "")
@@ -294,7 +241,6 @@ func NormalizeCode(raw string) (string, error) {
 	return normalized, nil
 }
 
-// GenerateCode generates a cryptographically random 6-digit numeric string (100000..999999).
 func GenerateCode() (string, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(900000))
 	if err != nil {
@@ -303,8 +249,7 @@ func GenerateCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()+100000), nil
 }
 
-// generateVerifyCode draws a 3-digit verification number (000..999) from
-// crypto/rand. It is independent of the 6-digit code by construction.
+// Independent of the 6-digit code by construction.
 func generateVerifyCode() (string, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1000))
 	if err != nil {
@@ -321,9 +266,6 @@ func randomToken(size int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// Init creates a new rendezvous session, generating an uncolliding 6-digit
-// code and the sender token. The concurrent-session cap counts rooms across
-// every replica.
 func (c *Coordinator) Init(ctx context.Context) (InitResult, error) {
 	senderToken, err := randomToken(tokenLengthBytes)
 	if err != nil {
@@ -366,12 +308,8 @@ func (c *Coordinator) Init(ctx context.Context) (InitResult, error) {
 	return InitResult{}, errors.New("piperelay: failed to generate unique code")
 }
 
-// Join admits a receiver that entered the right code and returns its
-// connection with its own random 3-digit verification number, unique among the
-// session's undecided connections. A late joiner (transfer already claimed), an
-// 11th waiting joiner, a 4th waiting joiner from one client network, a client
-// the sender already declined, or a join after the rendezvous window closed is
-// rejected without touching the session.
+// Rejects late joiners, a full room, a full network, declined clients, and joins after the window,
+// all without touching the session.
 func (c *Coordinator) Join(ctx context.Context, rawCode string, client JoinClient) (JoinResult, error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -389,8 +327,7 @@ func (c *Coordinator) Join(ctx context.Context, rawCode string, client JoinClien
 	if err != nil {
 		return JoinResult{}, fmt.Errorf("generate connection id: %w", err)
 	}
-	// The lease exists before the connection does, so a concurrent prune
-	// never drops a connection that just joined.
+	// The lease exists before the connection, so a concurrent prune never drops a just-joined connection.
 	lease := c.leaseKey(id, connID)
 	if err := c.valkey.Set(ctx, lease, 0, c.presenceTimeout).Err(); err != nil {
 		return JoinResult{}, unavailable(err)
@@ -461,14 +398,10 @@ func (c *Coordinator) Join(ctx context.Context, rawCode string, client JoinClien
 	return result, nil
 }
 
-// statusAnswer is Status's answer for the room as it stands; done is false
-// while the connection still waits for the sender.
 func statusAnswer(r *room, connID string) (done, selected bool, err error) {
 	conn := r.conn(connID)
 	if conn != nil {
 		if result := conn.loserResult(); result != nil {
-			// A connection the sender already settled keeps its own answer,
-			// even after the session ends.
 			return true, false, result
 		}
 	}
@@ -483,13 +416,8 @@ func statusAnswer(r *room, connID string) (done, selected bool, err error) {
 	return false, false, nil
 }
 
-// Status is a waiting receiver's long-poll. It returns selected=true once the
-// sender picked this connection (the receiver then opens Receive), an error
-// once the connection was declined (ErrDeclined), not chosen (ErrNotSelected),
-// or the session ended, and selected=false after maxWait while it is still
-// waiting (or at once while the coordinator drains for shutdown). An open
-// Status call is what keeps a waiting connection in the room: its poll lease
-// expires the presence timeout after the last poll started or ended.
+// An open Status call keeps a waiting connection in the room: its poll lease expires the presence
+// timeout after the last poll started or ended.
 func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWait time.Duration) (bool, error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -556,8 +484,7 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 	}
 }
 
-// senderView reads the room for a sender call. A wrong token answers exactly
-// like an unknown code, so sender endpoints are no code oracle.
+// A wrong token answers like an unknown code, so sender endpoints are no code oracle.
 func (c *Coordinator) senderView(ctx context.Context, id roomID, senderToken string) (room, error) {
 	r, err := c.view(ctx, id)
 	if err != nil {
@@ -572,9 +499,6 @@ func (c *Coordinator) senderView(ctx context.Context, id roomID, senderToken str
 	return r, nil
 }
 
-// Wait returns the sender's view of the session as soon as its version differs
-// from since, or after maxWait with the current view (long-poll). While the
-// coordinator drains for shutdown it answers at once.
 func (c *Coordinator) Wait(ctx context.Context, rawCode, senderToken string, since uint64, maxWait time.Duration) (WaitSnapshot, error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -612,7 +536,6 @@ func (c *Coordinator) Wait(ctx context.Context, rawCode, senderToken string, sin
 		case <-c.draining:
 			return snapshot()
 		case <-hold.C:
-			// A fresh snapshot also prunes connections that went idle during the hold.
 			return snapshot()
 		case <-changed:
 		case <-resync.C:
@@ -643,9 +566,6 @@ func snapshotOf(r *room) WaitSnapshot {
 	return snap
 }
 
-// Select hands the transfer to one undecided connection. Every other
-// undecided connection ends with ErrNotSelected. A connection that already left
-// the room (dropped as idle) or was already settled answers ErrNotPending.
 func (c *Coordinator) Select(ctx context.Context, rawCode, senderToken, connID string) error {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -684,13 +604,7 @@ func (c *Coordinator) Select(ctx context.Context, rawCode, senderToken, connID s
 	return err
 }
 
-// Decline ends one undecided connection with ErrDeclined. Its slot reopens
-// and the session stays alive. The connection's client key joins the session's
-// block list, so the same client cannot rejoin this session. The key is coarse
-// by design: another client behind the same NAT with the same User-Agent is
-// blocked too for this one short session, and a client that changes network or
-// User-Agent gets through; the sender can decline it again. A connection that
-// already left the room or was already settled answers ErrNotPending.
+// The client key is coarse by design: the same NAT and User-Agent is blocked too, for one short session.
 func (c *Coordinator) Decline(ctx context.Context, rawCode, senderToken, connID string) error {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -715,12 +629,8 @@ func (c *Coordinator) Decline(ctx context.Context, rawCode, senderToken, connID 
 	return err
 }
 
-// Cancel burns the whole session before streaming starts. Every waiting
-// receiver ends with ErrCancelled. A transfer that is already streaming is
-// never cut: Cancel returns ErrStreaming instead (the sender stops a stream by
-// aborting its own send request). Cancel and Send's start of streaming are
-// both compare-and-set writes on the same room, so exactly one of them wins.
-// A session that already ended answers ErrNotFound.
+// A streaming transfer is never cut. Cancel and Send's stream start are compare-and-set writes on the
+// same room, so exactly one wins.
 func (c *Coordinator) Cancel(ctx context.Context, rawCode, senderToken string) error {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
@@ -739,8 +649,6 @@ func (c *Coordinator) Cancel(ctx context.Context, rawCode, senderToken string) e
 	return err
 }
 
-// ActiveSessions counts the live rendezvous sessions across every replica
-// (for tests and telemetry).
 func (c *Coordinator) ActiveSessions(ctx context.Context) (int, error) {
 	n, err := c.valkey.ZCount(ctx, c.roomsKey(), "("+strconv.FormatInt(time.Now().UnixMilli(), 10), "+inf").Result()
 	if err != nil {
@@ -749,10 +657,7 @@ func (c *Coordinator) ActiveSessions(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-// Drain makes every open Status and Wait long-poll on this replica answer at
-// once with its current view, and every later one answer without holding. The
-// API calls it on SIGTERM, so waiting browsers re-poll through another replica
-// instead of being cut when this one stops; Send and Receive keep running.
+// Called on SIGTERM so waiting browsers re-poll another replica; Send and Receive keep running.
 func (c *Coordinator) Drain() {
 	c.drainOnce.Do(func() { close(c.draining) })
 }
@@ -771,10 +676,7 @@ func (c *Coordinator) runCleaner() {
 	}
 }
 
-// cleanOnce applies the lazy end rules (room.go settle) and idle pruning to
-// every live room, so a room nobody touches still ends on time and frees its
-// slot in the concurrent-session cap. Every replica runs it; the
-// compare-and-set writes make concurrent cleaners harmless.
+// Every replica runs it; compare-and-set writes make concurrent cleaners harmless.
 func (c *Coordinator) cleanOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), c.cleanInterval)
 	defer cancel()
@@ -800,9 +702,7 @@ func (c *Coordinator) cleanOnce() {
 	}
 }
 
-// Close stops the cleaner and the event subscription and releases every local
-// waiter. It leaves rooms in Valkey untouched: another replica keeps serving
-// them. No goroutine started by the coordinator survives Close.
+// Leaves rooms in Valkey for other replicas.
 func (c *Coordinator) Close() error {
 	c.closeOnce.Do(func() {
 		c.Drain()
@@ -813,11 +713,9 @@ func (c *Coordinator) Close() error {
 	return nil
 }
 
-// errReceiverGone is the internal answer when the chosen receiver's request
-// on this replica is no longer waiting for the stream.
 var errReceiverGone = errors.New("piperelay: receiver is not waiting on this replica")
 
-// copyBufferBytes matches the age streaming chunk size.
+// Matches the age streaming chunk size.
 const copyBufferBytes = 64 * 1024
 
 var bufferPool = sync.Pool{
@@ -827,8 +725,7 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// copyWithPool copies src to dst through a pooled 64 KiB buffer and clears
-// the buffer before returning it, so no ciphertext lingers in the pool.
+// Clears the buffer before returning it, so no ciphertext lingers in the pool.
 func copyWithPool(dst io.Writer, src io.Reader) (int64, error) {
 	ptr := bufferPool.Get().(*[]byte)
 	buf := *ptr

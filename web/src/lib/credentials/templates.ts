@@ -1,8 +1,6 @@
 import { type Messages, t } from '#lib/i18n/index.js';
 
-// `label` is the English name stored in the credential payload (FLCR1: JSON) and
-// never changes with the display language. Screen text comes from the
-// `credentials` catalog in web/src/lib/i18n/messages/*/credentials.ts.
+// `label` is the stored English name (FLCR1 payload); screen text comes from i18n `credentials`.
 type TemplateSpec = {
 	label: string;
 	icon: string;
@@ -155,7 +153,6 @@ type CredentialsText = Messages['credentials'];
 type TemplateText = CredentialsText['templates'][CredentialType];
 type FieldText = { label: string; placeholder?: string };
 
-// Name, description, and title placeholder of a template in the display language.
 export function credentialTemplateText(
 	type: CredentialType,
 	text: CredentialsText = t().credentials
@@ -163,7 +160,6 @@ export function credentialTemplateText(
 	return text.templates[type];
 }
 
-// Display text of a template field, or undefined for a custom field id.
 export function credentialFieldText(
 	type: CredentialType,
 	fieldId: string,
@@ -173,9 +169,7 @@ export function credentialFieldText(
 	return Object.hasOwn(fields, fieldId) ? fields[fieldId] : undefined;
 }
 
-// A template field still carrying the template's English label shows that label in
-// the display language. Any other label (a custom field, a field id the template does
-// not know, or a label another client wrote) shows as stored in the payload.
+// Only a field still carrying the template's English label is translated; others show as stored.
 export function displayFieldLabel(
 	type: CredentialType,
 	field: { id: string; label: string },

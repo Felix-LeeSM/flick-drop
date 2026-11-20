@@ -18,24 +18,8 @@ const (
 	DefaultReaperBatchSize = 50
 )
 
-// claimReclaimableSQL atomically claims one batch of reclaimable secrets and
-// returns the columns needed to build their cleanup events. The candidate CTE
-// takes FOR UPDATE SKIP LOCKED row locks, so concurrent API replicas claim
-// disjoint sets: rows locked by another replica's in-flight claim batch are
-// skipped instead of blocking, and the locks last until this transaction
-// commits, which also pins the reclaim_enqueued_at flip. The WHERE guard
-// (reclaim_enqueued_at IS NULL) keeps already-claimed rows out of later ticks.
-// Consumed secrets are excluded because /open already enqueued their cleanup.
-// Reason is derived from state: active → expired, pending_upload → orphan.
-// Pending uploads are also reclaimable at content expiry, even before
-// PendingTTL. Both comparisons are native timestamptz comparisons.
-//
-// Ordering is by a unified "reclaimable-since" timestamp so the two classes
-// compete fairly for a batch slot: an expired-active row is reclaimable since
-// its expires_at, while a pending_upload orphan is reclaimable since
-// the earlier of expires_at and created_at + PendingTTL. Without this, a
-// future expires_at on orphans would always sort them behind an active-expiry
-// backlog and starve orphan reclaim.
+// FOR UPDATE SKIP LOCKED lets replicas claim disjoint sets; locks last until commit.
+// Ordered by unified reclaimable-since so an active-expiry backlog cannot starve orphan reclaim.
 const claimReclaimableSQL = `with candidates as (
 	select id
 	from secrets
@@ -58,8 +42,6 @@ from candidates
 where secrets.id = candidates.id
 returning secrets.id, secrets.state, secrets.storage_backend, secrets.storage_key`
 
-// outboxEnqueuer is the subset of *events.OutboxStore the reaper needs, kept as
-// an interface so tests can inject a failing fake for atomicity checks.
 type outboxEnqueuer interface {
 	EnqueueTx(context.Context, *sql.Tx, events.JobEvent) (events.OutboxRecord, error)
 }
@@ -84,7 +66,6 @@ type ReaperLoopOptions struct {
 	Logf     func(string, ...any)
 }
 
-// claimedRow mirrors the columns returned by claimReclaimableSQL.
 type claimedRow struct {
 	id             string
 	state          string
@@ -121,10 +102,7 @@ func (r *Reaper) SetNowForTest(now func() time.Time) {
 	r.now = now
 }
 
-// ClaimOnce claims one batch of reclaimable secrets, hard-deletes their rows,
-// and enqueues an object-delete event for any S3-backed row — all in one
-// transaction. A failure rolls the claim back, leaving reclaim_enqueued_at NULL
-// so the next tick retries. Returns the number of secrets reaped.
+// One transaction; a failure leaves reclaim_enqueued_at NULL so the next tick retries.
 func (r *Reaper) ClaimOnce(ctx context.Context) (int, error) {
 	claimed, expiryErr := r.claimExpired(ctx)
 	_, reconciliationErr := r.ReconcileOnce(ctx)
@@ -141,8 +119,6 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 
 	now := r.now().UTC()
 	orphanCutoff := now.Add(-r.pendingTTL)
-	// created_at + this interval is the moment the orphan became reclaimable;
-	// the CASE in claimReclaimableSQL uses it for fair ordering.
 	orphanTTLInterval := fmt.Sprintf("%d seconds", int(r.pendingTTL.Seconds()))
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -159,9 +135,7 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 		return 0, fmt.Errorf("claim reclaimable secrets: %w", err)
 	}
 
-	// Collect before mutating: a database/sql transaction is bound to one
-	// connection, so the result cursor must be drained and closed before this
-	// transaction executes further statements.
+	// A database/sql tx is bound to one connection: drain and close the cursor before further statements.
 	var batch []claimedRow
 	for rows.Next() {
 		var c claimedRow
@@ -194,15 +168,11 @@ func (r *Reaper) claimExpired(ctx context.Context) (_ int, err error) {
 		return 0, err
 	}
 
-	// A failed COMMIT aborts the server-side transaction and database/sql
-	// returns the connection to the pool, so no manual rollback is needed; the
-	// deferred rollback only sweeps earlier exits.
+	// A failed COMMIT aborts server-side, so no manual rollback is needed.
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit reaper claim tx: %w", err)
 	}
-	// Record the reclaim after the commit so a rolled-back tick does not bump
-	// counters for rows that were not actually reaped. reason is derived from
-	// state, mirroring the job reason in reclaimRow.
+	// Record after commit so a rolled-back tick does not bump counters.
 	for _, c := range batch {
 		reason := "expired"
 		if c.state == "pending_upload" {
@@ -247,14 +217,10 @@ func (r *Reaper) reclaimRow(ctx context.Context, tx *sql.Tx, c claimedRow, now t
 	return nil
 }
 
-// claimRunner is the subset of *Reaper the loop drives, kept as an interface so
-// tests can inject a fake (mirrors events.duePublisher).
 type claimRunner interface {
 	ClaimOnce(context.Context) (int, error)
 }
 
-// RunReaper ticks ClaimOnce at a fixed interval until ctx is cancelled. It is a
-// structural mirror of events.RunOutboxPublisher.
 func RunReaper(ctx context.Context, reaper claimRunner, opts ReaperLoopOptions) error {
 	if ctx == nil {
 		return fmt.Errorf("context is required")

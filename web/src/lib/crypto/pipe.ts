@@ -4,10 +4,6 @@ import { base64ToBytes, bytesToBase64 } from './encoding';
 
 export const PIPE_CODE_LENGTH = 6;
 
-/**
- * Normalizes user-entered pipe code by trimming whitespace and removing hyphens.
- * Throws an Error if the resulting code is not exactly 6 ASCII digits.
- */
 export function normalizePipeCode(raw: string): string {
 	const cleaned = raw.trim().replace(/[-\s]/g, '');
 	if (cleaned.length !== PIPE_CODE_LENGTH || !/^\d{6}$/.test(cleaned)) {
@@ -16,39 +12,26 @@ export function normalizePipeCode(raw: string): string {
 	return cleaned;
 }
 
-/**
- * Formats a 6-digit code into a human-readable "XXX-XXX" string.
- */
 export function formatPipeCode(raw: string): string {
 	const normalized = normalizePipeCode(raw);
 	return `${normalized.slice(0, 3)}-${normalized.slice(3)}`;
 }
 
-/**
- * A fresh age identity for one receive attempt, and the recipient (public
- * half) that goes to the API on /join. The identity stays in this browser's
- * memory only: the sender encrypts to the recipient, so the API relays a
- * stream it cannot decrypt.
- */
+/** The identity stays in this browser's memory; the API relays a stream it cannot decrypt. */
 export async function createPipeReceiverKey(): Promise<{ identity: string; recipient: string }> {
 	const identity = await generateSecretIdentity();
 	return { identity, recipient: await recipientOf(identity) };
 }
 
-/** The Flick-Encrypted-Filename header value: an age file to `recipient`, base64. */
 export async function encryptPipeFilename(recipient: string, filename: string): Promise<string> {
 	return bytesToBase64(await encryptToRecipient(recipient, new TextEncoder().encode(filename)));
 }
 
-/** Opens a Flick-Encrypted-Filename header value with this receiver's identity. */
 export async function decryptPipeFilename(identity: string, encrypted: string): Promise<string> {
 	const plaintext = await decryptWith(identity, base64ToBytes(encrypted));
 	return new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 }
 
-/**
- * Helper to drain a ReadableStream into a single Uint8Array.
- */
 export async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
@@ -74,19 +57,12 @@ export async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise
 	return result;
 }
 
-/**
- * Helper to drain a ReadableStream into a UTF-8 string.
- */
 export async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
 	const bytes = await streamToBytes(stream);
 	return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
-/**
- * A failed pipe call. `reason` is the API's error code (`declined`,
- * `room_full`, `not_selected`, …) or a status-derived fallback, so callers
- * branch on it instead of on message text.
- */
+/** `reason` is the API error code or a status fallback; branch on it, not on message text. */
 export class PipeRelayError extends Error {
 	readonly reason: string;
 	readonly status: number;
@@ -99,8 +75,6 @@ export class PipeRelayError extends Error {
 	}
 }
 
-// The message for an API error code in the display language, or undefined for a
-// code the catalog does not know.
 function pipeErrorMessage(reason: string): string | undefined {
 	const reasons: Partial<Record<string, string>> = t().live.errors.reasons;
 	return Object.hasOwn(reasons, reason) ? reasons[reason] : undefined;
@@ -119,7 +93,6 @@ function statusReason(status: number): string {
 	}
 }
 
-// `fallback` names the failed call in the display language when the API code is unknown.
 async function pipeError(response: Response, fallback: string): Promise<PipeRelayError> {
 	let reason = '';
 	try {
@@ -145,10 +118,7 @@ export type PipeInitResult = {
 	senderToken: string;
 };
 
-/**
- * Calls POST /api/pipe/init. The sender token it returns is the only credential
- * for the sender-side calls; it stays in browser memory.
- */
+/** The sender token is the only sender credential; it stays in browser memory. */
 export async function initPipeRendezvous(
 	baseUrl: string,
 	fetcher: typeof fetch = fetch
@@ -181,11 +151,7 @@ export type PipeJoinResult = {
 	expiresIn: number;
 };
 
-/**
- * Calls POST /api/pipe/join with the 6-digit code and this device's age
- * recipient (`createPipeReceiverKey`), which the API hands to the sender only.
- * Returns this device's own random 3-digit number to read to the sender.
- */
+/** The API hands the recipient to the sender only. Returns this device's random 3-digit number. */
 export async function joinPipe(
 	baseUrl: string,
 	code: string,
@@ -217,12 +183,8 @@ export async function joinPipe(
 }
 
 /**
- * Fetches one long-poll (/status or /wait), retrying a single transient
- * failure: a 5xx from the API or a proxy (Cloudflare's 502 and 524), or a
- * socket the network dropped (fetch rejects with a TypeError). An API replica
- * stopping for a rolling update is the usual cause; the retry reaches another
- * replica, which reads the same waiting room from Valkey. A second failure in
- * a row is returned or thrown to the caller. An abort is never retried.
+ * Retries one transient failure (5xx, proxy 502/524, dropped socket): usually a replica
+ * stopping in a rolling update; another replica reads the same room from Valkey. Never retries an abort.
  */
 async function fetchLongPoll(
 	fetcher: typeof fetch,
@@ -244,13 +206,7 @@ async function fetchLongPoll(
 	return fetcher(url, init);
 }
 
-/**
- * Long-polls GET /api/pipe/status until the sender picks this connection. Each
- * poll holds at most 25 seconds, so a proxy never sees a silent response, and
- * the open poll is what keeps this device in the sender's list. Resolves once
- * selected (open /receive next); rejects with a PipeRelayError when the device
- * was declined, not chosen, or the session ended.
- */
+/** Each poll holds ≤25 s so proxies never see silence; the open poll keeps this device listed. */
 export async function waitForPipeSelection(
 	baseUrl: string,
 	code: string,
@@ -262,8 +218,7 @@ export async function waitForPipeSelection(
 		'X-Flick-Pipe-Code': normalizePipeCode(code),
 		'X-Flick-Pipe-Connection': connectionId
 	};
-	// The connection stays in the room for 35 seconds without a poll, so the
-	// one retry inside fetchLongPoll is still in time.
+	// The room keeps a connection 35 s without a poll, so fetchLongPoll's one retry is in time.
 	while (true) {
 		const response = await fetchLongPoll(fetcher, `${apiBase(baseUrl)}/api/pipe/status`, {
 			method: 'GET',
@@ -272,9 +227,8 @@ export async function waitForPipeSelection(
 		});
 		if (!response.ok) {
 			const err = await pipeError(response, t().live.errors.statusFailed);
-			// The join succeeded with this code, so not_found here means the server
-			// dropped this connection (no poll for 35 seconds, e.g. a sleeping tab).
-			// It is not a decline: the same code may be entered again.
+			// not_found after a successful join means the server dropped this connection (no poll for
+			// 35 s, e.g. a sleeping tab), not a decline: the code may be entered again.
 			if (err.reason === 'not_found') {
 				throw new PipeRelayError('dropped', response.status, t().live.errors.reasons.dropped);
 			}
@@ -292,7 +246,6 @@ export type PipePendingConnection = {
 	index: number;
 	verifyCode: string;
 	device: string;
-	/** The age recipient this device generated; the sender encrypts to it when picking this row. */
 	recipient: string;
 	connectedSeconds: number;
 };
@@ -300,16 +253,10 @@ export type PipePendingConnection = {
 export type PipeWaitResult = {
 	status: 'waiting' | 'ready';
 	version: number;
-	/** The attached receiver's age recipient, present once `status` is `ready`. */
 	recipient?: string;
 	connections: PipePendingConnection[];
 };
 
-/**
- * Long-polls GET /api/pipe/wait. Resolves as soon as the session differs from
- * `since`, or after the server's hold time with the unchanged view. One
- * transient failure is retried (`fetchLongPoll`).
- */
 export async function waitForPipeUpdate(
 	baseUrl: string,
 	code: string,
@@ -387,7 +334,6 @@ async function senderAction(action: SenderAction): Promise<void> {
 	}
 }
 
-/** Calls POST /api/pipe/select: the transfer goes to this connection only. */
 export function selectPipeConnection(
 	baseUrl: string,
 	code: string,
@@ -398,7 +344,6 @@ export function selectPipeConnection(
 	return senderAction({ path: 'select', baseUrl, code, senderToken, connectionId, fetcher });
 }
 
-/** Calls POST /api/pipe/decline: ends this connection; the session stays open. */
 export function declinePipeConnection(
 	baseUrl: string,
 	code: string,
@@ -409,7 +354,6 @@ export function declinePipeConnection(
 	return senderAction({ path: 'decline', baseUrl, code, senderToken, connectionId, fetcher });
 }
 
-/** Calls POST /api/pipe/cancel: burns the whole session before streaming starts. */
 export function cancelPipe(
 	baseUrl: string,
 	code: string,
@@ -430,9 +374,6 @@ export type SendPipeOptions = {
 	signal?: AbortSignal;
 };
 
-/**
- * Streams encrypted bytes to POST /api/pipe/send.
- */
 export async function sendPipeStream(options: SendPipeOptions): Promise<number> {
 	const {
 		baseUrl,
@@ -458,12 +399,8 @@ export async function sendPipeStream(options: SendPipeOptions): Promise<number> 
 		headers['Flick-Encrypted-Filename'] = encryptedFilename;
 	}
 
-	// Chromium only allows streaming request bodies over HTTP/2; against a
-	// plaintext HTTP/1.1 API (local dev) the fetch fails with
-	// ERR_ALPN_NEGOTIATION_FAILED, and the rejected fetch has already consumed
-	// the stream. So buffer the encrypted bytes up front whenever the target is
-	// not https — browsers negotiate HTTP/2 (or let Chromium stream) on https
-	// only, which is every publicly deployed Flick target.
+	// Chromium streams request bodies only over HTTP/2 and a failed fetch consumes the stream,
+	// so buffer for non-https targets (plaintext HTTP/1.1 local dev).
 	const streamRequestBody = normalized.startsWith('https');
 	const body: BodyInit = streamRequestBody
 		? stream
@@ -498,11 +435,6 @@ export type ReceivePipeResult = {
 	encryptedFilename?: string;
 };
 
-/**
- * Calls GET /api/pipe/receive on a joined connection after `waitForPipeSelection`
- * resolved. Resolves with the live stream once the sender starts; rejects with
- * a PipeRelayError otherwise.
- */
 export async function receivePipeStream(
 	baseUrl: string,
 	code: string,
