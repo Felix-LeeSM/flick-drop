@@ -57,9 +57,11 @@ screen area need only typed objects and the browser's `Intl`.
 - Pages are prerendered in English. The language is applied after hydration
   (`web/src/routes/+layout.svelte`), so a Korean or Japanese reader briefly sees
   English on a cold load.
-- Korean and Japanese use Pretendard / Pretendard JP for body text and Noto Serif
-  KR / JP for serif headings, self-hosted from npm (`pretendard`, `pretendard-jp`,
-  `@fontsource-variable/noto-serif-kr`, `@fontsource-variable/noto-serif-jp`) and
+- Korean and Japanese use Pretendard / Pretendard JP for body text. Serif headings
+  use "Flick Title KR" for Korean (`web/src/lib/fonts/title-kr/`, a unicode-range
+  subset of Naver MaruBuri SemiBold under the SIL OFL, renamed because the OFL bars a
+  modified font from a Reserved Font Name; `subset.py` there regenerates it) and Kaisei
+  Opti Medium for Japanese (`@fontsource/kaisei-opti`, SIL OFL). All are self-hosted and
   selected by `<html lang>` in `web/src/routes/layout.css`. Every face is split by
   `unicode-range`, so English pages download none of them.
 - Server error messages are not shown; the web client maps error codes to its own

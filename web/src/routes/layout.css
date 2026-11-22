@@ -8,8 +8,8 @@
 /* CJK faces are split by unicode-range, so an English page downloads none of them. */
 @import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 @import "pretendard-jp/dist/web/variable/pretendardvariable-jp-dynamic-subset.css";
-@import "@fontsource-variable/noto-serif-kr";
-@import "@fontsource-variable/noto-serif-jp";
+@import "../lib/fonts/title-kr/title-kr.css";
+@import "@fontsource/kaisei-opti/japanese-500.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -206,10 +206,11 @@
 		line-break: strict;
 	}
 	:lang(ko) :is(.font-serif, .page-title) {
-		font-family: "Instrument Serif", "Noto Serif KR Variable", Georgia, serif;
+		font-family: "Instrument Serif", "Flick Title KR", Georgia, serif;
 	}
 	:lang(ja) :is(.font-serif, .page-title) {
-		font-family: "Instrument Serif", "Noto Serif JP Variable", Georgia, serif;
+		font-family: "Instrument Serif", "Kaisei Opti", Georgia, serif;
+		font-weight: 500;
 	}
 	:lang(ko) .font-mono {
 		font-family: "JetBrains Mono Variable", "Pretendard Variable", ui-monospace, monospace;
@@ -222,6 +223,12 @@
 	:is(:lang(ko), :lang(ja)) .page-title {
 		line-height: 1.22;
 		letter-spacing: 0;
+	}
+	:lang(ko) .page-title {
+		letter-spacing: -0.03em;
+	}
+	:lang(ja) .page-title {
+		letter-spacing: -0.02em;
 	}
 	:is(:lang(ko), :lang(ja)) .micro {
 		font-family: inherit;
