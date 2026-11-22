@@ -9,7 +9,7 @@
 @import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 @import "pretendard-jp/dist/web/variable/pretendardvariable-jp-dynamic-subset.css";
 @import "../lib/fonts/title-kr/title-kr.css";
-@import "@fontsource/kaisei-opti/japanese-500.css";
+@import "@fontsource/kaisei-opti/500.css";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -42,8 +42,11 @@ for key, spec in json.loads(pathlib.Path(ranges_path).read_text()).items():
     subsetter.populate(unicodes=wanted)
     subsetter.subset(font)
     for record in font["name"].names:
-        if record.nameID in (1, 3, 4, 6, 16, 17, 18):
+        if record.nameID in (1, 3, 4, 6):
             record.string = "FlickTitleKR" if record.nameID == 6 else "Flick Title KR"
+    font["name"].setName("This Font Software is licensed under the SIL Open Font License, Version 1.1.", 13, 3, 1, 0x409)
+    font["name"].setName("https://openfontlicense.org", 14, 3, 1, 0x409)
+    font.flavor = "woff2"
     font.save(out / name)
     faces.append(
         "@font-face {\n"
