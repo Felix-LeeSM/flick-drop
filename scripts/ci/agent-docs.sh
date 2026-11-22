@@ -41,6 +41,8 @@ ALLOWED_STATUS = {"draft", "stable", "deprecated"}
 
 EXEMPT = (
     "README.md",
+    "README.ko.md",
+    "README.ja.md",
     ".github/pull_request_template.md",
     ".agents/skills/*/SKILL.md",
     "docs/work/done/**",

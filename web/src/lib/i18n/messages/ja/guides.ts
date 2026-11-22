@@ -3,7 +3,7 @@ import type { guides as source } from '../en/guides';
 export const guides: typeof source = {
 	title: 'Flickの仕組み',
 	description:
-		'よくある質問から始めて、送った内容をサーバーが読めない理由、ソースコードの場所、自分で運用する方法まで順に説明します。',
+		'送り方・開き方の手順から、サーバーが内容を読めない理由、ソースコードの場所、自分で運用する方法まで順に説明します。',
 	cta: '1回だけ開けるリンクを作成',
 	toc: 'このページの内容',
 	sections: {
