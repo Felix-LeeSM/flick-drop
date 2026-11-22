@@ -89,8 +89,8 @@ contract, open decision log, or multi-step verification record.
 - NATS messages contain IDs and small metadata only, never ciphertext bodies.
 - Real OCI credentials, kubeconfig, admin tokens, production domains, database
   files, PVC dumps, and backup archives stay out of the repository. The one
-  named exception is the public demo instance in `README.md` (and `README.ko.md`, `README.ja.md`), which is
-  deliberately advertised.
+  named exception is the public demo instance in `README.md`, `README.ko.md`,
+  and `README.ja.md`, which is deliberately advertised.
 - Keep public manifests generic. Real production overlays belong outside this
   public repository until a private ops repository exists.
 

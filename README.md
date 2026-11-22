@@ -9,7 +9,7 @@ Flick is a self-hosted, open-source service for sharing short-lived secrets and 
 ## Features
 
 - **One-time encrypted links:** Share notes, files (multiple files or folders are zipped into one bundle), or structured templates (Login, Card, Identity, Custom) with configurable expiry (5 minutes to 7 days).
-- **Optional passphrase:** Passphrase-free links carry the decryption key in the URL fragment (`#key=...`), which browsers never send to the server. Passphrase-protected links require both the link and passphrase, and lock after 5 wrong attempts.
+- **Optional passphrase:** Passphrase-free links carry the decryption key in the URL fragment (`#key=...`), which browsers never send to the server. Passphrase-protected links require both the link and passphrase, and are deleted from the server after 5 wrong attempts.
 - **Live transfer:** Send text or files directly between two open devices using a 6-digit code and a 3-digit verification number. Ciphertext streams through API memory and is never written to the database or object storage.
 - **Request a secret:** Generate a submission link to share with someone else and a private retrieval link to open their first submission once. See the [request-link contract](docs/architecture/request-links.md) for full semantics.
 - **Account-free management link:** Check whether a delivery is still unopened or cancel it before it is read. The management link expires with the delivery and cannot decrypt content or recover a lost recipient link; Flick keeps no delivery history, so save the links you need.
