@@ -11,15 +11,12 @@ importers:
       '@fontsource-variable/jetbrains-mono':
         specifier: ^5.2.8
         version: 5.2.8
-      '@fontsource-variable/noto-serif-jp':
-        specifier: ^5.3.1
-        version: 5.3.1
-      '@fontsource-variable/noto-serif-kr':
-        specifier: ^5.3.1
-        version: 5.3.1
       '@fontsource/instrument-serif':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/kaisei-opti':
+        specifier: ^5.3.1
+        version: 5.3.1
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
@@ -176,14 +173,11 @@ packages:
   '@fontsource-variable/jetbrains-mono@5.2.8':
     resolution: {integrity: sha512-WBA9elru6Jdp5df2mES55wuOO0WIrn3kpXnI4+W2ek5u3ZgLS9XS4gmIlcQhiZOWEKl95meYdvK7xI+ETLCq/Q==}
 
-  '@fontsource-variable/noto-serif-jp@5.3.1':
-    resolution: {integrity: sha512-quU5uIezSqZFgPaDDI2C3hQfIJHzyXVYuvMZsDDF++og8yechsAwcmCkLLdofPboUB1xHOWV3xohJyIVBi3b4g==}
-
-  '@fontsource-variable/noto-serif-kr@5.3.1':
-    resolution: {integrity: sha512-cf29V+FWfw7/9dyzwCK6zKmf0z7XkdPPoq5UxgczmjZkV3RW1mr02/1LbEsRtiCKagRgVCb9/wQ+uYci1KzRMg==}
-
   '@fontsource/instrument-serif@5.2.8':
     resolution: {integrity: sha512-s+bkz+syj2rO00Rmq9g0P+PwuLig33DR1xDR8pTWmovH1pUjwnncrFk++q9mmOex8fUQ7oW80gPpPDaw7V1MMw==}
+
+  '@fontsource/kaisei-opti@5.3.1':
+    resolution: {integrity: sha512-71MPFMyXvVCnxDot5RfSvWFyH1lZPs8kNqU4lsFnDSxSRFXgtOK1WmJP23X8PRRif11oKLMMKSHQo6SwB7Lc+g==}
 
   '@internationalized/date@3.12.2':
     resolution: {integrity: sha512-FY1Y+H64NDs+HAF6omlnWxm3mEpfgaCSWtL5l551ZZfImA+kGjPFgrnJrGjH6lfmLL0g8Z/mBu1R3kufeCp6Jw==}
@@ -1124,11 +1118,9 @@ snapshots:
 
   '@fontsource-variable/jetbrains-mono@5.2.8': {}
 
-  '@fontsource-variable/noto-serif-jp@5.3.1': {}
-
-  '@fontsource-variable/noto-serif-kr@5.3.1': {}
-
   '@fontsource/instrument-serif@5.2.8': {}
+
+  '@fontsource/kaisei-opti@5.3.1': {}
 
   '@internationalized/date@3.12.2':
     dependencies:

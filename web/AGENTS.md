@@ -19,6 +19,7 @@ Directory structure principles:
   - `src/lib/credentials/`: browser-only credential envelope build/parse/serialize (templates, schema).
   - `src/lib/components/`: reusable UI components.
   - `src/lib/state/`: browser-only state that does not persist passphrases or derived keys.
+  - `src/lib/fonts/`: generated font subsets; `src/lib/fonts/title-kr/subset.py` rebuilds them.
   - `static/`: public static assets safe to ship unchanged.
 - Do not add a generic `src/lib/utils/` directory. A single `src/lib/utils.ts` holding only the shadcn-svelte `cn()` class helper is allowed; any other behavior belongs in a named module.
 - Browser crypto code should stay isolated enough that e2e tests can exercise the product flow without mocking the API contract.
