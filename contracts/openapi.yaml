@@ -1194,11 +1194,14 @@ paths:
         "400":
           description: Missing header or invalid code.
         "404":
-          description: Rendezvous not found.
+          description: >-
+            Rendezvous not found, or the connection is not in it (already left,
+            dropped, or never joined). Both answer the same so this unthrottled
+            call reveals no live code.
         "409":
           description: >-
-            `not_pending`: the connection was already settled, chosen, left the
-            room, or never existed in this session.
+            `not_pending`: the connection was already declined, chosen, or not
+            chosen, or is receiving.
           content:
             application/json:
               schema:

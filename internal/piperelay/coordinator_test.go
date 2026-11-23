@@ -886,11 +886,35 @@ func TestCoordinator_LeaveDropsTheRowBeforeThePresenceTimeoutWithoutBlocking(t *
 	if active(t, coord) != 1 {
 		t.Fatal("a receiver leaving burned the session")
 	}
-	if err := coord.Leave(ctx, init.Code, leaving.ConnectionID); err != ErrNotPending {
-		t.Fatalf("second Leave = %v, want ErrNotPending", err)
+	if err := coord.Leave(ctx, init.Code, leaving.ConnectionID); err != ErrNotFound {
+		t.Fatalf("second Leave = %v, want ErrNotFound like an unknown code", err)
 	}
 	if _, err := coord.Join(ctx, init.Code, client(1)); err != nil {
 		t.Fatalf("the device that left could not join again: %v", err)
+	}
+}
+
+func TestCoordinator_LeaveOfAChosenConnectionIsNotPending(t *testing.T) {
+	coord := newTestCoordinator(t, CoordinatorOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, err := coord.Init(ctx)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	join, err := coord.Join(ctx, init.Code, client(1))
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if err := coord.Select(ctx, init.Code, init.SenderToken, join.ConnectionID); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+
+	if err := coord.Leave(ctx, init.Code, join.ConnectionID); err != ErrNotPending {
+		t.Fatalf("Leave of the chosen connection = %v, want ErrNotPending", err)
+	}
+	if active(t, coord) != 1 {
+		t.Fatal("a refused Leave ended the session")
 	}
 }
 

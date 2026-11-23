@@ -631,18 +631,22 @@ func (c *Coordinator) Decline(ctx context.Context, rawCode, senderToken, connID 
 }
 
 // The receiver's own exit: unlike Decline it blocks nothing, and the sender's Wait drops the row at once
-// instead of after PresenceTimeout. The unguessable connection ID is the only credential.
+// instead of after PresenceTimeout. The unguessable connection ID is the only credential, so an unknown
+// one answers like an unknown code: /leave has no rate limit and must not reveal which codes are live.
 func (c *Coordinator) Leave(ctx context.Context, rawCode, connID string) error {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {
 		return err
 	}
 	_, err = c.update(ctx, id, func(r *room, _ time.Time) (bool, error) {
+		conn := r.conn(connID)
+		if conn == nil {
+			return false, ErrNotFound
+		}
 		if r.ended() {
 			return false, r.cause()
 		}
-		conn := r.conn(connID)
-		if conn == nil || conn.Result != "" || conn.Attached {
+		if conn.Result != "" || conn.Attached {
 			return false, ErrNotPending
 		}
 		r.Connections = slices.DeleteFunc(r.Connections, func(other roomConn) bool { return other.ID == connID })

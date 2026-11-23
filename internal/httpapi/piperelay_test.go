@@ -641,19 +641,33 @@ func TestPipeRelay_LeaveDropsTheRowAtOnceWithoutBlocking(t *testing.T) {
 	leaving := f.mustJoin(init.Code, uaChromeWindows)
 	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
 
-	leave := func() *httptest.ResponseRecorder {
+	leave := func(code, connectionID string) *httptest.ResponseRecorder {
 		return pipeDo(f.router, http.MethodPost, "/api/pipe/leave", map[string]string{
-			pipeCodeHeader:       init.Code,
-			pipeConnectionHeader: leaving.ConnectionID,
+			pipeCodeHeader:       code,
+			pipeConnectionHeader: connectionID,
 		}, nil)
 	}
-	if rec := leave(); rec.Code != http.StatusOK {
+	if rec := leave(init.Code, leaving.ConnectionID); rec.Code != http.StatusOK {
 		t.Fatalf("leave: %d %s", rec.Code, rec.Body.String())
 	}
 
 	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
-	if rec := leave(); rec.Code != http.StatusConflict || pipeErrorCode(t, rec) != "not_pending" {
-		t.Fatalf("second leave: %d %s", rec.Code, rec.Body.String())
+	unusedCode := "000000"
+	if init.Code == unusedCode {
+		unusedCode = "000001"
+	}
+	// /leave has no rate limit, so a live code with a made-up connection must look like a dead code.
+	deadCode := leave(unusedCode, "made-up")
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"second leave":                  leave(init.Code, leaving.ConnectionID),
+		"made-up connection, live code": leave(init.Code, "made-up"),
+	} {
+		if rec.Code != deadCode.Code || pipeErrorCode(t, rec) != pipeErrorCode(t, deadCode) {
+			t.Fatalf("%s: %d %s, want the unknown-code answer %d %s", name, rec.Code, rec.Body.String(), deadCode.Code, deadCode.Body.String())
+		}
+	}
+	if deadCode.Code != http.StatusNotFound {
+		t.Fatalf("unknown code: %d %s", deadCode.Code, deadCode.Body.String())
 	}
 	f.mustJoin(init.Code, uaChromeWindows)
 	if f.active() != 1 {
