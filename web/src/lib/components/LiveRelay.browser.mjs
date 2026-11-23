@@ -191,7 +191,7 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 	}
 });
 
-// Playwright는 가상 키보드를 흉내 내지 못해, 보이는 영역을 숫자 키패드 높이 추정값만큼 줄여 Connect가 그 안에 남는지로 잰다.
+// Playwright는 가상 키보드를 흉내 내지 못해, visualViewport 높이만 숫자 키패드 높이 추정값만큼 줄여 Connect가 그 안에 남는지로 잰다.
 // 글자 150%에서는 키패드가 Connect를 덮으므로(6자리 입력 시 자동 연결) 화면 안에 들어오는지만 잰다.
 const phoneKeypadHeight = 290;
 for (const viewport of [
@@ -232,8 +232,15 @@ for (const viewport of [
 				`dialog spans ${box.y}-${box.y + box.height}px, not centered in ${viewport.height}px`
 			);
 
+			// 키패드는 레이아웃 viewport는 그대로 두고 visualViewport만 줄인다(Android Chrome 기본값, iOS Safari).
 			const visibleHeight = viewport.height - phoneKeypadHeight;
-			await page.setViewportSize({ width: viewport.width, height: visibleHeight });
+			await page.evaluate((height) => {
+				Object.defineProperty(window.visualViewport, 'height', {
+					configurable: true,
+					get: () => height
+				});
+				window.visualViewport.dispatchEvent(new Event('resize'));
+			}, visibleHeight);
 			await page.waitForFunction(
 				(height) =>
 					document.querySelector('[role="dialog"]').getBoundingClientRect().bottom <= height,
@@ -246,7 +253,10 @@ for (const viewport of [
 				connect.y >= 0 && connect.y + connect.height <= visibleHeight,
 				`Connect spans ${connect.y}-${connect.y + connect.height}px, outside the ${visibleHeight}px above the keypad`
 			);
-			await page.setViewportSize(viewport);
+			await page.evaluate(() => {
+				delete window.visualViewport.height;
+				window.visualViewport.dispatchEvent(new Event('resize'));
+			});
 
 			await page.evaluate(() => {
 				document.documentElement.style.fontSize = '150%';

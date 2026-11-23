@@ -136,6 +136,7 @@ $effect(() => {
 	return () => {
 		viewport.removeEventListener('resize', measure);
 		viewport.removeEventListener('scroll', measure);
+		visibleArea = null;
 	};
 });
 
@@ -394,7 +395,7 @@ async function copyText(): Promise<void> {
 		/>
 		<Dialog.Content
 			style={visibleArea
-				? `top: ${visibleArea.top + visibleArea.height / 2}px; max-height: ${visibleArea.height - 24}px`
+				? `top: ${visibleArea.top + visibleArea.height / 2}px; max-height: calc(${visibleArea.height}px - 1.5rem)`
 				: undefined}
 			class="fixed left-1/2 top-1/2 z-50 grid max-h-[calc(100dvh-1.5rem)] w-[23rem] max-w-[calc(100vw-1.5rem)] grid-cols-[minmax(0,1fr)] -translate-x-1/2 -translate-y-1/2 gap-5 overflow-y-auto rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
