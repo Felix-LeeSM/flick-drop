@@ -24,7 +24,7 @@ const (
 	pipeWaitMaxHold = 25 * time.Second
 	// A receiver whose network died stays listed for up to this hold plus the coordinator's presence timeout.
 	pipeStatusMaxHold = 10 * time.Second
-	// ~6 polls/min per waiting receiver x MaxPendingPerNetwork(3), with room for several sessions behind one NAT.
+	// ~6 polls/min per waiting receiver, so about 20 receivers waiting at once behind one NAT or IPv6 /64.
 	pipeStatusRatePerMinute = 120
 	pipeInitBodyMax         = 1024
 	// A hybrid ML-KEM-768 + X25519 recipient (web/src/lib/crypto/age.ts) is 1,959 characters.

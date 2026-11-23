@@ -418,8 +418,8 @@ func statusAnswer(r *room, connID string) (done, selected bool, err error) {
 	return false, false, nil
 }
 
-// An open Status call keeps a waiting connection in the room: its poll lease expires the presence
-// timeout after the last poll started or ended.
+// An open Status call keeps a waiting connection in the room: its lease lasts the hold plus the
+// presence timeout from the poll's start, and at least the presence timeout after it ends.
 func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWait time.Duration) (bool, error) {
 	id, err := c.roomIDFor(rawCode)
 	if err != nil {

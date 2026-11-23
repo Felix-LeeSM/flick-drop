@@ -216,10 +216,13 @@ redis.call('SET', KEYS[1], 1, 'PX', ARGV[2])
 return 1
 `)
 
+// Only raises the lease: another poll still open beside this one holds a longer TTL.
 // KEYS: lease, polls. ARGV: presence TTL ms, poll member.
 var releaseLeaseScript = redis.NewScript(`
 redis.call('ZREM', KEYS[2], ARGV[2])
-redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
+if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[1]) then
+  redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
+end
 return 1
 `)
 

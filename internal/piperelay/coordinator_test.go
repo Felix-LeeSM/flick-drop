@@ -847,8 +847,14 @@ func TestCoordinator_OpenStatusPollLongerThanThePresenceTimeoutKeepsTheRow(t *te
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	init, _ := coord.Init(ctx)
-	join, _ := coord.Join(ctx, init.Code, client(1))
+	init, err := coord.Init(ctx)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	join, err := coord.Join(ctx, init.Code, client(1))
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
 	pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 2*time.Second)
 	waitPending(t, coord, init, 1)
 
@@ -860,6 +866,36 @@ func TestCoordinator_OpenStatusPollLongerThanThePresenceTimeoutKeepsTheRow(t *te
 	}
 	if len(snap.Pending) != 1 {
 		t.Fatal("a receiver with an open Status poll was dropped once the presence timeout passed")
+	}
+}
+
+// A browser's retry after a dropped socket overlaps the server's still-open first poll.
+func TestCoordinator_ShortPollEndingDoesNotCutAnOverlappingPollsLease(t *testing.T) {
+	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, err := coord.Init(ctx)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	join, err := coord.Join(ctx, init.Code, client(1))
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 2*time.Second)
+	waitPending(t, coord, init, 1)
+
+	if _, err := coord.Status(ctx, init.Code, join.ConnectionID, 20*time.Millisecond); err != nil {
+		t.Fatalf("short overlapping Status: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	snap, err := coord.Wait(ctx, init.Code, init.SenderToken, 0, 0)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if len(snap.Pending) != 1 {
+		t.Fatal("a short poll ending cut the lease of the poll still open beside it")
 	}
 }
 
