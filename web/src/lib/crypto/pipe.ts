@@ -206,7 +206,7 @@ async function fetchLongPoll(
 	return fetcher(url, init);
 }
 
-/** Each poll holds ≤25 s so proxies never see silence; the open poll keeps this device listed. */
+/** Each poll holds ≤10 s so proxies never see silence; the open poll keeps this device listed. */
 export async function waitForPipeSelection(
 	baseUrl: string,
 	code: string,
@@ -218,7 +218,7 @@ export async function waitForPipeSelection(
 		'X-Flick-Pipe-Code': normalizePipeCode(code),
 		'X-Flick-Pipe-Connection': connectionId
 	};
-	// The room keeps a connection 35 s without a poll, so fetchLongPoll's one retry is in time.
+	// The room keeps a connection 10 s without a poll, so fetchLongPoll's one retry is in time.
 	while (true) {
 		const response = await fetchLongPoll(fetcher, `${apiBase(baseUrl)}/api/pipe/status`, {
 			method: 'GET',
@@ -228,7 +228,7 @@ export async function waitForPipeSelection(
 		if (!response.ok) {
 			const err = await pipeError(response, t().live.errors.statusFailed);
 			// not_found after a successful join means the server dropped this connection (no poll for
-			// 35 s, e.g. a sleeping tab), not a decline: the code may be entered again.
+			// 10 s, e.g. a sleeping tab), not a decline: the code may be entered again.
 			if (err.reason === 'not_found') {
 				throw new PipeRelayError('dropped', response.status, t().live.errors.reasons.dropped);
 			}
@@ -241,7 +241,7 @@ export async function waitForPipeSelection(
 	}
 }
 
-// keepalive lets the request outlive a closing tab, so the sender's row goes at once, not after 35 s.
+// keepalive lets the request outlive a closing tab, so the sender's row goes at once, not after the presence timeout.
 export async function leavePipe(
 	baseUrl: string,
 	code: string,

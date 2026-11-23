@@ -46,9 +46,10 @@ const (
 	defaultTTL                 = 3 * time.Minute
 	defaultCleanInterval       = 30 * time.Second
 	defaultMaxTransferDuration = 10 * time.Minute
-	// Idle time without a Status poll, and the chosen connection's deadline to open Receive.
-	// Must exceed the 25s Status hold (internal/httpapi/piperelay.go pipeWaitMaxHold).
-	defaultPresenceTimeout = 35 * time.Second
+	// Idle time between Status polls (a poll's own hold is added on top), and the chosen
+	// connection's deadline to open Receive. Short so a receiver that lost its network leaves
+	// the sender's list within a Status hold plus this.
+	defaultPresenceTimeout = 10 * time.Second
 	defaultNamespace       = "pipe:"
 	// Ended-room tombstone lifetime, and how long a room key outlives its deadline.
 	endedRetention = time.Minute
@@ -441,8 +442,9 @@ func (c *Coordinator) Status(ctx context.Context, rawCode, connID string, maxWai
 	}
 	holdFor := min(maxWait, time.Until(r.ExpiresAt))
 	leaseKeys := []string{c.leaseKey(id, connID), c.pollsKey(id, connID)}
+	heldLease := (max(holdFor, 0) + c.presenceTimeout).Milliseconds()
 	opened, err := acquireLeaseScript.Run(ctx, c.valkey, leaseKeys, MaxStatusPollsPerConnection,
-		c.presenceTimeout.Milliseconds(), pollID, (max(holdFor, 0) + c.presenceTimeout).Milliseconds()).Int()
+		heldLease, pollID, heldLease).Int()
 	if err != nil {
 		return false, unavailable(err)
 	}

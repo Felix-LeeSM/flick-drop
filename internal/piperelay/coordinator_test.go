@@ -843,6 +843,26 @@ func TestCoordinator_SelectedLocksOutLateJoinersWithoutBurning(t *testing.T) {
 	}
 }
 
+func TestCoordinator_OpenStatusPollLongerThanThePresenceTimeoutKeepsTheRow(t *testing.T) {
+	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	init, _ := coord.Init(ctx)
+	join, _ := coord.Join(ctx, init.Code, client(1))
+	pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 2*time.Second)
+	waitPending(t, coord, init, 1)
+
+	time.Sleep(300 * time.Millisecond)
+
+	snap, err := coord.Wait(ctx, init.Code, init.SenderToken, 0, 0)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if len(snap.Pending) != 1 {
+		t.Fatal("a receiver with an open Status poll was dropped once the presence timeout passed")
+	}
+}
+
 func TestCoordinator_PendingReceiverStoppingPollsFreesSlot(t *testing.T) {
 	coord := newTestCoordinator(t, CoordinatorOptions{PresenceTimeout: 50 * time.Millisecond, CleanInterval: 10 * time.Millisecond})
 	init, _ := coord.Init(context.Background())

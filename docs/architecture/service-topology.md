@@ -59,10 +59,12 @@ announce every change on `pipe:ev:{roomID}` (`internal/piperelay/room.go`).
 Each replica holds one Pub/Sub pattern subscription and wakes its local
 long-polls from it, re-reading the room at least every 2 seconds
 (`resyncInterval`) in case a message was lost. `pipe:poll:{roomID}:{hash of the
-connection ID}` marks a waiting receiver present and expires 35 seconds after
-its last `/status` poll started or ended. `pipe:polls:{roomID}:{hash of the
-connection ID}` holds one member per open poll, scored by its 25-second hold
-plus those 35 seconds on Valkey's clock, so a poll that a dead replica never
+connection ID}` marks a waiting receiver present: each `/status` poll sets it to
+expire its 10-second hold plus 10 seconds after the poll starts, and 10 seconds
+after it ends, so a receiver whose network died leaves the list within about 20
+seconds. `pipe:polls:{roomID}:{hash of the
+connection ID}` holds one member per open poll, scored by the same hold plus 10
+seconds on Valkey's clock, so a poll that a dead replica never
 released stops counting by then on its own. `pipe:rooms` (sorted by deadline) backs the concurrent-session
 cap across replicas. Ciphertext bytes never touch Valkey.
 
@@ -80,16 +82,17 @@ sender's replica tells a completed transfer from a receiver that left
 or object storage. A waiting room survives the replica that created it: a
 rolling restart cuts only a stream still running when the 50-second shutdown
 timeout ends. No relay request stays silent longer than 25 seconds before a
-decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the
+decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold` for `/wait`,
+`pipeStatusMaxHold` 10 seconds for `/status`), under the
 100-second idle cut of a proxy such as Cloudflare. The flow:
 
 1. Sender `POST /api/pipe/init` gets the 6-digit code and sender token.
 2. Each receiver `POST /api/pipe/join` with the code and its browser-generated
    age recipient gets a connection ID and its own random 3-digit confirmation
    number.
-3. Each receiver long-polls `GET /api/pipe/status` (up to 25 seconds per poll)
+3. Each receiver long-polls `GET /api/pipe/status` (up to 10 seconds per poll)
    until it is selected, declined, not selected, or the session ends. A receiver
-   with no open `/status` call for 35 seconds (`internal/piperelay/coordinator.go`
+   with no open `/status` call for 10 seconds (`internal/piperelay/coordinator.go`
    `defaultPresenceTimeout`) drops out of the room; a receiver that closes the
    dialog or the page calls `POST /api/pipe/leave` and drops out at once. On `SIGTERM` an open poll
    answers at once (`Coordinator.Drain`), and the browser re-polls through
@@ -100,7 +103,7 @@ decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the
 5. Sender calls `POST /api/pipe/select` or `POST /api/pipe/decline` per
    connection; `POST /api/pipe/cancel` burns the session before streaming. Only
    the selected receiver then opens `GET /api/pipe/receive`; it must do so
-   within 35 seconds or the session ends.
+   within 10 seconds or the session ends.
 6. Sender `POST /api/pipe/send` streams an age file encrypted to the chosen
    receiver's recipient; whichever pod holds the sender dials the receiver
    pod's internal stream listener, which writes the bytes into that receiver's

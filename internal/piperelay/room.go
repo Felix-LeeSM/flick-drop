@@ -204,7 +204,7 @@ return 1
 `)
 
 // Returns 0 when ARGV[1] polls still count. Uses Valkey's clock so skewed replicas agree.
-// KEYS: lease, polls. ARGV: max polls, presence TTL ms, poll member, poll lifetime ms.
+// KEYS: lease, polls. ARGV: max polls, lease TTL ms (hold + presence), poll member, poll lifetime ms.
 var acquireLeaseScript = redis.NewScript(`
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
