@@ -1139,7 +1139,7 @@ test('Receiver: a connection dropped while waiting says so and lets the same cod
 				});
 			}
 			if (path === '/api/pipe/status') {
-				// The tab slept past 35 seconds: the server dropped the connection.
+				// The tab slept past the presence timeout: the server dropped the connection.
 				return route.fulfill({ status: 404, headers: corsHeaders, json: errorJson('not_found') });
 			}
 			return route.continue();

@@ -203,23 +203,31 @@ redis.call('PUBLISH', KEYS[3], rev)
 return 1
 `)
 
-// Returns 0 when ARGV[1] polls still count. Uses Valkey's clock so skewed replicas agree.
-// KEYS: lease, polls. ARGV: max polls, presence TTL ms, poll member, poll lifetime ms.
+// Returns 0 when ARGV[1] polls still count. Uses Valkey's clock so skewed replicas agree. Like
+// releaseLeaseScript it only raises TTLs, so a shorter poll never cuts one still open beside it.
+// KEYS: lease, polls. ARGV: max polls, lease TTL ms (hold + presence), poll member, poll lifetime ms.
 var acquireLeaseScript = redis.NewScript(`
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
 if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[1]) then return 0 end
 redis.call('ZADD', KEYS[2], now + tonumber(ARGV[4]), ARGV[3])
-redis.call('PEXPIRE', KEYS[2], ARGV[4])
-redis.call('SET', KEYS[1], 1, 'PX', ARGV[2])
+if redis.call('PTTL', KEYS[2]) < tonumber(ARGV[4]) then
+  redis.call('PEXPIRE', KEYS[2], ARGV[4])
+end
+if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[2]) then
+  redis.call('SET', KEYS[1], 1, 'PX', ARGV[2])
+end
 return 1
 `)
 
+// Only raises the lease: another poll still open beside this one holds a longer TTL.
 // KEYS: lease, polls. ARGV: presence TTL ms, poll member.
 var releaseLeaseScript = redis.NewScript(`
 redis.call('ZREM', KEYS[2], ARGV[2])
-redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
+if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[1]) then
+  redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
+end
 return 1
 `)
 

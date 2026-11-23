@@ -876,7 +876,7 @@ paths:
         connections), and a coarse device label parsed from the User-Agent. The
         receiver shows verify_code so the sender can pick it, then long-polls
         /status. A waiting connection stays in the room only while it polls
-        /status: one with no open /status call for 35 seconds is dropped and its
+        /status: one with no open /status call for 10 seconds is dropped and its
         slot reopens. No rejection here ends the session or counts against it.
         The body carries the receiver's age recipient, generated fresh in the
         receiving browser for this connection. The API keeps it with the
@@ -945,10 +945,10 @@ paths:
       description: >-
         Returns at once with `selected` when the sender picked this connection;
         the receiver then opens /receive, which streams as soon as the sender
-        starts. Otherwise holds up to 25 seconds and returns `waiting`, and the
+        starts. Otherwise holds up to 10 seconds and returns `waiting`, and the
         receiver polls again; the hold stays under proxy idle limits (Cloudflare
         cuts silent responses at 100 seconds). An open /status call is what keeps
-        the connection in the room: a connection with no /status call for 35
+        the connection in the room: a connection with no /status call for 10
         seconds is dropped, which frees its slot without ending the session. The
         connection's end comes back as an error.
       parameters:
@@ -1007,7 +1007,7 @@ paths:
         open /receive; it returns the stream once the sender starts, and a
         still-waiting connection gets 409 `awaiting_decision`. The chosen
         receiver leaving before the stream starts ends the session; so does a
-        selected connection that does not open /receive within 35 seconds.
+        selected connection that does not open /receive within 10 seconds.
       parameters:
         - $ref: "#/components/parameters/PipeCode"
         - $ref: "#/components/parameters/PipeConnection"
@@ -1067,7 +1067,7 @@ paths:
         sender re-polls with the returned version. `status` turns `ready` once
         the chosen receiver is attached and /send can stream. `connections`
         lists waiting receivers in join order; a receiver that stopped polling
-        /status for 35 seconds drops out of the list and bumps the version.
+        /status for 10 seconds drops out of the list and bumps the version.
         Each listed connection carries its age recipient, and once `status` is
         `ready` the top-level `recipient` names the attached receiver's. Only
         the sender token holder sees recipients.
