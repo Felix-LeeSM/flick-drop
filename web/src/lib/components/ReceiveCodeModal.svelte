@@ -23,6 +23,7 @@ import {
 	decryptPipeFilename,
 	formatPipeCode,
 	joinPipe,
+	leavePipe,
 	normalizePipeCode,
 	PipeRelayError,
 	receivePipeStream,
@@ -98,6 +99,18 @@ let receivedFileBlob = $state<Blob | null>(null);
 let copiedText = $state(false);
 
 let abortController = $state<AbortController | null>(null);
+// Set only while this device waits in the sender's list, so closing or leaving the page frees its row at once.
+let waitingConnection: { baseUrl: string; code: string; connectionId: string } | null = null;
+
+function leaveWaitingRoom(): void {
+	const connection = waitingConnection;
+	waitingConnection = null;
+	if (connection) {
+		void leavePipe(connection.baseUrl, connection.code, connection.connectionId, fetch).catch(
+			() => undefined
+		);
+	}
+}
 
 function clearPayloadState(): void {
 	receivedText = '';
@@ -108,6 +121,7 @@ function clearPayloadState(): void {
 }
 
 function reset(): void {
+	leaveWaitingRoom();
 	abortController?.abort();
 	abortController = null;
 	rawCode = '';
@@ -144,6 +158,7 @@ let previousOpen = false;
 $effect(() => {
 	if (!open) {
 		previousOpen = false;
+		leaveWaitingRoom();
 		abortController?.abort();
 		abortController = null;
 		clearPayloadState();
@@ -244,9 +259,16 @@ async function joinAndReceive(attempt: ReceiveAttempt): Promise<void> {
 	attempt.sessionExpiresAt = sessionExpiresAt(join.expiresIn);
 	verifyCode = join.verifyCode;
 	currentState = 'verify';
+	waitingConnection = { baseUrl: targetBaseUrl, code: normalized, connectionId: join.connectionId };
 	// Short status polls keep this device in the sender's list; /receive
 	// opens only once picked, so no request sits silent behind a proxy.
-	await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
+	try {
+		await waitForPipeSelection(targetBaseUrl, normalized, join.connectionId, fetch, signal);
+	} finally {
+		if (waitingConnection?.connectionId === join.connectionId) {
+			waitingConnection = null;
+		}
+	}
 
 	const result = await receivePipeStream(
 		targetBaseUrl,
@@ -387,6 +409,8 @@ async function copyText(): Promise<void> {
 	}
 }
 </script>
+
+<svelte:window onpagehide={leaveWaitingRoom} />
 
 <Dialog.Root bind:open={open}>
 	<Dialog.Portal>

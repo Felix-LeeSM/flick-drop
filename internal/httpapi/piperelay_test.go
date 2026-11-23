@@ -635,6 +635,46 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	}
 }
 
+func TestPipeRelay_LeaveDropsTheRowAtOnceWithoutBlocking(t *testing.T) {
+	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{TTL: 5 * time.Second, PresenceTimeout: time.Minute}, 100)
+	init := f.init()
+	leaving := f.mustJoin(init.Code, uaChromeWindows)
+	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
+
+	leave := func(code, connectionID string) *httptest.ResponseRecorder {
+		return pipeDo(f.router, http.MethodPost, "/api/pipe/leave", map[string]string{
+			pipeCodeHeader:       code,
+			pipeConnectionHeader: connectionID,
+		}, nil)
+	}
+	if rec := leave(init.Code, leaving.ConnectionID); rec.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", rec.Code, rec.Body.String())
+	}
+
+	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
+	unusedCode := "000000"
+	if init.Code == unusedCode {
+		unusedCode = "000001"
+	}
+	// /leave has no rate limit, so a live code with a made-up connection must look like a dead code.
+	deadCode := leave(unusedCode, "made-up")
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"second leave":                  leave(init.Code, leaving.ConnectionID),
+		"made-up connection, live code": leave(init.Code, "made-up"),
+	} {
+		if rec.Code != deadCode.Code || pipeErrorCode(t, rec) != pipeErrorCode(t, deadCode) {
+			t.Fatalf("%s: %d %s, want the unknown-code answer %d %s", name, rec.Code, rec.Body.String(), deadCode.Code, deadCode.Body.String())
+		}
+	}
+	if deadCode.Code != http.StatusNotFound {
+		t.Fatalf("unknown code: %d %s", deadCode.Code, deadCode.Body.String())
+	}
+	f.mustJoin(init.Code, uaChromeWindows)
+	if f.active() != 1 {
+		t.Fatal("a receiver leaving burned the session")
+	}
+}
+
 func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 	f := newPipeFixture(t)
 	init := f.init()

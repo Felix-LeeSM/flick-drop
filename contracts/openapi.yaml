@@ -1171,6 +1171,45 @@ paths:
           description: Rendezvous expired, cancelled, or closed.
         "503":
           description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
+  /api/pipe/leave:
+    post:
+      operationId: leavePipe
+      summary: Remove this waiting connection from the sender's list.
+      description: >-
+        Called by the receiver when it closes the dialog or leaves the page, so
+        the sender's list drops the row at once instead of after the presence
+        timeout. Unlike decline, it blocks nothing: the same device may join
+        again. The connection ID is the only credential. The session stays
+        alive.
+      parameters:
+        - $ref: "#/components/parameters/PipeCode"
+        - $ref: "#/components/parameters/PipeConnection"
+      responses:
+        "200":
+          description: Connection removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipeActionResponse"
+        "400":
+          description: Missing header or invalid code.
+        "404":
+          description: >-
+            Rendezvous not found, or the connection is not in it (already left,
+            dropped, or never joined). Both answer the same so this unthrottled
+            call reveals no live code.
+        "409":
+          description: >-
+            `not_pending`: the connection was already declined, chosen, or not
+            chosen, or is receiving.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Rendezvous expired, cancelled, or closed.
+        "503":
+          description: Live pipe relay is disabled, or its rendezvous store is temporarily unavailable.
   /api/pipe/cancel:
     post:
       operationId: cancelPipe
@@ -1761,7 +1800,7 @@ components:
       properties:
         status:
           type: string
-          enum: [selected, declined, cancelled]
+          enum: [selected, declined, left, cancelled]
     PipeSendResponse:
       type: object
       additionalProperties: false

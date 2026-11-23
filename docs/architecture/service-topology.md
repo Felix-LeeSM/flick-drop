@@ -90,7 +90,8 @@ decision (`internal/httpapi/piperelay.go` `pipeWaitMaxHold`), under the
 3. Each receiver long-polls `GET /api/pipe/status` (up to 25 seconds per poll)
    until it is selected, declined, not selected, or the session ends. A receiver
    with no open `/status` call for 35 seconds (`internal/piperelay/coordinator.go`
-   `defaultPresenceTimeout`) drops out of the room. On `SIGTERM` an open poll
+   `defaultPresenceTimeout`) drops out of the room; a receiver that closes the
+   dialog or the page calls `POST /api/pipe/leave` and drops out at once. On `SIGTERM` an open poll
    answers at once (`Coordinator.Drain`), and the browser re-polls through
    another replica (`web/src/lib/crypto/pipe.ts` `fetchLongPoll` retries one
    5xx or dropped socket).

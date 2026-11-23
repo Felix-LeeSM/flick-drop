@@ -241,6 +241,26 @@ export async function waitForPipeSelection(
 	}
 }
 
+// keepalive lets the request outlive a closing tab, so the sender's row goes at once, not after 35 s.
+export async function leavePipe(
+	baseUrl: string,
+	code: string,
+	connectionId: string,
+	fetcher: typeof fetch = fetch
+): Promise<void> {
+	const response = await fetcher(`${apiBase(baseUrl)}/api/pipe/leave`, {
+		method: 'POST',
+		headers: {
+			'X-Flick-Pipe-Code': normalizePipeCode(code),
+			'X-Flick-Pipe-Connection': connectionId
+		},
+		keepalive: true
+	});
+	if (!response.ok) {
+		throw await pipeError(response, t().live.errors.actionFailed);
+	}
+}
+
 export type PipePendingConnection = {
 	connectionId: string;
 	index: number;

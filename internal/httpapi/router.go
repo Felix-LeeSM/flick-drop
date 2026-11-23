@@ -174,6 +174,7 @@ func NewRouter(db *sql.DB, secretStore *secrets.Store, opts Options) http.Handle
 		r.With(server.pipeJoinLimiter.middleware).Post("/join", server.joinPipe)
 		r.With(server.pipeStatusLimiter.middleware).Get("/status", server.statusPipe)
 		r.Get("/receive", server.receivePipe)
+		r.Post("/leave", server.leavePipe)
 		r.Get("/wait", server.waitPipe)
 		r.Post("/select", server.selectPipe)
 		r.Post("/decline", server.declinePipe)

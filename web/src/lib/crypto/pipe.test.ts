@@ -9,6 +9,7 @@ import {
 	formatPipeCode,
 	initPipeRendezvous,
 	joinPipe,
+	leavePipe,
 	normalizePipeCode,
 	PipeRelayError,
 	receivePipeStream,
@@ -379,6 +380,24 @@ describe('client API hooks', () => {
 			undefined
 		]);
 		expect(calls.every((call) => call.headers['X-Flick-Pipe-Sender'] === 'tok')).toBe(true);
+	});
+
+	it('leavePipe sends only the code and connection ID, kept alive past page unload', async () => {
+		let captured: { url: string; init?: RequestInit } | undefined;
+		const mockFetch: typeof fetch = (url, init) => {
+			captured = { url: String(url), init };
+			return Promise.resolve(jsonResponse({ status: 'left' }));
+		};
+
+		await leavePipe('http://api/', '123-456', 'c1', mockFetch);
+
+		expect(captured?.url).toBe('http://api/api/pipe/leave');
+		expect(captured?.init?.method).toBe('POST');
+		expect(captured?.init?.keepalive).toBe(true);
+		expect(captured?.init?.headers).toEqual({
+			'X-Flick-Pipe-Code': '123456',
+			'X-Flick-Pipe-Connection': 'c1'
+		});
 	});
 
 	it('sendPipeStream passes headers, body, duplex and returns transferred bytes', async () => {

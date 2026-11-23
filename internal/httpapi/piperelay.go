@@ -346,6 +346,21 @@ func (s Server) declinePipe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "declined"})
 }
 
+func (s Server) leavePipe(w http.ResponseWriter, r *http.Request) {
+	if !s.pipeEnabled(w) {
+		return
+	}
+	headers, ok := requirePipeHeaders(w, r, pipeCodeHeader, pipeConnectionHeader)
+	if !ok {
+		return
+	}
+	if err := s.pipeCoordinator.Leave(r.Context(), headers[0], headers[1]); err != nil {
+		writePipeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pipeStatusResponse{Status: "left"})
+}
+
 func (s Server) cancelPipe(w http.ResponseWriter, r *http.Request) {
 	if !s.pipeEnabled(w) {
 		return
