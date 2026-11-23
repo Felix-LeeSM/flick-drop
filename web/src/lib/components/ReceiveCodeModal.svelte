@@ -120,6 +120,26 @@ function reset(): void {
 	verifyCode = '';
 }
 
+// A phone keypad shrinks only the visual viewport, so the dialog centers in what stays visible.
+let visibleArea = $state<{ top: number; height: number } | null>(null);
+$effect(() => {
+	const viewport = window.visualViewport;
+	if (!(open && viewport)) {
+		return;
+	}
+	const measure = () => {
+		visibleArea = { top: viewport.offsetTop, height: viewport.height };
+	};
+	measure();
+	viewport.addEventListener('resize', measure);
+	viewport.addEventListener('scroll', measure);
+	return () => {
+		viewport.removeEventListener('resize', measure);
+		viewport.removeEventListener('scroll', measure);
+		visibleArea = null;
+	};
+});
+
 let previousOpen = false;
 $effect(() => {
 	if (!open) {
@@ -374,7 +394,10 @@ async function copyText(): Promise<void> {
 			class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
 		/>
 		<Dialog.Content
-			class="fixed left-1/2 top-3 z-50 grid max-h-[calc(100dvh-1.5rem)] w-[23rem] max-w-[calc(100vw-1.5rem)] grid-cols-[minmax(0,1fr)] -translate-x-1/2 gap-5 overflow-y-auto sm:top-1/2 sm:-translate-y-1/2 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+			style={visibleArea
+				? `top: ${visibleArea.top + visibleArea.height / 2}px; max-height: calc(${visibleArea.height}px - 1.5rem)`
+				: undefined}
+			class="fixed left-1/2 top-1/2 z-50 grid max-h-[calc(100dvh-1.5rem)] w-[23rem] max-w-[calc(100vw-1.5rem)] grid-cols-[minmax(0,1fr)] -translate-x-1/2 -translate-y-1/2 gap-5 overflow-y-auto rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
 		>
 			{#if currentState === 'declined'}
 				<div class="relative z-10 -mb-8 flex items-center justify-end">

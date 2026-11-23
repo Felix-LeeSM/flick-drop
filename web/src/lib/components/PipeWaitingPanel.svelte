@@ -86,6 +86,17 @@ $effect(() => {
 let qrOpen = $state(false);
 let copied = $state(false);
 
+// A device that joins while the QR is up closes it, so the sender sees the new row and its number.
+let seenConnections = new Set<string>();
+$effect(() => {
+	const ids = pending.map((receiver) => receiver.connectionId);
+	const arrived = ids.some((id) => !seenConnections.has(id));
+	seenConnections = new Set(ids);
+	if (arrived) {
+		qrOpen = false;
+	}
+});
+
 let timerInterval: number | null = null;
 let now = $state(Date.now());
 

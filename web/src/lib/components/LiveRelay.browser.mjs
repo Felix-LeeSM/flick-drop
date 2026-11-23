@@ -191,14 +191,14 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 	}
 });
 
-// Playwright는 가상 키보드를 흉내 내지 못해, 숫자 키패드 높이 추정값 위에 Connect가 남는지로 잰다.
+// Playwright는 가상 키보드를 흉내 내지 못해, visualViewport 높이만 숫자 키패드 높이 추정값만큼 줄여 Connect가 그 안에 남는지로 잰다.
 // 글자 150%에서는 키패드가 Connect를 덮으므로(6자리 입력 시 자동 연결) 화면 안에 들어오는지만 잰다.
 const phoneKeypadHeight = 290;
 for (const viewport of [
 	{ width: 320, height: 568 },
 	{ width: 360, height: 740 }
 ]) {
-	test(`Receive dialog keeps Connect above the keypad at 100% text and fits ${viewport.width}x${viewport.height} at 150% text`, async () => {
+	test(`Receive dialog centers on screen, keeps Connect above the keypad at 100% text, and fits ${viewport.width}x${viewport.height} at 150% text`, async () => {
 		const page = await browser.newPage({ viewport });
 		try {
 			await routeApi(page, (path, route) => {
@@ -226,13 +226,37 @@ for (const viewport of [
 			const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
 			await dialog.getByRole('heading', { name: 'Connect to sender' }).waitFor();
 			await assertDialogFits(page, '100% code entry');
+			const box = await dialog.boundingBox();
+			assert.ok(
+				Math.abs(box.y + box.height / 2 - viewport.height / 2) <= 1,
+				`dialog spans ${box.y}-${box.y + box.height}px, not centered in ${viewport.height}px`
+			);
+
+			// 키패드는 레이아웃 viewport는 그대로 두고 visualViewport만 줄인다(Android Chrome 기본값, iOS Safari).
+			const visibleHeight = viewport.height - phoneKeypadHeight;
+			await page.evaluate((height) => {
+				Object.defineProperty(window.visualViewport, 'height', {
+					configurable: true,
+					get: () => height
+				});
+				window.visualViewport.dispatchEvent(new Event('resize'));
+			}, visibleHeight);
+			await page.waitForFunction(
+				(height) =>
+					document.querySelector('[role="dialog"]').getBoundingClientRect().bottom <= height,
+				visibleHeight
+			);
 			const connect = await dialog
 				.getByRole('button', { name: 'Connect', exact: true })
 				.boundingBox();
 			assert.ok(
-				connect.y + connect.height <= viewport.height - phoneKeypadHeight,
-				`Connect ends at ${connect.y + connect.height}px, under the keypad`
+				connect.y >= 0 && connect.y + connect.height <= visibleHeight,
+				`Connect spans ${connect.y}-${connect.y + connect.height}px, outside the ${visibleHeight}px above the keypad`
 			);
+			await page.evaluate(() => {
+				delete window.visualViewport.height;
+				window.visualViewport.dispatchEvent(new Event('resize'));
+			});
 
 			await page.evaluate(() => {
 				document.documentElement.style.fontSize = '150%';
@@ -928,6 +952,43 @@ test('Sender: a /wait answer that was in flight during Deny does not bring the r
 
 		assert.equal(await page.getByRole('button', { name: 'Deny connection 1' }).count(), 0);
 		await page.getByText('2 of 10 devices waiting').waitFor();
+	} finally {
+		await page.close();
+	}
+});
+
+test('Sender: a device joining while the QR is open closes it so the new row shows', async () => {
+	const page = await browser.newPage();
+	const joined = Promise.withResolvers();
+	try {
+		await routeApi(page, async (path, route) => {
+			if (path === '/api/pipe/init') {
+				return fulfillConfirmedInit(route);
+			}
+			if (path === '/api/pipe/wait') {
+				const since = new URL(route.request().url()).searchParams.get('since');
+				if (since === '0') {
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(1, 0) });
+				}
+				if (since === '1') {
+					await joined.promise;
+					return route.fulfill({ headers: corsHeaders, json: senderRoomJson(2, 1) });
+				}
+				return;
+			}
+			return route.continue();
+		});
+		await startConfirmedSender(page);
+		await page.getByText('0 of 10 devices waiting').waitFor();
+		await page.getByRole('button', { name: 'Show QR' }).click();
+		const qr = page.getByRole('dialog', { name: 'Scan or copy' });
+		await qr.waitFor();
+
+		joined.resolve();
+
+		await qr.waitFor({ state: 'hidden' });
+		await page.getByText('1 of 10 devices waiting').waitFor();
+		await page.getByRole('button', { name: 'Deny connection 1' }).waitFor();
 	} finally {
 		await page.close();
 	}
