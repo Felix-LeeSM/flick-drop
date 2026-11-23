@@ -884,6 +884,16 @@ func TestCoordinator_ShortPollEndingDoesNotCutAnOverlappingPollsLease(t *testing
 	}
 	pollUntilDecided(ctx, coord, init.Code, join.ConnectionID, 2*time.Second)
 	waitPending(t, coord, init, 1)
+	id, err := coord.roomIDFor(init.Code)
+	if err != nil {
+		t.Fatalf("roomIDFor: %v", err)
+	}
+	for coord.valkey.ZCard(ctx, coord.pollsKey(id, join.ConnectionID)).Val() != 1 {
+		if ctx.Err() != nil {
+			t.Fatal("the long poll never opened")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if _, err := coord.Status(ctx, init.Code, join.ConnectionID, 20*time.Millisecond); err != nil {
 		t.Fatalf("short overlapping Status: %v", err)

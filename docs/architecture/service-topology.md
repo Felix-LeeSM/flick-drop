@@ -60,8 +60,8 @@ Each replica holds one Pub/Sub pattern subscription and wakes its local
 long-polls from it, re-reading the room at least every 2 seconds
 (`resyncInterval`) in case a message was lost. `pipe:poll:{roomID}:{hash of the
 connection ID}` marks a waiting receiver present: each `/status` poll sets it to
-expire its 10-second hold plus 10 seconds after the poll starts, and 10 seconds
-after it ends, so a receiver whose network died leaves the list within about 20
+expire its 10-second hold plus 10 seconds after the poll starts, and at least 10
+seconds after it ends (a poll only ever raises it), so a receiver whose network died leaves the list within about 20
 seconds. `pipe:polls:{roomID}:{hash of the
 connection ID}` holds one member per open poll, scored by the same hold plus 10
 seconds on Valkey's clock, so a poll that a dead replica never
