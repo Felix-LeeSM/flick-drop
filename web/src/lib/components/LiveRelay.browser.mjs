@@ -191,6 +191,56 @@ test('Receive dialog mirrors typed digits in six key caps and shows its own numb
 	}
 });
 
+test('Closing the Receive dialog while waiting tells the sender at once with /leave', async () => {
+	const page = await browser.newPage();
+	try {
+		const leaves = [];
+		await routeApi(page, (path, route) => {
+			if (path === '/api/pipe/join') {
+				return route.fulfill({
+					status: 201,
+					headers: corsHeaders,
+					json: {
+						connection_id: 'conn-1',
+						verify_code: '042',
+						device: 'Chrome on Linux',
+						expires_in: 170
+					}
+				});
+			}
+			if (path === '/api/pipe/leave') {
+				leaves.push(route.request().headers());
+				return route.fulfill({ headers: corsHeaders, json: { status: 'left' } });
+			}
+			// 응답하지 않아 대화상자가 번호 확인 단계에 머문다.
+			if (path === '/api/pipe/status') {
+				return;
+			}
+			return route.continue();
+		});
+		await page.goto(`${baseUrl}/`);
+		await page.locator('#svelte-announcer').waitFor({ state: 'attached' });
+		await openReceiveDialog(page);
+		const dialog = page.getByRole('dialog', { name: 'Receive secret with code' });
+		await page.locator('#pipe-code-input').fill('741928');
+		await dialog.getByRole('heading', { name: 'Read this to the sender' }).waitFor();
+		assert.equal(leaves.length, 0);
+
+		const leaveSent = page.waitForResponse(
+			(response) => new URL(response.url()).pathname === '/api/pipe/leave'
+		);
+		await dialog.getByRole('button', { name: 'Close' }).first().click();
+		await leaveSent;
+		await dialog.waitFor({ state: 'hidden' });
+
+		assert.equal(leaves.length, 1);
+		assert.equal(leaves[0]['x-flick-pipe-code'], '741928');
+		assert.equal(leaves[0]['x-flick-pipe-connection'], 'conn-1');
+	} finally {
+		await page.close();
+	}
+});
+
 // Playwright는 가상 키보드를 흉내 내지 못해, visualViewport 높이만 숫자 키패드 높이 추정값만큼 줄여 Connect가 그 안에 남는지로 잰다.
 // 글자 150%에서는 키패드가 Connect를 덮으므로(6자리 입력 시 자동 연결) 화면 안에 들어오는지만 잰다.
 const phoneKeypadHeight = 290;

@@ -635,6 +635,32 @@ func TestPipeRelay_DeclineFreesSlotAndBlocksThatClient(t *testing.T) {
 	}
 }
 
+func TestPipeRelay_LeaveDropsTheRowAtOnceWithoutBlocking(t *testing.T) {
+	f := newPipeFixtureWith(t, piperelay.CoordinatorOptions{TTL: 5 * time.Second, PresenceTimeout: time.Minute}, 100)
+	init := f.init()
+	leaving := f.mustJoin(init.Code, uaChromeWindows)
+	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 1 })
+
+	leave := func() *httptest.ResponseRecorder {
+		return pipeDo(f.router, http.MethodPost, "/api/pipe/leave", map[string]string{
+			pipeCodeHeader:       init.Code,
+			pipeConnectionHeader: leaving.ConnectionID,
+		}, nil)
+	}
+	if rec := leave(); rec.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", rec.Code, rec.Body.String())
+	}
+
+	f.waitFor(init, func(w pipeWaitResponse) bool { return len(w.Connections) == 0 })
+	if rec := leave(); rec.Code != http.StatusConflict || pipeErrorCode(t, rec) != "not_pending" {
+		t.Fatalf("second leave: %d %s", rec.Code, rec.Body.String())
+	}
+	f.mustJoin(init.Code, uaChromeWindows)
+	if f.active() != 1 {
+		t.Fatal("a receiver leaving burned the session")
+	}
+}
+
 func TestPipeRelay_RoomFullRejectsEleventhWithoutBurning(t *testing.T) {
 	f := newPipeFixture(t)
 	init := f.init()
