@@ -51,6 +51,10 @@ type OpenResult struct {
 // The server has no second copy: callers must surface OpenResult.Plaintext or RescuedPath.
 var ErrWriteAfterConsume = errors.New("secret was opened and consumed but could not be written")
 
+// The payload was received and secured, but passes the inline text limit this client
+// accepts; the result carries it, so callers surface the file or plaintext alongside.
+var ErrOverInlineCap = errors.New("the payload is larger than the inline text limit this client accepts")
+
 // Order matters: everything that can fail (probe, passphrase, identity check, reserving the
 // output) runs before the consuming open; afterwards the payload exists only in this process.
 func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, error) {
@@ -90,7 +94,7 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	}
 
 	// Reserved before the open so a bad path costs nothing; discarded if the open fails.
-	reserved, err := reserveDestination(opts, metadata.Kind, opts.Link.ID)
+	reserved, err := reserveDestination(opts, metadata.Kind, "flick-secret-"+opts.Link.ID)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -116,24 +120,27 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 
 	result := OpenResult{Kind: opened.Kind, ContentType: opened.ContentType}
 	if opened.Kind != "file" {
-		return openText(opts, reserved, identity, opened, result)
+		return openText(opts, reserved, identity, opened.Body, result)
 	}
+	return openFile(opts, reserved, identity, opened.EncryptedFilename, opened.Body, result)
+}
 
+// Staged and moved into place only after age authenticates the final chunk, so no partial plaintext lands.
+func openFile(opts OpenOptions, reserved *destination, identity *age.HybridIdentity, encryptedFilename string, body io.Reader, result OpenResult) (OpenResult, error) {
 	// A name that fails to decrypt is not an error: encrypted_filename is optional, the body is
 	// separately authenticated, and the server copy is already gone.
-	if opts.OutputPath == "" && opened.EncryptedFilename != "" {
-		name, err := openFilename(identity, opened.EncryptedFilename)
+	if opts.OutputPath == "" && encryptedFilename != "" {
+		name, err := openFilename(identity, encryptedFilename)
 		result.Filename = name
 		result.FilenameUnreadable = err != nil
 	}
 
-	// Staged and moved into place only after age authenticates the final chunk, so no partial plaintext lands.
 	staged, err := reserved.stage(opts)
 	if err != nil {
 		reserved.discard()
 		return result, fmt.Errorf("%w: %w", ErrWriteAfterConsume, err)
 	}
-	if err := decryptInto(staged, identity, opened.Body); err != nil {
+	if err := decryptInto(staged, identity, body); err != nil {
 		staged.Close()
 		os.Remove(staged.Name())
 		reserved.discard()
@@ -153,8 +160,8 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	return result, nil
 }
 
-func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdentity, opened OpenedSecret, result OpenResult) (OpenResult, error) {
-	plaintext, err := unsealReader(identity, opened.Body)
+func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdentity, body io.Reader, result OpenResult) (OpenResult, error) {
+	plaintext, err := unsealReader(identity, body)
 	if err != nil {
 		reserved.discard()
 		return OpenResult{}, consumedError(err)
@@ -292,7 +299,9 @@ func (d *destination) place(opts OpenOptions, filename string, staged *os.File) 
 	return placeFile(opts, filename, staged.Name())
 }
 
-func reserveDestination(opts OpenOptions, kind, id string) (*destination, error) {
+// autoBase is the no-extension base for the automatic text destination; the
+// kind decides between a text file and the decrypted-filename path for files.
+func reserveDestination(opts OpenOptions, kind, autoBase string) (*destination, error) {
 	if opts.OutputPath != "" {
 		// O_EXCL: never truncate a local file to make room for the secret.
 		file, err := os.OpenFile(opts.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -308,7 +317,7 @@ func reserveDestination(opts OpenOptions, kind, id string) (*destination, error)
 		if opts.Reveal {
 			return &destination{}, nil
 		}
-		return reserveAutoDestination(opts.OutputDir, safeFilename("flick-secret-"+id+".txt"))
+		return reserveAutoDestination(opts.OutputDir, safeFilename(autoBase+".txt"))
 	}
 	// Catching a bad directory after the open would cost the secret.
 	if err := checkWritableDir(opts.OutputDir); err != nil {

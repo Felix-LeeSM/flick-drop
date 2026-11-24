@@ -87,6 +87,12 @@ flick send
 flick open 'https://flick.makana.cc/s/abc123#key=...'
 # To print the payload itself (byte-exact text, label: value credential lines):
 flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
+
+# Request a secret from someone once: prints a submission link to share and a
+# private retrieval link to keep (the retrieval link holds the only key)
+flick request -ttl 24h -note "the staging password, please"
+flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "here it is"
+flick receive - < retrieval-link.txt
 ```
 
 Flags can appear before or after positional arguments. A passphrase is never accepted as a flag, because command arguments show up in `ps` and shell history; for scripted use, set `FLICK_PASSPHRASE` in place of the prompt.

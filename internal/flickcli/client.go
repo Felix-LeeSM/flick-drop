@@ -340,3 +340,204 @@ func readAPIError(resp *http.Response) error {
 	}
 	return &APIError{Code: code, Status: resp.StatusCode, Message: envelope.Error.Message}
 }
+
+// Request-link endpoints (contracts/openapi.yaml /api/requests). The bearer
+// token from a link fragment travels only in the Authorization header.
+
+type CreateRequestInput struct {
+	PublicKey     string `json:"public_key"`
+	TTLSeconds    int    `json:"ttl_seconds,omitempty"`
+	EncryptedNote string `json:"encrypted_note,omitempty"`
+}
+
+type CreatedRequest struct {
+	ID              string `json:"id"`
+	ExpiresAt       string `json:"expires_at"`
+	SubmissionToken string `json:"submission_token"`
+	RetrievalToken  string `json:"retrieval_token"`
+}
+
+type RequestInstructions struct {
+	PublicKey     string `json:"public_key"`
+	Fingerprint   string `json:"fingerprint"`
+	ExpiresAt     string `json:"expires_at"`
+	Generation    int    `json:"generation"`
+	CanSubmit     bool   `json:"can_submit"`
+	EncryptedNote string `json:"encrypted_note,omitempty"`
+}
+
+type RequestEnvelope struct {
+	Version           int    `json:"version"`
+	EncryptedFilename string `json:"encrypted_filename,omitempty"`
+}
+
+type SubmitRequestInput struct {
+	Generation   int             `json:"generation"`
+	AttemptToken string          `json:"attempt_token"`
+	Kind         string          `json:"kind"`
+	SizeBytes    int64           `json:"size_bytes"`
+	Envelope     RequestEnvelope `json:"envelope"`
+	Ciphertext   string          `json:"ciphertext"`
+}
+
+type RequestUploadInput struct {
+	Generation       int             `json:"generation"`
+	AttemptToken     string          `json:"attempt_token"`
+	Kind             string          `json:"kind"`
+	SizeBytes        int64           `json:"size_bytes"`
+	Envelope         RequestEnvelope `json:"envelope"`
+	CiphertextSHA256 string          `json:"ciphertext_sha256"`
+}
+
+// State "uploading" carries Upload and ReservationExpiresAt; a replayed
+// accepted attempt comes back as State "submitted".
+type RequestUploadResult struct {
+	Generation           int              `json:"generation"`
+	State                string           `json:"state"`
+	Upload               *PresignedUpload `json:"upload,omitempty"`
+	ReservationExpiresAt string           `json:"reservation_expires_at,omitempty"`
+}
+
+type RequestAttempt struct {
+	Generation   int    `json:"generation"`
+	AttemptToken string `json:"attempt_token"`
+}
+
+type RequestReceipt struct {
+	Generation int    `json:"generation"`
+	State      string `json:"state"`
+}
+
+type RequestAttemptStatus struct {
+	Generation int    `json:"generation"`
+	State      string `json:"state"`
+}
+
+type RequestOwnerStatus struct {
+	PublicKey   string `json:"public_key"`
+	Fingerprint string `json:"fingerprint"`
+	ExpiresAt   string `json:"expires_at"`
+	State       string `json:"state"`
+}
+
+type OpenedRequest struct {
+	Kind              string
+	EncryptedFilename string
+	Body              io.ReadCloser
+}
+
+func (c *Client) CreateRequest(ctx context.Context, input CreateRequestInput) (CreatedRequest, error) {
+	var resp CreatedRequest
+	err := c.do(ctx, http.MethodPost, "/api/requests", input, &resp)
+	return resp, err
+}
+
+func (c *Client) RequestInstructions(ctx context.Context, id, token string) (RequestInstructions, error) {
+	var resp RequestInstructions
+	err := c.doBearer(ctx, http.MethodGet, "/api/requests/"+url.PathEscape(id), token, nil, &resp)
+	return resp, err
+}
+
+func (c *Client) SubmitRequest(ctx context.Context, id, token string, input SubmitRequestInput) (RequestReceipt, error) {
+	var resp RequestReceipt
+	err := c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/submit", token, input, &resp)
+	return resp, err
+}
+
+func (c *Client) ReserveRequestUpload(ctx context.Context, id, token string, input RequestUploadInput) (RequestUploadResult, error) {
+	var resp RequestUploadResult
+	err := c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/upload", token, input, &resp)
+	return resp, err
+}
+
+func (c *Client) FinalizeRequest(ctx context.Context, id, token string, attempt RequestAttempt) (RequestReceipt, error) {
+	var resp RequestReceipt
+	err := c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/finalize", token, attempt, &resp)
+	return resp, err
+}
+
+func (c *Client) AbandonRequest(ctx context.Context, id, token string, attempt RequestAttempt) (RequestReceipt, error) {
+	var resp RequestReceipt
+	err := c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/abandon", token, attempt, &resp)
+	return resp, err
+}
+
+func (c *Client) InspectRequestAttempt(ctx context.Context, id, token string, attempt RequestAttempt) (RequestAttemptStatus, error) {
+	var resp RequestAttemptStatus
+	err := c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/attempt", token, attempt, &resp)
+	return resp, err
+}
+
+func (c *Client) RequestOwnerStatus(ctx context.Context, id, token string) (RequestOwnerStatus, error) {
+	var resp RequestOwnerStatus
+	err := c.doBearer(ctx, http.MethodGet, "/api/requests/"+url.PathEscape(id)+"/owner", token, nil, &resp)
+	return resp, err
+}
+
+func (c *Client) RevokeRequest(ctx context.Context, id, token string) error {
+	return c.doBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/revoke", token, nil, nil)
+}
+
+// OpenRequest consumes the accepted submission; the body must be read or the
+// reply exists only in this process afterwards, exactly like OpenSecret.
+func (c *Client) OpenRequest(ctx context.Context, id, token string) (OpenedRequest, error) {
+	resp, err := c.sendBearer(ctx, http.MethodPost, "/api/requests/"+url.PathEscape(id)+"/open", token, nil)
+	if err != nil {
+		return OpenedRequest{}, err
+	}
+	opened := OpenedRequest{
+		Kind:              resp.Header.Get("Flick-Kind"),
+		EncryptedFilename: resp.Header.Get("Flick-Encrypted-Filename"),
+		Body:              resp.Body,
+	}
+	if opened.Kind != "text" && opened.Kind != "file" {
+		resp.Body.Close()
+		return OpenedRequest{}, fmt.Errorf("request open response has an unknown kind %q", opened.Kind)
+	}
+	return opened, nil
+}
+
+func (c *Client) doBearer(ctx context.Context, method, path, token string, body, out any) error {
+	resp, err := c.sendBearer(ctx, method, path, token, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response from %s: %w", path, err)
+	}
+	return nil
+}
+
+// The token is a capability from a link fragment; it never appears in a URL or an error.
+func (c *Client) sendBearer(ctx context.Context, method, path, token string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encode request: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("could not reach %s: %w", c.baseURL, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, readAPIError(resp)
+	}
+	return resp, nil
+}

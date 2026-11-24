@@ -123,7 +123,7 @@ machine, not by any server process.
 
 | Variable | Purpose |
 | --- | --- |
-| `FLICK_URL` | Deployment URL for `flick send`, and for `flick open` when it is given a bare secret ID. `flick open` with a full link uses that link's origin (`cmd/flick/main.go` `runOpen`). The `-url` flag overrides both; when neither is set the CLI uses its built-in default. |
+| `FLICK_URL` | Deployment URL for `flick send` and `flick request`. `flick open`, `flick submit`, and `flick receive` with a full link use that link's origin (`cmd/flick/main.go` `runOpen`, `runSubmit`, `runReceive`), and `flick open` with a bare secret ID falls back to this URL. The `-url` flag overrides all of it; when neither is set the CLI uses its built-in default. |
 | `FLICK_PASSPHRASE` | Passphrase for non-interactive use instead of a terminal prompt. Set but empty is an error. The passphrase stays on the client and is never sent to the API. |
 
 ## Object storage backends

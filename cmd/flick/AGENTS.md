@@ -21,10 +21,16 @@ process, not a service. It has no config file, no database, and no telemetry.
 
 ## What belongs here
 
-- Flag and subcommand parsing (`flag`, not a CLI framework — the surface is two
-  commands).
+- Flag and subcommand parsing (`flag`, not a CLI framework — the surface is
+  `send`, `open`, `request`, `submit`, `receive`, and `version`).
 - Terminal interaction: passphrase prompts, TTY detection, exit codes.
 - Rendering results for humans and for `-json`.
+
+Request-link commands (`cmd/flick/main.go` `runRequest`, `runSubmit`,
+`runReceive`) print the two links a request produces with labels on stderr and
+the bare links on stdout, and `flick receive -` (or a pipe) reads the
+retrieval link from stdin so the identity in its fragment stays out of shell
+history.
 
 Encryption, HTTP calls, and share-link handling belong in
 `internal/clientcrypto` and `internal/flickcli`.

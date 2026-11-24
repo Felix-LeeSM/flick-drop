@@ -87,6 +87,12 @@ flick send
 flick open 'https://flick.makana.cc/s/abc123#key=...'
 # ペイロード自体を出力するには（テキストはバイト通り、クレデンシャルは label: value 行）:
 flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
+
+# 相手に一度きりの秘密を依頼する: 共有用の提出リンクと、自分で保管するプライベートな
+# 受取リンクを出力します（受取リンクに唯一の鍵が入ります）
+flick request -ttl 24h -note "ステージングのパスワードをください"
+flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "どうぞ"
+flick receive - < retrieval-link.txt
 ```
 
 `-reveal`を渡すまで、復号された値がstdoutに出ることはありません。ターミナルのスクロールバックやエージェント・CIのログに秘密が残らないよう、代わりに保存先のファイルパスを報告し、`flick open -json`は`-reveal`と併用しない限りシークレットフィールドの値を除いた構造だけを出力します。

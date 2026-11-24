@@ -19,6 +19,12 @@ Client-side encryption for non-browser clients. This is the Go mirror of
 - `access.go`: the Model A PBKDF2 access proof, checked against the
   `access_proof` vector in `tests/fixtures/client-crypto-vectors.json`.
 - `fragment.go`: the Model B identity in a share URL fragment (`#key=...`).
+- `requests.go`: request-link recipient handling, the twin of
+  `web/src/lib/crypto/requests.ts` — canonical `age1pq1…` recipient parsing
+  (`ParseRecipient`), the SHA-256 recipient fingerprint
+  (`RecipientFingerprint`), encrypt-to-recipient without an identity
+  (`EncryptToRecipient`), and the 43-char attempt token
+  (`NewAttemptToken`).
 
 ## The rule that matters
 

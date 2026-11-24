@@ -87,6 +87,12 @@ flick send
 flick open 'https://flick.makana.cc/s/abc123#key=...'
 # 페이로드 자체를 출력하려면 (텍스트는 바이트 그대로, 자격 증명은 label: value 행):
 flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
+
+# 상대에게 비밀을 한 번 요청하기: 공유할 제출 링크와 직접 보관할 개인 수신 링크를
+# 함께 출력해요 (수신 링크에 유일한 키가 들어 있어요)
+flick request -ttl 24h -note "스태징 비밀번호 부탁해요"
+flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "여기 있어요"
+flick receive - < retrieval-link.txt
 ```
 
 `-reveal`을 넘기기 전에는 복호화된 값이 stdout에 나가지 않아서 터미널 스크롤백이나 에이전트·CI 로그에 비밀이 남지 않아요. 대신 저장된 파일 경로를 알려주고, `flick open -json`은 `-reveal`과 함께 쓰지 않는 한 비밀 필드 값을 빼고 구조만 내보내요.

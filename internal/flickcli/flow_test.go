@@ -31,6 +31,11 @@ type fakeFlick struct {
 
 	secrets map[string]*storedSecret
 	objects map[string][]byte
+	// Request-link state, mirroring internal/requests enough for flow tests.
+	requests         map[string]*storedRequest
+	nextRequestID    int
+	requestBodies    []string
+	requestOpenCalls int
 
 	createBodies []string
 	openCalls    int
@@ -58,6 +63,7 @@ func newFakeFlick(t *testing.T) *fakeFlick {
 		s3Enabled: true,
 		secrets:   map[string]*storedSecret{},
 		objects:   map[string][]byte{},
+		requests:  map[string]*storedRequest{},
 	}
 	fake.server = httptest.NewServer(http.HandlerFunc(fake.route))
 	t.Cleanup(fake.server.Close)
@@ -73,6 +79,10 @@ func (f *fakeFlick) route(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Limits{PayloadInlineMaxBytes: f.inlineMax, MaxFileBytes: f.maxFile})
 	case path == "/api/secrets" && r.Method == http.MethodPost:
 		f.createSecret(w, r)
+	case path == "/api/requests" && r.Method == http.MethodPost:
+		f.createRequest(w, r)
+	case strings.HasPrefix(path, "/api/requests/"):
+		f.routeRequest(w, r, strings.TrimPrefix(path, "/api/requests/"))
 	case strings.HasSuffix(path, "/finalize"):
 		f.finalize(w, strings.TrimSuffix(strings.TrimPrefix(path, "/api/secrets/"), "/finalize"))
 	case strings.HasSuffix(path, "/open"):
@@ -80,7 +90,12 @@ func (f *fakeFlick) route(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/api/secrets/"):
 		f.metadata(w, strings.TrimPrefix(path, "/api/secrets/"))
 	case strings.HasPrefix(path, "/bucket/"):
-		f.putObject(w, r, strings.TrimPrefix(path, "/bucket/"))
+		key := strings.TrimPrefix(path, "/bucket/")
+		if strings.HasPrefix(key, "reqobj-") {
+			f.putRequestObject(w, r, key)
+			return
+		}
+		f.putObject(w, r, key)
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
