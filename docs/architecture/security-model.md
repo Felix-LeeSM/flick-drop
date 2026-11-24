@@ -319,6 +319,12 @@ Residual risks remain:
   browser's by the shared golden vectors in
   `tests/fixtures/client-crypto-vectors.json` — see that package's `AGENTS.md`
   for why those vectors must not be regenerated to make a test pass.
+  Opened values stay off stdout by default: `flick open` reserves a 0600 file
+  (`internal/flickcli/open.go:reserveAutoDestination`) and prints only its
+  path, so decrypted secrets do not land in terminal scrollback or agent and
+  CI logs; `-reveal` (`cmd/flick/main.go:runOpen`) is the explicit opt-in for
+  stdout, and `-json` omits secret-field values unless paired with it
+  (`cmd/flick/main.go:printOpenJSON`).
 
 Runbooks must document checkpoint/vacuum and backup retention behavior. The
 product should communicate that Flick is ephemeral delivery, not guaranteed

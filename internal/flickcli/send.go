@@ -25,9 +25,11 @@ const (
 	DefaultTTL = time.Hour
 )
 
-// Exactly one of Text or FileName carries the payload.
+// Exactly one of Text, Credential, or FileName carries the payload.
 type SendOptions struct {
 	Text string
+	// Credential JSON (FLCR1 prefix optional), validated and canonicalized before sending.
+	Credential string
 	// Encrypted alongside the body, never sent in the clear.
 	FileName string
 	// Read once and encrypted as read; never held whole in memory.
@@ -51,6 +53,14 @@ type SendResult struct {
 
 // The server receives age files and metadata, never the passphrase, the clear identity, or the plaintext.
 func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, error) {
+	if opts.Credential != "" {
+		cred, err := ParseCredentialInput([]byte(opts.Credential))
+		if err != nil {
+			return SendResult{}, err
+		}
+		opts.Text = SerializeCredential(cred)
+		opts.Credential = ""
+	}
 	if err := validateSendOptions(opts); err != nil {
 		return SendResult{}, err
 	}
@@ -239,8 +249,14 @@ func seal(identity *age.HybridIdentity, plaintext []byte) ([]byte, error) {
 
 func validateSendOptions(opts SendOptions) error {
 	switch {
-	case opts.Text == "" && opts.FileName == "":
-		return errors.New("nothing to send: provide text or a file")
+	case opts.Text != "" && opts.Credential != "":
+		return errors.New("send text or a credential, not both")
+	case opts.Text != "" && opts.FileName != "":
+		return errors.New("send text or a file, not both")
+	case opts.Credential != "" && opts.FileName != "":
+		return errors.New("send a credential or a file, not both")
+	case opts.Text == "" && opts.Credential == "" && opts.FileName == "":
+		return errors.New("nothing to send: provide text, a credential, or a file")
 	case opts.Text != "" && opts.FileName != "":
 		return errors.New("send text or a file, not both")
 	case opts.FileName != "" && opts.File == nil:

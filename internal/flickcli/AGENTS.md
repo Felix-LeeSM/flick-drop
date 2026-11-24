@@ -17,6 +17,9 @@ send/open flows. `cmd/flick` parses flags and calls into here.
 - `send.go`: encrypt locally, create the secret, take the inline or presigned
   upload path.
 - `open.go`: probe metadata, derive the access proof, consume, decrypt, write.
+- `credential.go`: parse, validate, and serialize `FLCR1:` credential payloads
+  (twin of `web/src/lib/credentials/serialize.ts`), plus the masked stderr
+  summary and the `-reveal` rendering.
 
 ## Boundaries
 
@@ -46,8 +49,10 @@ Anything that can fail should fail before step 3, including reserving the
 output destination. After it, the payload exists only in this process — a
 failure past that point loses the secret for good.
 
-- A text secret is decrypted into memory, so a failed write can still hand it
-  to stdout. Its reported size is checked against the inline limit before the
+- A text secret is decrypted into memory, so a failed write can still be
+  rescued to a file by the caller (`cmd/flick/main.go:writeRescueFile`);
+  values never fall back to stdout. Its reported size is checked against the
+  inline limit before the
   open, since the server's number is otherwise the only bound.
 - A file secret is streamed: age decrypts the body into a `.flick-partial-*`
   staging file in the destination directory, and only after the final chunk

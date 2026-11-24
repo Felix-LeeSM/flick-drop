@@ -64,7 +64,7 @@ send_secret() {
 run_text() {
 	head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/sent.txt"
 	send_secret <"$work/sent.txt" || return 1
-	flick open "$(cat "$work/link")" >"$work/opened.txt" 2>"$work/open.err" || {
+	flick open -reveal "$(cat "$work/link")" >"$work/opened.txt" 2>"$work/open.err" || {
 		log "open failed: $(redact "$work/open.err")"
 		return 1
 	}

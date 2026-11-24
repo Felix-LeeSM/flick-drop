@@ -254,10 +254,84 @@ func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
 }
 
 func TestUsageNamesBothCommands(t *testing.T) {
-	for _, needed := range []string{"flick send", "flick open", "FLICK_PASSPHRASE", "FLICK_URL"} {
+	for _, needed := range []string{
+		"flick send", "flick open", "FLICK_PASSPHRASE", "FLICK_URL",
+		"-reveal", "-credential",
+	} {
 		if !strings.Contains(usage, needed) {
 			t.Errorf("usage text does not mention %q", needed)
 		}
+	}
+}
+
+func TestReadInputReadsStdinForADash(t *testing.T) {
+	withStdin(t, `{"v":1}`, func() {
+		data, err := readInput("-")
+		if err != nil {
+			t.Fatalf("readInput -: %v", err)
+		}
+		if string(data) != `{"v":1}` {
+			t.Errorf("readInput - = %q", data)
+		}
+	})
+
+	path := filepath.Join(t.TempDir(), "cred.json")
+	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	data, err := readInput(path)
+	if err != nil {
+		t.Fatalf("readInput path: %v", err)
+	}
+	if string(data) != "from-file" {
+		t.Errorf("readInput path = %q", data)
+	}
+}
+
+func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
+	cred := flickcli.Credential{
+		Type:  "login",
+		Title: "prod",
+		Fields: []flickcli.CredentialField{
+			{ID: "username", Label: "Username", Value: "alice", Secret: false},
+			{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
+		},
+	}
+
+	defaultJSON, _, err := captureOutput(t, func() error {
+		return printOpenJSON(flickcli.OpenResult{Kind: "text", Credential: &cred, WrittenPath: "out.txt"}, false)
+	})
+	if err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	if strings.Contains(defaultJSON, "hunter2") {
+		t.Errorf("default -json leaked a secret value: %s", defaultJSON)
+	}
+	if !strings.Contains(defaultJSON, `"saved":"out.txt"`) || !strings.Contains(defaultJSON, `"kind":"credential"`) {
+		t.Errorf("default -json = %s, want the saved path and kind", defaultJSON)
+	}
+	if !strings.Contains(defaultJSON, `"value":"alice"`) {
+		t.Errorf("default -json hid a non-secret value: %s", defaultJSON)
+	}
+
+	revealedJSON, _, err := captureOutput(t, func() error {
+		return printOpenJSON(flickcli.OpenResult{Kind: "text", Credential: &cred}, true)
+	})
+	if err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	if !strings.Contains(revealedJSON, "hunter2") {
+		t.Errorf("revealed -json lost the secret value: %s", revealedJSON)
+	}
+
+	textJSON, _, err := captureOutput(t, func() error {
+		return printOpenJSON(flickcli.OpenResult{Kind: "text", Plaintext: []byte("the payload")}, true)
+	})
+	if err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	if !strings.Contains(textJSON, `"text":"the payload"`) {
+		t.Errorf("revealed text -json = %s", textJSON)
 	}
 }
 
@@ -395,44 +469,45 @@ func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
 	}
 }
 
-func TestSalvagePrintsATextSecretOnStdout(t *testing.T) {
-	dir := t.TempDir()
+func TestRescueWritesATextSecretToAFileInsteadOfStdout(t *testing.T) {
 	cause := errors.New("disk full")
 
 	stdout, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, cause)
+		return rescue(flickcli.OpenResult{Kind: "text", Plaintext: []byte("sk-live-value")}, cause)
 	})
 
 	if !errors.Is(err, cause) {
 		t.Errorf("err = %v, want it to carry the cause", err)
 	}
-	if stdout != "sk-live-value" {
-		t.Errorf("stdout = %q, want the payload", stdout)
+	if stdout != "" {
+		t.Errorf("stdout = %q, want no payload bytes there", stdout)
 	}
 	if !strings.Contains(stderr, "only remaining copy") {
 		t.Errorf("stderr did not warn that this is the last copy: %q", stderr)
 	}
-	entries, err := os.ReadDir(dir)
+	path := rescuedPath(t, stderr)
+	defer os.Remove(path)
+	saved, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read dir: %v", err)
+		t.Fatalf("read rescue file: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("a text salvage wrote files: %v", entries)
+	if string(saved) != "sk-live-value" {
+		t.Errorf("rescue file = %q, want the payload", saved)
 	}
 }
 
-func TestSalvageNamesTheRescuedFile(t *testing.T) {
+func TestRescueNamesTheRescuedFile(t *testing.T) {
 	rescued := filepath.Join(t.TempDir(), ".flick-partial-1")
 	if err := os.WriteFile(rescued, []byte("binary payload"), 0o600); err != nil {
 		t.Fatalf("seed rescued file: %v", err)
 	}
 
 	stdout, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "file", RescuedPath: rescued}, errors.New("no unused filename"))
+		return rescue(flickcli.OpenResult{Kind: "file", RescuedPath: rescued}, errors.New("no unused filename"))
 	})
 
 	if err == nil {
-		t.Fatal("salvage reported success for a secret that could not be written")
+		t.Fatal("rescue reported success for a secret that could not be written")
 	}
 	if stdout != "" {
 		t.Errorf("file bytes were dumped on stdout: %q", stdout)
@@ -445,13 +520,13 @@ func TestSalvageNamesTheRescuedFile(t *testing.T) {
 	}
 }
 
-func TestSalvageReportsALostFile(t *testing.T) {
+func TestRescueReportsALostFile(t *testing.T) {
 	stdout, stderr, err := captureOutput(t, func() error {
-		return salvage(flickcli.OpenResult{Kind: "file"}, errors.New("disk full"))
+		return rescue(flickcli.OpenResult{Kind: "file"}, errors.New("disk full"))
 	})
 
 	if err == nil {
-		t.Fatal("salvage reported success for a secret that could not be written")
+		t.Fatal("rescue reported success for a secret that could not be written")
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want nothing", stdout)

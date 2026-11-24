@@ -77,15 +77,21 @@ kubectl get secret db -o jsonpath='{.data.password}' | base64 -d | flick send
 flick send -passphrase -ttl 24h "the database password"
 flick send -file ./credentials.json -ttl 30m
 
+# Structured credential (the web's login/card/identity/custom forms), as JSON
+flick send -credential login.json
+
 # Interactive prompt
 flick send
 
-# Open and consume
+# Open and consume: the payload lands in a 0600 file and only its path is printed
 flick open 'https://flick.makana.cc/s/abc123#key=...'
-flick open https://flick.makana.cc/s/abc123 > recovered.txt
+# To print the payload itself (byte-exact text, label: value credential lines):
+flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 ```
 
 Flags can appear before or after positional arguments. A passphrase is never accepted as a flag, because command arguments show up in `ps` and shell history; for scripted use, set `FLICK_PASSPHRASE` in place of the prompt.
+
+Opened values never go to stdout unless `-reveal` is passed, so decrypted secrets stay out of terminal scrollback and agent or CI logs; `flick open` reports the saved file path instead, and `flick open -json` emits structure without secret-field values unless paired with `-reveal`.
 
 ## Self-Hosting
 
