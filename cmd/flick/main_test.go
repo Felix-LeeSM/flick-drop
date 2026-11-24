@@ -255,8 +255,8 @@ func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
 
 func TestUsageNamesBothCommands(t *testing.T) {
 	for _, needed := range []string{
-		"flick send", "flick open", "FLICK_PASSPHRASE", "FLICK_URL",
-		"-reveal", "-credential",
+		"flick send", "flick open", "flick request", "flick submit", "flick receive",
+		"FLICK_PASSPHRASE", "FLICK_URL", "-reveal", "-credential",
 	} {
 		if !strings.Contains(usage, needed) {
 			t.Errorf("usage text does not mention %q", needed)

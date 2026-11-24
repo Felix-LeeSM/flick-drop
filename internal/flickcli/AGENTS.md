@@ -14,9 +14,16 @@ send/open flows. `cmd/flick` parses flags and calls into here.
 
 - `client.go`: HTTP client for the public contract in `contracts/openapi.yaml`.
 - `link.go`: parsing and building share URLs, including the fragment key.
+- `requestlink.go`: parsing and building request-link URLs
+  (`/r/{id}#submit=…&fp=…`, `/r/{id}/receive#receive=…&key=…`), twins of
+  `web/src/lib/state/request-links.ts`.
 - `send.go`: encrypt locally, create the secret, take the inline or presigned
   upload path.
 - `open.go`: probe metadata, derive the access proof, consume, decrypt, write.
+- `request.go`: request-link flows — create (fresh identity plus an optional
+  memo identity), submit (fingerprint-pinned recipient encryption, inline or
+  presigned, frozen attempt body), and the destructive retrieval open reusing
+  `open.go`'s reservation, staging, and rescue.
 - `credential.go`: parse, validate, and serialize `FLCR1:` credential payloads
   (twin of `web/src/lib/credentials/serialize.ts`), plus the masked stderr
   summary and the `-reveal` rendering.

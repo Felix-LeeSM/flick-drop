@@ -181,6 +181,31 @@ upload instruction must be abandoned before a new attempt. Leaving/reloading
 discards the retry receipt. No identity, plaintext, or filename is written to
 browser storage, Svelte navigation state, HTTP, or error messages.
 
+## CLI flow
+
+The `flick` CLI (`cmd/flick/main.go` `runRequest`, `runSubmit`, `runReceive`
+over `internal/flickcli/request.go`) is a second client of the same contract:
+
+- `flick request -ttl 24h [-note "..."]` creates the request with a fresh
+  identity (plus a single-purpose memo identity for a note), prints the
+  submission link and the private retrieval link on stdout with labels on
+  stderr, and never sends the identity anywhere.
+- `flick submit <submission-link> [text|-file|-credential]` pins the served
+  `public_key` against the link's `fp` before encrypting, decrypts and shows
+  the requester's note, and freezes one attempt body — a network failure after
+  the server decided is resolved through `POST /{id}/attempt` with the same
+  attempt token, never by re-encrypting.
+- `flick receive <retrieval-link|->` reads status non-destructively, refuses to
+  open a link whose `key=` fragment is missing or whose identity fingerprint
+  does not match `GET /{id}/owner`, and reserves its output destination before
+  the consuming `POST /{id}/open` (the same ordering rule as secret opens).
+  `-status` never consumes, `-revoke` cancels, and a piped link keeps the
+  identity out of shell history.
+- Tokens travel only in `Authorization` headers; the CLI builds and parses the
+  `/r/{id}#submit=…&fp=…(&mk=…)` and `/r/{id}/receive#receive=…&key=…`
+  fragments as exact twins of `web/src/lib/state/request-links.ts`
+  (`internal/flickcli/requestlink.go`).
+
 ## Lifetime and transitions
 
 Use the existing configured min/default/max TTL and size limits. Defaults are

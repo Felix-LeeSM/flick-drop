@@ -30,9 +30,12 @@ const defaultAPIURL = "http://localhost:8080"
 const usage = `flick — one-time encrypted secret links
 
 Usage:
-  flick send [flags] [text]        Create a secret and print its share link
-  flick open [flags] <link|id>     Open a secret once and save it to a file
-  flick version                    Print the client version
+  flick send [flags] [text]           Create a secret and print its share link
+  flick open [flags] <link|id>        Open a secret once and save it to a file
+  flick request [flags]               Create a one-time request link pair
+  flick submit [flags] <link> [text]  Send a secret into a request link
+  flick receive [flags] <link|->      Retrieve the reply to a request link
+  flick version                       Print the client version
 
 Run "flick <command> -h" for the flags of a command.
 
@@ -46,6 +49,11 @@ and whether to protect it with a passphrase, one at a time.
 A structured credential (what the web's login, card, identity, and custom
 forms produce) is sent as JSON carrying "v":1, a "type", and "fields":
   flick send -credential login.json
+
+A request link asks someone to send you a secret once: "flick request" prints
+a submission link to share and a private retrieval link to keep — the retrieval
+link holds the only key, so pipe it instead of leaving it in shell history:
+  flick receive - < retrieval-link.txt
 
 An opened secret is saved to a 0600 file and only its path is printed, so
 decrypted values never land in terminal scrollback or piped command logs.
@@ -85,6 +93,12 @@ func run(args []string) error {
 		return runSend(ctx, args[1:])
 	case "open":
 		return runOpen(ctx, args[1:])
+	case "request":
+		return runRequest(ctx, args[1:])
+	case "submit":
+		return runSubmit(ctx, args[1:])
+	case "receive":
+		return runReceive(ctx, args[1:])
 	case "version":
 		fmt.Println(clientVersion())
 		return nil
@@ -250,6 +264,12 @@ func runOpen(ctx context.Context, args []string) error {
 	if *asJSON {
 		return printOpenJSON(result, *reveal)
 	}
+	return reportOpened(result, *reveal)
+}
+
+// The common human rendering for every opened payload: path on stdout, values
+// only under reveal, masked credential summary on stderr.
+func reportOpened(result flickcli.OpenResult, reveal bool) error {
 	if result.WrittenPath != "" {
 		if result.FilenameUnreadable {
 			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
@@ -268,7 +288,7 @@ func runOpen(ctx context.Context, args []string) error {
 		fmt.Println(result.Credential.RevealText())
 		return nil
 	}
-	_, err = os.Stdout.Write(result.Plaintext)
+	_, err := os.Stdout.Write(result.Plaintext)
 	if err == nil && !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
 		// Keep piped output byte-exact.
 		fmt.Println()
@@ -276,8 +296,237 @@ func runOpen(ctx context.Context, args []string) error {
 	return err
 }
 
+func runRequest(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick request", flag.ContinueOnError)
+	ttl := flags.Duration("ttl", flickcli.DefaultTTL,
+		fmt.Sprintf("Lifetime before the request expires (%s to %s)", flickcli.MinTTL, flickcli.MaxTTL))
+	note := flags.String("note", "", "Note shown to the person opening your request link (at most 1024 bytes)")
+	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
+	shareURL := flags.String("share-url", "",
+		"Origin to render the links with, when it differs from -url (a split dev stack)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+	if flags.NArg() > 0 {
+		return errors.New("flick request takes no arguments, only flags")
+	}
+
+	result, err := flickcli.CreateRequest(ctx, flickcli.NewClient(*apiURL, nil), flickcli.RequestOptions{
+		TTL:         *ttl,
+		Note:        *note,
+		ShareOrigin: *shareURL,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"id":              result.ID,
+			"expires_at":      result.ExpiresAt,
+			"submission_link": result.SubmissionLink,
+			"retrieval_link":  result.RetrievalLink,
+			"note":            result.HasNote,
+		})
+	}
+	fmt.Fprintln(os.Stderr, "Share this submission link — it works once, until it expires:")
+	fmt.Println(result.SubmissionLink)
+	fmt.Fprintln(os.Stderr, "Keep this private retrieval link. It carries the only key to the reply; losing it loses the reply:")
+	fmt.Println(result.RetrievalLink)
+	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
+		fmt.Fprintf(os.Stderr, "The request expires %s.\n", t.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(os.Stderr, "The request expires %s.\n", result.ExpiresAt)
+	}
+	return nil
+}
+
+func runSubmit(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick submit", flag.ContinueOnError)
+	filePath := flags.String("file", "", "Encrypt and send this file instead of text")
+	credentialPath := flags.String("credential", "",
+		`Send this credential JSON file instead of text (FLCR1 prefix optional; "-" reads stdin)`)
+	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+	if flags.NArg() < 1 {
+		return errors.New("give the submission link (and optionally the text as one argument)")
+	}
+	if flags.NArg() > 2 {
+		return errors.New("give the link and the text as one argument, or pipe the text on stdin")
+	}
+
+	link, err := flickcli.ParseSubmissionLink(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	base := *apiURL
+	if base == "" {
+		base = link.Origin
+	}
+
+	opts := flickcli.SubmitOptions{Link: link}
+	switch {
+	case *filePath != "":
+		file, err := os.Open(*filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		opts.File = file
+		opts.FileName = fileNameOf(*filePath)
+	case *credentialPath != "":
+		if flags.NArg() > 1 {
+			return errors.New("send a credential or text, not both")
+		}
+		data, err := readInput(*credentialPath)
+		if err != nil {
+			return err
+		}
+		opts.Credential = string(data)
+	case flags.NArg() == 2:
+		opts.Text = flags.Arg(1)
+	case !term.IsTerminal(int(os.Stdin.Fd())):
+		text, err := readText(nil, 0)
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	default:
+		text, err := promptSecretText()
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	}
+
+	result, err := flickcli.SubmitToRequest(ctx, flickcli.NewClient(base, nil), opts)
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"generation": result.Generation,
+			"state":      result.State,
+			"note":       result.Note,
+		})
+	}
+	if result.Note != "" {
+		fmt.Fprintln(os.Stderr, "Note from the requester:")
+		for _, line := range strings.Split(result.Note, "\n") {
+			fmt.Fprintln(os.Stderr, "  "+line)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Submitted (generation %d). The requester opens it with their private link.\n", result.Generation)
+	return nil
+}
+
+func runReceive(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick receive", flag.ContinueOnError)
+	statusOnly := flags.Bool("status", false, "Only report the request's state; never consume the reply")
+	revoke := flags.Bool("revoke", false, "Cancel the request instead of opening the reply")
+	output := flags.String("output", "", "Write the reply to this exact path")
+	outputDir := flags.String("output-dir", ".", "Directory to save the reply into")
+	reveal := flags.Bool("reveal", false,
+		"Print the reply to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
+	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+	if *reveal && *output != "" {
+		return errors.New("choose one destination: -reveal for stdout or -output for a file")
+	}
+
+	raw := ""
+	switch {
+	case flags.NArg() == 1 && flags.Arg(0) != "-":
+		raw = flags.Arg(0)
+	case flags.NArg() == 0 || (flags.NArg() == 1 && flags.Arg(0) == "-"):
+		// The retrieval link carries the only key; stdin keeps it out of shell history.
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			return errors.New("give the retrieval link, or pipe it on stdin with -")
+		}
+		line, err := readLine()
+		if err != nil {
+			return err
+		}
+		raw = line
+	default:
+		return errors.New("give exactly one retrieval link")
+	}
+
+	link, err := flickcli.ParseRetrievalLink(raw)
+	if err != nil {
+		return err
+	}
+	base := *apiURL
+	if base == "" {
+		base = link.Origin
+	}
+
+	result, err := flickcli.ReceiveRequest(ctx, flickcli.NewClient(base, nil), flickcli.ReceiveOptions{
+		Link:       link,
+		OutputPath: *output,
+		OutputDir:  *outputDir,
+		Reveal:     *reveal,
+		StatusOnly: *statusOnly,
+		Revoke:     *revoke,
+	})
+	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		return rescue(*result.Opened, err)
+	}
+	if err != nil {
+		return err
+	}
+
+	if result.Opened != nil {
+		if *asJSON {
+			openJSON, err := openedJSON(*result.Opened, *reveal)
+			if err != nil {
+				return err
+			}
+			openJSON["state"] = result.State
+			openJSON["expires_at"] = result.ExpiresAt
+			return json.NewEncoder(os.Stdout).Encode(openJSON)
+		}
+		return reportOpened(*result.Opened, *reveal)
+	}
+
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"state":      result.State,
+			"expires_at": result.ExpiresAt,
+		})
+	}
+	fmt.Fprintf(os.Stderr, "Request state: %s (expires %s).\n", result.State, result.ExpiresAt)
+	switch result.State {
+	case "waiting":
+		fmt.Fprintln(os.Stderr, "Nothing has been submitted yet; run again later.")
+	case "uploading":
+		fmt.Fprintln(os.Stderr, "A submission is uploading; run again in a moment.")
+	case "consumed":
+		fmt.Fprintln(os.Stderr, "The reply was already opened; a request never serves it twice.")
+	case "cancelled":
+		fmt.Fprintln(os.Stderr, "This request was cancelled.")
+	}
+	return nil
+}
+
 // Values appear only under -reveal; the default shape carries the saved path and structure.
 func printOpenJSON(result flickcli.OpenResult, reveal bool) error {
+	out, err := openedJSON(result, reveal)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
+}
+
+func openedJSON(result flickcli.OpenResult, reveal bool) (map[string]any, error) {
 	out := map[string]any{"kind": result.Kind}
 	switch {
 	case result.Credential != nil:
@@ -299,7 +548,7 @@ func printOpenJSON(result flickcli.OpenResult, reveal bool) error {
 			out["text"] = string(result.Plaintext)
 		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(out)
+	return out, nil
 }
 
 // rescue saves a secret the server already consumed when its intended destination failed.
