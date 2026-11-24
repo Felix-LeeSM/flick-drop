@@ -251,8 +251,6 @@ func validateSendOptions(opts SendOptions) error {
 	switch {
 	case opts.Text != "" && opts.Credential != "":
 		return errors.New("send text or a credential, not both")
-	case opts.Text != "" && opts.FileName != "":
-		return errors.New("send text or a file, not both")
 	case opts.Credential != "" && opts.FileName != "":
 		return errors.New("send a credential or a file, not both")
 	case opts.Text == "" && opts.Credential == "" && opts.FileName == "":

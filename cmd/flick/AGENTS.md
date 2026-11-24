@@ -62,7 +62,7 @@ Encryption, HTTP calls, and share-link handling belong in
 - `flick send -credential <path|->` sends a structured credential as JSON
   validated against `contracts/credential-payload.schema.json`
   (`internal/flickcli/credential.go:ParseCredentialInput`); an invalid payload
-  fails before any HTTP call.
+  fails before the create request (`internal/flickcli/send.go:Send`).
 - `flick send` with nothing to send and a terminal on stdin asks for the parts
   the command line left out, one at a time. It asks only about those: a flag
   that was typed is never re-asked, and a pipe or an argument means the caller
