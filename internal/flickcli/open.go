@@ -51,6 +51,10 @@ type OpenResult struct {
 // The server has no second copy: callers must surface OpenResult.Plaintext or RescuedPath.
 var ErrWriteAfterConsume = errors.New("secret was opened and consumed but could not be written")
 
+// The payload was received and secured, but passes the inline text limit this client
+// accepts; the result carries it, so callers surface the file or plaintext alongside.
+var ErrOverInlineCap = errors.New("the payload is larger than the inline text limit this client accepts")
+
 // Order matters: everything that can fail (probe, passphrase, identity check, reserving the
 // output) runs before the consuming open; afterwards the payload exists only in this process.
 func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, error) {

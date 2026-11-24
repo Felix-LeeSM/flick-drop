@@ -368,6 +368,9 @@ func runSubmit(ctx context.Context, args []string) error {
 		base = link.Origin
 	}
 
+	if *filePath != "" && *credentialPath != "" {
+		return errors.New("send a file or a credential, not both")
+	}
 	opts := flickcli.SubmitOptions{Link: link}
 	switch {
 	case *filePath != "":
@@ -477,6 +480,10 @@ func runReceive(ctx context.Context, args []string) error {
 		StatusOnly: *statusOnly,
 		Revoke:     *revoke,
 	})
+	if result.Opened != nil && errors.Is(err, flickcli.ErrOverInlineCap) {
+		fmt.Fprintln(os.Stderr, "flick: the reply passed the inline text limit; it is secured below, but check the sender.")
+		return reportOpened(*result.Opened, *reveal)
+	}
 	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(*result.Opened, err)
 	}

@@ -191,10 +191,11 @@ over `internal/flickcli/request.go`) is a second client of the same contract:
   submission link and the private retrieval link on stdout with labels on
   stderr, and never sends the identity anywhere.
 - `flick submit <submission-link> [text|-file|-credential]` pins the served
-  `public_key` against the link's `fp` before encrypting, decrypts and shows
-  the requester's note, and freezes one attempt body — a network failure after
-  the server decided is resolved through `POST /{id}/attempt` with the same
-  attempt token, never by re-encrypting.
+  `public_key` against the link's `fp` before encrypting and freezes one
+  attempt body — a network failure after the server decided is resolved
+  through `POST /{id}/attempt` with the same attempt token, never by
+  re-encrypting. The requester's decrypted note is shown with the submission
+  receipt, so an interactive submitter composes the reply before seeing it.
 - `flick receive <retrieval-link|->` reads status non-destructively, refuses to
   open a link whose `key=` fragment is missing or whose identity fingerprint
   does not match `GET /{id}/owner`, and reserves its output destination before

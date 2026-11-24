@@ -39,6 +39,7 @@ type storedRequest struct {
 
 	reservedKey  string
 	reservedSize int64
+	reservedSum  string
 	uploaded     bool
 }
 
@@ -279,6 +280,7 @@ func (f *fakeFlick) reserveRequest(w http.ResponseWriter, r *http.Request, store
 	stored.sizeBytes = input.SizeBytes
 	stored.reservedKey = "reqobj-" + input.AttemptToken
 	stored.reservedSize = input.SizeBytes
+	stored.reservedSum = input.CiphertextSHA256
 	writeJSON(w, http.StatusOK, RequestUploadResult{
 		Generation:           stored.generation,
 		State:                "uploading",
@@ -303,6 +305,11 @@ func (f *fakeFlick) putRequestObject(w http.ResponseWriter, r *http.Request, key
 		if stored.reservedKey == key {
 			if int64(len(body)) != stored.reservedSize {
 				writeError(w, http.StatusForbidden, "signature_mismatch")
+				return
+			}
+			sum := sha256.Sum256(body)
+			if base64.StdEncoding.EncodeToString(sum[:]) != stored.reservedSum {
+				writeError(w, http.StatusConflict, "request_conflict")
 				return
 			}
 			f.objects[key] = body

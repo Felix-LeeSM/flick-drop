@@ -228,14 +228,13 @@ func submitFile(ctx context.Context, client *Client, opts SubmitOptions, recipie
 	if _, err := sealed.file.Seek(0, io.SeekStart); err != nil {
 		return SubmitResult{}, err
 	}
-	sum := sha256.Sum256(hasher.Sum(nil))
 	reserved, err := client.ReserveRequestUpload(ctx, opts.Link.ID, opts.Link.Token, RequestUploadInput{
 		Generation:       attempt.Generation,
 		AttemptToken:     attempt.AttemptToken,
 		Kind:             "file",
 		SizeBytes:        sealed.size,
 		Envelope:         envelope,
-		CiphertextSHA256: base64.StdEncoding.EncodeToString(sum[:]),
+		CiphertextSHA256: base64.StdEncoding.EncodeToString(hasher.Sum(nil)),
 	})
 	if err != nil {
 		return SubmitResult{}, resolveAttempt(ctx, client, opts.Link, attempt, err)
@@ -338,10 +337,16 @@ func ReceiveRequest(ctx context.Context, client *Client, opts ReceiveOptions) (R
 		capped := &countingReader{r: opened.Body, limit: ageFileBytes(limits.PayloadInlineMaxBytes)}
 		openRes, err := openText(openOpts, reserved, identity, capped, OpenResult{Kind: opened.Kind})
 		if err != nil {
+			// The result carries the plaintext or rescued path for the caller to salvage.
+			if errors.Is(err, ErrWriteAfterConsume) {
+				result.Opened = &openRes
+			}
 			return result, err
 		}
 		if capped.over {
-			return result, errors.New("the reply is larger than this deployment stores inline")
+			// The reply was consumed and secured; surface it with the cap notice.
+			result.Opened = &openRes
+			return result, ErrOverInlineCap
 		}
 		result.Opened = &openRes
 		return result, nil
@@ -353,6 +358,10 @@ func ReceiveRequest(ctx context.Context, client *Client, opts ReceiveOptions) (R
 	}
 	openRes, err := openFile(openOpts, reserved, identity, opened.EncryptedFilename, opened.Body, OpenResult{Kind: opened.Kind})
 	if err != nil {
+		// The result carries the rescued staging path for the caller to salvage.
+		if errors.Is(err, ErrWriteAfterConsume) {
+			result.Opened = &openRes
+		}
 		return result, err
 	}
 	result.Opened = &openRes
