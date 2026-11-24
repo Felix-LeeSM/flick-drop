@@ -495,7 +495,7 @@ func runReceive(ctx context.Context, args []string) error {
 	})
 	if result.Opened != nil && errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the reply passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpened(*result.Opened, *reveal)
+		return reportOpenedResult(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
 	}
 	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(*result.Opened, err)
@@ -505,16 +505,7 @@ func runReceive(ctx context.Context, args []string) error {
 	}
 
 	if result.Opened != nil {
-		if *asJSON {
-			openJSON, err := openedJSON(*result.Opened, *reveal)
-			if err != nil {
-				return err
-			}
-			openJSON["state"] = result.State
-			openJSON["expires_at"] = result.ExpiresAt
-			return json.NewEncoder(os.Stdout).Encode(openJSON)
-		}
-		return reportOpened(*result.Opened, *reveal)
+		return reportOpenedResult(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
 	}
 
 	if *asJSON {
@@ -895,7 +886,9 @@ func runLive(ctx context.Context, args []string) error {
 			return errors.New(
 				"no terminal to confirm the receiver; pass -confirm auto, or -confirm with the 3-digit number the receiver reads out")
 		}
-		pick = promptLivePick
+		pick = func(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+			return promptLivePick(ctx, pending)
+		}
 	default:
 		return fmt.Errorf("-confirm must be \"auto\" or a 3-digit number, not %q", *confirm)
 	}
@@ -941,6 +934,11 @@ func runLive(ctx context.Context, args []string) error {
 	}
 	opts.Pick = pick
 	opts.Started = func(session flickcli.PipeSession) error {
+		if *asJSON {
+			// The code is needed before the transfer ends, so it goes to stderr and stdout stays one JSON object.
+			fmt.Fprintf(os.Stderr, "Live transfer code: %s (expires in %d seconds)\n", session.Code, session.ExpiresIn)
+			return nil
+		}
 		fmt.Println(session.Code)
 		fmt.Fprintf(os.Stderr, "The recipient runs: flick join %s — the code expires in %d seconds.\n", session.Code, session.ExpiresIn)
 		fmt.Fprintln(os.Stderr, "Waiting for a device. Nothing is stored on the server.")
@@ -968,13 +966,32 @@ func runLive(ctx context.Context, args []string) error {
 
 // promptLivePick renders the waiting rows and reads the 3-digit number the
 // receiver read out; "d<nnn>" declines that device and an empty line keeps waiting.
-func promptLivePick(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+// A terminal read does not return on a signal, so the line is read beside the
+// context and Ctrl-C cancels the session without waiting for Enter.
+func promptLivePick(ctx context.Context, pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
 	fmt.Fprintln(os.Stderr, "Devices waiting:")
 	for _, conn := range pending {
 		fmt.Fprintf(os.Stderr, "  %s  %s (waiting %ds)\n", conn.VerifyCode, conn.Device, conn.ConnectedSeconds)
 	}
 	fmt.Fprint(os.Stderr, "Which number does your receiver see? [d<nnn> to decline, Enter to keep waiting]: ")
-	typed, err := readLine()
+
+	type answer struct {
+		line string
+		err  error
+	}
+	read := make(chan answer, 1)
+	go func() {
+		line, err := readLine()
+		read <- answer{line, err}
+	}()
+	var typed string
+	var err error
+	select {
+	case got := <-read:
+		typed, err = got.line, got.err
+	case <-ctx.Done():
+		return flickcli.LiveDecision{}, ctx.Err()
+	}
 	if err != nil {
 		return flickcli.LiveDecision{}, err
 	}
@@ -1045,7 +1062,7 @@ func runJoin(ctx context.Context, args []string) error {
 	})
 	if errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the live payload passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpened(result, *reveal)
+		return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code})
 	}
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(result, err)
@@ -1057,13 +1074,21 @@ func runJoin(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if *asJSON {
-		out, err := openedJSON(result, *reveal)
-		if err != nil {
-			return err
-		}
-		out["code"] = code
-		return json.NewEncoder(os.Stdout).Encode(out)
+	return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code})
+}
+
+// reportOpenedResult is reportOpened for every command that opens a payload:
+// under -json stdout is exactly one object, whatever branch reported it.
+func reportOpenedResult(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
+	if !asJSON {
+		return reportOpened(result, reveal)
 	}
-	return reportOpened(result, *reveal)
+	out, err := openedJSON(result, reveal)
+	if err != nil {
+		return err
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
 }

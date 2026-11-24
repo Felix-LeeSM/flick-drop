@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -263,6 +267,72 @@ func TestUsageNamesBothCommands(t *testing.T) {
 		if !strings.Contains(usage, needed) {
 			t.Errorf("usage text does not mention %q", needed)
 		}
+	}
+}
+
+func TestRunLiveJSONKeepsStdoutToOneObject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			fmt.Fprint(w, `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`)
+		case "/api/pipe/init":
+			fmt.Fprint(w, `{"code":"305817","expires_in":180,"sender_token":"sender-token"}`)
+		case "/api/pipe/wait":
+			// The room ended before any device joined.
+			w.WriteHeader(http.StatusGone)
+			fmt.Fprint(w, `{"error":{"code":"expired","message":"expired"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return runLive(context.Background(), []string{"-url", server.URL, "-json", "-confirm", "auto", "payload"})
+	})
+	if err == nil {
+		t.Fatal("an ended room reported success")
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing but the final JSON object", stdout)
+	}
+	if !strings.Contains(stderr, "305817") {
+		t.Errorf("stderr = %q, want the code a script needs before the transfer ends", stderr)
+	}
+}
+
+func TestReportOpenedResultKeepsStdoutToOneObject(t *testing.T) {
+	cred := flickcli.Credential{Type: "login", Fields: []flickcli.CredentialField{
+		{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
+	}}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return reportOpenedResult(flickcli.OpenResult{Kind: "text", Credential: &cred, WrittenPath: "out.txt"}, false, true,
+			map[string]any{"code": "305817"})
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	var out map[string]any
+	if err := decoder.Decode(&out); err != nil {
+		t.Fatalf("stdout is not JSON: %v (%q)", err, stdout)
+	}
+	if decoder.More() {
+		t.Errorf("stdout carried more than one JSON object: %q", stdout)
+	}
+	if out["code"] != "305817" || out["saved"] != "out.txt" || strings.Contains(stdout, "hunter2") {
+		t.Errorf("stdout = %s, want the code and saved path without the secret value", stdout)
+	}
+
+	plain, _, err := captureOutput(t, func() error {
+		return reportOpenedResult(flickcli.OpenResult{Kind: "text", Plaintext: []byte("value"), WrittenPath: "out.txt"}, false, false, nil)
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if plain != "out.txt\n" {
+		t.Errorf("human stdout = %q, want only the saved path", plain)
 	}
 }
 

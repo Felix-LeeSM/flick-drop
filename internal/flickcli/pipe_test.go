@@ -1,6 +1,7 @@
 package flickcli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
 // An in-memory twin of the pipe relay: rooms keyed by a 6-digit code, wake-on-
@@ -28,18 +31,19 @@ type fakePipeConn struct {
 }
 
 type fakePipeRoom struct {
-	mu          sync.Mutex
-	code        string
-	senderToken string
-	version     int
-	conns       map[string]*fakePipeConn
-	order       []string
-	chosenID    string
-	state       string // open | closed | cancelled
-	attached    bool
-	body        []byte
-	kind        string
-	encFilename string
+	mu           sync.Mutex
+	code         string
+	senderToken  string
+	version      int
+	conns        map[string]*fakePipeConn
+	order        []string
+	chosenID     string
+	state        string // open | closed | cancelled
+	attached     bool
+	body         []byte
+	kind         string
+	encFilename  string
+	receiveCalls int
 
 	cancelCalled bool
 	leaveCalled  bool
@@ -285,6 +289,12 @@ func (f *fakeFlick) pipeWait(w http.ResponseWriter, r *http.Request, room *fakeP
 		case <-time.After(200 * time.Millisecond):
 			// The real server answers the hold with the current room view.
 			room.mu.Lock()
+			if room.state != "open" {
+				state := room.state
+				room.mu.Unlock()
+				writeError(w, http.StatusGone, state)
+				return
+			}
 			resp := pipeWaitSnapshot(room)
 			room.mu.Unlock()
 			writeJSON(w, http.StatusOK, resp)
@@ -412,8 +422,14 @@ func (f *fakeFlick) pipeReceive(w http.ResponseWriter, r *http.Request, room *fa
 		return
 	}
 	room.attached = true
+	room.receiveCalls++
 	room.bumpLocked()
 	for room.body == nil {
+		if room.state != "open" {
+			room.mu.Unlock()
+			writeError(w, http.StatusGone, room.state)
+			return
+		}
 		changed := room.changed
 		room.mu.Unlock()
 		select {
@@ -745,5 +761,187 @@ func TestLiveJoinSurfacesAnOverLimitPayloadWithItsSavedFile(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(result.WrittenPath); string(got) != payload {
 		t.Errorf("saved file = %d bytes, want the payload", len(got))
+	}
+}
+
+func testRecipient(t *testing.T) string {
+	t.Helper()
+	identity, err := clientcrypto.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientcrypto.RecipientStringOf(identity)
+}
+
+func openPipeRoom(t *testing.T, fake *fakeFlick) *fakePipeRoom {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	var room *fakePipeRoom
+	for _, candidate := range fake.pipeRooms {
+		room = candidate
+	}
+	if room == nil {
+		t.Fatal("no room was created")
+	}
+	return room
+}
+
+// Both long polls answer when their hold expires without a room change; the
+// answers are built under the room lock.
+func TestPipeLongPollsAnswerWhenTheHoldExpires(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	room := fake.newPipeRoom()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	joined, err := client.PipeJoin(ctx, room.code, testRecipient(t))
+	if err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	room.mu.Lock()
+	version := room.version
+	room.mu.Unlock()
+
+	wait, err := client.PipeWait(ctx, room.code, room.senderToken, version)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if wait.Version != version || len(wait.Connections) != 1 {
+		t.Errorf("wait = %+v, want the unchanged room view with one connection", wait)
+	}
+
+	status, err := client.PipeStatus(ctx, room.code, joined.ConnectionID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status != "waiting" {
+		t.Errorf("status = %q, want waiting", status)
+	}
+}
+
+func TestLiveSendRefusesAnOversizedFileBeforeCreatingARoom(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.maxFile = 16
+	client := fake.client()
+	path := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	_, err = LiveSend(context.Background(), client, LiveSendOptions{
+		FileName: "big.bin",
+		File:     file,
+		Started:  func(PipeSession) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v, want the size refusal", err)
+	}
+
+	fake.mu.Lock()
+	rooms := len(fake.pipeRooms)
+	fake.mu.Unlock()
+	if rooms != 0 {
+		t.Errorf("a room was created for an undeliverable file: %d rooms", rooms)
+	}
+}
+
+func TestLiveJoinChecksTheOutputDirectoryBeforeTheStream(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	room := fake.newPipeRoom()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Select the receiver the moment it joins, as a sender with -confirm auto does.
+	go func() {
+		for {
+			room.mu.Lock()
+			for _, conn := range room.conns {
+				if room.chosenID == "" {
+					room.chosenID = conn.id
+					room.bumpLocked()
+				}
+			}
+			room.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}()
+
+	_, err := LiveJoin(ctx, client, LiveJoinOptions{
+		Code:      room.code,
+		OutputDir: filepath.Join(t.TempDir(), "missing"),
+		Connected: func(string, int) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("a missing output directory did not stop the join")
+	}
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.receiveCalls != 0 {
+		t.Errorf("the receive stream was opened %d time(s) before the destination was checked", room.receiveCalls)
+	}
+}
+
+func TestLiveSendCancelsTheRoomWhenTheFileCannotBeSealed(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.maxFile = 16
+	client := fake.client()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	receiverDone := make(chan error, 1)
+	go func() {
+		var code string
+		for i := 0; i < 500 && code == ""; i++ {
+			fake.mu.Lock()
+			for _, candidate := range fake.pipeRooms {
+				code = candidate.code
+			}
+			fake.mu.Unlock()
+			if code == "" {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		_, err := LiveJoin(ctx, client, LiveJoinOptions{
+			Code:      code,
+			OutputDir: t.TempDir(),
+			Connected: func(string, int) error { return nil },
+		})
+		receiverDone <- err
+	}()
+
+	// A reader with no size passes the up-front check, so the limit bites after select.
+	_, err := LiveSend(ctx, client, LiveSendOptions{
+		FileName: "stream.bin",
+		File:     io.LimitReader(strings.NewReader(strings.Repeat("x", 4096)), 4096),
+		Started:  func(PipeSession) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v, want the size refusal after select", err)
+	}
+
+	room := openPipeRoom(t, fake)
+	room.mu.Lock()
+	cancelled := room.cancelCalled
+	room.mu.Unlock()
+	if !cancelled {
+		t.Error("the room was left open after the sender's seal failure")
+	}
+	select {
+	case <-receiverDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the chosen receiver was left waiting after the sender's seal failure")
 	}
 }

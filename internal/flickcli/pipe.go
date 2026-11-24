@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -300,11 +301,16 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 		return LiveSendResult{}, errors.New("no file contents to send")
 	}
 
-	// The CLI receiver refuses text past the inline limit, so the sender never
-	// mints a room for a payload it cannot deliver to another CLI device.
+	// Sized before a room exists: the CLI receiver refuses text past the inline
+	// limit, and a doomed transfer would leave the chosen receiver waiting.
+	limits := client.Config(ctx)
 	if opts.FileName == "" {
-		if limit := client.Config(ctx).PayloadInlineMaxBytes; limit > 0 && int64(len(opts.Text)) > limit {
+		if limit := limits.PayloadInlineMaxBytes; limit > 0 && int64(len(opts.Text)) > limit {
 			return LiveSendResult{}, fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(opts.Text), limit)
+		}
+	} else if sized, ok := opts.File.(interface{ Stat() (fs.FileInfo, error) }); ok {
+		if info, statErr := sized.Stat(); statErr == nil && limits.MaxFileBytes > 0 && info.Size() > limits.MaxFileBytes {
+			return LiveSendResult{}, fmt.Errorf("file is larger than %d bytes, the most this deployment accepts", limits.MaxFileBytes)
 		}
 	}
 
@@ -338,7 +344,7 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 				if recipient == "" {
 					recipient = chosen.Recipient
 				}
-				return client.sendLivePayload(ctx, session, opts, chosen, recipient)
+				return client.sendLivePayload(ctx, session, opts, chosen, recipient, limits)
 			}
 			continue
 		}
@@ -379,17 +385,20 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 	}
 }
 
-func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts LiveSendOptions, chosen PipePending, recipient string) (LiveSendResult, error) {
+// A payload that cannot be sealed after select cancels the room, so the chosen
+// receiver does not wait out the 3-minute window for bytes that never come.
+func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts LiveSendOptions, chosen PipePending, recipient string, limits Limits) (LiveSendResult, error) {
 	result := LiveSendResult{Code: session.Code, ConnectionID: chosen.ConnectionID, VerifyCode: chosen.VerifyCode}
-	limits := c.Config(ctx)
 
 	if opts.FileName != "" {
 		name, err := sealToRecipient(recipient, []byte(opts.FileName))
 		if err != nil {
+			c.cancelPipeSession(session)
 			return result, fmt.Errorf("encrypt filename: %w", err)
 		}
 		sealed, err := sealFileToRecipient(recipient, opts.File, limits.MaxFileBytes)
 		if err != nil {
+			c.cancelPipeSession(session)
 			return result, err
 		}
 		defer sealed.remove()
@@ -400,6 +409,7 @@ func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts 
 
 	sealed, err := sealToRecipient(recipient, []byte(opts.Text))
 	if err != nil {
+		c.cancelPipeSession(session)
 		return result, fmt.Errorf("encrypt payload: %w", err)
 	}
 	result.BytesTransferred, err = c.PipeSend(ctx, session.Code, session.SenderToken, "text", "",
@@ -473,32 +483,40 @@ func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenRe
 		}
 	}
 
+	// Reserved before the stream attaches, like a secret open: the relay answers
+	// /receive only once the sender's bytes arrive, so a bad destination has to
+	// fail before that or both sides lose the transfer.
+	limits := client.Config(ctx)
+	openOpts := OpenOptions{OutputPath: opts.OutputPath, OutputDir: opts.OutputDir, Reveal: opts.Reveal}
+	reserved, err := reserveDestination(openOpts, "file", "")
+	if err != nil {
+		client.leavePipeSession(opts.Code, joined.ConnectionID)
+		return OpenResult{}, err
+	}
+	defer reserved.close()
+
 	stream, err := client.PipeReceive(ctx, opts.Code, joined.ConnectionID)
 	if err != nil {
 		return OpenResult{}, err
 	}
 	defer stream.Body.Close()
 
-	limits := client.Config(ctx)
-	openOpts := OpenOptions{OutputPath: opts.OutputPath, OutputDir: opts.OutputDir, Reveal: opts.Reveal}
 	if stream.Kind == "file" {
-		reserved, err := reserveDestination(openOpts, "file", "")
-		if err != nil {
-			return OpenResult{}, err
-		}
-		defer reserved.close()
 		return openFile(openOpts, reserved, identity, stream.EncryptedFilename, stream.Body, OpenResult{Kind: "file"})
 	}
 
-	reserved, err := reserveDestination(openOpts, "text", "flick-live-"+opts.Code)
-	if err != nil {
-		return OpenResult{}, err
+	// Text without -output takes its own no-clobber file; the directory is already proven writable.
+	textDest := reserved
+	if reserved.file == nil && !opts.Reveal {
+		if textDest, err = reserveAutoDestination(opts.OutputDir, safeFilename("flick-live-"+opts.Code)); err != nil {
+			return OpenResult{}, err
+		}
+		defer textDest.close()
 	}
-	defer reserved.close()
 	capped := &countingReader{r: stream.Body, limit: ageFileBytes(limits.PayloadInlineMaxBytes)}
-	result, err := openText(openOpts, reserved, identity, capped, OpenResult{Kind: "text"})
+	result, err := openText(openOpts, textDest, identity, capped, OpenResult{Kind: "text"})
 	if err != nil {
-		// The returned result already carries the plaintext or rescued path for the caller to salvage.
+		// On a failed write the result carries the plaintext; a stream that fails to decrypt yields nothing.
 		return result, err
 	}
 	if capped.over {
