@@ -347,6 +347,7 @@ func TestUsageNamesBothCommands(t *testing.T) {
 }
 
 func TestRunLiveJSONKeepsStdoutToOneObject(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/config":
@@ -378,6 +379,7 @@ func TestRunLiveJSONKeepsStdoutToOneObject(t *testing.T) {
 }
 
 func TestReportOpenedResultKeepsStdoutToOneObject(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	cred := flickcli.Credential{Type: "login", Fields: []flickcli.CredentialField{
 		{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
 	}}
@@ -413,6 +415,7 @@ func TestReportOpenedResultKeepsStdoutToOneObject(t *testing.T) {
 }
 
 func TestPromptLivePickReturnsAtOnceWhenCancelled(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -450,6 +453,7 @@ func TestPromptLivePickReturnsAtOnceWhenCancelled(t *testing.T) {
 }
 
 func TestReportOpenedSaysAFileIsSavedUnderReveal(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	stdout, stderr, err := captureOutput(t, func() error {
 		return reportOpened(flickcli.OpenResult{Kind: "file", WrittenPath: "notes.txt"}, true)
 	})
@@ -467,6 +471,7 @@ func TestReportOpenedSaysAFileIsSavedUnderReveal(t *testing.T) {
 // The sender side end to end: a device joins, -confirm auto picks it, and the
 // relay receives bytes only that device can decrypt.
 func TestRunLiveSendsToTheFirstDeviceAndPrintsOneJSONObject(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	const payload = "live payload"
 	recipient, open := freshReceiverForTest(t)
 	var mu sync.Mutex
@@ -529,6 +534,7 @@ func TestRunLiveSendsToTheFirstDeviceAndPrintsOneJSONObject(t *testing.T) {
 // The receiver side end to end over the inline limit: one object on stdout
 // that names the saved file and the condition, and the payload kept on disk.
 func TestRunJoinJSONReportsAnOverLimitPayloadAndKeepsIt(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	// Sealed, this is well past what a 512-byte inline allowance can carry.
 	payload := strings.Repeat("x", 5000)
 	// The relay seals to whatever recipient the device published on /join.
@@ -1105,6 +1111,7 @@ func onlyEntryIn(t *testing.T, dir string) string {
 }
 
 func TestRunLiveRefusesWithoutATerminalOrConfirm(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "payload\n", func() {
 		err := runLive(context.Background(), []string{"payload"})
 		if err == nil || !strings.Contains(err.Error(), "-confirm") {

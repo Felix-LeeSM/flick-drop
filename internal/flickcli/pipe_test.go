@@ -732,6 +732,7 @@ func TestNormalizePipeCode(t *testing.T) {
 }
 
 func TestLiveSendRefusesOverLimitTextBeforeCreatingARoom(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 512
 	client := fake.client()
@@ -755,6 +756,7 @@ func TestLiveSendRefusesOverLimitTextBeforeCreatingARoom(t *testing.T) {
 }
 
 func TestLiveJoinSurfacesAnOverLimitPayloadWithItsSavedFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 512
 	client := fake.client()
@@ -848,6 +850,7 @@ func openPipeRoom(t *testing.T, fake *fakeFlick) *fakePipeRoom {
 // Both long polls answer when their hold expires without a room change; the
 // answers are built under the room lock.
 func TestPipeLongPollsAnswerWhenTheHoldExpires(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	room := fake.newPipeRoom()
@@ -880,6 +883,7 @@ func TestPipeLongPollsAnswerWhenTheHoldExpires(t *testing.T) {
 }
 
 func TestLiveSendRefusesAnOversizedFileBeforeCreatingARoom(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.maxFile = 16
 	client := fake.client()
@@ -913,6 +917,7 @@ func TestLiveSendRefusesAnOversizedFileBeforeCreatingARoom(t *testing.T) {
 }
 
 func TestLiveJoinChecksTheOutputDirectoryBeforeTheStream(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	room := fake.newPipeRoom()
@@ -955,6 +960,7 @@ func TestLiveJoinChecksTheOutputDirectoryBeforeTheStream(t *testing.T) {
 }
 
 func TestLiveSendCancelsTheRoomWhenTheFileCannotBeSealed(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.maxFile = 16
 	client := fake.client()
@@ -1066,6 +1072,7 @@ func dirEntryNames(t *testing.T, dir string) []string {
 }
 
 func TestLiveSendRefusesADirectoryBeforeCreatingARoom(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	dir := t.TempDir()
@@ -1097,6 +1104,7 @@ func TestLiveSendRefusesADirectoryBeforeCreatingARoom(t *testing.T) {
 // The text destination is reserved before the relay can hand out the stream,
 // so a join that ends without a stream must take that file back with it.
 func TestLiveJoinLeavesNoReservedFileBehindWhenNothingArrives(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, ends := range map[string]func(room *fakePipeRoom){
 		"the status poll ends first": func(room *fakePipeRoom) {
 			go func() {
@@ -1169,6 +1177,7 @@ func TestLiveJoinLeavesNoReservedFileBehindWhenNothingArrives(t *testing.T) {
 }
 
 func TestLiveJoinSavesTextUnderItsDottedName(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1193,6 +1202,7 @@ func TestLiveJoinSavesTextUnderItsDottedName(t *testing.T) {
 }
 
 func TestLiveJoinWritesToTheExactOutputPath(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, send := range map[string]LiveSendOptions{
 		"text": {Text: "live payload", Started: func(PipeSession) error { return nil }},
 		"file": {FileName: "notes.txt", File: strings.NewReader("file over live"), Started: func(PipeSession) error { return nil }},
@@ -1234,6 +1244,7 @@ func pipeRoomByCode(fake *fakeFlick, code string) *fakePipeRoom {
 // A sender whose transfer fails after select releases the room, so the chosen
 // receiver is not left attached and waiting.
 func TestLiveSendReleasesTheRoomWhenTheSendFails(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1290,6 +1301,7 @@ func TestLiveSendReleasesTheRoomWhenTheSendFails(t *testing.T) {
 
 // Ctrl-C that lands with the pick answer fails the select; the room is still released.
 func TestLiveSendReleasesTheRoomWhenTheContextEndsAtSelect(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1355,6 +1367,7 @@ func TestLiveSendReleasesTheRoomWhenTheContextEndsAtSelect(t *testing.T) {
 // One 5xx from each long poll, as from a replica stopping in a rolling update,
 // must not end a transfer.
 func TestLiveRoundTripSurvivesOneFailedLongPoll(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.statusFailures = 1
 	fake.waitFailures = 1
@@ -1373,6 +1386,7 @@ func TestLiveRoundTripSurvivesOneFailedLongPoll(t *testing.T) {
 }
 
 func TestPipeLongPollRetriesOneServerErrorOnly(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, x := range map[string]struct {
 		statuses  []int
 		wantErr   bool

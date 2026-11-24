@@ -127,9 +127,14 @@ Expected coverage:
 - `internal/flickcli` and `cmd/flick`: the CLI send/open, request-link, and
   live-transfer flows against an in-memory fake of the public API, plus
   cassette replay tests (`internal/flickcli/cassette_test.go`) that run the
-  flows against recorded responses of a real deployment — pinned identities
+  flows against responses recorded from a real deployment — pinned identities
   in `internal/flickcli/testdata/cassettes/*.json` make the recorded open
-  bodies decrypt on replay. Recording is a manual, network-touching run:
+  bodies decrypt on replay. Replay shows the API's past answers: it fails on a
+  changed request sequence or a changed way of reading an answer, not on a
+  live regression, which is the canary's job. The large-file paths are not
+  recorded (their bodies are megabytes); `scripts/smoke/canary.sh file` covers
+  the secret one against a live deployment. Recording is a manual,
+  network-touching run:
 
   ```sh
   FLICK_CASSETTE_RECORD=https://flick.example go test ./internal/flickcli/ -run TestCassette -count=1 -timeout 600s
@@ -137,9 +142,11 @@ Expected coverage:
 
   Recording uses the 5-minute minimum TTL and consumes every secret in the
   same run, so the committed tokens and management tokens are dead. Every
-  test function in the three CLI packages runs under a `withTimeout` budget
-  (`internal/flickcli/timeout_test.go`, mirroring `go test -timeout`
-  semantics per test) so a wedged flow fails the run instead of holding CI.
+  test function in the three CLI packages starts with a `withTimeout` budget
+  (`timeout_test.go` in each of `cmd/flick`, `internal/flickcli`, and
+  `internal/clientcrypto`, mirroring `go test -timeout` semantics per test)
+  so a wedged flow fails the run instead of holding CI; `TestEveryTestRunsUnderABudget`
+  in each of those three files fails when a test lacks one.
 
 - `internal/config`: env parsing and validation.
 - `internal/secrets`: secret lifecycle and verified open invariants.

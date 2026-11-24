@@ -19,9 +19,11 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
 
-// Cassette record/replay: the tests below run the CLI flows against real
-// recorded server responses, so contract drift on a real deployment fails in
-// CI without any network access.
+// Cassette record/replay: the tests below run the CLI flows against responses
+// recorded from a real deployment, so a change in the CLI's request sequence
+// or in how it reads the API's answers fails in CI without network access.
+// Replay only shows the API's past answers: a live regression needs the
+// canary (scripts/smoke/canary.sh) or scripts/smoke/live.sh.
 //
 // Record once by hand against a deployment:
 //
@@ -175,7 +177,7 @@ func withCassette(t *testing.T, name string, run func(t *testing.T, client *Clie
 	if base := os.Getenv(cassetteRecordEnv); base != "" {
 		tr.record = strings.TrimRight(base, "/")
 		t.Logf("recording %s against %s", name, tr.record)
-		time.Sleep(12 * time.Second) // stay under the 5-creates-per-minute bucket
+		time.Sleep(15 * time.Second) // under the 5-creates-per-minute bucket, not on it
 		defer func() {
 			if t.Failed() {
 				t.Logf("recording failed; fixture %s not written", fixture)
