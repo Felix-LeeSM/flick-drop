@@ -300,6 +300,14 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 		return LiveSendResult{}, errors.New("no file contents to send")
 	}
 
+	// The CLI receiver refuses text past the inline limit, so the sender never
+	// mints a room for a payload it cannot deliver to another CLI device.
+	if opts.FileName == "" {
+		if limit := client.Config(ctx).PayloadInlineMaxBytes; limit > 0 && int64(len(opts.Text)) > limit {
+			return LiveSendResult{}, fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(opts.Text), limit)
+		}
+	}
+
 	session, err := client.PipeInit(ctx)
 	if err != nil {
 		return LiveSendResult{}, err
@@ -349,7 +357,10 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 		case "wait":
 		case "decline":
 			if err := client.PipeDecline(ctx, session.Code, session.SenderToken, decision.ConnectionID); err != nil {
-				return LiveSendResult{Code: session.Code}, err
+				// A row that already left is not an error; the room keeps working.
+				if !pipeRowAlreadyGone(err) {
+					return LiveSendResult{Code: session.Code}, err
+				}
 			}
 		case "send":
 			found, ok := findPipePending(wait.Connections, decision.ConnectionID)
@@ -357,7 +368,10 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 				continue
 			}
 			if err := client.PipeSelect(ctx, session.Code, session.SenderToken, found.ConnectionID); err != nil {
-				return LiveSendResult{Code: session.Code}, err
+				if !pipeRowAlreadyGone(err) {
+					return LiveSendResult{Code: session.Code}, err
+				}
+				continue
 			}
 			selected = true
 			chosen = found
@@ -391,6 +405,13 @@ func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts 
 	result.BytesTransferred, err = c.PipeSend(ctx, session.Code, session.SenderToken, "text", "",
 		bytes.NewReader(sealed), int64(len(sealed)))
 	return result, err
+}
+
+// not_pending is the documented race when a receiver leaves between the wait
+// response and the sender action; every other failure ends the session.
+func pipeRowAlreadyGone(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "not_pending"
 }
 
 func lowestPipePending(pending []PipePending) string {
@@ -476,10 +497,18 @@ func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenRe
 	defer reserved.close()
 	capped := &countingReader{r: stream.Body, limit: ageFileBytes(limits.PayloadInlineMaxBytes)}
 	result, err := openText(openOpts, reserved, identity, capped, OpenResult{Kind: "text"})
-	if err == nil && capped.over {
-		return result, errors.New("the live payload is larger than this deployment stores inline")
+	if err != nil {
+		// The result carries the plaintext or rescued path for the caller to salvage.
+		if errors.Is(err, ErrWriteAfterConsume) {
+			return result, err
+		}
+		return result, err
 	}
-	return result, err
+	if capped.over {
+		// The stream was received and secured; surface it with the cap notice.
+		return result, ErrOverInlineCap
+	}
+	return result, nil
 }
 
 // After the process is leaving: short budgets, errors swallowed, never retried.

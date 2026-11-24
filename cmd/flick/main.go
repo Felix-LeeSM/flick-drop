@@ -1043,6 +1043,10 @@ func runJoin(ctx context.Context, args []string) error {
 			return nil
 		},
 	})
+	if errors.Is(err, flickcli.ErrOverInlineCap) {
+		fmt.Fprintln(os.Stderr, "flick: the live payload passed the inline text limit; it is secured below, but check the sender.")
+		return reportOpened(result, *reveal)
+	}
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(result, err)
 	}

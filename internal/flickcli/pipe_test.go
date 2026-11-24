@@ -175,6 +175,28 @@ func (f *fakeFlick) pipeJoin(w http.ResponseWriter, r *http.Request, room *fakeP
 
 func verifyInt(v string) int { return int(v[0]-'0')*100 + int(v[1]-'0')*10 + int(v[2]-'0') }
 
+// The room view a /wait response carries; call holding room.mu.
+func pipeWaitSnapshot(room *fakePipeRoom) map[string]any {
+	resp := map[string]any{"status": "waiting", "version": room.version, "connections": []any{}}
+	for _, id := range room.order {
+		if conn := room.conns[id]; conn != nil && room.chosenID == "" {
+			resp["connections"] = append(resp["connections"].([]any), map[string]any{
+				"connection_id":     conn.id,
+				"index":             conn.index,
+				"verify_code":       conn.verify,
+				"device":            conn.device,
+				"recipient":         conn.recipient,
+				"connected_seconds": conn.index * 7,
+			})
+		}
+	}
+	if room.chosenID != "" && room.attached {
+		resp["status"] = "ready"
+		resp["recipient"] = room.conns[room.chosenID].recipient
+	}
+	return resp
+}
+
 func (f *fakeFlick) pipeStatus(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
 	if pipeRoomUnavailable(w, room) {
 		return
@@ -213,6 +235,10 @@ func (f *fakeFlick) pipeStatus(w http.ResponseWriter, r *http.Request, room *fak
 			room.mu.Lock()
 		case <-r.Context().Done():
 			return
+		case <-time.After(200 * time.Millisecond):
+			// The real server answers each poll when its hold expires.
+			writeJSON(w, http.StatusOK, map[string]string{"status": "waiting"})
+			return
 		}
 	}
 }
@@ -244,23 +270,7 @@ func (f *fakeFlick) pipeWait(w http.ResponseWriter, r *http.Request, room *fakeP
 			return
 		}
 		if room.version != since {
-			resp := map[string]any{"status": "waiting", "version": room.version, "connections": []any{}}
-			for _, id := range room.order {
-				if conn := room.conns[id]; conn != nil && room.chosenID == "" {
-					resp["connections"] = append(resp["connections"].([]any), map[string]any{
-						"connection_id":     conn.id,
-						"index":             conn.index,
-						"verify_code":       conn.verify,
-						"device":            conn.device,
-						"recipient":         conn.recipient,
-						"connected_seconds": conn.index * 7,
-					})
-				}
-			}
-			if room.chosenID != "" && room.attached {
-				resp["status"] = "ready"
-				resp["recipient"] = room.conns[room.chosenID].recipient
-			}
+			resp := pipeWaitSnapshot(room)
 			room.mu.Unlock()
 			writeJSON(w, http.StatusOK, resp)
 			return
@@ -272,8 +282,12 @@ func (f *fakeFlick) pipeWait(w http.ResponseWriter, r *http.Request, room *fakeP
 			room.mu.Lock()
 		case <-r.Context().Done():
 			return
-		case <-time.After(10 * time.Second):
-			room.mu.Lock()
+		case <-time.After(200 * time.Millisecond):
+			// The real server answers the hold with the current room view.
+			resp := pipeWaitSnapshot(room)
+			room.mu.Unlock()
+			writeJSON(w, http.StatusOK, resp)
+			return
 		}
 	}
 }
@@ -641,5 +655,94 @@ func TestNormalizePipeCode(t *testing.T) {
 		if _, err := NormalizePipeCode(raw); err == nil {
 			t.Errorf("NormalizePipeCode(%q) was accepted", raw)
 		}
+	}
+}
+
+func TestLiveSendRefusesOverLimitTextBeforeCreatingARoom(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 512
+	client := fake.client()
+
+	_, err := LiveSend(context.Background(), client, LiveSendOptions{
+		Text:    strings.Repeat("x", 4000),
+		Started: func(PipeSession) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "inline limit") {
+		t.Fatalf("err = %v, want the inline-limit refusal", err)
+	}
+
+	fake.mu.Lock()
+	rooms := len(fake.pipeRooms)
+	fake.mu.Unlock()
+	if rooms != 0 {
+		t.Errorf("a room was created for an undeliverable payload: %d rooms", rooms)
+	}
+}
+
+func TestLiveJoinSurfacesAnOverLimitPayloadWithItsSavedFile(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.inlineMax = 512
+	client := fake.client()
+	room := fake.newPipeRoom()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	joined := make(chan error, 1)
+	var result OpenResult
+	go func() {
+		var err error
+		result, err = LiveJoin(ctx, client, LiveJoinOptions{
+			Code:      room.code,
+			OutputDir: t.TempDir(),
+			Connected: func(string, int) error { return nil },
+		})
+		joined <- err
+	}()
+
+	// Wait for the receiver to join, then act as a sender that ignored the
+	// CLI-side cap (a web sender can): encrypt straight to its recipient.
+	var conn *fakePipeConn
+	for i := 0; i < 500 && conn == nil; i++ {
+		room.mu.Lock()
+		for _, candidate := range room.conns {
+			conn = candidate
+		}
+		room.mu.Unlock()
+		if conn == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if conn == nil {
+		t.Fatal("the receiver never joined")
+	}
+	payload := strings.Repeat("x", 4000)
+	sealed, err := sealToRecipient(conn.recipient, []byte(payload))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	room.mu.Lock()
+	room.chosenID = conn.id
+	room.attached = true
+	room.kind = "text"
+	room.body = sealed
+	room.bumpLocked()
+	room.mu.Unlock()
+
+	select {
+	case err := <-joined:
+		if !errors.Is(err, ErrOverInlineCap) {
+			t.Fatalf("err = %v, want ErrOverInlineCap", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the receiver never finished")
+	}
+	if string(result.Plaintext) != payload {
+		t.Errorf("plaintext = %d bytes, want the payload", len(result.Plaintext))
+	}
+	if result.WrittenPath == "" {
+		t.Fatal("the over-limit payload was not saved to the reserved file")
+	}
+	if got, _ := os.ReadFile(result.WrittenPath); string(got) != payload {
+		t.Errorf("saved file = %d bytes, want the payload", len(got))
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"os"
@@ -263,6 +264,15 @@ func TestUsageNamesBothCommands(t *testing.T) {
 			t.Errorf("usage text does not mention %q", needed)
 		}
 	}
+}
+
+func TestRunLiveRefusesWithoutATerminalOrConfirm(t *testing.T) {
+	withStdin(t, "payload\n", func() {
+		err := runLive(context.Background(), []string{"payload"})
+		if err == nil || !strings.Contains(err.Error(), "-confirm") {
+			t.Errorf("err = %v, want the -confirm refusal before any room is created", err)
+		}
+	})
 }
 
 func TestReadInputReadsStdinForADash(t *testing.T) {
