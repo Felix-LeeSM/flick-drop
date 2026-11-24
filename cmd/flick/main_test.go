@@ -96,6 +96,7 @@ func newSendFlags() *flag.FlagSet {
 }
 
 func TestHoistFlagsMovesFlagsAheadOfPositionalArguments(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newOpenFlags()
 	args := []string{"https://example.com/s/abc#key=x", "-output-dir", "out"}
 
@@ -117,6 +118,7 @@ func TestHoistFlagsMovesFlagsAheadOfPositionalArguments(t *testing.T) {
 }
 
 func TestHoistFlagsKeepsBoolFlagsSeparateFromTheirNeighbour(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newSendFlags()
 
 	hoisted := hoistFlags(flags, []string{"my secret", "-passphrase", "-ttl", "30m"})
@@ -136,6 +138,7 @@ func TestHoistFlagsKeepsBoolFlagsSeparateFromTheirNeighbour(t *testing.T) {
 }
 
 func TestHoistFlagsHandlesInlineValues(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newOpenFlags()
 
 	hoisted := hoistFlags(flags, []string{"abc123", "--output-dir=out"})
@@ -152,6 +155,7 @@ func TestHoistFlagsHandlesInlineValues(t *testing.T) {
 }
 
 func TestHoistFlagsPreservesTheDoubleDashTerminator(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newSendFlags()
 
 	hoisted := hoistFlags(flags, []string{"--", "-my-secret-text"})
@@ -168,6 +172,7 @@ func TestHoistFlagsPreservesTheDoubleDashTerminator(t *testing.T) {
 }
 
 func TestHoistFlagsLeavesUnknownFlagsForParseToReject(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newOpenFlags()
 
 	hoisted := hoistFlags(flags, []string{"abc123", "-nope"})
@@ -178,6 +183,7 @@ func TestHoistFlagsLeavesUnknownFlagsForParseToReject(t *testing.T) {
 }
 
 func TestReadTextTakesASingleArgument(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	text, err := readText([]string{"sk-live-value"}, 0)
 	if err != nil {
 		t.Fatalf("readText: %v", err)
@@ -188,12 +194,14 @@ func TestReadTextTakesASingleArgument(t *testing.T) {
 }
 
 func TestReadTextRejectsMultipleArguments(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	if _, err := readText([]string{"one", "two"}, 0); err == nil {
 		t.Error("accepted two positional arguments")
 	}
 }
 
 func TestReadTextReadsPipedStdin(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "sk-live-piped\n", func() {
 		text, err := readText(nil, 0)
 		if err != nil {
@@ -206,6 +214,7 @@ func TestReadTextReadsPipedStdin(t *testing.T) {
 }
 
 func TestReadTextRejectsEmptyStdin(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "", func() {
 		if _, err := readText(nil, 0); err == nil {
 			t.Error("accepted empty stdin")
@@ -214,6 +223,7 @@ func TestReadTextRejectsEmptyStdin(t *testing.T) {
 }
 
 func TestReadTextEnforcesInlineLimit(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	text, err := readText([]string{strings.Repeat("a", 10)}, 10)
 	if err != nil {
 		t.Fatalf("readText at limit: %v", err)
@@ -244,6 +254,7 @@ func TestReadTextEnforcesInlineLimit(t *testing.T) {
 }
 
 func TestFileNameOfKeepsOnlyTheBaseName(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	for input, want := range map[string]string{
 		"/home/felix/secrets/report.pdf": "report.pdf",
 		"report.pdf":                     "report.pdf",
@@ -257,6 +268,7 @@ func TestFileNameOfKeepsOnlyTheBaseName(t *testing.T) {
 }
 
 func TestPassphraseReadersUseTheEnvironmentInsteadOfPrompting(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	t.Setenv("FLICK_PASSPHRASE", "from the environment")
 
 	first, err := readNewPassphrase()
@@ -273,6 +285,7 @@ func TestPassphraseReadersUseTheEnvironmentInsteadOfPrompting(t *testing.T) {
 }
 
 func TestPassphraseReadersRejectAnEmptyEnvironmentValue(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	t.Setenv("FLICK_PASSPHRASE", "")
 
 	if _, err := readNewPassphrase(); err == nil {
@@ -284,6 +297,7 @@ func TestPassphraseReadersRejectAnEmptyEnvironmentValue(t *testing.T) {
 }
 
 func TestDefaultURLPrefersTheEnvironment(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	t.Setenv("FLICK_URL", "https://flick.example.com")
 	if got := defaultURL(); got != "https://flick.example.com" {
 		t.Errorf("defaultURL = %q", got)
@@ -296,6 +310,7 @@ func TestDefaultURLPrefersTheEnvironment(t *testing.T) {
 }
 
 func TestRunRejectsAnUnknownCommand(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	if err := run([]string{"upload"}); err == nil {
 		t.Error("accepted an unknown command")
 	}
@@ -305,6 +320,7 @@ func TestRunRejectsAnUnknownCommand(t *testing.T) {
 }
 
 func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	if got := clientVersion(); got == "" {
 		t.Error("clientVersion returned an empty string")
 	}
@@ -318,6 +334,7 @@ func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
 }
 
 func TestUsageNamesBothCommands(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	for _, needed := range []string{
 		"flick send", "flick open", "flick request", "flick submit", "flick receive",
 		"flick live", "flick join",
@@ -1097,6 +1114,7 @@ func TestRunLiveRefusesWithoutATerminalOrConfirm(t *testing.T) {
 }
 
 func TestReadInputReadsStdinForADash(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, `{"v":1}`, func() {
 		data, err := readInput("-")
 		if err != nil {
@@ -1121,6 +1139,7 @@ func TestReadInputReadsStdinForADash(t *testing.T) {
 }
 
 func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	cred := flickcli.Credential{
 		Type:  "login",
 		Title: "prod",
@@ -1168,6 +1187,7 @@ func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
 }
 
 func TestPromptTTLTakesTheDefaultOnAnEmptyLine(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "\n", func() {
 		_, _, err := captureOutput(t, func() error {
 			chosen, err := promptTTL(time.Hour)
@@ -1183,6 +1203,7 @@ func TestPromptTTLTakesTheDefaultOnAnEmptyLine(t *testing.T) {
 }
 
 func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "24h\n", func() {
 		_, _, err := captureOutput(t, func() error {
 			chosen, err := promptTTL(time.Hour)
@@ -1208,6 +1229,7 @@ func TestPromptTTLReadsADurationAndRejectsGarbage(t *testing.T) {
 }
 
 func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "tomorrow\n999h\n24h\n", func() {
 		_, stderr, err := captureOutput(t, func() error {
 			chosen, err := promptTTL(time.Hour)
@@ -1229,6 +1251,7 @@ func TestPromptTTLAsksAgainInsteadOfGivingUp(t *testing.T) {
 }
 
 func TestPromptsTreatEndOfInputAsACancel(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "", func() {
 		_, _, err := captureOutput(t, func() error {
 			_, err := promptTTL(time.Hour)
@@ -1253,6 +1276,7 @@ func TestPromptsTreatEndOfInputAsACancel(t *testing.T) {
 }
 
 func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	for typed, want := range map[string]bool{
 		"y\n": true, "Y\n": true, "yes\n": true,
 		"\n": false, "n\n": false, "sure\n": false,
@@ -1273,6 +1297,7 @@ func TestPromptYesNoOnlyAcceptsYes(t *testing.T) {
 }
 
 func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withStdin(t, "24h\nthe next answer\n", func() {
 		first, err := readLine()
 		if err != nil {
@@ -1289,6 +1314,7 @@ func TestReadLineLeavesTheRestOfStdinForTheNextReader(t *testing.T) {
 }
 
 func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	flags := newSendFlags()
 	if err := flags.Parse([]string{"-ttl", "1h"}); err != nil {
 		t.Fatalf("parse: %v", err)
@@ -1302,6 +1328,7 @@ func TestFlagGivenDistinguishesATypedFlagFromItsDefault(t *testing.T) {
 }
 
 func TestRescueWritesATextSecretToAFileInsteadOfStdout(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	cause := errors.New("disk full")
 
 	stdout, stderr, err := captureOutput(t, func() error {
@@ -1329,6 +1356,7 @@ func TestRescueWritesATextSecretToAFileInsteadOfStdout(t *testing.T) {
 }
 
 func TestRescueNamesTheRescuedFile(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	rescued := filepath.Join(t.TempDir(), ".flick-partial-1")
 	if err := os.WriteFile(rescued, []byte("binary payload"), 0o600); err != nil {
 		t.Fatalf("seed rescued file: %v", err)
@@ -1353,6 +1381,7 @@ func TestRescueNamesTheRescuedFile(t *testing.T) {
 }
 
 func TestRescueReportsALostFile(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	stdout, stderr, err := captureOutput(t, func() error {
 		return rescue(flickcli.OpenResult{Kind: "file"}, errors.New("disk full"))
 	})

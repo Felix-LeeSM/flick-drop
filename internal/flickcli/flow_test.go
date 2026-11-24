@@ -298,6 +298,7 @@ func writeError(w http.ResponseWriter, status int, code string) {
 }
 
 func TestSendAndOpenModelBText(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -332,6 +333,7 @@ func TestSendAndOpenModelBText(t *testing.T) {
 }
 
 func TestSendAndOpenModelAText(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -367,6 +369,7 @@ func TestSendAndOpenModelAText(t *testing.T) {
 }
 
 func TestServerNeverReceivesPlaintextOrPassphrase(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	const plaintext = "correct-horse-plaintext-marker"
@@ -407,6 +410,7 @@ func TestServerNeverReceivesPlaintextOrPassphrase(t *testing.T) {
 }
 
 func TestSendLargeFileUsesPresignedUploadAndFinalizes(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64 // force the large path without building a 1 MiB fixture
 
@@ -462,6 +466,7 @@ func TestSendLargeFileUsesPresignedUploadAndFinalizes(t *testing.T) {
 }
 
 func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for _, size := range []int{1_044_208, 1_044_209} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			fake := newFakeFlick(t)
@@ -494,6 +499,7 @@ func TestSendFileUsesPlaintextInlineBoundaryWhenConfigUnavailable(t *testing.T) 
 }
 
 func TestSendLargeFileFailsClearlyWithoutObjectStorage(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64
 	fake.s3Enabled = false
@@ -512,6 +518,7 @@ func TestSendLargeFileFailsClearlyWithoutObjectStorage(t *testing.T) {
 }
 
 func TestSendRejectsFilesOverTheDeploymentLimit(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.maxFile = 100
 
@@ -531,6 +538,7 @@ func TestSendRejectsFilesOverTheDeploymentLimit(t *testing.T) {
 }
 
 func TestSendRejectsTextOverTheInlineLimit(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 100
 
@@ -566,6 +574,7 @@ func TestSendRejectsTextOverTheInlineLimit(t *testing.T) {
 }
 
 func TestOpenConfinesSenderSuppliedFilename(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 
@@ -595,6 +604,7 @@ func TestOpenConfinesSenderSuppliedFilename(t *testing.T) {
 }
 
 func TestOpenNeverOverwritesAnExistingFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "notes.txt")
@@ -639,6 +649,7 @@ func TestOpenNeverOverwritesAnExistingFile(t *testing.T) {
 }
 
 func TestOpenReportsTheUnwritablePayloadInsteadOfLosingIt(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 	for attempt := range 100 {
@@ -681,6 +692,7 @@ func TestOpenReportsTheUnwritablePayloadInsteadOfLosingIt(t *testing.T) {
 }
 
 func TestOpenWithoutFragmentKeyDoesNotConsumeTheSecret(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "payload", TTL: DefaultTTL})
@@ -714,6 +726,7 @@ func TestOpenWithoutFragmentKeyDoesNotConsumeTheSecret(t *testing.T) {
 }
 
 func TestOpenRejectsAWrongPassphraseWithoutConsuming(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -751,6 +764,7 @@ func TestOpenRejectsAWrongPassphraseWithoutConsuming(t *testing.T) {
 }
 
 func TestSendRejectsTTLOutsideTheContractBounds(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	for name, ttl := range map[string]time.Duration{
@@ -766,6 +780,7 @@ func TestSendRejectsTTLOutsideTheContractBounds(t *testing.T) {
 }
 
 func TestOpenWithOutputPathNeverTruncatesAnExistingFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "notes.txt")
@@ -803,6 +818,7 @@ func TestOpenWithOutputPathNeverTruncatesAnExistingFile(t *testing.T) {
 }
 
 func TestOpenChecksTheOutputDirectoryBeforeConsuming(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -841,6 +857,7 @@ func TestOpenChecksTheOutputDirectoryBeforeConsuming(t *testing.T) {
 }
 
 func TestOpenRemovesTheReservedFileWhenTheOpenFails(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	target := filepath.Join(t.TempDir(), "secret.txt")
 
@@ -866,6 +883,7 @@ func TestOpenRemovesTheReservedFileWhenTheOpenFails(t *testing.T) {
 }
 
 func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	target := filepath.Join(t.TempDir(), "secret.txt")
 
@@ -902,6 +920,7 @@ func TestOpenWritesATextSecretToTheRequestedPath(t *testing.T) {
 }
 
 func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, envelope := range map[string]string{
 		"malformed":  base64.StdEncoding.EncodeToString([]byte("not an age file")),
 		"not base64": "%%%",
@@ -950,6 +969,7 @@ func TestOpenWritesAFileWhoseNameCannotBeDecrypted(t *testing.T) {
 }
 
 func TestOpenWithOutputPathIgnoresAnUndecryptableFilename(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	target := filepath.Join(t.TempDir(), "report.pdf")
 
@@ -986,6 +1006,7 @@ func TestOpenWithOutputPathIgnoresAnUndecryptableFilename(t *testing.T) {
 }
 
 func TestOpenRemovesTheReservedFileWhenDecryptionFails(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, break_ := range map[string]func(t *testing.T, fake *fakeFlick, id string, link *ShareLink){
 		"wrong identity": func(t *testing.T, _ *fakeFlick, _ string, link *ShareLink) {
 			other, err := clientcrypto.NewIdentity()
@@ -1031,6 +1052,7 @@ func TestOpenRemovesTheReservedFileWhenDecryptionFails(t *testing.T) {
 }
 
 func TestOpenFileLeavesNothingWhenTheBodyFailsToAuthenticate(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -1069,6 +1091,7 @@ func TestOpenFileLeavesNothingWhenTheBodyFailsToAuthenticate(t *testing.T) {
 }
 
 func TestOpenRefusesABodyOfTheWrongLength(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, change := range map[string]func([]byte) []byte{
 		"longer":  func(b []byte) []byte { return append(b, 0) },
 		"shorter": func(b []byte) []byte { return b[:len(b)-1] },
@@ -1100,6 +1123,7 @@ func TestOpenRefusesABodyOfTheWrongLength(t *testing.T) {
 }
 
 func TestSendAndOpenModelAFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	payload := bytes.Repeat([]byte{0, 1, 2, 250}, 40_000)
 
@@ -1138,6 +1162,7 @@ func TestSendAndOpenModelAFile(t *testing.T) {
 }
 
 func TestOpenRefusesAnImpossibleReportedSize(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, size := range map[string]int{"negative": -1, "zero": 0, "text over inline": 1 << 30} {
 		t.Run(name, func(t *testing.T) {
 			fake := newFakeFlick(t)
@@ -1165,6 +1190,7 @@ func TestOpenRefusesAnImpossibleReportedSize(t *testing.T) {
 }
 
 func TestOpenFilePlacesAPrivateFileAndCleansUp(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 64
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -1201,6 +1227,7 @@ func TestOpenFilePlacesAPrivateFileAndCleansUp(t *testing.T) {
 }
 
 func TestCopyExclusiveNeverOverwrites(t *testing.T) {
+	withTimeout(t, time.Minute)
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
 	dst := filepath.Join(dir, "dst")
@@ -1219,6 +1246,7 @@ func TestCopyExclusiveNeverOverwrites(t *testing.T) {
 }
 
 func TestSendCredentialRidesTheTextPath(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	sent, err := Send(context.Background(), fake.client(), SendOptions{
@@ -1264,6 +1292,7 @@ func TestSendCredentialRidesTheTextPath(t *testing.T) {
 }
 
 func TestSendRejectsAnInvalidCredentialBeforeCreatingAnything(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 
 	if _, err := Send(context.Background(), fake.client(), SendOptions{
@@ -1282,6 +1311,7 @@ func TestSendRejectsAnInvalidCredentialBeforeCreatingAnything(t *testing.T) {
 }
 
 func TestOpenSavesATextSecretToAReservedFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 
@@ -1336,6 +1366,7 @@ func TestOpenSavesATextSecretToAReservedFile(t *testing.T) {
 }
 
 func TestOpenRevealHandsBackThePlaintextWithoutWritingAFile(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	dir := t.TempDir()
 

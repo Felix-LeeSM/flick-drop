@@ -505,6 +505,7 @@ func (f *fakeFlick) pipeReceive(w http.ResponseWriter, r *http.Request, room *fa
 }
 
 func TestLiveTextBidirectionalRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -566,6 +567,7 @@ func TestLiveTextBidirectionalRoundTrip(t *testing.T) {
 }
 
 func TestLiveFileAndCredentialRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -640,6 +642,7 @@ func TestLiveFileAndCredentialRoundTrip(t *testing.T) {
 }
 
 func TestLiveSenderCancelWhileWaitingCancelsTheRoom(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -672,6 +675,7 @@ func TestLiveSenderCancelWhileWaitingCancelsTheRoom(t *testing.T) {
 }
 
 func TestLiveReceiverLeaveWhileWaiting(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	room := fake.newPipeRoom()
@@ -696,6 +700,7 @@ func TestLiveReceiverLeaveWhileWaiting(t *testing.T) {
 }
 
 func TestPipeWrongSenderTokenIsNotFound(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	room := fake.newPipeRoom()
@@ -708,6 +713,7 @@ func TestPipeWrongSenderTokenIsNotFound(t *testing.T) {
 }
 
 func TestNormalizePipeCode(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for raw, want := range map[string]string{
 		"305817":    "305817",
 		" 305-817 ": "305817",

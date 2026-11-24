@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Shared with web/src/lib/crypto/access.test.ts; constant drift on either side fails a suite.
@@ -20,6 +21,7 @@ type vectors struct {
 }
 
 func TestGoldenVectorAccessProof(t *testing.T) {
+	withTimeout(t, time.Minute)
 	raw, err := os.ReadFile(vectorsPath)
 	if err != nil {
 		t.Fatalf("read golden vectors: %v", err)
@@ -40,6 +42,7 @@ func TestGoldenVectorAccessProof(t *testing.T) {
 }
 
 func TestValidateKDFRejectsInvalidParams(t *testing.T) {
+	withTimeout(t, time.Minute)
 	valid := KDFParams{
 		Algorithm:     KDFAlgorithm,
 		Salt:          base64.StdEncoding.EncodeToString(make([]byte, SaltBytes)),
@@ -67,6 +70,7 @@ func TestValidateKDFRejectsInvalidParams(t *testing.T) {
 }
 
 func TestAccessProofIsStableAndPassphraseBound(t *testing.T) {
+	withTimeout(t, time.Minute)
 	verifier, err := NewAccessVerifier("passphrase")
 	if err != nil {
 		t.Fatalf("verifier: %v", err)
@@ -93,6 +97,7 @@ func TestAccessProofIsStableAndPassphraseBound(t *testing.T) {
 }
 
 func TestKeyFragmentRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	id, err := NewIdentity()
 	if err != nil {
 		t.Fatalf("identity: %v", err)
@@ -113,6 +118,7 @@ func TestKeyFragmentRoundTrip(t *testing.T) {
 }
 
 func TestDecodeKeyFragmentRejectsBadInput(t *testing.T) {
+	withTimeout(t, time.Minute)
 	id, err := NewIdentity()
 	if err != nil {
 		t.Fatalf("identity: %v", err)

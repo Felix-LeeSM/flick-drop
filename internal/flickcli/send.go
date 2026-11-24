@@ -40,6 +40,9 @@ type SendOptions struct {
 	TTL        time.Duration
 	// Empty falls back to the API base URL (same host when deployed, deploy/base/ingress.yaml).
 	ShareOrigin string
+	// Pins the delivery key instead of generating a fresh one; the cassette
+	// tests use this so a recorded open response decrypts on replay. nil = fresh.
+	Identity *age.HybridIdentity
 }
 
 type SendResult struct {
@@ -66,9 +69,12 @@ func Send(ctx context.Context, client *Client, opts SendOptions) (SendResult, er
 	}
 
 	limits := client.Config(ctx)
-	identity, err := clientcrypto.NewIdentity()
-	if err != nil {
-		return SendResult{}, err
+	var err error
+	identity := opts.Identity
+	if identity == nil {
+		if identity, err = clientcrypto.NewIdentity(); err != nil {
+			return SendResult{}, err
+		}
 	}
 
 	isFile := opts.FileName != ""

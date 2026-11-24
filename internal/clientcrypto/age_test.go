@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 )
@@ -98,6 +99,7 @@ func headerLength(t *testing.T, file []byte) int {
 }
 
 func TestAgeVectorsOpenFromBothClients(t *testing.T) {
+	withTimeout(t, time.Minute)
 	v := loadAgeVectors(t)
 	for name, side := range map[string]ageSide{"go": v.Go, "web": v.Web} {
 		t.Run(name, func(t *testing.T) {
@@ -134,6 +136,7 @@ func TestAgeVectorsOpenFromBothClients(t *testing.T) {
 }
 
 func TestAgeRoundTripAndSizes(t *testing.T) {
+	withTimeout(t, time.Minute)
 	id, err := NewIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +167,7 @@ func TestAgeRoundTripAndSizes(t *testing.T) {
 }
 
 func TestAgeFailsClosed(t *testing.T) {
+	withTimeout(t, time.Minute)
 	v := loadAgeVectors(t)
 	wrapped := b64(t, v.Web.WrappedIdentity)
 

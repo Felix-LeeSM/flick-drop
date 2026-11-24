@@ -1,0 +1,72 @@
+{
+  "comment": "Recorded from a real deployment by TestCassetteSendOpenPassphrase with FLICK_CASSETTE_RECORD=\u003curl\u003e; payloads are fake markers, consumed secrets, dead tokens. Re-record to refresh.",
+  "identities": {
+    "sender": "AGE-SECRET-KEY-PQ-1C4R76M3CHFG3ET503RQX3M7AZ8N5MMURJ2KMA9JEFAKTX2RR5GZS83KTVC"
+  },
+  "interactions": [
+    {
+      "method": "GET",
+      "path": "/api/config",
+      "status": 200,
+      "header": {
+        "Content-Type": [
+          "application/json"
+        ]
+      },
+      "body": "eyJwYXlsb2FkX2lubGluZV9tYXhfYnl0ZXMiOjEwNDQyMDgsIm1heF9maWxlX2J5dGVzIjoyNjg0MzU0NTYsInBpcGVfcmVsYXlfZW5hYmxlZCI6dHJ1ZX0K"
+    },
+    {
+      "method": "POST",
+      "path": "/api/secrets",
+      "status": 201,
+      "header": {
+        "Content-Type": [
+          "application/json"
+        ]
+      },
+      "body": "eyJtYW5hZ2VtZW50X3Rva2VuIjoiRmdyNUdfVnBfMFhJYnVKbXNsN1NLSHlldE9aNXZ0WjBKUFMxSk16RkRnOCIsIm1hbmFnZW1lbnRfZXhwaXJlc19hdCI6IjIwMjYtMTEtMjRUMDc6MDk6MzkuMjUyNTA1NTYxWiIsImlkIjoiVUVMRVpJOHl6RU4xVV9ScGNRSzd6RHhFIiwiZXhwaXJlc19hdCI6IjIwMjYtMTEtMjRUMDc6MDk6MzkuMjUyNTA1NTYxWiJ9Cg=="
+    },
+    {
+      "method": "GET",
+      "path": "/api/secrets/UELEZI8yzEN1U_RpcQK7zDxE",
+      "status": 200,
+      "header": {
+        "Content-Type": [
+          "application/json"
+        ]
+      },
+      "body": "eyJpZCI6IlVFTEVaSTh5ekVOMVVfUnBjUUs3ekR4RSIsImtpbmQiOiJ0ZXh0IiwiYWNjZXNzIjp7ImtkZiI6eyJhbGdvcml0aG0iOiJQQktERjItU0hBLTI1NiIsInNhbHQiOiJPQVlVeEFJMy92TTZhSE02TmJtMytBPT0iLCJpdGVyYXRpb25zIjo2MDAwMDAsImtleV9sZW5ndGhfYml0cyI6MjU2fX0sInNpemVfYnl0ZXMiOjE2ODYsImV4cGlyZXNfYXQiOiIyMDI2LTExLTI0VDA3OjA5OjM5LjI1MjUwNVoifQo="
+    },
+    {
+      "method": "GET",
+      "path": "/api/config",
+      "status": 200,
+      "header": {
+        "Content-Type": [
+          "application/json"
+        ]
+      },
+      "body": "eyJwYXlsb2FkX2lubGluZV9tYXhfYnl0ZXMiOjEwNDQyMDgsIm1heF9maWxlX2J5dGVzIjoyNjg0MzU0NTYsInBpcGVfcmVsYXlfZW5hYmxlZCI6dHJ1ZX0K"
+    },
+    {
+      "method": "POST",
+      "path": "/api/secrets/UELEZI8yzEN1U_RpcQK7zDxE/open",
+      "status": 200,
+      "header": {
+        "Content-Type": [
+          "application/octet-stream"
+        ],
+        "Flick-Expires-At": [
+          "2026-11-24T07:09:39.252505Z"
+        ],
+        "Flick-Kind": [
+          "text"
+        ],
+        "Flick-Wrapped-Identity": [
+          "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IHNjcnlwdCBXRkQ1d1N5MzRjY0kraHZyd3ZrQWlnIDE4CkFXdE5WN0UwV1Rud2NVUXhUY0lxeUsySTBPKy83M1YyOHZjdFBsRTVsalEKLS0tIHlzUktQNE1ZbWR4OUxoZkVHVWM4K0cvYU1uSlVEdEpEVGdYTXB6c0VyaVUK70yAkm4Csn/UfDC+JPscxOXaTjBj36Dit92NXoPUv9wUa58LbmNvX9Gb/U2syFRHFFWQuI/q/bTACMeAM69KNh2zdK0CqRRG5bS+Bfo3AGz+XcHtUKRPTTLjd/go3qeSAntSaphwocoOy3EL+Q=="
+        ]
+      },
+      "body": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IDBZK2Nyd1FlSkNVRUFtdUQvcVJIeEE3NXBaZmNYdmpaOUNYUWZxNXRUWXc1WkdnRU45TGR1eGlEY0dCeWxZd1RKWVVNSHV0VXVqbTd2dzV2eTA5NThxNmIybGpSdGVNN2hpTmkxVDhhODRDdFFFbHY3bE5lMElGelBWdVJnTFFiMGJoY0ZaQjYxaTVjYmE3elVyWU91Wm16QlV1UGFjYnJFdjg2NlVXWU1ob0hURWF4aTFwbWJKSEQ4Q0dhSTJHYUY4dkZ5d1hrYlVzKzNHS2xrblN4V2YwalJqV3dwQmdTdmVGczE3TU1PdnMyOGFhdysvaTNlY2NIdHlTejR5Rkx4c1loc0p4aVprdlVWTGpXMFhKYStVenNzNDByVFpZYk5WZk4rT01rcTFZdHc1NTd3d2FJUy9lMzZJYUxCUlpoNXBXb00zSmRXekZ0UytPRjdCNjNzdFpRVmZ1cTIwT1Mvdm0wMnJEUHZlSzZ2NFRNQTlyYTJxRnU1SnZYS0VaQ21qdTNPZXhuMFpHM3d1cGhOYTVHWEp2VVozOU9qb1FpejY3TUtLa2drL0VCWS80a3cyOXR5b2l3SE9ERFgrcUsrN3k5dTRkaG1kR1ozbzhWbDhBcUw0WVJwZGZuU2Z1RVJYUVZpeFRXNysrajN5R1VuRTQ5MVFuNWlYOW42RUdNL2EyVnNQUUR4N0RPaTM3M0tGaWdhT3FSN0M4TGpUY245UHAvb2JVMHEzcnhjeGVHay9LSnRsWGI2M0RFQk03S0RDRHhtVUp1em91QVorVjRsakE1UnZKcG5ZQ3piU2xYbWdMY0xkU0Jsa2hkSHV5aXhTVE8ya3Q2Mng1c1JhTWQ1TzBSdExIbU1Db25tKzI1b1Q5MFVtclRKcUFvZnVzYU8vdVRXc0hJZTBqdE1RWW1pYmdWUjFoeElZenFBek52c0JhbkxuNmNDVkVockd0OWhubWJ4U2w1Z3g3dXhQTzdSeFdXRUpzZXV6QzVpMkRWN0pJdWp3aHFjMFpuN2xQNFFxdjk0Ky9wZkpZcUgvbWY2cStoTlpsVHgzODNYT3pHaDQvZzVYRTVrd1R4UzV6Tkc4dTg0Zk1yTzA0RTFvMUo1dXJzZWJUR2tuUGJzWFR4ZHFmNnJvby8rbW9mSVo5YUxYTnNZc0pOS25qUW02TCtXUjREV1ZzRC9BT2tCYUVXT21ucHFJVDExTGQyVE9QL2lxNUNJMWl5K3hpcGJXUmhjZ29IMFloQnRsZ0hDTW1sQk5pSm1ncjI0QXluYjMrdk5rK2tCQW1NZGJoNkhrRkhEQm4zQkk2bTQ3S2w3MG5yUWE3a2hhemN3czJieGVCTC9kaldZbDlwZjZMdVh2dUxJQi8yZ2QydG1RaVZ1K09vNmpMd0p1dnEzY005K0k4Z0J2U250eUx4OXZ3R0xOS211Q21ySE10am4ybkFXTm9WbHNSRklGenJZbXBUdEwyTjZNTFU5VENCb3Z3bGRVNlBHVlFuQVZ1V1VEN2RLRVVWcGU0eVRTd2hQcDNjSUhmRG1ZZmFjWXoybjk2RjlwU0NjTC9FWGN2Wmptb2pkNXBFdTQwbVFDbW83dWZPZEhOUUlTRFFSU3lMZ0JvTG13U3o2NlhDOFN5cVNjRXpWMWZRb2s0OVM1NTNKN1ErVU4wc0l6ZmNKRUJjdjdHUXFmWUpMWm1sRkxWRjQ5bXMreG1qZTRsWWFaVTNHcEUwUUJoazVpVGJycWZQQk8rcWpxbWIzZlJaUVEwLzNUQTRXOGszem9ETTZrenE4Y1hRd1RZNVdOL21mTjEzLzdaelF3RnAweFVHTGQ1b1luVVUyN3hGZVN5YlB5TGljQmxrT1pBekdWUTZqU0R6WWQ4ODdLaWIyVXNTSVQ3Y0pab1BkOUlTdHJGWS9Va1dmR2JzVDdwVzdMSGZzODNnQ3hFSVFibXRpUUQyNVlzREVSY2FVc3diV3dZcGh3QkJnd3AzWnkraE9NcjFaUQo1bEx0M25sOWhaMTJBMGlQNGlqRmpqWG92UEI0WVlFZzZmQXVuQWlKbCtjCi0tLSB1RkI2clBSdk5nVVg2ckU5cThNTUhCOXRxSm10dDlhalBGeW1ZN0hKZUJZCiPrXz53tI9vCWpN435bw6iSLLYQ6D8p3XJ+BH5yJZKkJncQ9H0MRb3vL/ih/AFTes0vPv3PntLzpadk"
+    }
+  ]
+}

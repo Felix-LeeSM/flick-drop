@@ -3,6 +3,7 @@ package flickcli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 )
@@ -26,6 +27,7 @@ var (
 )
 
 func TestParseRequestLinksRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	submission, retrieval := requestLinkPair(t)
 
 	sub, err := ParseSubmissionLink(submission)
@@ -46,6 +48,7 @@ func TestParseRequestLinksRoundTrip(t *testing.T) {
 }
 
 func TestParseSubmissionLinkCarriesTheMemoKey(t *testing.T) {
+	withTimeout(t, time.Minute)
 	identity, err := clientcrypto.NewIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +66,7 @@ func TestParseSubmissionLinkCarriesTheMemoKey(t *testing.T) {
 }
 
 func TestParseRequestLinksRejectMalformedInput(t *testing.T) {
+	withTimeout(t, time.Minute)
 	submission, retrieval := requestLinkPair(t)
 
 	for name, value := range map[string]string{
@@ -102,6 +106,7 @@ func TestParseRequestLinksRejectMalformedInput(t *testing.T) {
 }
 
 func TestParseRequestLinksKeepAPathPrefix(t *testing.T) {
+	withTimeout(t, time.Minute)
 	identity, err := clientcrypto.NewIdentity()
 	if err != nil {
 		t.Fatal(err)

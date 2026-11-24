@@ -124,6 +124,23 @@ comments, and label-after-review ordering.
 
 Expected coverage:
 
+- `internal/flickcli` and `cmd/flick`: the CLI send/open, request-link, and
+  live-transfer flows against an in-memory fake of the public API, plus
+  cassette replay tests (`internal/flickcli/cassette_test.go`) that run the
+  flows against recorded responses of a real deployment — pinned identities
+  in `internal/flickcli/testdata/cassettes/*.json` make the recorded open
+  bodies decrypt on replay. Recording is a manual, network-touching run:
+
+  ```sh
+  FLICK_CASSETTE_RECORD=https://flick.example go test ./internal/flickcli/ -run TestCassette -count=1 -timeout 600s
+  ```
+
+  Recording uses the 5-minute minimum TTL and consumes every secret in the
+  same run, so the committed tokens and management tokens are dead. Every
+  test function in the three CLI packages runs under a `withTimeout` budget
+  (`internal/flickcli/timeout_test.go`, mirroring `go test -timeout`
+  semantics per test) so a wedged flow fails the run instead of holding CI.
+
 - `internal/config`: env parsing and validation.
 - `internal/secrets`: secret lifecycle and verified open invariants.
 - `internal/storage`: inline payload threshold and large-payload S3 routing behavior.
@@ -457,6 +474,21 @@ Run the same checks by hand:
 go build -o /tmp/flick ./cmd/flick
 FLICK_CANARY_URL=https://flick.example FLICK_BIN=/tmp/flick \
   scripts/smoke/canary.sh text
+```
+
+## Live Relay Smoke
+
+`scripts/smoke/live.sh` runs one live-transfer round trip by hand against a
+deployment with the relay enabled (`FLICK_LIVE_URL`, `FLICK_BIN`): the sender
+starts with `-confirm auto`, the script joins with the 6-digit code as the
+only receiver, and the script compares the received bytes. The room lives 3
+minutes and the relay stores nothing, so a failed run leaves nothing behind.
+It is not a scheduled workflow; run it when changing
+`internal/flickcli/pipe.go` or the relay endpoints:
+
+```sh
+go build -o /tmp/flick ./cmd/flick
+FLICK_LIVE_URL=https://flick.example FLICK_BIN=/tmp/flick scripts/smoke/live.sh
 ```
 
 ## Image Publish

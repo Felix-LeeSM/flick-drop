@@ -3,6 +3,7 @@ package flickcli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 
@@ -19,6 +20,7 @@ func newTestIdentity(t *testing.T) *age.HybridIdentity {
 }
 
 func TestParseShareLinkModelB(t *testing.T) {
+	withTimeout(t, time.Minute)
 	id := newTestIdentity(t)
 	raw := "https://flick.example.com/s/abc123#" + clientcrypto.EncodeKeyFragment(id)
 
@@ -38,6 +40,7 @@ func TestParseShareLinkModelB(t *testing.T) {
 }
 
 func TestParseShareLinkModelACarriesNoKey(t *testing.T) {
+	withTimeout(t, time.Minute)
 	link, err := ParseShareLink("https://flick.example.com/s/abc123")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -48,6 +51,7 @@ func TestParseShareLinkModelACarriesNoKey(t *testing.T) {
 }
 
 func TestParseShareLinkBareID(t *testing.T) {
+	withTimeout(t, time.Minute)
 	link, err := ParseShareLink("  abc123  ")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -61,6 +65,7 @@ func TestParseShareLinkBareID(t *testing.T) {
 }
 
 func TestParseShareLinkKeepsPathPrefix(t *testing.T) {
+	withTimeout(t, time.Minute)
 	link, err := ParseShareLink("https://example.com/flick/s/abc123")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -71,6 +76,7 @@ func TestParseShareLinkKeepsPathPrefix(t *testing.T) {
 }
 
 func TestParseShareLinkRejectsBadInput(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, raw := range map[string]string{
 		"empty":            "",
 		"blank":            "   ",
@@ -91,6 +97,7 @@ func TestParseShareLinkRejectsBadInput(t *testing.T) {
 }
 
 func TestBuildShareLinkRoundTrips(t *testing.T) {
+	withTimeout(t, time.Minute)
 	id := newTestIdentity(t)
 	built := BuildShareLink("https://flick.example.com/", "abc123", id)
 
@@ -107,6 +114,7 @@ func TestBuildShareLinkRoundTrips(t *testing.T) {
 }
 
 func TestBuildShareLinkOmitsKeyForModelA(t *testing.T) {
+	withTimeout(t, time.Minute)
 	built := BuildShareLink("https://flick.example.com", "abc123", nil)
 	if strings.Contains(built, "#") {
 		t.Errorf("model A link %q carries a fragment", built)
