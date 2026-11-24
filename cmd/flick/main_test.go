@@ -256,6 +256,7 @@ func TestClientVersionFallsBackToBuildInfo(t *testing.T) {
 func TestUsageNamesBothCommands(t *testing.T) {
 	for _, needed := range []string{
 		"flick send", "flick open", "flick request", "flick submit", "flick receive",
+		"flick live", "flick join",
 		"FLICK_PASSPHRASE", "FLICK_URL", "-reveal", "-credential",
 	} {
 		if !strings.Contains(usage, needed) {

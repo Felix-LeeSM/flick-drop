@@ -35,6 +35,8 @@ Usage:
   flick request [flags]               Create a one-time request link pair
   flick submit [flags] <link> [text]  Send a secret into a request link
   flick receive [flags] <link|->      Retrieve the reply to a request link
+  flick live [flags] [text]           Stream a secret to a nearby device by code
+  flick join [flags] <code>           Receive a live transfer by its 6-digit code
   flick version                       Print the client version
 
 Run "flick <command> -h" for the flags of a command.
@@ -54,6 +56,13 @@ A request link asks someone to send you a secret once: "flick request" prints
 a submission link to share and a private retrieval link to keep — the retrieval
 link holds the only key, so pipe it instead of leaving it in shell history:
   flick receive - < retrieval-link.txt
+
+A live transfer streams a secret to a nearby device without storing it; the
+receiver confirms themselves with a 3-digit number read out loud:
+  flick live "wifi password"
+  flick join 305817
+Without a terminal, say how to confirm the receiver ("-confirm auto" takes the
+first device, "-confirm 482" waits for that number).
 
 An opened secret is saved to a 0600 file and only its path is printed, so
 decrypted values never land in terminal scrollback or piped command logs.
@@ -99,6 +108,10 @@ func run(args []string) error {
 		return runSubmit(ctx, args[1:])
 	case "receive":
 		return runReceive(ctx, args[1:])
+	case "live":
+		return runLive(ctx, args[1:])
+	case "join":
+		return runJoin(ctx, args[1:])
 	case "version":
 		fmt.Println(clientVersion())
 		return nil
@@ -848,4 +861,205 @@ func clientVersion() string {
 		return info.Main.Version
 	}
 	return "unknown"
+}
+
+func runLive(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick live", flag.ContinueOnError)
+	filePath := flags.String("file", "", "Encrypt and send this file instead of text")
+	credentialPath := flags.String("credential", "",
+		`Send this credential JSON file instead of text (FLCR1 prefix optional; "-" reads stdin)`)
+	confirm := flags.String("confirm", "",
+		`How to confirm the receiver: "auto" sends to the first waiting device, a 3-digit number waits for it; the default asks on a terminal`)
+	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
+	asJSON := flags.Bool("json", false, "Print the result as JSON")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+
+	opts := flickcli.LiveSendOptions{}
+	var pick func(pending []flickcli.PipePending) (flickcli.LiveDecision, error)
+	switch {
+	case *confirm == "auto":
+	case pipeConfirmArg(*confirm) != "":
+		want := pipeConfirmArg(*confirm)
+		pick = func(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+			for _, conn := range pending {
+				if conn.VerifyCode == want {
+					return flickcli.LiveDecision{Action: "send", ConnectionID: conn.ConnectionID}, nil
+				}
+			}
+			return flickcli.LiveDecision{Action: "wait"}, nil
+		}
+	case *confirm == "":
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return errors.New(
+				"no terminal to confirm the receiver; pass -confirm auto, or -confirm with the 3-digit number the receiver reads out")
+		}
+		pick = promptLivePick
+	default:
+		return fmt.Errorf("-confirm must be \"auto\" or a 3-digit number, not %q", *confirm)
+	}
+
+	switch {
+	case *filePath != "":
+		if flags.NArg() > 0 {
+			return errors.New("send a file or text, not both")
+		}
+		if *credentialPath != "" {
+			return errors.New("send a file or a credential, not both")
+		}
+		file, err := os.Open(*filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		opts.File = file
+		opts.FileName = fileNameOf(*filePath)
+	case *credentialPath != "":
+		if flags.NArg() > 0 {
+			return errors.New("send a credential or text, not both")
+		}
+		data, err := readInput(*credentialPath)
+		if err != nil {
+			return err
+		}
+		opts.Credential = string(data)
+	case flags.NArg() == 1:
+		opts.Text = flags.Arg(0)
+	case !term.IsTerminal(int(os.Stdin.Fd())):
+		text, err := readText(nil, 0)
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	default:
+		text, err := promptSecretText()
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	}
+	opts.Pick = pick
+	opts.Started = func(session flickcli.PipeSession) error {
+		fmt.Println(session.Code)
+		fmt.Fprintf(os.Stderr, "The recipient runs: flick join %s — the code expires in %d seconds.\n", session.Code, session.ExpiresIn)
+		fmt.Fprintln(os.Stderr, "Waiting for a device. Nothing is stored on the server.")
+		return nil
+	}
+
+	result, err := flickcli.LiveSend(ctx, flickcli.NewClient(*apiURL, nil), opts)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Cancelled. The code no longer works.")
+		}
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"code":              result.Code,
+			"bytes_transferred": result.BytesTransferred,
+			"verify_code":       result.VerifyCode,
+		})
+	}
+	fmt.Fprintf(os.Stderr, "Sent to the device that read out %s (%d bytes). The transfer is gone from the server.\n",
+		result.VerifyCode, result.BytesTransferred)
+	return nil
+}
+
+// promptLivePick renders the waiting rows and reads the 3-digit number the
+// receiver read out; "d<nnn>" declines that device and an empty line keeps waiting.
+func promptLivePick(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+	fmt.Fprintln(os.Stderr, "Devices waiting:")
+	for _, conn := range pending {
+		fmt.Fprintf(os.Stderr, "  %s  %s (waiting %ds)\n", conn.VerifyCode, conn.Device, conn.ConnectedSeconds)
+	}
+	fmt.Fprint(os.Stderr, "Which number does your receiver see? [d<nnn> to decline, Enter to keep waiting]: ")
+	typed, err := readLine()
+	if err != nil {
+		return flickcli.LiveDecision{}, err
+	}
+	typed = strings.TrimSpace(typed)
+	if typed == "" {
+		return flickcli.LiveDecision{Action: "wait"}, nil
+	}
+	if declined, ok := strings.CutPrefix(typed, "d"); ok {
+		if want := pipeConfirmArg(declined); want != "" {
+			for _, conn := range pending {
+				if conn.VerifyCode == want {
+					return flickcli.LiveDecision{Action: "decline", ConnectionID: conn.ConnectionID}, nil
+				}
+			}
+		}
+		return flickcli.LiveDecision{Action: "wait"}, nil
+	}
+	if want := pipeConfirmArg(typed); want != "" {
+		for _, conn := range pending {
+			if conn.VerifyCode == want {
+				return flickcli.LiveDecision{Action: "send", ConnectionID: conn.ConnectionID}, nil
+			}
+		}
+		fmt.Fprintf(os.Stderr, "No device is showing %s.\n", want)
+	}
+	return flickcli.LiveDecision{Action: "wait"}, nil
+}
+
+func pipeConfirmArg(value string) string {
+	if len(value) == 3 && strings.Trim(value, "0123456789") == "" {
+		return value
+	}
+	return ""
+}
+
+func runJoin(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick join", flag.ContinueOnError)
+	output := flags.String("output", "", "Write the payload to this exact path")
+	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
+	reveal := flags.Bool("reveal", false,
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
+	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("give exactly one 6-digit live transfer code")
+	}
+	if *reveal && *output != "" {
+		return errors.New("choose one destination: -reveal for stdout or -output for a file")
+	}
+	code, err := flickcli.NormalizePipeCode(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	result, err := flickcli.LiveJoin(ctx, flickcli.NewClient(*apiURL, nil), flickcli.LiveJoinOptions{
+		Code:       code,
+		OutputPath: *output,
+		OutputDir:  *outputDir,
+		Reveal:     *reveal,
+		Connected: func(verifyCode string, expiresIn int) error {
+			fmt.Fprintf(os.Stderr, "Read this to the sender: %s\n", verifyCode)
+			fmt.Fprintf(os.Stderr, "Waiting for the sender to send (expires in %d seconds)...\n", expiresIn)
+			return nil
+		},
+	})
+	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		return rescue(result, err)
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Disconnected from the waiting room.")
+		}
+		return err
+	}
+
+	if *asJSON {
+		out, err := openedJSON(result, *reveal)
+		if err != nil {
+			return err
+		}
+		out["code"] = code
+		return json.NewEncoder(os.Stdout).Encode(out)
+	}
+	return reportOpened(result, *reveal)
 }

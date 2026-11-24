@@ -1,0 +1,645 @@
+package flickcli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// An in-memory twin of the pipe relay: rooms keyed by a 6-digit code, wake-on-
+// change long polls, select/decline/leave/cancel, and a rendezvous where /send
+// and /receive block for each other like the real pod-to-pod stream.
+
+type fakePipeConn struct {
+	id        string
+	index     int
+	verify    string
+	device    string
+	recipient string
+}
+
+type fakePipeRoom struct {
+	mu          sync.Mutex
+	code        string
+	senderToken string
+	version     int
+	conns       map[string]*fakePipeConn
+	order       []string
+	chosenID    string
+	state       string // open | closed | cancelled
+	attached    bool
+	body        []byte
+	kind        string
+	encFilename string
+
+	cancelCalled bool
+	leaveCalled  bool
+	changed      chan struct{}
+}
+
+func (room *fakePipeRoom) bumpLocked() {
+	room.version++
+	close(room.changed)
+	room.changed = make(chan struct{})
+}
+
+func (f *fakeFlick) newPipeRoom() *fakePipeRoom {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pipeCodeCounter++
+	room := &fakePipeRoom{
+		code:        fmt.Sprintf("%06d", 100000+f.pipeCodeCounter),
+		senderToken: randomToken(),
+		conns:       map[string]*fakePipeConn{},
+		state:       "open",
+		changed:     make(chan struct{}),
+	}
+	f.pipeRooms[room.code] = room
+	return room
+}
+
+func (f *fakeFlick) routePipe(w http.ResponseWriter, r *http.Request, action string) {
+	code := r.Header.Get(pipeCodeHeader)
+	f.mu.Lock()
+	room := f.pipeRooms[code]
+	f.mu.Unlock()
+
+	switch action {
+	case "init":
+		f.pipeInit(w, r)
+	case "join":
+		f.pipeJoin(w, r, room)
+	case "status":
+		f.pipeStatus(w, r, room, code)
+	case "wait":
+		f.pipeWait(w, r, room, code)
+	case "select", "decline":
+		f.pipeSenderAction(w, r, room, code, action)
+	case "leave":
+		f.pipeLeave(w, r, room, code)
+	case "cancel":
+		f.pipeCancel(w, r, room, code)
+	case "send":
+		f.pipeSend(w, r, room, code)
+	case "receive":
+		f.pipeReceive(w, r, room, code)
+	default:
+		writeError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (f *fakeFlick) pipeInit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "bad_request")
+		return
+	}
+	room := f.newPipeRoom()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"code":         room.code,
+		"expires_in":   180,
+		"sender_token": room.senderToken,
+	})
+}
+
+func pipeRoomUnavailable(w http.ResponseWriter, room *fakePipeRoom) bool {
+	if room == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return true
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.state != "open" {
+		writeError(w, http.StatusGone, room.state)
+		return true
+	}
+	return false
+}
+
+func (f *fakeFlick) pipeJoin(w http.ResponseWriter, r *http.Request, room *fakePipeRoom) {
+	var input struct {
+		Recipient string `json:"recipient"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 5120)).Decode(&input); err != nil || len(input.Recipient) > 4096 {
+		writeError(w, http.StatusBadRequest, "invalid_recipient")
+		return
+	}
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if len(room.conns) >= 10 {
+		writeError(w, http.StatusConflict, "room_full")
+		return
+	}
+	verify := fmt.Sprintf("%03d", 100+len(room.order))
+	for {
+		taken := false
+		for _, conn := range room.conns {
+			if conn.verify == verify {
+				taken = true
+			}
+		}
+		if !taken {
+			break
+		}
+		verify = fmt.Sprintf("%03d", (verifyInt(verify)*7+13)%1000)
+	}
+	conn := &fakePipeConn{
+		id:        randomToken(),
+		index:     len(room.order) + 1,
+		verify:    verify,
+		device:    "CLI test device",
+		recipient: input.Recipient,
+	}
+	room.conns[conn.id] = conn
+	room.order = append(room.order, conn.id)
+	room.bumpLocked()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"connection_id": conn.id,
+		"verify_code":   conn.verify,
+		"device":        conn.device,
+		"expires_in":    180,
+	})
+}
+
+func verifyInt(v string) int { return int(v[0]-'0')*100 + int(v[1]-'0')*10 + int(v[2]-'0') }
+
+func (f *fakeFlick) pipeStatus(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+	connID := r.Header.Get(pipeConnHeader)
+
+	room.mu.Lock()
+	// Long-poll: hold until the connection is chosen (or dropped) so the
+	// receiver does not hot-loop, like the server's ten-second hold.
+	for {
+		if room.state != "open" {
+			room.mu.Unlock()
+			writeError(w, http.StatusGone, room.state)
+			return
+		}
+		conn := room.conns[connID]
+		if conn == nil {
+			room.mu.Unlock()
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if room.chosenID == connID {
+			room.mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"status": "selected"})
+			return
+		}
+		if room.chosenID != "" {
+			room.mu.Unlock()
+			writeError(w, http.StatusGone, "not_selected")
+			return
+		}
+		changed := room.changed
+		room.mu.Unlock()
+		select {
+		case <-changed:
+			room.mu.Lock()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func pipeSenderAuthorized(w http.ResponseWriter, r *http.Request, room *fakePipeRoom) bool {
+	// A wrong sender token answers 404 like an unknown code, never a code oracle.
+	if r.Header.Get(pipeSenderHeader) != room.senderToken {
+		writeError(w, http.StatusNotFound, "not_found")
+		return false
+	}
+	return true
+}
+
+func (f *fakeFlick) pipeWait(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+	if !pipeSenderAuthorized(w, r, room) {
+		return
+	}
+	var since int
+	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &since)
+
+	room.mu.Lock()
+	for {
+		if room.state != "open" {
+			room.mu.Unlock()
+			writeError(w, http.StatusGone, room.state)
+			return
+		}
+		if room.version != since {
+			resp := map[string]any{"status": "waiting", "version": room.version, "connections": []any{}}
+			for _, id := range room.order {
+				if conn := room.conns[id]; conn != nil && room.chosenID == "" {
+					resp["connections"] = append(resp["connections"].([]any), map[string]any{
+						"connection_id":     conn.id,
+						"index":             conn.index,
+						"verify_code":       conn.verify,
+						"device":            conn.device,
+						"recipient":         conn.recipient,
+						"connected_seconds": conn.index * 7,
+					})
+				}
+			}
+			if room.chosenID != "" && room.attached {
+				resp["status"] = "ready"
+				resp["recipient"] = room.conns[room.chosenID].recipient
+			}
+			room.mu.Unlock()
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		changed := room.changed
+		room.mu.Unlock()
+		select {
+		case <-changed:
+			room.mu.Lock()
+		case <-r.Context().Done():
+			return
+		case <-time.After(10 * time.Second):
+			room.mu.Lock()
+		}
+	}
+}
+
+func (f *fakeFlick) pipeSenderAction(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code, action string) {
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+	if !pipeSenderAuthorized(w, r, room) {
+		return
+	}
+	connID := r.Header.Get(pipeConnHeader)
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.conns[connID] == nil {
+		writeError(w, http.StatusConflict, "not_pending")
+		return
+	}
+	if action == "select" {
+		room.chosenID = connID
+	} else {
+		delete(room.conns, connID)
+	}
+	room.bumpLocked()
+	status := "selected"
+	if action == "decline" {
+		status = "declined"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
+}
+
+func (f *fakeFlick) pipeLeave(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if room == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	connID := r.Header.Get(pipeConnHeader)
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.conns[connID] == nil {
+		writeError(w, http.StatusConflict, "not_pending")
+		return
+	}
+	delete(room.conns, connID)
+	room.leaveCalled = true
+	room.bumpLocked()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
+}
+
+func (f *fakeFlick) pipeCancel(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if room == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if !pipeSenderAuthorized(w, r, room) {
+		return
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	room.state = "cancelled"
+	room.cancelCalled = true
+	room.bumpLocked()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func (f *fakeFlick) pipeSend(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+	if !pipeSenderAuthorized(w, r, room) {
+		return
+	}
+
+	room.mu.Lock()
+	kind := r.Header.Get("Flick-Kind")
+	if kind == "" {
+		kind = "text"
+	}
+	room.mu.Unlock()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "transfer_failed")
+		return
+	}
+
+	room.mu.Lock()
+	room.kind = kind
+	room.encFilename = r.Header.Get("Flick-Encrypted-Filename")
+	room.body = body
+	room.bumpLocked()
+	// The real relay streams to the receiver's pod; the rendezvous is the part
+	// the client must tolerate.
+	for !room.attached {
+		changed := room.changed
+		room.mu.Unlock()
+		select {
+		case <-changed:
+			room.mu.Lock()
+		case <-r.Context().Done():
+			return
+		case <-time.After(10 * time.Second):
+			room.mu.Lock()
+		}
+	}
+	room.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"status": "completed", "bytes_transferred": len(body)})
+}
+
+func (f *fakeFlick) pipeReceive(w http.ResponseWriter, r *http.Request, room *fakePipeRoom, code string) {
+	if pipeRoomUnavailable(w, room) {
+		return
+	}
+	connID := r.Header.Get(pipeConnHeader)
+
+	room.mu.Lock()
+	if room.chosenID == "" || room.chosenID != connID {
+		room.mu.Unlock()
+		writeError(w, http.StatusConflict, "awaiting_decision")
+		return
+	}
+	room.attached = true
+	room.bumpLocked()
+	for room.body == nil {
+		changed := room.changed
+		room.mu.Unlock()
+		select {
+		case <-changed:
+			room.mu.Lock()
+		case <-r.Context().Done():
+			return
+		case <-time.After(10 * time.Second):
+			room.mu.Lock()
+		}
+	}
+	header := w.Header()
+	header.Set("Content-Type", "application/octet-stream")
+	header.Set("Flick-Kind", room.kind)
+	if room.encFilename != "" {
+		header.Set("Flick-Encrypted-Filename", room.encFilename)
+	}
+	body := room.body
+	room.state = "closed"
+	room.mu.Unlock()
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func TestLiveTextBidirectionalRoundTrip(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	receiverDone := make(chan OpenResult, 1)
+	receiverErr := make(chan error, 1)
+	go func() {
+		var code string
+		for i := 0; i < 500 && code == ""; i++ {
+			fake.mu.Lock()
+			for _, room := range fake.pipeRooms {
+				code = room.code
+			}
+			fake.mu.Unlock()
+			if code == "" {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		if code == "" {
+			receiverErr <- errors.New("no room appeared")
+			return
+		}
+		result, err := LiveJoin(ctx, client, LiveJoinOptions{
+			Code:      code,
+			OutputDir: t.TempDir(),
+			Connected: func(string, int) error { return nil },
+		})
+		receiverDone <- result
+		receiverErr <- err
+	}()
+
+	sent, err := LiveSend(ctx, client, LiveSendOptions{
+		Text:    "live payload",
+		Started: func(PipeSession) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("live send: %v", err)
+	}
+	if sent.BytesTransferred == 0 || sent.VerifyCode == "" || sent.ConnectionID == "" {
+		t.Errorf("send result = %+v", sent)
+	}
+
+	var received OpenResult
+	select {
+	case received = <-receiverDone:
+		if err := <-receiverErr; err != nil {
+			t.Fatalf("live join: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the receiver never finished")
+	}
+	if string(received.Plaintext) != "live payload" {
+		t.Errorf("received %q", received.Plaintext)
+	}
+	if received.WrittenPath == "" {
+		t.Error("the live payload was not saved to a reserved file")
+	}
+}
+
+func TestLiveFileAndCredentialRoundTrip(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	runPair := func(sendOpts LiveSendOptions, check func(t *testing.T, result OpenResult)) {
+		t.Helper()
+		receiverDone := make(chan OpenResult, 1)
+		receiverErr := make(chan error, 1)
+		go func() {
+			var code string
+			for i := 0; i < 500 && code == ""; i++ {
+				fake.mu.Lock()
+				for _, room := range fake.pipeRooms {
+					if room.state == "open" {
+						code = room.code
+					}
+				}
+				fake.mu.Unlock()
+				if code == "" {
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			result, err := LiveJoin(ctx, client, LiveJoinOptions{
+				Code:      code,
+				OutputDir: t.TempDir(),
+				Connected: func(string, int) error { return nil },
+			})
+			receiverDone <- result
+			receiverErr <- err
+		}()
+
+		sent, err := LiveSend(ctx, client, sendOpts)
+		if err != nil {
+			t.Fatalf("live send: %v", err)
+		}
+		if sent.BytesTransferred == 0 {
+			t.Fatal("nothing was transferred")
+		}
+		select {
+		case result := <-receiverDone:
+			if err := <-receiverErr; err != nil {
+				t.Fatalf("live join: %v", err)
+			}
+			check(t, result)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the receiver never finished")
+		}
+	}
+
+	runPair(LiveSendOptions{
+		FileName: "notes.txt",
+		File:     strings.NewReader("file over live"),
+		Started:  func(PipeSession) error { return nil },
+	}, func(t *testing.T, result OpenResult) {
+		if filepath.Base(result.WrittenPath) != "notes.txt" {
+			t.Errorf("written = %q, want the decrypted name", result.WrittenPath)
+		}
+		if got, _ := os.ReadFile(result.WrittenPath); string(got) != "file over live" {
+			t.Errorf("file contents = %q", got)
+		}
+	})
+
+	runPair(LiveSendOptions{
+		Credential: `{"v":1,"type":"login","fields":[{"id":"password","label":"Password","value":"hunter2","secret":true}]}`,
+		Started:    func(PipeSession) error { return nil },
+	}, func(t *testing.T, result OpenResult) {
+		if result.Credential == nil || len(result.Credential.Fields) != 1 || result.Credential.Fields[0].Value != "hunter2" {
+			t.Errorf("credential = %+v", result.Credential)
+		}
+	})
+}
+
+func TestLiveSenderCancelWhileWaitingCancelsTheRoom(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := LiveSend(ctx, client, LiveSendOptions{
+		Text: "never arrives",
+		Started: func(session PipeSession) error {
+			cancel()
+			return nil
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	fake.mu.Lock()
+	var room *fakePipeRoom
+	for _, candidate := range fake.pipeRooms {
+		room = candidate
+	}
+	fake.mu.Unlock()
+	if room == nil {
+		t.Fatal("no room was created")
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if !room.cancelCalled {
+		t.Error("the waiting room was not cancelled behind the sender")
+	}
+}
+
+func TestLiveReceiverLeaveWhileWaiting(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	room := fake.newPipeRoom()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := LiveJoin(ctx, client, LiveJoinOptions{
+		Code: room.code,
+		Connected: func(string, int) error {
+			cancel()
+			return nil
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if !room.leaveCalled {
+		t.Error("the receiver did not leave the waiting room behind itself")
+	}
+}
+
+func TestPipeWrongSenderTokenIsNotFound(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	room := fake.newPipeRoom()
+
+	_, err := client.PipeWait(context.Background(), room.code, "not-the-token", 0)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("err = %v, want a 404 APIError", err)
+	}
+}
+
+func TestNormalizePipeCode(t *testing.T) {
+	for raw, want := range map[string]string{
+		"305817":    "305817",
+		" 305-817 ": "305817",
+		"305 817":   "305817",
+	} {
+		got, err := NormalizePipeCode(raw)
+		if err != nil || got != want {
+			t.Errorf("NormalizePipeCode(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"", "30581", "3058177", "30581a", "abc"} {
+		if _, err := NormalizePipeCode(raw); err == nil {
+			t.Errorf("NormalizePipeCode(%q) was accepted", raw)
+		}
+	}
+}

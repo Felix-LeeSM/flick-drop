@@ -40,6 +40,9 @@ type fakeFlick struct {
 	createBodies []string
 	openCalls    int
 	nextID       int
+
+	pipeRooms       map[string]*fakePipeRoom
+	pipeCodeCounter int
 }
 
 type storedSecret struct {
@@ -64,6 +67,7 @@ func newFakeFlick(t *testing.T) *fakeFlick {
 		secrets:   map[string]*storedSecret{},
 		objects:   map[string][]byte{},
 		requests:  map[string]*storedRequest{},
+		pipeRooms: map[string]*fakePipeRoom{},
 	}
 	fake.server = httptest.NewServer(http.HandlerFunc(fake.route))
 	t.Cleanup(fake.server.Close)
@@ -79,6 +83,8 @@ func (f *fakeFlick) route(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Limits{PayloadInlineMaxBytes: f.inlineMax, MaxFileBytes: f.maxFile})
 	case path == "/api/secrets" && r.Method == http.MethodPost:
 		f.createSecret(w, r)
+	case strings.HasPrefix(path, "/api/pipe/"):
+		f.routePipe(w, r, strings.TrimPrefix(path, "/api/pipe/"))
 	case path == "/api/requests" && r.Method == http.MethodPost:
 		f.createRequest(w, r)
 	case strings.HasPrefix(path, "/api/requests/"):

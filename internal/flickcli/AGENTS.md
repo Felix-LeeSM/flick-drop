@@ -24,6 +24,11 @@ send/open flows. `cmd/flick` parses flags and calls into here.
   memo identity), submit (fingerprint-pinned recipient encryption, inline or
   presigned, frozen attempt body), and the destructive retrieval open reusing
   `open.go`'s reservation, staging, and rescue.
+- `pipe.go`: the `/api/pipe/*` live-transfer client and its two flows —
+  `LiveSend` (room, `/wait` long poll, 3-digit pick or `-confirm`, streaming
+  encryption to the chosen recipient, best-effort `/cancel` on abort) and
+  `LiveJoin` (fresh identity per attempt, `/status` long poll, decrypt under
+  the same destination rules as `open.go`, best-effort `/leave`).
 - `credential.go`: parse, validate, and serialize `FLCR1:` credential payloads
   (twin of `web/src/lib/credentials/serialize.ts`), plus the masked stderr
   summary and the `-reveal` rendering.

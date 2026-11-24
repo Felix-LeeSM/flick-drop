@@ -22,7 +22,13 @@ process, not a service. It has no config file, no database, and no telemetry.
 ## What belongs here
 
 - Flag and subcommand parsing (`flag`, not a CLI framework — the surface is
-  `send`, `open`, `request`, `submit`, `receive`, and `version`).
+  `send`, `open`, `request`, `submit`, `receive`, `live`, `join`, and
+  `version`).
+- Live-transfer commands (`cmd/flick/main.go` `runLive`, `runJoin`) confirm the
+  receiver by its 3-digit number: interactive on a terminal, `-confirm auto`
+  (first waiting row) or `-confirm <nnn>` (that number) for scripts, and a
+  refusal before `/init` when there is neither a terminal nor `-confirm`, so
+  no room is burned.
 - Terminal interaction: passphrase prompts, TTY detection, exit codes.
 - Rendering results for humans and for `-json`.
 

@@ -93,6 +93,11 @@ flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 flick request -ttl 24h -note "스태징 비밀번호 부탁해요"
 flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "여기 있어요"
 flick receive - < retrieval-link.txt
+
+# 근거리 기기로 실시간 전송: 서버에 아무것도 저장되지 않고, 수신자가 소리 내어 읽는
+# 3자리 번호로 확인해요 (에이전트: -confirm auto 또는 -confirm <nnn>)
+flick live "wifi password"
+flick join 305817
 ```
 
 `-reveal`을 넘기기 전에는 복호화된 값이 stdout에 나가지 않아서 터미널 스크롤백이나 에이전트·CI 로그에 비밀이 남지 않아요. 대신 저장된 파일 경로를 알려주고, `flick open -json`은 `-reveal`과 함께 쓰지 않는 한 비밀 필드 값을 빼고 구조만 내보내요.
