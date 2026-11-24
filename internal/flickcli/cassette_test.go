@@ -25,7 +25,7 @@ import (
 //
 // Record once by hand against a deployment:
 //
-//	FLICK_CASSETTE_RECORD=https://flick.example go test ./internal/flickcli/ -run TestCassette -count=1 -timeout 900s
+//	FLICK_CASSETTE_RECORD=https://flick.example go test ./internal/flickcli/ -run TestCassette -count=1 -timeout 600s
 //
 // Recording creates real secrets on that deployment and consumes them in the
 // same run; every payload is a fake marker value, never a real secret. CI runs

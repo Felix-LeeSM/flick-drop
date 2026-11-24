@@ -307,12 +307,13 @@ Completed:
 - N named S3-compatible object storage backends weighted by remaining capacity (`#455`).
 - Single public guide page `/guides/` (`#457`, old paths `301` to `/guides/#sending`).
 - English, Korean, and Japanese UI localization (`#459`, followed on `main` by `#461` for full localization, header globe switcher, and translated `/guides/`).
-- CLI parity with the whole public contract (2026-11-24, `cli/v0.3.0`): opened
-  values stay off stdout by default (0600 file, `-reveal` opt-in), `FLCR1`
-  credential send and masked open, request links (`flick
-  request/submit/receive`, the backlog item in `#277`), live transfer
-  (`flick live/join` with `-confirm auto|<nnn>`), cassette replay tests
-  against recorded real-server responses, and a live-transfer smoke script.
+- CLI parity with the whole public contract (2026-11-24, issues
+  #480–#483, released as `cli/v0.3.0`): opened values stay off stdout by
+  default (0600 file, `-reveal` opt-in), `FLCR1` credential send and masked
+  open, request links (`flick request/submit/receive`, the backlog item in
+  `#277`), live transfer (`flick live/join` with `-confirm auto|<nnn>`),
+  cassette replay tests against recorded real-server responses, and a
+  live-transfer smoke script.
 
 Planned follow-ups:
 
