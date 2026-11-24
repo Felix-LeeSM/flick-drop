@@ -233,7 +233,7 @@ func runOpen(ctx context.Context, args []string) error {
 	output := flags.String("output", "", "Write the payload to this exact path")
 	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
 	reveal := flags.Bool("reveal", false,
-		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file secret is always saved to disk)")
 	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
@@ -294,6 +294,10 @@ func reportOpened(result flickcli.OpenResult, reveal bool) error {
 				fmt.Fprintln(os.Stderr, line)
 			}
 			fmt.Fprintln(os.Stderr, "Secret fields are masked here; the values are in the file. Run with -reveal to print them.")
+		}
+		if result.Kind == "file" && reveal {
+			// stdout cannot be reserved, so a streamed file never goes there, not even under -reveal.
+			fmt.Fprintln(os.Stderr, "A file secret is saved, not revealed; the path above is the result.")
 		}
 		return nil
 	}
@@ -448,7 +452,7 @@ func runReceive(ctx context.Context, args []string) error {
 	output := flags.String("output", "", "Write the reply to this exact path")
 	outputDir := flags.String("output-dir", ".", "Directory to save the reply into")
 	reveal := flags.Bool("reveal", false,
-		"Print the reply to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+		"Print the reply to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file reply is always saved to disk)")
 	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
@@ -1032,7 +1036,7 @@ func runJoin(ctx context.Context, args []string) error {
 	output := flags.String("output", "", "Write the payload to this exact path")
 	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
 	reveal := flags.Bool("reveal", false,
-		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file secret is always saved to disk)")
 	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
