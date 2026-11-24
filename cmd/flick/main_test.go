@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -571,6 +572,183 @@ func TestRunJoinJSONReportsAnOverLimitPayloadAndKeepsIt(t *testing.T) {
 	}
 }
 
+// TestHelperProcess is the child half of the broken-pipe test: the real
+// command path, with stdout on a pipe nobody reads. It is skipped in a
+// normal run.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("FLICK_TEST_REVEAL_CHILD") != "1" {
+		t.Skip("only meaningful as the child of the broken-pipe test")
+	}
+	args := os.Args
+	for i, arg := range os.Args {
+		if arg == "--" {
+			args = args[i+1:]
+		}
+	}
+	if err := run(args); err != nil {
+		fmt.Fprintln(os.Stderr, "flick:", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// `flick open -reveal <link> | head` with a payload larger than a pipe buffer:
+// Go kills a process on a broken stdout pipe unless it says otherwise, and the
+// consumed payload would die with it. The command must fail and rescue it.
+func TestOpenRevealRescuesThePayloadWhenTheReaderIsGone(t *testing.T) {
+	const marker = "the one copy, far larger than any pipe buffer: "
+	payload := marker + strings.Repeat("x", 200<<10)
+	identity, err := clientcrypto.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := sealForTest(t, clientcrypto.RecipientStringOf(identity), payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/config" {
+			fmt.Fprint(w, `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/open") {
+			w.Header().Set("Flick-Kind", "text")
+			_, _ = w.Write(sealed)
+			return
+		}
+		fmt.Fprintf(w, `{"id":"secret1","kind":"text","size_bytes":%d,"expires_at":"2026-01-01T00:00:00Z"}`, len(sealed))
+	}))
+	defer server.Close()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	stderrFile, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderrFile.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$", "--",
+		"open", "-url", server.URL, "-reveal", flickcli.BuildShareLink(server.URL, "secret1", identity))
+	cmd.Stdout = writer
+	cmd.Stderr = stderrFile
+	cmd.Env = append(os.Environ(), "FLICK_TEST_REVEAL_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	// The child now owns the only write end, and nothing will ever read it.
+	reader.Close()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("the command reported success although nobody could read the payload")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Fatalf("the command ended with code %d (killed by a signal: %v) instead of rescuing the payload",
+			code, cmd.ProcessState)
+	}
+
+	stderr := readFile(t, stderrFile.Name())
+	if strings.Contains(stderr, marker) {
+		t.Errorf("the payload reached stderr: %q", stderr)
+	}
+	path := rescuedPath(t, stderr)
+	defer os.Remove(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat rescue file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("rescue file mode = %v, want 0600", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(path); string(got) != payload {
+		t.Errorf("rescue file holds %d bytes, want the whole %d-byte payload", len(got), len(payload))
+	}
+}
+
+// A -reveal write that fails must not take the consumed payload with it.
+func TestFinishOpenedRescuesAPayloadWhoseStdoutWriteFails(t *testing.T) {
+	closed, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = closed
+	t.Cleanup(func() { os.Stdout = original })
+
+	for name, x := range map[string]struct {
+		result   flickcli.OpenResult
+		reveal   bool
+		asJSON   bool
+		expected string
+	}{
+		"plain text": {
+			result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
+			reveal:   true,
+			expected: "the one copy",
+		},
+		"credential": {
+			result: flickcli.OpenResult{Kind: "text", Credential: &flickcli.Credential{Type: "login", Fields: []flickcli.CredentialField{
+				{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
+			}}, Plaintext: []byte(`FLCR1:{"v":1}`)},
+			reveal:   true,
+			expected: `FLCR1:{"v":1}`,
+		},
+		"json with values": {
+			result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
+			reveal:   true,
+			asJSON:   true,
+			expected: "the one copy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stderr, err := captureStderr(t, func() error {
+				return finishOpened(x.result, x.reveal, x.asJSON, nil)
+			})
+			if !errors.Is(err, flickcli.ErrWriteAfterConsume) {
+				t.Fatalf("err = %v, want it to carry ErrWriteAfterConsume", err)
+			}
+			path := rescuedPath(t, stderr)
+			defer os.Remove(path)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat rescue file: %v", err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("rescue file mode = %v, want 0600", info.Mode().Perm())
+			}
+			if got, _ := os.ReadFile(path); string(got) != x.expected {
+				t.Errorf("rescue file = %q, want the payload", got)
+			}
+		})
+	}
+}
+
+// A -json write that fails carries no value, so nothing is rescued: the error is plain.
+func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
+	closed, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = closed
+	t.Cleanup(func() { os.Stdout = original })
+
+	captured, writeErr := captureStderr(t, func() error {
+		return finishOpened(flickcli.OpenResult{Kind: "text", WrittenPath: "saved.txt"}, false, true, nil)
+	})
+	if writeErr == nil || errors.Is(writeErr, flickcli.ErrWriteAfterConsume) {
+		t.Fatalf("err = %v, want a plain write error", writeErr)
+	}
+	if strings.Contains(captured, "Payload written to") {
+		t.Errorf("a payload that was never on stdout was reported as rescued: %q", captured)
+	}
+}
+
 func TestRunLiveRefusesWithoutATerminalOrConfirm(t *testing.T) {
 	withStdin(t, "payload\n", func() {
 		err := runLive(context.Background(), []string{"payload"})
@@ -615,7 +793,7 @@ func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
 	}
 
 	defaultJSON, _, err := captureOutput(t, func() error {
-		return printOpenJSON(flickcli.OpenResult{Kind: "text", Credential: &cred, WrittenPath: "out.txt"}, false)
+		return reportOpenedResult(flickcli.OpenResult{Kind: "text", Credential: &cred, WrittenPath: "out.txt"}, false, true, nil)
 	})
 	if err != nil {
 		t.Fatalf("print: %v", err)
@@ -631,7 +809,7 @@ func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
 	}
 
 	revealedJSON, _, err := captureOutput(t, func() error {
-		return printOpenJSON(flickcli.OpenResult{Kind: "text", Credential: &cred}, true)
+		return reportOpenedResult(flickcli.OpenResult{Kind: "text", Credential: &cred}, true, true, nil)
 	})
 	if err != nil {
 		t.Fatalf("print: %v", err)
@@ -641,7 +819,7 @@ func TestPrintOpenJSONHidesValuesUnlessRevealed(t *testing.T) {
 	}
 
 	textJSON, _, err := captureOutput(t, func() error {
-		return printOpenJSON(flickcli.OpenResult{Kind: "text", Plaintext: []byte("the payload")}, true)
+		return reportOpenedResult(flickcli.OpenResult{Kind: "text", Plaintext: []byte("the payload")}, true, true, nil)
 	})
 	if err != nil {
 		t.Fatalf("print: %v", err)
@@ -863,6 +1041,21 @@ func rescuedPath(t *testing.T, stderr string) string {
 		t.Fatalf("stderr did not terminate the rescue path: %q", stderr)
 	}
 	return path
+}
+
+// captureStderr swaps only stderr, so a test can supply its own stdout.
+func captureStderr(t *testing.T, body func() error) (captured string, err error) {
+	t.Helper()
+	file, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatalf("create capture file: %v", err)
+	}
+	defer file.Close()
+	original := os.Stderr
+	os.Stderr = file
+	err = body()
+	os.Stderr = original
+	return readFile(t, file.Name()), err
 }
 
 func captureOutput(t *testing.T, body func() error) (stdout, stderr string, err error) {

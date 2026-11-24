@@ -67,12 +67,18 @@ Encryption, HTTP calls, and share-link handling belong in
   commands, and `cmd/flick/main.go:reportOpenedResult` is its `-json` form,
   which keeps stdout to exactly one JSON object.
 - `-json` carries values only together with `-reveal`
-  (`cmd/flick/main.go:printOpenJSON`); alone it reports the saved path plus a
-  credential structure whose secret-field values are omitted.
+  (`cmd/flick/main.go:reportOpenedResult`); alone it reports the saved path
+  plus a credential structure whose secret-field values are omitted.
 - Prompts, status lines, and the masked credential summary
   (`internal/flickcli/credential.go:SummaryLines`) go to stderr.
-- A consumed secret whose write failed is rescued to a fresh 0600 file, never
-  stdout (`cmd/flick/main.go:writeRescueFile`).
+- A consumed payload whose write failed is rescued to a fresh 0600 file
+  (`cmd/flick/main.go:writeRescueFile`), never dropped. Every command leaves
+  an opened payload through `cmd/flick/main.go:finishOpened`, which rescues
+  on `internal/flickcli/open.go:ErrWriteAfterConsume`; a `-reveal` write to
+  stdout that fails is reported the same way, because the consumed payload
+  then exists only in this process. `cmd/flick/main.go:run` ignores
+  `SIGPIPE` so a write to a pipe whose reader is gone returns an error and
+  reaches that rescue instead of ending the process.
 - Piped stdout stays byte-exact under `-reveal` — no trailing newline is added
   unless stdout is a terminal.
 - `flick send -credential <path|->` sends a structured credential as JSON

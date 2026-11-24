@@ -324,7 +324,7 @@ Residual risks remain:
   path, so decrypted secrets do not land in terminal scrollback or agent and
   CI logs; `-reveal` (`cmd/flick/main.go:runOpen`) is the explicit opt-in for
   stdout, and `-json` omits secret-field values unless paired with it
-  (`cmd/flick/main.go:printOpenJSON`).
+  (`cmd/flick/main.go:reportOpenedResult`).
 
 Runbooks must document checkpoint/vacuum and backup retention behavior. The
 product should communicate that Flick is ephemeral delivery, not guaranteed

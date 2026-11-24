@@ -94,6 +94,10 @@ func run(args []string) error {
 		return errors.New("no command given")
 	}
 
+	// A write to a pipe whose reader is gone must fail with an error, not kill the
+	// process: under -reveal the payload exists only here and still needs its rescue.
+	signal.Ignore(syscall.SIGPIPE)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -274,10 +278,18 @@ func runOpen(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if *asJSON {
-		return printOpenJSON(result, *reveal)
+	return finishOpened(result, *reveal, *asJSON, nil)
+}
+
+// finishOpened is the one way an opened payload leaves a command. A value it
+// put on stdout exists only in this process once consumed, so a failed write
+// is rescued to a file instead of reported and lost.
+func finishOpened(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
+	err := reportOpenedResult(result, reveal, asJSON, extra)
+	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		return rescue(result, err)
 	}
-	return reportOpened(result, *reveal)
+	return err
 }
 
 // The common human rendering for every opened payload: path on stdout, values
@@ -302,15 +314,19 @@ func reportOpened(result flickcli.OpenResult, reveal bool) error {
 		return nil
 	}
 	if result.Credential != nil {
-		fmt.Println(result.Credential.RevealText())
+		if _, err := fmt.Fprintln(os.Stdout, result.Credential.RevealText()); err != nil {
+			return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+		}
 		return nil
 	}
-	_, err := os.Stdout.Write(result.Plaintext)
-	if err == nil && !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
+	if _, err := os.Stdout.Write(result.Plaintext); err != nil {
+		return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+	}
+	if !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
 		// Keep piped output byte-exact.
 		fmt.Println()
 	}
-	return err
+	return nil
 }
 
 func runRequest(ctx context.Context, args []string) error {
@@ -499,7 +515,7 @@ func runReceive(ctx context.Context, args []string) error {
 	})
 	if result.Opened != nil && errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the reply passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpenedResult(*result.Opened, *reveal, *asJSON,
+		return finishOpened(*result.Opened, *reveal, *asJSON,
 			map[string]any{"state": result.State, "expires_at": result.ExpiresAt, "over_inline_limit": true})
 	}
 	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
@@ -510,7 +526,7 @@ func runReceive(ctx context.Context, args []string) error {
 	}
 
 	if result.Opened != nil {
-		return reportOpenedResult(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
+		return finishOpened(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
 	}
 
 	if *asJSON {
@@ -531,15 +547,6 @@ func runReceive(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stderr, "This request was cancelled.")
 	}
 	return nil
-}
-
-// Values appear only under -reveal; the default shape carries the saved path and structure.
-func printOpenJSON(result flickcli.OpenResult, reveal bool) error {
-	out, err := openedJSON(result, reveal)
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(out)
 }
 
 func openedJSON(result flickcli.OpenResult, reveal bool) (map[string]any, error) {
@@ -1073,7 +1080,7 @@ func runJoin(ctx context.Context, args []string) error {
 	})
 	if errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the live payload passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code, "over_inline_limit": true})
+		return finishOpened(result, *reveal, *asJSON, map[string]any{"code": code, "over_inline_limit": true})
 	}
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(result, err)
@@ -1085,11 +1092,12 @@ func runJoin(ctx context.Context, args []string) error {
 		return err
 	}
 
-	return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code})
+	return finishOpened(result, *reveal, *asJSON, map[string]any{"code": code})
 }
 
 // reportOpenedResult is reportOpened for every command that opens a payload:
 // under -json stdout is exactly one object, whatever branch reported it.
+// Values appear in that object only together with reveal.
 func reportOpenedResult(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
 	if !asJSON {
 		return reportOpened(result, reveal)
@@ -1101,5 +1109,11 @@ func reportOpenedResult(result flickcli.OpenResult, reveal, asJSON bool, extra m
 	for key, value := range extra {
 		out[key] = value
 	}
-	return json.NewEncoder(os.Stdout).Encode(out)
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		if reveal {
+			return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+		}
+		return err
+	}
+	return nil
 }

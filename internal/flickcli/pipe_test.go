@@ -268,13 +268,16 @@ func (f *fakeFlick) pipeStatus(w http.ResponseWriter, r *http.Request, room *fak
 		case <-r.Context().Done():
 			return
 		case <-time.After(200 * time.Millisecond):
-			// The real server answers each poll when its hold expires, with the state it sees then.
+			// The real server answers each poll when its hold expires, with the
+			// state it sees then; the select released the lock before waiting.
+			room.mu.Lock()
 			if room.state != "open" {
 				state := room.state
 				room.mu.Unlock()
 				writeError(w, http.StatusGone, state)
 				return
 			}
+			room.mu.Unlock()
 			writeJSON(w, http.StatusOK, map[string]string{"status": "waiting"})
 			return
 		}
@@ -1392,6 +1395,134 @@ func TestPipeLongPollRetriesOneServerErrorOnly(t *testing.T) {
 			}
 			if calls != x.wantCalls {
 				t.Errorf("the relay answered %d calls, want %d", calls, x.wantCalls)
+			}
+		})
+	}
+}
+
+// The room ends while the status poll is held and nothing wakes it, so only
+// the hold-expiry answer can see the new state; it must read it under the
+// room lock, like the version-change branch.
+func TestPipeStatusHoldExpiryReadsTheRoomStateUnderItsLock(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	room := fake.newPipeRoom()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	joined, err := client.PipeJoin(ctx, room.code, testRecipient(t))
+	if err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	status := make(chan error, 1)
+	go func() {
+		_, err := client.PipeStatus(ctx, room.code, joined.ConnectionID)
+		status <- err
+	}()
+	// Let the poll reach its hold, then end the room without publishing a change.
+	time.Sleep(80 * time.Millisecond)
+	room.mu.Lock()
+	room.state = "cancelled"
+	room.mu.Unlock()
+
+	err = <-status
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusGone || apiErr.Code != "cancelled" {
+		t.Fatalf("err = %v, want the relay's 410 cancelled from the hold-expiry answer", err)
+	}
+}
+
+// The pipe credentials are for the configured origin only.
+func TestPipeRequestsNeverFollowARedirect(t *testing.T) {
+	var mu sync.Mutex
+	reached := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	_, err := NewClient(origin.URL, origin.Client()).PipeStatus(context.Background(), "305817", "connection")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusFound {
+		t.Fatalf("err = %v, want the redirect itself reported", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reached != 0 {
+		t.Errorf("the redirect target was called %d time(s) with the pipe credentials", reached)
+	}
+}
+
+func TestLiveJoinUnderReveal(t *testing.T) {
+	t.Run("text is handed back and nothing is written", func(t *testing.T) {
+		fake := newFakeFlick(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		dir := t.TempDir()
+
+		_, received := runLivePair(t, fake, ctx,
+			LiveSendOptions{Text: "live payload", Started: func(PipeSession) error { return nil }},
+			func(code string) LiveJoinOptions {
+				return LiveJoinOptions{Code: code, OutputDir: dir, Reveal: true, Connected: func(string, int) error { return nil }}
+			})
+
+		if string(received.Plaintext) != "live payload" || received.WrittenPath != "" {
+			t.Errorf("received %+v, want the plaintext in memory and no file", received)
+		}
+		if names := dirEntryNames(t, dir); len(names) != 0 {
+			t.Errorf("reveal wrote %v", names)
+		}
+	})
+
+	// A file reply still lands in the output directory under -reveal, so that
+	// directory is proven before the stream, with and without -reveal.
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a missing output directory stops the join/reveal=%v", reveal), func(t *testing.T) {
+			fake := newFakeFlick(t)
+			client := fake.client()
+			room := fake.newPipeRoom()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			go func() {
+				for {
+					room.mu.Lock()
+					for _, conn := range room.conns {
+						room.chosenID = conn.id
+					}
+					room.bumpLocked()
+					room.mu.Unlock()
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+			}()
+
+			_, err := LiveJoin(ctx, client, LiveJoinOptions{
+				Code:      room.code,
+				OutputDir: filepath.Join(t.TempDir(), "missing"),
+				Reveal:    reveal,
+				Connected: func(string, int) error { return nil },
+			})
+			if err == nil {
+				t.Fatal("a missing output directory did not stop the join")
+			}
+			room.mu.Lock()
+			defer room.mu.Unlock()
+			if room.receiveCalls != 0 {
+				t.Errorf("the receive stream was opened %d time(s) before the directory was checked", room.receiveCalls)
+			}
+			if !room.leaveCalled {
+				t.Error("the waiting row was left in the room")
 			}
 		})
 	}

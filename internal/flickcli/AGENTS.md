@@ -34,7 +34,8 @@ send/open flows. `cmd/flick` parses flags and calls into here.
   takes it back unless the stream is decrypted
   (`internal/flickcli/pipe.go:LiveJoin`); `internal/flickcli/pipe.go:pipeLongPoll`
   retries one 5xx or dropped connection like `web/src/lib/crypto/pipe.ts`
-  `fetchLongPoll`.
+  `fetchLongPoll`. `internal/flickcli/pipe.go:pipeRequest` never follows a
+  redirect, so the pipe credentials stay on the configured origin.
 - `credential.go`: parse, validate, and serialize `FLCR1:` credential payloads
   (twin of `web/src/lib/credentials/serialize.ts`), plus the masked stderr
   summary and the `-reveal` rendering.

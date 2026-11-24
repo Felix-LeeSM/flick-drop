@@ -54,7 +54,10 @@ func (c *Client) pipeRequest(ctx context.Context, method, path string, headers m
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
-	resp, err := c.http.Do(req)
+	// A redirect must not carry the pipe credentials to another host.
+	noRedirect := *c.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach %s: %w", c.baseURL, err)
 	}
