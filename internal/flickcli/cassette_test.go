@@ -167,8 +167,8 @@ func (tr *cassetteTransport) Identity(name string) *age.HybridIdentity {
 }
 
 // withCassette runs a flow against the recorded responses, or records them
-// first. Recording paces the run at one create per minute-class bucket: the API
-// caps creates at 5 per client network per minute.
+// first. Recording waits 15 seconds before each cassette, under the API's
+// limit of 5 creates per client network per minute.
 func withCassette(t *testing.T, name string, run func(t *testing.T, client *Client, tr *cassetteTransport)) {
 	t.Helper()
 	fixture := filepath.Join("testdata", "cassettes", name+".json")
@@ -178,9 +178,13 @@ func withCassette(t *testing.T, name string, run func(t *testing.T, client *Clie
 		tr.record = strings.TrimRight(base, "/")
 		t.Logf("recording %s against %s", name, tr.record)
 		time.Sleep(15 * time.Second) // under the 5-creates-per-minute bucket, not on it
+		// Only a flow that returned normally may replace a fixture: t.Failed is
+		// still false while a panic unwinds, and a partial recording must not
+		// be committed.
+		completed := false
 		defer func() {
-			if t.Failed() {
-				t.Logf("recording failed; fixture %s not written", fixture)
+			if t.Failed() || !completed {
+				t.Logf("recording did not complete cleanly; fixture %s not written", fixture)
 				return
 			}
 			tr.file.Comment = fmt.Sprintf(
@@ -200,12 +204,15 @@ func withCassette(t *testing.T, name string, run func(t *testing.T, client *Clie
 		}()
 		client := NewClient(tr.record, &http.Client{Transport: tr})
 		run(t, client, tr)
+		completed = true
 		return
 	}
 
+	// The cassettes are committed with the tests, so a missing one is a deleted
+	// file that would silently drop coverage, not an environment without it.
 	encoded, err := os.ReadFile(fixture)
 	if os.IsNotExist(err) {
-		t.Skipf("no cassette at %s; record it with %s=<deployment url>", fixture, cassetteRecordEnv)
+		t.Fatalf("cassette %s is missing; restore it or record it with %s=<deployment url>", fixture, cassetteRecordEnv)
 	}
 	if err != nil {
 		t.Fatalf("read cassette: %v", err)

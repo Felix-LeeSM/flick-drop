@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Live relay smoke: one file round trip against a running deployment.
-# The sender prints the 6-digit code and waits; this script joins as the only
-# receiver, so -confirm auto picks exactly that device. The relay holds
-# nothing durable and the room lives 3 minutes, so a failed run leaves
-# nothing behind. The 6-digit code routes the room: keep it out of logs
-# (::add-mask::), and never print the received payload.
+# Live relay smoke: one file round trip against a running deployment with the
+# relay enabled (docs/architecture/live-relay.md). The sender prints the
+# 6-digit code and waits; this script joins as the only receiver, so
+# -confirm auto picks exactly that device. The relay stores nothing and the
+# room lives 3 minutes, so a failed run leaves nothing behind. The 6-digit
+# code routes the room: keep it out of logs, and never print the payload.
+# Run by hand only; it is not a scheduled workflow.
 
 base_url="${FLICK_LIVE_URL:?FLICK_LIVE_URL is required}"
 base_url="${base_url%/}"
@@ -16,15 +17,30 @@ cli_timeout="${LIVE_CLI_TIMEOUT_SECONDS:-90}"
 
 umask 077
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+sender=""
+
+cleanup() {
+	# A sender left running would hand the payload to whoever joins with its code.
+	if [ -n "$sender" ]; then
+		kill "$sender" 2>/dev/null || true
+		wait "$sender" 2>/dev/null || true
+	fi
+	rm -rf "$work"
+}
+trap cleanup EXIT
 
 log() {
 	echo "live: $*" >&2
 }
 
-# Error output may name the deployment; signed URLs must never reach logs.
+# Error output may name the deployment or the code; neither reaches a log.
 redact() {
-	sed -E 's#https?://[^" ]+#<url>#g' "$1"
+	local masked
+	masked="$(sed -E 's#https?://[^" ]+#<url>#g' "$1")"
+	if [ -n "${code:-}" ]; then
+		masked="${masked//$code/<code>}"
+	fi
+	printf '%s\n' "$masked"
 }
 
 # macOS ships no coreutils timeout, so a local run there goes uncapped.
@@ -41,11 +57,21 @@ flick() {
 	fi
 }
 
+# The same cap for a background sender, in a shell that execs: $! then names
+# the capped CLI itself, so the cleanup can stop it.
+flick_in_background() {
+	if command -v timeout >/dev/null 2>&1; then
+		exec timeout "$cli_timeout" "$flick_bin" "$@"
+	else
+		exec "$flick_bin" "$@"
+	fi
+}
+
 expected="$work/expected.txt"
 printf 'live smoke payload\n' > "$expected"
 
 log "starting the sender"
-flick live -url "$base_url" -file "$expected" -confirm auto \
+flick_in_background live -url "$base_url" -file "$expected" -confirm auto \
 	>"$work/code" 2>"$work/live.err" &
 sender=$!
 
@@ -64,7 +90,6 @@ while [ "$waited" -lt $((code_wait_seconds * 2)) ]; do
 done
 
 if [ -z "$code" ]; then
-	wait "$sender" || true
 	log "the sender never printed a code"
 	redact "$work/live.err" >&2
 	exit 1
@@ -74,27 +99,23 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
 fi
 log "joining with the 6-digit code"
 
-if ! flick join -url "$base_url" -output "$work/received.txt" "$code" 2>"$work/join.err"; then
+if ! flick join -url "$base_url" -output "$work/received.txt" "$code" >/dev/null 2>"$work/join.err"; then
 	log "join failed"
 	redact "$work/join.err" >&2
-	kill "$sender" 2>/dev/null || true
-	wait "$sender" 2>/dev/null || true
 	exit 1
 fi
 
+# The sender exits 0 only once /send completed, so its status is the
+# completion signal; the room ends within 3 minutes even without timeout(1).
 if ! wait "$sender"; then
 	log "the sender failed"
 	redact "$work/live.err" >&2
 	exit 1
 fi
+sender=""
 
 if ! cmp -s "$expected" "$work/received.txt"; then
 	log "the received bytes differ from what was sent"
-	exit 1
-fi
-if ! grep -q "Sent to the device" "$work/live.err"; then
-	log "the sender did not report a completed transfer"
-	redact "$work/live.err" >&2
 	exit 1
 fi
 

@@ -16,8 +16,13 @@ Scripts are the shared local and CI entrypoints.
   `.github/workflows/canary.yml` runs against `FLICK_CANARY_URL`; it creates
   real secrets on that deployment and opens them at once.
   `scripts/smoke/live.sh` is the live-transfer round trip (sender plus
-  joining receiver) run by hand against `FLICK_LIVE_URL`; the relay room
-  lives 3 minutes and stores nothing.
+  joining receiver) run by hand, never by a workflow, against
+  `FLICK_LIVE_URL` with the CLI at `FLICK_BIN`; the relay room lives 3
+  minutes and stores nothing (`docs/architecture/live-relay.md`), so a
+  failed run leaves nothing behind. `LIVE_CODE_WAIT_SECONDS` and
+  `LIVE_CLI_TIMEOUT_SECONDS` bound it, like the canary's
+  `CANARY_RETRY_DELAY_SECONDS` and `CANARY_CLI_TIMEOUT_SECONDS`
+  (`docs/architecture/ci-testing.md`, "Live Relay Smoke").
 - `scripts/ops/*`: one-time operator tools run by hand against a live
   deployment, never by CI or `mise run`. `scripts/ops/migrate-sqlite-to-postgres.sh`
   loads the SQLite `api.db`/`worker.db` into PostgreSQL once, following

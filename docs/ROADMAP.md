@@ -308,19 +308,21 @@ Completed:
 - Single public guide page `/guides/` (`#457`, old paths `301` to `/guides/#sending`).
 - English, Korean, and Japanese UI localization (`#459`, followed on `main` by `#461` for full localization, header globe switcher, and translated `/guides/`).
 - CLI parity with the whole public contract (2026-11-24, issues
-  #480–#483, released as `cli/v0.3.0`): opened values stay off stdout by
-  default (0600 file, `-reveal` opt-in), `FLCR1` credential send and masked
-  open, request links (`flick request/submit/receive`, the backlog item in
-  `#277`), live transfer (`flick live/join` with `-confirm auto|<nnn>`),
-  cassette replay tests against recorded real-server responses, and a
-  live-transfer smoke script.
+  #480–#483; the first CLI release to carry it is `cli/v0.3.0`): opened
+  values stay off stdout by default (0600 file, `-reveal` opt-in, and a
+  failed `-reveal` write rescues the payload), `FLCR1` credential send and
+  masked open, request links (`flick request/submit/receive`, the backlog
+  item in `#277`), live transfer (`flick live/join` with `-confirm
+  auto|<nnn>`), cassette replay tests against recorded real-server responses,
+  and a live-transfer smoke script.
 
 Planned follow-ups:
 
 - CLI message localization (English, Korean, Japanese): a messages table in
   `cmd/flick` keyed off `LANG` with a `-lang` override, translating prompts,
   status lines, and usage text the way the web i18n glossary does. Feasible
-  with no new dependencies; deliberately after `cli/v0.3.0`.
+  with no new dependencies; deliberately left for a release after the CLI
+  parity work above.
 - Docker Compose self-host kit (build from source by default with MinIO, documenting public images as an operator option, Kubernetes as an appendix, and updated `.env.example`).
 - Explicit button-triggered file downloads (no unsolicited download) and no in-app browser warning banner.
 - Mark English phrases that remain on Korean and Japanese screens with `lang="en"` so screen readers and fonts treat them as English. `#461` localized titles, tabs, primary buttons, and `/guides/`, which removed most English text, so the remaining scope is whatever English those screens still show.

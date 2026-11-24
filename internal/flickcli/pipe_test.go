@@ -1424,6 +1424,7 @@ func TestPipeLongPollRetriesOneServerErrorOnly(t *testing.T) {
 // the hold-expiry answer can see the new state; it must read it under the
 // room lock, like the version-change branch.
 func TestPipeStatusHoldExpiryReadsTheRoomStateUnderItsLock(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	room := fake.newPipeRoom()
@@ -1455,6 +1456,7 @@ func TestPipeStatusHoldExpiryReadsTheRoomStateUnderItsLock(t *testing.T) {
 
 // The pipe credentials are for the configured origin only.
 func TestPipeRequestsNeverFollowARedirect(t *testing.T) {
+	withTimeout(t, time.Minute)
 	var mu sync.Mutex
 	reached := 0
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1498,6 +1500,7 @@ func (a *abortingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func TestPipeLongPollNeverRetriesAnAbort(t *testing.T) {
+	withTimeout(t, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transport := &abortingTransport{cancel: cancel}
@@ -1512,6 +1515,7 @@ func TestPipeLongPollNeverRetriesAnAbort(t *testing.T) {
 }
 
 func TestLiveJoinUnderReveal(t *testing.T) {
+	withTimeout(t, time.Minute)
 	t.Run("text is handed back and nothing is written", func(t *testing.T) {
 		fake := newFakeFlick(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

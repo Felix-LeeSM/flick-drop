@@ -605,6 +605,7 @@ func TestRunJoinJSONReportsAnOverLimitPayloadAndKeepsIt(t *testing.T) {
 // command path, with stdout on a pipe nobody reads. It is skipped in a
 // normal run.
 func TestHelperProcess(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	if os.Getenv("FLICK_TEST_REVEAL_CHILD") != "1" {
 		t.Skip("only meaningful as the child of the broken-pipe test")
 	}
@@ -625,6 +626,7 @@ func TestHelperProcess(t *testing.T) {
 // Go kills a process on a broken stdout pipe unless it says otherwise, and the
 // consumed payload would die with it. The command must fail and rescue it.
 func TestOpenRevealRescuesThePayloadWhenTheReaderIsGone(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	const marker = "the one copy, far larger than any pipe buffer: "
 	payload := marker + strings.Repeat("x", 200<<10)
 	identity, err := clientcrypto.NewIdentity()
@@ -695,6 +697,7 @@ func TestOpenRevealRescuesThePayloadWhenTheReaderIsGone(t *testing.T) {
 
 // A -reveal write that fails must not take the consumed payload with it.
 func TestFinishOpenedRescuesAPayloadWhoseStdoutWriteFails(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	withClosedStdout(t, func() {
 		for name, x := range map[string]struct {
 			result   flickcli.OpenResult
@@ -748,6 +751,7 @@ func TestFinishOpenedRescuesAPayloadWhoseStdoutWriteFails(t *testing.T) {
 // A -json write that fails has nothing to rescue: the object held no value, or
 // the payload is on disk. The error is plain and names that file.
 func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	for name, x := range map[string]struct {
 		result flickcli.OpenResult
 		reveal bool
@@ -795,6 +799,7 @@ func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
 // The request open and the live receive consume their payload, so both commands
 // must rescue a -reveal reply that stdout could not carry.
 func TestOpenReplyCommandsRescueARevealedPayloadWhenStdoutIsGone(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	const payload = "the only copy of the reply"
 	for _, command := range []string{"receive", "join"} {
 		t.Run(command, func(t *testing.T) {
@@ -823,6 +828,7 @@ func TestOpenReplyCommandsRescueARevealedPayloadWhenStdoutIsGone(t *testing.T) {
 // A file reply is saved even under -reveal, and the report names that file: on
 // stdout when it can, otherwise in the error.
 func TestOpenReplyCommandsSaveAFileUnderReveal(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	const payload = "file reply bytes"
 	for _, command := range []string{"receive", "join"} {
 		// A fresh directory per run, so the file it holds is this run's.
@@ -881,6 +887,7 @@ func TestOpenReplyCommandsSaveAFileUnderReveal(t *testing.T) {
 // SIGPIPE is ignored, so a stdout that cannot take the result must fail the
 // command instead of letting it exit 0 without having delivered anything.
 func TestRunFailsWhenStdoutCannotCarryItsResult(t *testing.T) {
+	withTimeout(t, 30*time.Second)
 	const config = `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`
 	newServer := func(handler http.HandlerFunc) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
