@@ -40,7 +40,7 @@ macOS, Linux, Windows용 바이너리가 각 `cli/v*` [릴리스](https://github
 **macOS / Linux:**
 
 ```bash
-version=v0.2.0
+version=v0.3.0
 platform=darwin_arm64   # 또는 darwin_amd64, linux_amd64, linux_arm64
 base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
 

@@ -40,7 +40,7 @@ Prebuilt binaries for macOS, Linux, and Windows are attached to each `cli/v*` [r
 **macOS and Linux:**
 
 ```bash
-version=v0.2.0
+version=v0.3.0
 platform=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
 base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
 
