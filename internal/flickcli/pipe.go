@@ -130,8 +130,23 @@ func (c *Client) PipeStatus(ctx context.Context, code, connectionID string) (str
 		Status string `json:"status"`
 	}
 	headers := map[string]string{pipeCodeHeader: code, pipeConnHeader: connectionID}
-	err := c.pipeJSON(ctx, http.MethodGet, "/api/pipe/status", headers, nil, &resp)
+	err := c.pipeLongPoll(ctx, "/api/pipe/status", headers, &resp)
 	return resp.Status, err
+}
+
+// One retry on a 5xx or a dropped connection, like the browser's fetchLongPoll:
+// usually a replica stopping in a rolling update while another serves the same
+// room. Never retries an abort, and never a 4xx, which is the relay's answer.
+func (c *Client) pipeLongPoll(ctx context.Context, path string, headers map[string]string, out any) error {
+	err := c.pipeJSON(ctx, http.MethodGet, path, headers, nil, out)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError {
+		return err
+	}
+	return c.pipeJSON(ctx, http.MethodGet, path, headers, nil, out)
 }
 
 type PipeStream struct {
@@ -192,8 +207,7 @@ func (c *Client) PipeWait(ctx context.Context, code, senderToken string, since i
 		} `json:"connections"`
 	}
 	headers := map[string]string{pipeCodeHeader: code, pipeSenderHeader: senderToken}
-	err := c.pipeJSON(ctx, http.MethodGet, "/api/pipe/wait?since="+url.QueryEscape(fmt.Sprint(since)), headers, nil, &resp)
-	if err != nil {
+	if err := c.pipeLongPoll(ctx, "/api/pipe/wait?since="+url.QueryEscape(fmt.Sprint(since)), headers, &resp); err != nil {
 		return PipeWaitResult{}, err
 	}
 	out := PipeWaitResult{Status: resp.Status, Version: resp.Version, Recipient: resp.Recipient}
@@ -309,8 +323,13 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 			return LiveSendResult{}, fmt.Errorf("text is too large (%d bytes; inline limit is %d bytes): send as a file with -file instead", len(opts.Text), limit)
 		}
 	} else if sized, ok := opts.File.(interface{ Stat() (fs.FileInfo, error) }); ok {
-		if info, statErr := sized.Stat(); statErr == nil && limits.MaxFileBytes > 0 && info.Size() > limits.MaxFileBytes {
-			return LiveSendResult{}, fmt.Errorf("file is larger than %d bytes, the most this deployment accepts", limits.MaxFileBytes)
+		if info, statErr := sized.Stat(); statErr == nil {
+			if info.IsDir() {
+				return LiveSendResult{}, fmt.Errorf("%s is a directory, not a file", opts.FileName)
+			}
+			if limits.MaxFileBytes > 0 && info.Size() > limits.MaxFileBytes {
+				return LiveSendResult{}, fmt.Errorf("file is larger than %d bytes, the most this deployment accepts", limits.MaxFileBytes)
+			}
 		}
 	}
 
@@ -318,9 +337,16 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 	if err != nil {
 		return LiveSendResult{}, err
 	}
+	// Every exit from here that does not complete the transfer releases the room,
+	// so a chosen receiver never waits out its window for bytes that will not come.
+	roomOpen := true
+	defer func() {
+		if roomOpen {
+			client.cancelPipeSession(session)
+		}
+	}()
 	if opts.Started != nil {
 		if err := opts.Started(session); err != nil {
-			client.cancelPipeSession(session)
 			return LiveSendResult{Code: session.Code}, err
 		}
 	}
@@ -332,7 +358,6 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 		wait, err := client.PipeWait(ctx, session.Code, session.SenderToken, since)
 		if err != nil {
 			if ctx.Err() != nil {
-				client.cancelPipeSession(session)
 				return LiveSendResult{Code: session.Code}, ctx.Err()
 			}
 			return LiveSendResult{Code: session.Code}, err
@@ -344,7 +369,10 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 				if recipient == "" {
 					recipient = chosen.Recipient
 				}
-				return client.sendLivePayload(ctx, session, opts, chosen, recipient, limits)
+				result, err := client.sendLivePayload(ctx, session, opts, chosen, recipient, limits)
+				// A completed transfer closed the room itself; anything else leaves it open.
+				roomOpen = err != nil
+				return result, err
 			}
 			continue
 		}
@@ -355,7 +383,6 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 		decision := LiveDecision{Action: "send", ConnectionID: lowestPipePending(wait.Connections)}
 		if opts.Pick != nil {
 			if decision, err = opts.Pick(wait.Connections); err != nil {
-				client.cancelPipeSession(session)
 				return LiveSendResult{Code: session.Code}, err
 			}
 		}
@@ -385,20 +412,17 @@ func LiveSend(ctx context.Context, client *Client, opts LiveSendOptions) (LiveSe
 	}
 }
 
-// A payload that cannot be sealed after select cancels the room, so the chosen
-// receiver does not wait out the 3-minute window for bytes that never come.
+// The caller owns the room: a failure here returns to LiveSend, which cancels it.
 func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts LiveSendOptions, chosen PipePending, recipient string, limits Limits) (LiveSendResult, error) {
 	result := LiveSendResult{Code: session.Code, ConnectionID: chosen.ConnectionID, VerifyCode: chosen.VerifyCode}
 
 	if opts.FileName != "" {
 		name, err := sealToRecipient(recipient, []byte(opts.FileName))
 		if err != nil {
-			c.cancelPipeSession(session)
 			return result, fmt.Errorf("encrypt filename: %w", err)
 		}
 		sealed, err := sealFileToRecipient(recipient, opts.File, limits.MaxFileBytes)
 		if err != nil {
-			c.cancelPipeSession(session)
 			return result, err
 		}
 		defer sealed.remove()
@@ -409,7 +433,6 @@ func (c *Client) sendLivePayload(ctx context.Context, session PipeSession, opts 
 
 	sealed, err := sealToRecipient(recipient, []byte(opts.Text))
 	if err != nil {
-		c.cancelPipeSession(session)
 		return result, fmt.Errorf("encrypt payload: %w", err)
 	}
 	result.BytesTransferred, err = c.PipeSend(ctx, session.Code, session.SenderToken, "text", "",
@@ -455,6 +478,10 @@ type LiveJoinOptions struct {
 // The receiving half: a fresh identity per attempt, the verify number out-of-band,
 // then the consuming stream decrypted under the same destination rules as an open.
 func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenResult, error) {
+	// Settled before anything time-bound starts: joining opens a presence lease, and a
+	// chosen connection has ten seconds to attach after selection.
+	limits := client.Config(ctx)
+
 	identity, err := clientcrypto.NewIdentity()
 	if err != nil {
 		return OpenResult{}, err
@@ -469,6 +496,29 @@ func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenRe
 			return OpenResult{}, err
 		}
 	}
+	// The output destination is settled before the relay can hand out the stream,
+	// which is consumed the moment it opens.
+	openOpts := OpenOptions{OutputPath: opts.OutputPath, OutputDir: opts.OutputDir, Reveal: opts.Reveal}
+	// Text is what a transfer holds unless the sender chose a file, and -output serves
+	// both kinds, so the text destination is the one reserved up front.
+	reserved, err := reserveDestination(openOpts, "text", "flick-live-"+opts.Code)
+	if err == nil && reserved.file == nil {
+		// Under -reveal a file reply still lands in OutputDir, so the directory is proven too.
+		err = checkWritableDir(opts.OutputDir)
+	}
+	if err != nil {
+		client.leavePipeSession(opts.Code, joined.ConnectionID)
+		return OpenResult{}, err
+	}
+	defer reserved.close()
+	// The reserved file is removed unless the decrypt step takes it over.
+	owned := false
+	defer func() {
+		if !owned {
+			reserved.discard()
+		}
+	}()
+
 	for {
 		status, err := client.PipeStatus(ctx, opts.Code, joined.ConnectionID)
 		if err != nil {
@@ -483,38 +533,23 @@ func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenRe
 		}
 	}
 
-	// Reserved before the stream attaches, like a secret open: the relay answers
-	// /receive only once the sender's bytes arrive, so a bad destination has to
-	// fail before that or both sides lose the transfer.
-	limits := client.Config(ctx)
-	openOpts := OpenOptions{OutputPath: opts.OutputPath, OutputDir: opts.OutputDir, Reveal: opts.Reveal}
-	reserved, err := reserveDestination(openOpts, "file", "")
-	if err != nil {
-		client.leavePipeSession(opts.Code, joined.ConnectionID)
-		return OpenResult{}, err
-	}
-	defer reserved.close()
-
 	stream, err := client.PipeReceive(ctx, opts.Code, joined.ConnectionID)
 	if err != nil {
 		return OpenResult{}, err
 	}
 	defer stream.Body.Close()
 
+	owned = true
 	if stream.Kind == "file" {
+		if opts.OutputPath == "" {
+			// The automatic text file is the wrong shape for a streamed file; the directory is proven.
+			reserved.discard()
+		}
 		return openFile(openOpts, reserved, identity, stream.EncryptedFilename, stream.Body, OpenResult{Kind: "file"})
 	}
 
-	// Text without -output takes its own no-clobber file; the directory is already proven writable.
-	textDest := reserved
-	if reserved.file == nil && !opts.Reveal {
-		if textDest, err = reserveAutoDestination(opts.OutputDir, safeFilename("flick-live-"+opts.Code)); err != nil {
-			return OpenResult{}, err
-		}
-		defer textDest.close()
-	}
 	capped := &countingReader{r: stream.Body, limit: ageFileBytes(limits.PayloadInlineMaxBytes)}
-	result, err := openText(openOpts, textDest, identity, capped, OpenResult{Kind: "text"})
+	result, err := openText(openOpts, reserved, identity, capped, OpenResult{Kind: "text"})
 	if err != nil {
 		// On a failed write the result carries the plaintext; a stream that fails to decrypt yields nothing.
 		return result, err

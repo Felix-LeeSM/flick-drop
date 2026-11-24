@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,9 @@ type fakePipeRoom struct {
 	kind         string
 	encFilename  string
 	receiveCalls int
+	// Knobs: the stream fails before it carries a byte, as on a relay error.
+	receiveFails bool
+	sendFails    bool
 
 	cancelCalled bool
 	leaveCalled  bool
@@ -71,7 +75,31 @@ func (f *fakeFlick) newPipeRoom() *fakePipeRoom {
 	return room
 }
 
+// failLongPoll answers whether this long poll is one the test made fail, as a
+// replica stopping mid-request would.
+func (f *fakeFlick) failLongPoll(action string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch action {
+	case "status":
+		if f.statusFailures > 0 {
+			f.statusFailures--
+			return true
+		}
+	case "wait":
+		if f.waitFailures > 0 {
+			f.waitFailures--
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeFlick) routePipe(w http.ResponseWriter, r *http.Request, action string) {
+	if f.failLongPoll(action) {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable")
+		return
+	}
 	code := r.Header.Get(pipeCodeHeader)
 	f.mu.Lock()
 	room := f.pipeRooms[code]
@@ -240,7 +268,13 @@ func (f *fakeFlick) pipeStatus(w http.ResponseWriter, r *http.Request, room *fak
 		case <-r.Context().Done():
 			return
 		case <-time.After(200 * time.Millisecond):
-			// The real server answers each poll when its hold expires.
+			// The real server answers each poll when its hold expires, with the state it sees then.
+			if room.state != "open" {
+				state := room.state
+				room.mu.Unlock()
+				writeError(w, http.StatusGone, state)
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]string{"status": "waiting"})
 			return
 		}
@@ -375,6 +409,14 @@ func (f *fakeFlick) pipeSend(w http.ResponseWriter, r *http.Request, room *fakeP
 	}
 
 	room.mu.Lock()
+	sendFails := room.sendFails
+	room.mu.Unlock()
+	if sendFails {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable")
+		return
+	}
+
+	room.mu.Lock()
 	kind := r.Header.Get("Flick-Kind")
 	if kind == "" {
 		kind = "text"
@@ -419,6 +461,11 @@ func (f *fakeFlick) pipeReceive(w http.ResponseWriter, r *http.Request, room *fa
 	if room.chosenID == "" || room.chosenID != connID {
 		room.mu.Unlock()
 		writeError(w, http.StatusConflict, "awaiting_decision")
+		return
+	}
+	if room.receiveFails {
+		room.mu.Unlock()
+		writeError(w, http.StatusGone, "cancelled")
 		return
 	}
 	room.attached = true
@@ -680,7 +727,9 @@ func TestLiveSendRefusesOverLimitTextBeforeCreatingARoom(t *testing.T) {
 	fake.inlineMax = 512
 	client := fake.client()
 
-	_, err := LiveSend(context.Background(), client, LiveSendOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := LiveSend(ctx, client, LiveSendOptions{
 		Text:    strings.Repeat("x", 4000),
 		Started: func(PipeSession) error { return nil },
 	})
@@ -835,7 +884,9 @@ func TestLiveSendRefusesAnOversizedFileBeforeCreatingARoom(t *testing.T) {
 	}
 	defer file.Close()
 
-	_, err = LiveSend(context.Background(), client, LiveSendOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = LiveSend(ctx, client, LiveSendOptions{
 		FileName: "big.bin",
 		File:     file,
 		Started:  func(PipeSession) error { return nil },
@@ -943,5 +994,405 @@ func TestLiveSendCancelsTheRoomWhenTheFileCannotBeSealed(t *testing.T) {
 	case <-receiverDone:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the chosen receiver was left waiting after the sender's seal failure")
+	}
+}
+
+func waitForPipeCode(fake *fakeFlick) string {
+	var code string
+	for i := 0; i < 500 && code == ""; i++ {
+		fake.mu.Lock()
+		for _, room := range fake.pipeRooms {
+			code = room.code
+		}
+		fake.mu.Unlock()
+		if code == "" {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return code
+}
+
+// runLivePair runs a sender and a receiver against each other through the fake
+// relay and returns both results.
+func runLivePair(t *testing.T, fake *fakeFlick, ctx context.Context, send LiveSendOptions, joinOpts func(code string) LiveJoinOptions) (LiveSendResult, OpenResult) {
+	t.Helper()
+	client := fake.client()
+	type received struct {
+		result OpenResult
+		err    error
+	}
+	done := make(chan received, 1)
+	go func() {
+		result, err := LiveJoin(ctx, client, joinOpts(waitForPipeCode(fake)))
+		done <- received{result, err}
+	}()
+
+	sent, err := LiveSend(ctx, client, send)
+	if err != nil {
+		t.Fatalf("live send: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("live join: %v", got.err)
+		}
+		return sent, got.result
+	case <-time.After(30 * time.Second):
+		t.Fatal("the receiver never finished")
+	}
+	return LiveSendResult{}, OpenResult{}
+}
+
+func dirEntryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	names := []string{}
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func TestLiveSendRefusesADirectoryBeforeCreatingARoom(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	dir := t.TempDir()
+	opened, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = LiveSend(ctx, client, LiveSendOptions{
+		FileName: "dir",
+		File:     opened,
+		Started:  func(PipeSession) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("err = %v, want the directory refusal", err)
+	}
+
+	fake.mu.Lock()
+	rooms := len(fake.pipeRooms)
+	fake.mu.Unlock()
+	if rooms != 0 {
+		t.Errorf("a room was created for a directory: %d rooms", rooms)
+	}
+}
+
+// The text destination is reserved before the relay can hand out the stream,
+// so a join that ends without a stream must take that file back with it.
+func TestLiveJoinLeavesNoReservedFileBehindWhenNothingArrives(t *testing.T) {
+	for name, ends := range map[string]func(room *fakePipeRoom){
+		"the status poll ends first": func(room *fakePipeRoom) {
+			go func() {
+				for {
+					room.mu.Lock()
+					joined := len(room.conns) > 0
+					if joined {
+						room.state = "cancelled"
+						room.bumpLocked()
+					}
+					room.mu.Unlock()
+					if joined {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}()
+		},
+		"the receive stream fails": func(room *fakePipeRoom) {
+			room.mu.Lock()
+			room.receiveFails = true
+			room.mu.Unlock()
+		},
+	} {
+		for _, withOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/output=%v", name, withOutput), func(t *testing.T) {
+				fake := newFakeFlick(t)
+				client := fake.client()
+				room := fake.newPipeRoom()
+				ends(room)
+				dir := t.TempDir()
+				opts := LiveJoinOptions{Code: room.code, OutputDir: dir, Connected: func(string, int) error { return nil }}
+				if withOutput {
+					opts.OutputPath = filepath.Join(dir, "reply.txt")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+
+				// A sender selects the receiver the moment it joins, so the join gets as
+				// far as the stream.
+				go func() {
+					for {
+						room.mu.Lock()
+						for _, conn := range room.conns {
+							room.chosenID = conn.id
+						}
+						wasOpen := room.state == "open"
+						room.bumpLocked()
+						room.mu.Unlock()
+						if !wasOpen {
+							return
+						}
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(5 * time.Millisecond):
+						}
+					}
+				}()
+
+				if _, err := LiveJoin(ctx, client, opts); err == nil {
+					t.Fatal("a join with no stream reported success")
+				}
+				if names := dirEntryNames(t, dir); len(names) != 0 {
+					t.Errorf("files left behind: %v", names)
+				}
+			})
+		}
+	}
+}
+
+func TestLiveJoinSavesTextUnderItsDottedName(t *testing.T) {
+	fake := newFakeFlick(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+
+	_, received := runLivePair(t, fake, ctx,
+		LiveSendOptions{Text: "live payload", Started: func(PipeSession) error { return nil }},
+		func(code string) LiveJoinOptions {
+			return LiveJoinOptions{Code: code, OutputDir: dir, Connected: func(string, int) error { return nil }}
+		})
+
+	code := openPipeRoom(t, fake).code
+	if base := filepath.Base(received.WrittenPath); base != "flick-live-"+code+".txt" {
+		t.Errorf("written = %q, want flick-live-%s.txt", base, code)
+	}
+	if names := dirEntryNames(t, dir); len(names) != 1 {
+		t.Errorf("output directory holds %v, want only the saved text", names)
+	}
+	if got, _ := os.ReadFile(received.WrittenPath); string(got) != "live payload" {
+		t.Errorf("saved %q", got)
+	}
+}
+
+func TestLiveJoinWritesToTheExactOutputPath(t *testing.T) {
+	for name, send := range map[string]LiveSendOptions{
+		"text": {Text: "live payload", Started: func(PipeSession) error { return nil }},
+		"file": {FileName: "notes.txt", File: strings.NewReader("file over live"), Started: func(PipeSession) error { return nil }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeFlick(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			dir := t.TempDir()
+			target := filepath.Join(dir, "reply.bin")
+
+			_, received := runLivePair(t, fake, ctx, send, func(code string) LiveJoinOptions {
+				return LiveJoinOptions{Code: code, OutputPath: target, Connected: func(string, int) error { return nil }}
+			})
+
+			if received.WrittenPath != target {
+				t.Fatalf("written = %q, want %s", received.WrittenPath, target)
+			}
+			if names := dirEntryNames(t, dir); len(names) != 1 {
+				t.Errorf("output directory holds %v, want only the requested file", names)
+			}
+			want := "live payload"
+			if send.FileName != "" {
+				want = "file over live"
+			}
+			if got, _ := os.ReadFile(target); string(got) != want {
+				t.Errorf("saved %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func pipeRoomByCode(fake *fakeFlick, code string) *fakePipeRoom {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return fake.pipeRooms[code]
+}
+
+// A sender whose transfer fails after select releases the room, so the chosen
+// receiver is not left attached and waiting.
+func TestLiveSendReleasesTheRoomWhenTheSendFails(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	senderDone := make(chan error, 1)
+	go func() {
+		_, err := LiveSend(ctx, client, LiveSendOptions{
+			Text:    "never arrives",
+			Started: func(PipeSession) error { return nil },
+		})
+		senderDone <- err
+	}()
+
+	// The sender's room then gets a relay that refuses the stream and a receiver.
+	code := waitForPipeCode(fake)
+	if code == "" {
+		t.Fatal("no room appeared")
+	}
+	room := pipeRoomByCode(fake, code)
+	room.mu.Lock()
+	room.sendFails = true
+	room.mu.Unlock()
+	receiverDone := make(chan error, 1)
+	go func() {
+		_, err := LiveJoin(ctx, client, LiveJoinOptions{
+			Code:      code,
+			OutputDir: t.TempDir(),
+			Connected: func(string, int) error { return nil },
+		})
+		receiverDone <- err
+	}()
+
+	select {
+	case err := <-senderDone:
+		if err == nil {
+			t.Fatal("a failed send reported success")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sender never finished")
+	}
+	room.mu.Lock()
+	cancelled := room.cancelCalled
+	room.mu.Unlock()
+	if !cancelled {
+		t.Error("the room was left open after the failed send")
+	}
+	select {
+	case <-receiverDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the chosen receiver was left waiting after the failed send")
+	}
+}
+
+// Ctrl-C that lands with the pick answer fails the select; the room is still released.
+func TestLiveSendReleasesTheRoomWhenTheContextEndsAtSelect(t *testing.T) {
+	fake := newFakeFlick(t)
+	client := fake.client()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	senderDone := make(chan error, 1)
+	go func() {
+		_, err := LiveSend(ctx, client, LiveSendOptions{
+			Text: "never arrives",
+			// The pick is consulted only once a device is waiting.
+			Pick: func([]PipePending) (LiveDecision, error) {
+				cancel()
+				return LiveDecision{Action: "send"}, nil
+			},
+			Started: func(PipeSession) error { return nil },
+		})
+		senderDone <- err
+	}()
+
+	code := waitForPipeCode(fake)
+	if code == "" {
+		t.Fatal("no room appeared")
+	}
+	receiverDone := make(chan error, 1)
+	go func() {
+		_, err := LiveJoin(ctx, client, LiveJoinOptions{
+			Code:      code,
+			OutputDir: t.TempDir(),
+			Connected: func(string, int) error { return nil },
+		})
+		receiverDone <- err
+	}()
+
+	select {
+	case err := <-senderDone:
+		if err == nil {
+			t.Fatal("a cancelled send reported success")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sender never finished")
+	}
+	room := pipeRoomByCode(fake, code)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		room.mu.Lock()
+		cancelled := room.cancelCalled
+		room.mu.Unlock()
+		if cancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the room was left open after Ctrl-C at the pick")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case <-receiverDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the receiver was left waiting after Ctrl-C at the pick")
+	}
+}
+
+// One 5xx from each long poll, as from a replica stopping in a rolling update,
+// must not end a transfer.
+func TestLiveRoundTripSurvivesOneFailedLongPoll(t *testing.T) {
+	fake := newFakeFlick(t)
+	fake.statusFailures = 1
+	fake.waitFailures = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, received := runLivePair(t, fake, ctx,
+		LiveSendOptions{Text: "live payload", Started: func(PipeSession) error { return nil }},
+		func(code string) LiveJoinOptions {
+			return LiveJoinOptions{Code: code, OutputDir: t.TempDir(), Connected: func(string, int) error { return nil }}
+		})
+
+	if string(received.Plaintext) != "live payload" {
+		t.Errorf("received %q", received.Plaintext)
+	}
+}
+
+func TestPipeLongPollRetriesOneServerErrorOnly(t *testing.T) {
+	for name, x := range map[string]struct {
+		statuses  []int
+		wantErr   bool
+		wantCalls int
+	}{
+		"one 503 then 200":          {statuses: []int{503, 200}, wantCalls: 2},
+		"two 503s":                  {statuses: []int{503, 503}, wantErr: true, wantCalls: 2},
+		"a 404 is the relay answer": {statuses: []int{404}, wantErr: true, wantCalls: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				status := x.statuses[min(calls-1, len(x.statuses)-1)]
+				if status == http.StatusOK {
+					writeJSON(w, status, map[string]string{"status": "waiting"})
+					return
+				}
+				writeError(w, status, "error")
+			}))
+			defer server.Close()
+
+			_, err := NewClient(server.URL, server.Client()).PipeStatus(context.Background(), "305817", "connection")
+			if (err != nil) != x.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, x.wantErr)
+			}
+			if calls != x.wantCalls {
+				t.Errorf("the relay answered %d calls, want %d", calls, x.wantCalls)
+			}
+		})
 	}
 }

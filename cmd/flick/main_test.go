@@ -1,22 +1,74 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Felix-LeeSM/flick-drop/internal/clientcrypto"
 	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
+
+// sealForTest encrypts plaintext the way a sender does, to a recipient string.
+func sealForTest(t *testing.T, recipient, plaintext string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := clientcrypto.EncryptToRecipient(&buf, recipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(plaintext)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// freshReceiverForTest is a device about to join: the recipient it publishes
+// and the way back to what was sent to it.
+func freshReceiverForTest(t *testing.T) (recipient string, open func([]byte) ([]byte, error)) {
+	t.Helper()
+	identity, err := clientcrypto.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientcrypto.RecipientStringOf(identity), func(raw []byte) ([]byte, error) {
+		r, err := clientcrypto.DecryptWith(bytes.NewReader(raw), identity)
+		if err != nil {
+			return nil, err
+		}
+		return io.ReadAll(r)
+	}
+}
+
+// oneJSONObject fails unless text is exactly one JSON object.
+func oneJSONObject(t *testing.T, text string) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(text))
+	var out map[string]any
+	if err := decoder.Decode(&out); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v (%q)", err, text)
+	}
+	if decoder.More() {
+		t.Errorf("stdout carries more than one JSON object: %q", text)
+	}
+	return out
+}
 
 func newOpenFlags() *flag.FlagSet {
 	flags := flag.NewFlagSet("flick open", flag.ContinueOnError)
@@ -333,6 +385,189 @@ func TestReportOpenedResultKeepsStdoutToOneObject(t *testing.T) {
 	}
 	if plain != "out.txt\n" {
 		t.Errorf("human stdout = %q, want only the saved path", plain)
+	}
+}
+
+func TestPromptLivePickReturnsAtOnceWhenCancelled(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = original
+		reader.Close()
+		writer.Close()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	_, stderr, err := captureOutput(t, func() error {
+		// Nothing is ever written to the pipe, so only the context can end this prompt.
+		_, err := promptLivePick(ctx, []flickcli.PipePending{{VerifyCode: "482", Device: "phone"}})
+		if !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("promptLivePick returned %v, want context.Canceled", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Errorf("the cancelled prompt took %s", took)
+	}
+	if !strings.Contains(stderr, "482") {
+		t.Errorf("stderr = %q, want the waiting row", stderr)
+	}
+	// The line reader is still on the line; give it the Enter nobody typed.
+	fmt.Fprintln(writer)
+}
+
+func TestReportOpenedSaysAFileIsSavedUnderReveal(t *testing.T) {
+	stdout, stderr, err := captureOutput(t, func() error {
+		return reportOpened(flickcli.OpenResult{Kind: "file", WrittenPath: "notes.txt"}, true)
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if stdout != "notes.txt\n" {
+		t.Errorf("stdout = %q, want only the saved path", stdout)
+	}
+	if !strings.Contains(stderr, "saved, not revealed") {
+		t.Errorf("stderr = %q, want the note that a file is saved under -reveal", stderr)
+	}
+}
+
+// The sender side end to end: a device joins, -confirm auto picks it, and the
+// relay receives bytes only that device can decrypt.
+func TestRunLiveSendsToTheFirstDeviceAndPrintsOneJSONObject(t *testing.T) {
+	const payload = "live payload"
+	recipient, open := freshReceiverForTest(t)
+	var mu sync.Mutex
+	selected := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pipe/send" && r.Header.Get("X-Flick-Pipe-Sender") != "sender-token" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/config":
+			fmt.Fprint(w, `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`)
+		case "/api/pipe/init":
+			fmt.Fprint(w, `{"code":"305817","expires_in":180,"sender_token":"sender-token"}`)
+		case "/api/pipe/wait":
+			if !selected {
+				fmt.Fprintf(w, `{"status":"waiting","version":1,"connections":[{"connection_id":"c1","index":1,"verify_code":"482","device":"phone","recipient":%q,"connected_seconds":1}]}`, recipient)
+				return
+			}
+			fmt.Fprintf(w, `{"status":"ready","version":2,"recipient":%q,"connections":[]}`, recipient)
+		case "/api/pipe/select":
+			selected = true
+			fmt.Fprint(w, `{"status":"selected"}`)
+		case "/api/pipe/send":
+			raw, err := io.ReadAll(r.Body)
+			got, openErr := open(raw)
+			if err != nil || openErr != nil || string(got) != payload || r.Header.Get("Flick-Kind") != "text" {
+				t.Errorf("the relay got a %d-byte %q stream it could not turn into the payload (err %v, open %v)",
+					len(raw), r.Header.Get("Flick-Kind"), err, openErr)
+				http.Error(w, "bad stream", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprintf(w, `{"status":"completed","bytes_transferred":%d}`, len(raw))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return runLive(context.Background(), []string{"-url", server.URL, "-json", "-confirm", "auto", payload})
+	})
+	if err != nil {
+		t.Fatalf("runLive: %v", err)
+	}
+	out := oneJSONObject(t, stdout)
+	if out["code"] != "305817" || out["verify_code"] != "482" {
+		t.Errorf("stdout = %s, want the code and the verify number of the chosen device", stdout)
+	}
+	if transferred, ok := out["bytes_transferred"].(float64); !ok || transferred == 0 {
+		t.Errorf("stdout = %s, want a positive bytes_transferred", stdout)
+	}
+	if !strings.Contains(stderr, "305817") {
+		t.Errorf("stderr = %q, want the code a script needs before the transfer ends", stderr)
+	}
+}
+
+// The receiver side end to end over the inline limit: one object on stdout
+// that names the saved file and the condition, and the payload kept on disk.
+func TestRunJoinJSONReportsAnOverLimitPayloadAndKeepsIt(t *testing.T) {
+	// Sealed, this is well past what a 512-byte inline allowance can carry.
+	payload := strings.Repeat("x", 5000)
+	// The relay seals to whatever recipient the device published on /join.
+	joined := struct {
+		sync.Mutex
+		recipient string
+	}{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			fmt.Fprint(w, `{"payload_inline_max_bytes":512,"max_file_bytes":268435456}`)
+		case "/api/pipe/join":
+			var request struct {
+				Recipient string `json:"recipient"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			joined.Lock()
+			joined.recipient = request.Recipient
+			joined.Unlock()
+			fmt.Fprint(w, `{"connection_id":"c1","verify_code":"482","device":"phone","expires_in":180}`)
+		case "/api/pipe/status":
+			fmt.Fprint(w, `{"status":"selected"}`)
+		case "/api/pipe/receive":
+			joined.Lock()
+			recipient := joined.recipient
+			joined.Unlock()
+			if recipient == "" {
+				http.Error(w, "no recipient published", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Flick-Kind", "text")
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(sealForTest(t, recipient, payload))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+
+	stdout, stderr, err := captureOutput(t, func() error {
+		return runJoin(context.Background(), []string{"-url", server.URL, "-json", "-output-dir", dir, "305-817"})
+	})
+	if err != nil {
+		t.Fatalf("runJoin: %v", err)
+	}
+	out := oneJSONObject(t, stdout)
+	if out["over_inline_limit"] != true || out["kind"] != "text" || out["code"] != "305817" {
+		t.Errorf("stdout = %s, want the kind, the code, and over_inline_limit", stdout)
+	}
+	if _, has := out["text"]; has {
+		t.Errorf("stdout = %s, a value reached stdout without -reveal", stdout)
+	}
+	saved, _ := out["saved"].(string)
+	if saved == "" {
+		t.Fatalf("stdout = %s, want the saved path", stdout)
+	}
+	got, err := os.ReadFile(saved)
+	if err != nil || string(got) != payload {
+		t.Errorf("the saved reply is not the payload (err %v, %d bytes)", err, len(got))
+	}
+	if !strings.Contains(stderr, "inline text limit") {
+		t.Errorf("stderr = %q, want the warning", stderr)
 	}
 }
 

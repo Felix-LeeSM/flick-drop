@@ -499,7 +499,8 @@ func runReceive(ctx context.Context, args []string) error {
 	})
 	if result.Opened != nil && errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the reply passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpenedResult(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
+		return reportOpenedResult(*result.Opened, *reveal, *asJSON,
+			map[string]any{"state": result.State, "expires_at": result.ExpiresAt, "over_inline_limit": true})
 	}
 	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(*result.Opened, err)
@@ -702,10 +703,14 @@ func promptYesNo(label string) (bool, error) {
 // Byte at a time: a bufio.Reader would swallow input meant for the passphrase reader that follows.
 // Ctrl-D on an empty line is a cancel, never "take the default".
 func readLine() (string, error) {
+	return readLineFrom(os.Stdin)
+}
+
+func readLineFrom(input io.Reader) (string, error) {
 	line := make([]byte, 0, 32)
 	buf := make([]byte, 1)
 	for {
-		read, err := os.Stdin.Read(buf)
+		read, err := input.Read(buf)
 		if read > 0 {
 			if buf[0] == '\n' {
 				break
@@ -866,7 +871,8 @@ func runLive(ctx context.Context, args []string) error {
 	confirm := flags.String("confirm", "",
 		`How to confirm the receiver: "auto" sends to the first waiting device, a 3-digit number waits for it; the default asks on a terminal`)
 	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
-	asJSON := flags.Bool("json", false, "Print the result as JSON")
+	asJSON := flags.Bool("json", false,
+		"Print the result as JSON; the 6-digit code is written to stderr as soon as the room exists")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
 		return err
 	}
@@ -983,9 +989,10 @@ func promptLivePick(ctx context.Context, pending []flickcli.PipePending) (flickc
 		line string
 		err  error
 	}
+	stdin := os.Stdin
 	read := make(chan answer, 1)
 	go func() {
-		line, err := readLine()
+		line, err := readLineFrom(stdin)
 		read <- answer{line, err}
 	}()
 	var typed string
@@ -1066,7 +1073,7 @@ func runJoin(ctx context.Context, args []string) error {
 	})
 	if errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the live payload passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code})
+		return reportOpenedResult(result, *reveal, *asJSON, map[string]any{"code": code, "over_inline_limit": true})
 	}
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(result, err)

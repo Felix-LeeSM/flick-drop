@@ -43,6 +43,9 @@ type fakeFlick struct {
 
 	pipeRooms       map[string]*fakePipeRoom
 	pipeCodeCounter int
+	// Forced 5xx answers for the next /api/pipe/status and /api/pipe/wait calls.
+	statusFailures int
+	waitFailures   int
 }
 
 type storedSecret struct {
