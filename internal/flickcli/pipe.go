@@ -498,10 +498,7 @@ func LiveJoin(ctx context.Context, client *Client, opts LiveJoinOptions) (OpenRe
 	capped := &countingReader{r: stream.Body, limit: ageFileBytes(limits.PayloadInlineMaxBytes)}
 	result, err := openText(openOpts, reserved, identity, capped, OpenResult{Kind: "text"})
 	if err != nil {
-		// The result carries the plaintext or rescued path for the caller to salvage.
-		if errors.Is(err, ErrWriteAfterConsume) {
-			return result, err
-		}
+		// The returned result already carries the plaintext or rescued path for the caller to salvage.
 		return result, err
 	}
 	if capped.over {

@@ -284,6 +284,7 @@ func (f *fakeFlick) pipeWait(w http.ResponseWriter, r *http.Request, room *fakeP
 			return
 		case <-time.After(200 * time.Millisecond):
 			// The real server answers the hold with the current room view.
+			room.mu.Lock()
 			resp := pipeWaitSnapshot(room)
 			room.mu.Unlock()
 			writeJSON(w, http.StatusOK, resp)
