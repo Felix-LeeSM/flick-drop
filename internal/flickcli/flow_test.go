@@ -294,7 +294,7 @@ func TestSendAndOpenModelBText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse link: %v", err)
 	}
-	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link})
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -332,6 +332,7 @@ func TestSendAndOpenModelAText(t *testing.T) {
 	opened, err := Open(context.Background(), fake.client(), OpenOptions{
 		Link:       link,
 		Passphrase: func() (string, error) { return "correct horse battery staple", nil },
+		OutputDir:  t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -683,7 +684,7 @@ func TestOpenWithoutFragmentKeyDoesNotConsumeTheSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse link: %v", err)
 	}
-	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: full}); err != nil {
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: full, OutputDir: t.TempDir()}); err != nil {
 		t.Errorf("secret was not recoverable afterwards: %v", err)
 	}
 }
@@ -715,6 +716,7 @@ func TestOpenRejectsAWrongPassphraseWithoutConsuming(t *testing.T) {
 	opened, err := Open(context.Background(), fake.client(), OpenOptions{
 		Link:       link,
 		Passphrase: func() (string, error) { return "right", nil },
+		OutputDir:  t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("open with the right passphrase: %v", err)
@@ -827,7 +829,7 @@ func TestOpenRemovesTheReservedFileWhenTheOpenFails(t *testing.T) {
 		t.Fatalf("parse link: %v", err)
 	}
 
-	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link}); err != nil {
+	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: t.TempDir()}); err != nil {
 		t.Fatalf("first open: %v", err)
 	}
 	if _, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputPath: target}); err == nil {
@@ -1189,5 +1191,154 @@ func TestCopyExclusiveNeverOverwrites(t *testing.T) {
 	}
 	if err := copyExclusive(src, dst); !errors.Is(err, os.ErrExist) {
 		t.Errorf("second copy err = %v, want os.ErrExist", err)
+	}
+}
+
+func TestSendCredentialRidesTheTextPath(t *testing.T) {
+	fake := newFakeFlick(t)
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{
+		Credential: `{"fields":[{"id":"password","label":"Password","value":"hunter2","secret":true},{"id":"username","label":"Username","value":"alice","secret":false}],"type":"login","v":1}`,
+		TTL:        DefaultTTL,
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	fake.mu.Lock()
+	bodies := append([]string(nil), fake.createBodies...)
+	fake.mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("create called %d times", len(bodies))
+	}
+	var created struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &created); err != nil {
+		t.Fatalf("decode create body: %v", err)
+	}
+	if created.Kind != "text" {
+		t.Errorf("create kind = %q, want text", created.Kind)
+	}
+
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if opened.Credential == nil {
+		t.Fatalf("a credential secret opened as plain text: %q", opened.Plaintext)
+	}
+	// Key order is canonicalized; field order is preserved as sent, like the web form.
+	want := `FLCR1:{"v":1,"type":"login","fields":[{"id":"password","label":"Password","value":"hunter2","secret":true},{"id":"username","label":"Username","value":"alice","secret":false}],"title":"","notes":""}`
+	if got := SerializeCredential(*opened.Credential); got != want {
+		t.Errorf("round trip = %s, want %s", got, want)
+	}
+}
+
+func TestSendRejectsAnInvalidCredentialBeforeCreatingAnything(t *testing.T) {
+	fake := newFakeFlick(t)
+
+	if _, err := Send(context.Background(), fake.client(), SendOptions{
+		Credential: `{"v":1,"type":"login","fields":[{"id":"a","label":"L","value":"v"}]}`,
+		TTL:        DefaultTTL,
+	}); err == nil {
+		t.Fatal("an invalid credential was sent")
+	}
+
+	fake.mu.Lock()
+	calls := len(fake.createBodies)
+	fake.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("create endpoint was called %d times for an invalid credential", calls)
+	}
+}
+
+func TestOpenSavesATextSecretToAReservedFile(t *testing.T) {
+	fake := newFakeFlick(t)
+	dir := t.TempDir()
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "sk-live-value", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if opened.WrittenPath != filepath.Join(dir, "flick-secret-"+sent.ID+".txt") {
+		t.Fatalf("WrittenPath = %q", opened.WrittenPath)
+	}
+	info, err := os.Stat(opened.WrittenPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(opened.WrittenPath); string(got) != "sk-live-value" {
+		t.Errorf("saved %q", got)
+	}
+
+	// A pre-existing auto name moves to the numbered variant instead of overwriting.
+	sent2, err := Send(context.Background(), fake.client(), SendOptions{Text: "second", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send 2: %v", err)
+	}
+	fake.mu.Lock()
+	fake.secrets[sent2.ID].ciphertext = fake.secrets[sent.ID].ciphertext
+	fake.secrets[sent2.ID].sizeBytes = fake.secrets[sent.ID].sizeBytes
+	fake.mu.Unlock()
+	link2 := link
+	link2.ID = sent2.ID
+	opened2, err := Open(context.Background(), fake.client(), OpenOptions{Link: link2, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("open 2: %v", err)
+	}
+	if got, _ := os.ReadFile(opened2.WrittenPath); string(got) != "sk-live-value" {
+		t.Errorf("colliding save wrote %q from %s", got, opened2.WrittenPath)
+	}
+	if opened2.WrittenPath == opened.WrittenPath {
+		t.Errorf("both saves used %s", opened.WrittenPath)
+	}
+}
+
+func TestOpenRevealHandsBackThePlaintextWithoutWritingAFile(t *testing.T) {
+	fake := newFakeFlick(t)
+	dir := t.TempDir()
+
+	sent, err := Send(context.Background(), fake.client(), SendOptions{Text: "piped payload", TTL: DefaultTTL})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	link, err := ParseShareLink(sent.Link)
+	if err != nil {
+		t.Fatalf("parse link: %v", err)
+	}
+
+	opened, err := Open(context.Background(), fake.client(), OpenOptions{Link: link, OutputDir: dir, Reveal: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if string(opened.Plaintext) != "piped payload" {
+		t.Errorf("plaintext = %q", opened.Plaintext)
+	}
+	if opened.WrittenPath != "" {
+		t.Errorf("reveal wrote %s", opened.WrittenPath)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("reveal left files behind: %v", entries)
 	}
 }

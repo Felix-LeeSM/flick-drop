@@ -24,15 +24,20 @@ type OpenOptions struct {
 	Link ShareLink
 	// Called after the metadata probe and before the consuming open.
 	Passphrase PassphraseFunc
-	// Empty: text goes to stdout and a file lands under its decrypted name in OutputDir.
+	// Exact destination file; empty picks an automatic no-clobber name in OutputDir.
 	OutputPath string
 	OutputDir  string
+	// Reveal hands the payload to the caller instead of writing a file; text and
+	// credentials only, a file secret is always saved to disk. Stdout cannot be
+	// reserved, so a failed write afterwards falls back to a rescue file.
+	Reveal bool
 }
 
-// Plaintext is set for text even when the write failed, for salvage; file secrets stream to disk and have none.
+// Plaintext is set for text even when the write failed, for rescue; file secrets stream to disk and have none.
 type OpenResult struct {
 	Kind        string
 	Plaintext   []byte
+	Credential  *Credential
 	Filename    string
 	ContentType string
 	// May differ from the requested name after a collision. Empty: nothing written, the caller owns the payload.
@@ -85,7 +90,7 @@ func Open(ctx context.Context, client *Client, opts OpenOptions) (OpenResult, er
 	}
 
 	// Reserved before the open so a bad path costs nothing; discarded if the open fails.
-	reserved, err := reserveDestination(opts, metadata.Kind)
+	reserved, err := reserveDestination(opts, metadata.Kind, opts.Link.ID)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -155,13 +160,16 @@ func openText(opts OpenOptions, reserved *destination, identity *age.HybridIdent
 		return OpenResult{}, consumedError(err)
 	}
 	result.Plaintext = plaintext
-	if opts.OutputPath == "" {
+	if cred, ok := ParseCredential(plaintext); ok {
+		result.Credential = &cred
+	}
+	if opts.Reveal {
 		return result, nil
 	}
 	if err := reserved.writeText(plaintext); err != nil {
 		return result, fmt.Errorf("%w: %w", ErrWriteAfterConsume, err)
 	}
-	result.WrittenPath = opts.OutputPath
+	result.WrittenPath = reserved.path
 	return result, nil
 }
 
@@ -284,7 +292,7 @@ func (d *destination) place(opts OpenOptions, filename string, staged *os.File) 
 	return placeFile(opts, filename, staged.Name())
 }
 
-func reserveDestination(opts OpenOptions, kind string) (*destination, error) {
+func reserveDestination(opts OpenOptions, kind, id string) (*destination, error) {
 	if opts.OutputPath != "" {
 		// O_EXCL: never truncate a local file to make room for the secret.
 		file, err := os.OpenFile(opts.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -297,13 +305,43 @@ func reserveDestination(opts OpenOptions, kind string) (*destination, error) {
 		return &destination{file: file, path: opts.OutputPath}, nil
 	}
 	if kind != "file" {
-		return &destination{}, nil
+		if opts.Reveal {
+			return &destination{}, nil
+		}
+		return reserveAutoDestination(opts.OutputDir, safeFilename("flick-secret-"+id+".txt"))
 	}
 	// Catching a bad directory after the open would cost the secret.
 	if err := checkWritableDir(opts.OutputDir); err != nil {
 		return nil, err
 	}
 	return &destination{}, nil
+}
+
+// Text and credential payloads land in a reserved 0600 file even with no -output,
+// so decrypted values never depend on the caller remembering to redirect stdout.
+func reserveAutoDestination(dir, base string) (*destination, error) {
+	if err := checkWritableDir(dir); err != nil {
+		return nil, err
+	}
+	if dir == "" {
+		dir = "."
+	}
+	target := filepath.Join(dir, base)
+	for attempt := range 100 {
+		candidate := target
+		if attempt > 0 {
+			candidate = numberedPath(target, attempt)
+		}
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &destination{file: file, path: candidate}, nil
+	}
+	return nil, fmt.Errorf("could not find an unused filename near %s", target)
 }
 
 func checkWritableDir(dir string) error {

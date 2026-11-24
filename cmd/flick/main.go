@@ -31,7 +31,7 @@ const usage = `flick — one-time encrypted secret links
 
 Usage:
   flick send [flags] [text]        Create a secret and print its share link
-  flick open [flags] <link|id>     Open a secret once and print or save it
+  flick open [flags] <link|id>     Open a secret once and save it to a file
   flick version                    Print the client version
 
 Run "flick <command> -h" for the flags of a command.
@@ -42,6 +42,16 @@ Flags may go before or after the text or the link, in any order:
 
 Run "flick send" with nothing to send and it asks for the secret, its lifetime,
 and whether to protect it with a passphrase, one at a time.
+
+A structured credential (what the web's login, card, identity, and custom
+forms produce) is sent as JSON carrying "v":1, a "type", and "fields":
+  flick send -credential login.json
+
+An opened secret is saved to a 0600 file and only its path is printed, so
+decrypted values never land in terminal scrollback or piped command logs.
+Pass -reveal to print the payload itself instead: text byte-exact, a
+credential as label-colon-value lines. To pipe text into a file, say
+  flick open -reveal <link> > secret.txt
 
 Text that begins with a dash needs "--" first, or it is read as a flag:
   flick send -- -----BEGIN...
@@ -90,6 +100,8 @@ func run(args []string) error {
 func runSend(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("flick send", flag.ContinueOnError)
 	filePath := flags.String("file", "", "Encrypt and send this file instead of text")
+	credentialPath := flags.String("credential", "",
+		`Send this credential JSON file instead of text (FLCR1 prefix optional; "-" reads stdin)`)
 	askPassphrase := flags.Bool("passphrase", false,
 		"Protect the secret with a passphrase the recipient must type (otherwise the key travels in the link)")
 	ttl := flags.Duration("ttl", flickcli.DefaultTTL,
@@ -113,6 +125,9 @@ func runSend(ctx context.Context, args []string) error {
 		if flags.NArg() > 0 {
 			return errors.New("send a file or text, not both")
 		}
+		if *credentialPath != "" {
+			return errors.New("send a file or a credential, not both")
+		}
 		file, err := os.Open(*filePath)
 		if err != nil {
 			return err
@@ -120,6 +135,15 @@ func runSend(ctx context.Context, args []string) error {
 		defer file.Close()
 		opts.File = file
 		opts.FileName = fileNameOf(*filePath)
+	case *credentialPath != "":
+		if flags.NArg() > 0 {
+			return errors.New("send a credential or text, not both")
+		}
+		data, err := readInput(*credentialPath)
+		if err != nil {
+			return err
+		}
+		opts.Credential = string(data)
 	case flags.NArg() == 0 && term.IsTerminal(int(os.Stdin.Fd())):
 		text, err := promptSecretText()
 		if err != nil {
@@ -180,13 +204,19 @@ func runSend(ctx context.Context, args []string) error {
 func runOpen(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("flick open", flag.ContinueOnError)
 	output := flags.String("output", "", "Write the payload to this exact path")
-	outputDir := flags.String("output-dir", ".", "Directory to save a file secret into")
+	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
+	reveal := flags.Bool("reveal", false,
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
 		return errors.New("give exactly one share link or secret ID")
+	}
+	if *reveal && *output != "" {
+		return errors.New("choose one destination: -reveal for stdout or -output for a file")
 	}
 
 	link, err := flickcli.ParseShareLink(flags.Arg(0))
@@ -208,19 +238,34 @@ func runOpen(ctx context.Context, args []string) error {
 		Passphrase: readExistingPassphrase,
 		OutputPath: *output,
 		OutputDir:  *outputDir,
+		Reveal:     *reveal,
 	})
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
-		return salvage(result, err)
+		return rescue(result, err)
 	}
 	if err != nil {
 		return err
 	}
 
+	if *asJSON {
+		return printOpenJSON(result, *reveal)
+	}
 	if result.WrittenPath != "" {
 		if result.FilenameUnreadable {
 			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
 		}
-		fmt.Fprintf(os.Stderr, "Saved %s\n", result.WrittenPath)
+		// The path is the machine-readable outcome; values stay off stdout.
+		fmt.Println(result.WrittenPath)
+		if result.Credential != nil {
+			for _, line := range result.Credential.SummaryLines() {
+				fmt.Fprintln(os.Stderr, line)
+			}
+			fmt.Fprintln(os.Stderr, "Secret fields are masked here; the values are in the file. Run with -reveal to print them.")
+		}
+		return nil
+	}
+	if result.Credential != nil {
+		fmt.Println(result.Credential.RevealText())
 		return nil
 	}
 	_, err = os.Stdout.Write(result.Plaintext)
@@ -231,25 +276,80 @@ func runOpen(ctx context.Context, args []string) error {
 	return err
 }
 
-// salvage rescues a secret the server already consumed when the local write failed afterwards.
-// A file secret is never written to a terminal; its decrypted staging file path goes to stderr.
-func salvage(result flickcli.OpenResult, cause error) error {
+// Values appear only under -reveal; the default shape carries the saved path and structure.
+func printOpenJSON(result flickcli.OpenResult, reveal bool) error {
+	out := map[string]any{"kind": result.Kind}
+	switch {
+	case result.Credential != nil:
+		out["kind"] = "credential"
+		out["credential"] = result.Credential.JSONMap(reveal)
+		if result.WrittenPath != "" {
+			out["saved"] = result.WrittenPath
+		}
+	case result.Kind == "file":
+		out["saved"] = result.WrittenPath
+		if result.Filename != "" {
+			out["filename"] = result.Filename
+		}
+	default:
+		if result.WrittenPath != "" {
+			out["saved"] = result.WrittenPath
+		}
+		if reveal {
+			out["text"] = string(result.Plaintext)
+		}
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
+}
+
+// rescue saves a secret the server already consumed when its intended destination failed.
+// Values go to a fresh 0600 file, never stdout; a file secret keeps its decrypted staging path.
+func rescue(result flickcli.OpenResult, cause error) error {
 	fmt.Fprintf(os.Stderr, "flick: %v\n", cause)
 
 	switch {
 	case result.RescuedPath != "":
 		fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
 		fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", result.RescuedPath)
-	case result.Kind != "file":
-		fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
-		fmt.Fprintln(os.Stderr, "Its contents follow on stdout — save them now.")
-		if _, err := os.Stdout.Write(result.Plaintext); err != nil {
-			return fmt.Errorf("%w (and the payload could not be printed: %w)", cause, err)
+	case result.Kind != "file" && len(result.Plaintext) > 0:
+		path, err := writeRescueFile(result.Plaintext)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "The secret is gone from the server, and its contents could not be saved either.")
+			return fmt.Errorf("%w (and the payload could not be saved: %w)", cause, err)
 		}
+		fmt.Fprintln(os.Stderr, "The secret is gone from the server. This is the only remaining copy.")
+		fmt.Fprintf(os.Stderr, "Payload written to %s — move it somewhere safe now.\n", path)
 	default:
 		fmt.Fprintln(os.Stderr, "The secret is gone from the server, and the file could not be saved while it was decrypted.")
 	}
 	return cause
+}
+
+// CreateTemp is already 0600; the rescue copy must not widen the payload's audience.
+func writeRescueFile(plaintext []byte) (string, error) {
+	file, err := os.CreateTemp("", "flick-rescue-*.txt")
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.Write(plaintext); err != nil {
+		file.Close()
+		os.Remove(file.Name())
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		os.Remove(file.Name())
+		return "", err
+	}
+	return file.Name(), file.Close()
+}
+
+// "-" reads the credential payload from stdin; a path keeps it out of shell history.
+func readInput(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	return os.ReadFile(path)
 }
 
 func readText(args []string, limit int64) (string, error) {

@@ -77,13 +77,19 @@ kubectl get secret db -o jsonpath='{.data.password}' | base64 -d | flick send
 flick send -passphrase -ttl 24h "the database password"
 flick send -file ./credentials.json -ttl 30m
 
+# 構造化クレデンシャル（ウェブのログイン・カード・本人確認・カスタムフォーム）をJSONで
+flick send -credential login.json
+
 # 対話形式で入力して送信
 flick send
 
-# 開封（開くとサーバーから削除される）
+# 開封（開くとサーバーから削除される）: ペイロードは0600のファイルに保存され、パスだけが出力されます
 flick open 'https://flick.makana.cc/s/abc123#key=...'
-flick open https://flick.makana.cc/s/abc123 > recovered.txt
+# ペイロード自体を出力するには（テキストはバイト通り、クレデンシャルは label: value 行）:
+flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 ```
+
+`-reveal`を渡すまで、復号された値がstdoutに出ることはありません。ターミナルのスクロールバックやエージェント・CIのログに秘密が残らないよう、代わりに保存先のファイルパスを報告し、`flick open -json`は`-reveal`と併用しない限りシークレットフィールドの値を除いた構造だけを出力します。
 
 フラグはテキストやリンクの前後のどちらにも書けます。コマンド引数は`ps`やシェル履歴に残るため、パスワードはフラグでは受け付けません。スクリプトから実行する場合は、入力プロンプトの代わりに環境変数`FLICK_PASSPHRASE`を使ってください。
 

@@ -43,10 +43,26 @@ Encryption, HTTP calls, and share-link handling belong in
 - **A passphrase is never a flag value.** Command arguments are visible to every
   process through `ps` and land in shell history. Read it from the terminal
   without echo, or from `FLICK_PASSPHRASE` for scripted use.
-- Prompts and status lines go to stderr; the payload goes to stdout. That is
-  what makes `flick open <link> > secret.txt` write only the secret.
-- Piped stdout stays byte-exact — no trailing newline is added unless stdout is
-  a terminal.
+- **Decrypted values never reach stdout by default.** `flick open` saves the
+  payload to a reserved 0600 file
+  (`internal/flickcli/open.go:reserveAutoDestination`) and prints only its
+  path, so secrets stay out of terminal scrollback, pipes, and agent or CI
+  logs. `-reveal` opts into stdout — byte-exact text bytes, formatted
+  credential values (`cmd/flick/main.go:runOpen`) — and is what makes
+  `flick open -reveal <link> > secret.txt` write the secret.
+- `-json` carries values only together with `-reveal`
+  (`cmd/flick/main.go:printOpenJSON`); alone it reports the saved path plus a
+  credential structure whose secret-field values are omitted.
+- Prompts, status lines, and the masked credential summary
+  (`internal/flickcli/credential.go:SummaryLines`) go to stderr.
+- A consumed secret whose write failed is rescued to a fresh 0600 file, never
+  stdout (`cmd/flick/main.go:writeRescueFile`).
+- Piped stdout stays byte-exact under `-reveal` — no trailing newline is added
+  unless stdout is a terminal.
+- `flick send -credential <path|->` sends a structured credential as JSON
+  validated against `contracts/credential-payload.schema.json`
+  (`internal/flickcli/credential.go:ParseCredentialInput`); an invalid payload
+  fails before the create request (`internal/flickcli/send.go:Send`).
 - `flick send` with nothing to send and a terminal on stdin asks for the parts
   the command line left out, one at a time. It asks only about those: a flag
   that was typed is never re-asked, and a pipe or an argument means the caller

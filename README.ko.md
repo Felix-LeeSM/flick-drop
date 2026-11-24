@@ -77,13 +77,19 @@ kubectl get secret db -o jsonpath='{.data.password}' | base64 -d | flick send
 flick send -passphrase -ttl 24h "the database password"
 flick send -file ./credentials.json -ttl 30m
 
+# 구조화 자격 증명 (웹의 로그인/카드/신원/사용자 정의 폼), JSON으로
+flick send -credential login.json
+
 # 대화형으로 입력하며 보내기
 flick send
 
-# 열기 (열면 서버에서 바로 사라짐)
+# 열기 (열면 서버에서 바로 사라짐): 페이로드는 0600 파일에 저장되고 경로만 출력돼요
 flick open 'https://flick.makana.cc/s/abc123#key=...'
-flick open https://flick.makana.cc/s/abc123 > recovered.txt
+# 페이로드 자체를 출력하려면 (텍스트는 바이트 그대로, 자격 증명은 label: value 행):
+flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 ```
+
+`-reveal`을 넘기기 전에는 복호화된 값이 stdout에 나가지 않아서 터미널 스크롤백이나 에이전트·CI 로그에 비밀이 남지 않아요. 대신 저장된 파일 경로를 알려주고, `flick open -json`은 `-reveal`과 함께 쓰지 않는 한 비밀 필드 값을 빼고 구조만 내보내요.
 
 플래그는 텍스트나 링크 앞뒤 어디에나 쓸 수 있어요. 명령 인자는 `ps`와 셸 히스토리에 남기 때문에 비밀번호는 플래그로 받지 않아요. 스크립트에서는 입력 프롬프트 대신 `FLICK_PASSPHRASE` 환경 변수를 쓰세요.
 
