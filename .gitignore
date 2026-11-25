@@ -39,3 +39,6 @@ deploy/production/
 .DS_Store
 .idea/
 .vscode/
+
+# Agent tooling
+.playwright-mcp/
