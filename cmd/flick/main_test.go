@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,21 +24,26 @@ import (
 	"github.com/Felix-LeeSM/flick-drop/internal/flickcli"
 )
 
-// sealForTest encrypts plaintext the way a sender does, to a recipient string.
-func sealForTest(t *testing.T, recipient, plaintext string) []byte {
-	t.Helper()
+// mustSeal encrypts plaintext the way a sender does, to a recipient string. It
+// may run off the test goroutine, where t.Fatal must not be called.
+func mustSeal(recipient, plaintext string) []byte {
 	var buf bytes.Buffer
 	w, err := clientcrypto.EncryptToRecipient(&buf, recipient)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	if _, err := w.Write([]byte(plaintext)); err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	if err := w.Close(); err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return buf.Bytes()
+}
+
+func sealForTest(t *testing.T, recipient, plaintext string) []byte {
+	t.Helper()
+	return mustSeal(recipient, plaintext)
 }
 
 // freshReceiverForTest is a device about to join: the recipient it publishes
@@ -666,67 +672,388 @@ func TestOpenRevealRescuesThePayloadWhenTheReaderIsGone(t *testing.T) {
 
 // A -reveal write that fails must not take the consumed payload with it.
 func TestFinishOpenedRescuesAPayloadWhoseStdoutWriteFails(t *testing.T) {
-	closed, err := os.CreateTemp(t.TempDir(), "stdout")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	original := os.Stdout
-	os.Stdout = closed
-	t.Cleanup(func() { os.Stdout = original })
+	withClosedStdout(t, func() {
+		for name, x := range map[string]struct {
+			result   flickcli.OpenResult
+			reveal   bool
+			asJSON   bool
+			expected string
+		}{
+			"plain text": {
+				result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
+				reveal:   true,
+				expected: "the one copy",
+			},
+			"credential": {
+				result: flickcli.OpenResult{Kind: "text", Credential: &flickcli.Credential{Type: "login", Fields: []flickcli.CredentialField{
+					{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
+				}}, Plaintext: []byte(`FLCR1:{"v":1}`)},
+				reveal:   true,
+				expected: `FLCR1:{"v":1}`,
+			},
+			"json with values": {
+				result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
+				reveal:   true,
+				asJSON:   true,
+				expected: "the one copy",
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				stderr, err := captureStderr(t, func() error {
+					return finishOpened(x.result, x.reveal, x.asJSON, nil)
+				})
+				if !errors.Is(err, flickcli.ErrWriteAfterConsume) {
+					t.Fatalf("err = %v, want it to carry ErrWriteAfterConsume", err)
+				}
+				path := rescuedPath(t, stderr)
+				defer os.Remove(path)
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatalf("stat rescue file: %v", err)
+				}
+				if info.Mode().Perm() != 0o600 {
+					t.Errorf("rescue file mode = %v, want 0600", info.Mode().Perm())
+				}
+				if got, _ := os.ReadFile(path); string(got) != x.expected {
+					t.Errorf("rescue file = %q, want the payload", got)
+				}
+			})
+		}
+	})
+}
 
+// A -json write that fails has nothing to rescue: the object held no value, or
+// the payload is on disk. The error is plain and names that file.
+func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
 	for name, x := range map[string]struct {
-		result   flickcli.OpenResult
-		reveal   bool
-		asJSON   bool
-		expected string
+		result flickcli.OpenResult
+		reveal bool
+		saved  string
 	}{
-		"plain text": {
-			result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
-			reveal:   true,
-			expected: "the one copy",
+		"json without -reveal": {
+			result: flickcli.OpenResult{Kind: "text", WrittenPath: "saved.txt"},
+			saved:  "saved.txt",
 		},
-		"credential": {
-			result: flickcli.OpenResult{Kind: "text", Credential: &flickcli.Credential{Type: "login", Fields: []flickcli.CredentialField{
-				{ID: "password", Label: "Password", Value: "hunter2", Secret: true},
-			}}, Plaintext: []byte(`FLCR1:{"v":1}`)},
-			reveal:   true,
-			expected: `FLCR1:{"v":1}`,
+		"json without -reveal, nothing saved": {
+			result: flickcli.OpenResult{Kind: "text"},
 		},
-		"json with values": {
-			result:   flickcli.OpenResult{Kind: "text", Plaintext: []byte("the one copy")},
-			reveal:   true,
-			asJSON:   true,
-			expected: "the one copy",
+		"json with -reveal, a saved text payload": {
+			result: flickcli.OpenResult{Kind: "text", WrittenPath: "saved.txt", Plaintext: []byte("the one copy")},
+			reveal: true,
+			saved:  "saved.txt",
+		},
+		"json with -reveal, a file payload": {
+			result: flickcli.OpenResult{Kind: "file", WrittenPath: "saved.bin"},
+			reveal: true,
+			saved:  "saved.bin",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			stderr, err := captureStderr(t, func() error {
-				return finishOpened(x.result, x.reveal, x.asJSON, nil)
+			var captured string
+			var writeErr error
+			withClosedStdout(t, func() {
+				captured, writeErr = captureStderr(t, func() error {
+					return finishOpened(x.result, x.reveal, true, nil)
+				})
 			})
-			if !errors.Is(err, flickcli.ErrWriteAfterConsume) {
-				t.Fatalf("err = %v, want it to carry ErrWriteAfterConsume", err)
+			if writeErr == nil || errors.Is(writeErr, flickcli.ErrWriteAfterConsume) {
+				t.Fatalf("err = %v, want a plain write error", writeErr)
 			}
-			path := rescuedPath(t, stderr)
-			defer os.Remove(path)
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatalf("stat rescue file: %v", err)
+			if strings.Contains(captured, "Payload written to") {
+				t.Errorf("a payload that was not lost was reported as rescued: %q", captured)
 			}
-			if info.Mode().Perm() != 0o600 {
-				t.Errorf("rescue file mode = %v, want 0600", info.Mode().Perm())
-			}
-			if got, _ := os.ReadFile(path); string(got) != x.expected {
-				t.Errorf("rescue file = %q, want the payload", got)
+			if x.saved != "" && !strings.Contains(writeErr.Error(), x.saved) {
+				t.Errorf("err = %v, want it to name the saved file %s", writeErr, x.saved)
 			}
 		})
 	}
 }
 
-// A -json write that fails carries no value, so nothing is rescued: the error is plain.
-func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
+// The request open and the live receive consume their payload, so both commands
+// must rescue a -reveal reply that stdout could not carry.
+func TestOpenReplyCommandsRescueARevealedPayloadWhenStdoutIsGone(t *testing.T) {
+	const payload = "the only copy of the reply"
+	for _, command := range []string{"receive", "join"} {
+		t.Run(command, func(t *testing.T) {
+			var stderr string
+			var err error
+			withClosedStdout(t, func() {
+				stderr, err = captureStderr(t, func() error {
+					return openReply(t, command, "text", []byte(payload), "-reveal", "-output-dir", t.TempDir())
+				})
+			})
+			if !errors.Is(err, flickcli.ErrWriteAfterConsume) {
+				t.Fatalf("%s: %v, want ErrWriteAfterConsume", command, err)
+			}
+			if strings.Contains(stderr, payload) {
+				t.Errorf("the reply reached stderr: %q", stderr)
+			}
+			path := rescuedPath(t, stderr)
+			defer os.Remove(path)
+			if got, _ := os.ReadFile(path); string(got) != payload {
+				t.Errorf("rescue file = %q, want the reply", got)
+			}
+		})
+	}
+}
+
+// A file reply is saved even under -reveal, and the report names that file: on
+// stdout when it can, otherwise in the error.
+func TestOpenReplyCommandsSaveAFileUnderReveal(t *testing.T) {
+	const payload = "file reply bytes"
+	for _, command := range []string{"receive", "join"} {
+		// A fresh directory per run, so the file it holds is this run's.
+		intoFreshDir := func(t *testing.T) (dir string, flags []string) {
+			dir = t.TempDir()
+			return dir, []string{"-reveal", "-json", "-output-dir", dir}
+		}
+
+		t.Run(command, func(t *testing.T) {
+			_, flags := intoFreshDir(t)
+			stdout, _, err := captureOutput(t, func() error {
+				return openReply(t, command, "file", []byte(payload), flags...)
+			})
+			if err != nil {
+				t.Fatalf("%s: %v", command, err)
+			}
+			out := oneJSONObject(t, stdout)
+			if out["kind"] != "file" || out["filename"] != "photo.jpg" {
+				t.Errorf("stdout = %s, want the saved file and its decrypted name", stdout)
+			}
+			if _, has := out["text"]; has {
+				t.Errorf("stdout = %s, file bytes were put on stdout", stdout)
+			}
+			saved, _ := out["saved"].(string)
+			if got, err := os.ReadFile(saved); err != nil || string(got) != payload {
+				t.Errorf("the saved reply is not the payload (err %v, path %q)", err, saved)
+			}
+		})
+
+		t.Run(command+" with stdout gone", func(t *testing.T) {
+			dir, flags := intoFreshDir(t)
+			var stderr string
+			var err error
+			withClosedStdout(t, func() {
+				stderr, err = captureStderr(t, func() error {
+					return openReply(t, command, "file", []byte(payload), flags...)
+				})
+			})
+			if err == nil || errors.Is(err, flickcli.ErrWriteAfterConsume) {
+				t.Fatalf("%s: %v, want a plain write error", command, err)
+			}
+			if strings.Contains(stderr, "Payload written to") {
+				t.Errorf("a saved file was reported as rescued: %q", stderr)
+			}
+			saved := filepath.Join(dir, onlyEntryIn(t, dir))
+			if got, readErr := os.ReadFile(saved); readErr != nil || string(got) != payload {
+				t.Errorf("the saved reply is not the payload (err %v, path %q)", readErr, saved)
+			}
+			if !strings.Contains(err.Error(), saved) {
+				t.Errorf("err = %v, want it to name %s", err, saved)
+			}
+		})
+	}
+}
+
+// SIGPIPE is ignored, so a stdout that cannot take the result must fail the
+// command instead of letting it exit 0 without having delivered anything.
+func TestRunFailsWhenStdoutCannotCarryItsResult(t *testing.T) {
+	const config = `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`
+	newServer := func(handler http.HandlerFunc) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/config" {
+				fmt.Fprint(w, config)
+				return
+			}
+			handler(w, r)
+		}))
+	}
+
+	t.Run("send", func(t *testing.T) {
+		server := newServer(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"id":"secret1","expires_at":"2026-01-01T00:00:00Z"}`)
+		})
+		defer server.Close()
+
+		err := runWithClosedStdout(t, "send", "-url", server.URL, "payload")
+		want := "the secret was created and expires at 2026-01-01T00:00:00Z, but its link could not be written to stdout"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("open", func(t *testing.T) {
+		const payload = "saved, but never announced"
+		identity, err := clientcrypto.NewIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed := mustSeal(clientcrypto.RecipientStringOf(identity), payload)
+		server := newServer(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/open") {
+				w.Header().Set("Flick-Kind", "text")
+				_, _ = w.Write(sealed)
+				return
+			}
+			fmt.Fprintf(w, `{"id":"secret1","kind":"text","size_bytes":%d,"expires_at":"2026-01-01T00:00:00Z"}`, len(sealed))
+		})
+		defer server.Close()
+		dir := t.TempDir()
+
+		err = runWithClosedStdout(t, "open", "-url", server.URL, "-output-dir", dir,
+			flickcli.BuildShareLink(server.URL, "secret1", identity))
+		if err == nil || errors.Is(err, flickcli.ErrWriteAfterConsume) {
+			t.Fatalf("err = %v, want a plain write error that leaves the saved file alone", err)
+		}
+		saved := filepath.Join(dir, onlyEntryIn(t, dir))
+		if got, _ := os.ReadFile(saved); string(got) != payload {
+			t.Errorf("the saved file = %q, want the payload", got)
+		}
+		if !strings.Contains(err.Error(), saved) {
+			t.Errorf("err = %v, want it to name %s", err, saved)
+		}
+	})
+
+	t.Run("request", func(t *testing.T) {
+		server := newServer(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"id":"req1","expires_at":"2026-01-01T00:00:00Z","submission_token":"s","retrieval_token":"r"}`)
+		})
+		defer server.Close()
+
+		err := runWithClosedStdout(t, "request", "-url", server.URL)
+		want := "the request was created and expires at 2026-01-01T00:00:00Z," +
+			" but its submission link could not be written to stdout"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("live", func(t *testing.T) {
+		var mu sync.Mutex
+		cancelled := 0
+		server := newServer(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch r.URL.Path {
+			case "/api/pipe/init":
+				fmt.Fprint(w, `{"code":"305817","expires_in":180,"sender_token":"sender-token"}`)
+			case "/api/pipe/cancel":
+				if r.Header.Get("X-Flick-Pipe-Sender") != "sender-token" {
+					http.NotFound(w, r)
+					return
+				}
+				cancelled++
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		defer server.Close()
+
+		err := runWithClosedStdout(t, "live", "-url", server.URL, "-confirm", "auto", "payload")
+		want := "the live code could not be written to stdout, so nothing was sent"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if cancelled != 1 {
+			t.Errorf("the room was cancelled %d time(s), want it released once nobody can learn the code", cancelled)
+		}
+	})
+}
+
+// openReply runs the receiving half of a request link or of a live transfer
+// against a fake that replies with payload as kind.
+func openReply(t *testing.T, command, kind string, payload []byte, flags ...string) error {
+	t.Helper()
+	reply := func(recipient string) (string, string, []byte) {
+		body := mustSeal(recipient, string(payload))
+		if kind != "file" {
+			return kind, "", body
+		}
+		// The name travels beside the body, sealed to the same recipient.
+		return kind, base64.StdEncoding.EncodeToString(mustSeal(recipient, "photo.jpg")), body
+	}
+	if command == "join" {
+		server := relayWithReply(reply)
+		defer server.Close()
+		return runJoin(context.Background(), append(append([]string{"-url", server.URL}, flags...), "305817"))
+	}
+
+	identity, err := clientcrypto.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient := clientcrypto.RecipientStringOf(identity)
+	kindOf, encryptedFilename, body := reply(recipient)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			fmt.Fprint(w, `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`)
+		case "/api/requests/req1/owner":
+			fmt.Fprintf(w, `{"fingerprint":%q,"expires_at":"2026-01-01T00:00:00Z","state":"submitted"}`,
+				clientcrypto.RecipientFingerprint(recipient))
+		case "/api/requests/req1/open":
+			w.Header().Set("Flick-Kind", kindOf)
+			if encryptedFilename != "" {
+				w.Header().Set("Flick-Encrypted-Filename", encryptedFilename)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	return runReceive(context.Background(), append(append([]string{"-url", server.URL}, flags...),
+		flickcli.BuildRetrievalLink(server.URL, "req1", token, identity)))
+}
+
+// relayWithReply is a relay that selects the first device to join and hands it
+// the reply sealed to whatever recipient that device published.
+func relayWithReply(reply func(recipient string) (kind, encryptedFilename string, body []byte)) *httptest.Server {
+	var mu sync.Mutex
+	var joined string
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/config":
+			fmt.Fprint(w, `{"payload_inline_max_bytes":1044208,"max_file_bytes":268435456}`)
+		case "/api/pipe/join":
+			var request struct {
+				Recipient string `json:"recipient"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			mu.Lock()
+			joined = request.Recipient
+			mu.Unlock()
+			fmt.Fprint(w, `{"connection_id":"c1","verify_code":"482","device":"phone","expires_in":180}`)
+		case "/api/pipe/status":
+			fmt.Fprint(w, `{"status":"selected"}`)
+		case "/api/pipe/receive":
+			mu.Lock()
+			recipient := joined
+			mu.Unlock()
+			if recipient == "" {
+				http.Error(w, "no recipient published", http.StatusConflict)
+				return
+			}
+			kind, encryptedFilename, body := reply(recipient)
+			w.Header().Set("Flick-Kind", kind)
+			if encryptedFilename != "" {
+				w.Header().Set("Flick-Encrypted-Filename", encryptedFilename)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// withClosedStdout makes every stdout write fail, as it does once the reader of a pipe is gone.
+func withClosedStdout(t *testing.T, body func()) {
+	t.Helper()
 	closed, err := os.CreateTemp(t.TempDir(), "stdout")
 	if err != nil {
 		t.Fatal(err)
@@ -737,16 +1064,27 @@ func TestFinishOpenedDoesNotRescueWhenNoValueWasOnStdout(t *testing.T) {
 	original := os.Stdout
 	os.Stdout = closed
 	t.Cleanup(func() { os.Stdout = original })
+	body()
+}
 
-	captured, writeErr := captureStderr(t, func() error {
-		return finishOpened(flickcli.OpenResult{Kind: "text", WrittenPath: "saved.txt"}, false, true, nil)
+// runWithClosedStdout is the real command entry with a stdout that takes nothing.
+func runWithClosedStdout(t *testing.T, args ...string) error {
+	t.Helper()
+	var err error
+	withClosedStdout(t, func() {
+		_, err = captureStderr(t, func() error { return run(args) })
 	})
-	if writeErr == nil || errors.Is(writeErr, flickcli.ErrWriteAfterConsume) {
-		t.Fatalf("err = %v, want a plain write error", writeErr)
+	return err
+}
+
+// onlyEntryIn is the single name dir holds.
+func onlyEntryIn(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("%s holds %d entries (err %v), want exactly one file", dir, len(entries), err)
 	}
-	if strings.Contains(captured, "Payload written to") {
-		t.Errorf("a payload that was never on stdout was reported as rescued: %q", captured)
-	}
+	return entries[0].Name()
 }
 
 func TestRunLiveRefusesWithoutATerminalOrConfirm(t *testing.T) {

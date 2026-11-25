@@ -117,8 +117,7 @@ func run(args []string) error {
 	case "join":
 		return runJoin(ctx, args[1:])
 	case "version":
-		fmt.Println(clientVersion())
-		return nil
+		return printLine(clientVersion())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -220,7 +219,10 @@ func runSend(ctx context.Context, args []string) error {
 			"model":      result.Model,
 		})
 	}
-	fmt.Println(result.Link)
+	if err := printLine(result.Link); err != nil {
+		return fmt.Errorf("the secret was created and expires at %s, but its link could not be written to stdout: %w",
+			result.ExpiresAt, err)
+	}
 	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
 		fmt.Fprintf(os.Stderr, "Expires %s. Opens once, then it is gone.\n", t.Format(time.RFC3339))
 	} else {
@@ -281,14 +283,20 @@ func runOpen(ctx context.Context, args []string) error {
 	return finishOpened(result, *reveal, *asJSON, nil)
 }
 
-// finishOpened is the one way an opened payload leaves a command. A value it
-// put on stdout exists only in this process once consumed, so a failed write
-// is rescued to a file instead of reported and lost.
+// finishOpened reports an opened payload and rescues a value whose stdout write
+// failed: once consumed, that value exists only in this process.
 func finishOpened(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
 	err := reportOpenedResult(result, reveal, asJSON, extra)
 	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(result, err)
 	}
+	return err
+}
+
+// printLine writes one line to stdout and reports a failed write: run ignores
+// SIGPIPE, so a reader that is already gone must not pass for success.
+func printLine(text string) error {
+	_, err := fmt.Println(text)
 	return err
 }
 
@@ -300,7 +308,7 @@ func reportOpened(result flickcli.OpenResult, reveal bool) error {
 			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
 		}
 		// The path is the machine-readable outcome; values stay off stdout.
-		fmt.Println(result.WrittenPath)
+		pathErr := printLine(result.WrittenPath)
 		if result.Credential != nil {
 			for _, line := range result.Credential.SummaryLines() {
 				fmt.Fprintln(os.Stderr, line)
@@ -310,6 +318,10 @@ func reportOpened(result flickcli.OpenResult, reveal bool) error {
 		if result.Kind == "file" && reveal {
 			// stdout cannot be reserved, so a streamed file never goes there, not even under -reveal.
 			fmt.Fprintln(os.Stderr, "A file secret is saved, not revealed; the path above is the result.")
+		}
+		if pathErr != nil {
+			return fmt.Errorf("the payload was saved to %s, but its path could not be written to stdout: %w",
+				result.WrittenPath, pathErr)
 		}
 		return nil
 	}
@@ -363,10 +375,18 @@ func runRequest(ctx context.Context, args []string) error {
 			"note":            result.HasNote,
 		})
 	}
-	fmt.Fprintln(os.Stderr, "Share this submission link — it works once, until it expires:")
-	fmt.Println(result.SubmissionLink)
-	fmt.Fprintln(os.Stderr, "Keep this private retrieval link. It carries the only key to the reply; losing it loses the reply:")
-	fmt.Println(result.RetrievalLink)
+	links := []struct{ notice, link, failure string }{
+		{"Share this submission link — it works once, until it expires:", result.SubmissionLink,
+			"but its submission link could not be written to stdout"},
+		{"Keep this private retrieval link. It carries the only key to the reply; losing it loses the reply:", result.RetrievalLink,
+			"but its private retrieval link could not be written to stdout, so a reply to it can no longer be read"},
+	}
+	for _, link := range links {
+		fmt.Fprintln(os.Stderr, link.notice)
+		if err := printLine(link.link); err != nil {
+			return fmt.Errorf("the request was created and expires at %s, %s: %w", result.ExpiresAt, link.failure, err)
+		}
+	}
 	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
 		fmt.Fprintf(os.Stderr, "The request expires %s.\n", t.Format(time.RFC3339))
 	} else {
@@ -956,7 +976,9 @@ func runLive(ctx context.Context, args []string) error {
 			fmt.Fprintf(os.Stderr, "Live transfer code: %s (expires in %d seconds)\n", session.Code, session.ExpiresIn)
 			return nil
 		}
-		fmt.Println(session.Code)
+		if err := printLine(session.Code); err != nil {
+			return fmt.Errorf("the live code could not be written to stdout, so nothing was sent: %w", err)
+		}
 		fmt.Fprintf(os.Stderr, "The recipient runs: flick join %s — the code expires in %d seconds.\n", session.Code, session.ExpiresIn)
 		fmt.Fprintln(os.Stderr, "Waiting for a device. Nothing is stored on the server.")
 		return nil
@@ -1110,10 +1132,21 @@ func reportOpenedResult(result flickcli.OpenResult, reveal, asJSON bool, extra m
 		out[key] = value
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
-		if reveal {
+		if reveal && result.WrittenPath == "" {
 			return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
 		}
-		return err
+		return undeliveredResult(result, err)
 	}
 	return nil
+}
+
+// undeliveredResult reports a stdout that could not carry the outcome. No value
+// of the payload was on it, so there is nothing to rescue: what was opened is
+// on disk at WrittenPath, or the object carried no such value.
+func undeliveredResult(result flickcli.OpenResult, err error) error {
+	if result.WrittenPath == "" {
+		return fmt.Errorf("write the result to stdout: %w", err)
+	}
+	return fmt.Errorf("the payload was saved to %s, but its result could not be written to stdout: %w",
+		result.WrittenPath, err)
 }
