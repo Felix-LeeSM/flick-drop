@@ -40,7 +40,7 @@ macOS・Linux・Windows向けのビルド済みバイナリが、各`cli/v*`[リ
 **macOS / Linux：**
 
 ```bash
-version=v0.2.0
+version=v0.3.0
 platform=darwin_arm64   # または darwin_amd64, linux_amd64, linux_arm64
 base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
 
@@ -93,6 +93,11 @@ flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 flick request -ttl 24h -note "ステージングのパスワードをください"
 flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "どうぞ"
 flick receive - < retrieval-link.txt
+
+# 近くのデバイスへリアルタイム転送: サーバーには何も保存されず、受取人が声に出して
+# 読む3桁の番号で確認します（エージェント: -confirm auto または -confirm <nnn>）
+flick live "wifi password"
+flick join 305817
 ```
 
 `-reveal`を渡すまで、復号された値がstdoutに出ることはありません。ターミナルのスクロールバックやエージェント・CIのログに秘密が残らないよう、代わりに保存先のファイルパスを報告し、`flick open -json`は`-reveal`と併用しない限りシークレットフィールドの値を除いた構造だけを出力します。

@@ -22,7 +22,13 @@ process, not a service. It has no config file, no database, and no telemetry.
 ## What belongs here
 
 - Flag and subcommand parsing (`flag`, not a CLI framework — the surface is
-  `send`, `open`, `request`, `submit`, `receive`, and `version`).
+  `send`, `open`, `request`, `submit`, `receive`, `live`, `join`, and
+  `version`).
+- Live-transfer commands (`cmd/flick/main.go` `runLive`, `runJoin`) confirm the
+  receiver by its 3-digit number: interactive on a terminal, `-confirm auto`
+  (first waiting row) or `-confirm <nnn>` (that number) for scripts, and a
+  refusal before `/init` when there is neither a terminal nor `-confirm`, so
+  no room is burned.
 - Terminal interaction: passphrase prompts, TTY detection, exit codes.
 - Rendering results for humans and for `-json`.
 
@@ -49,22 +55,41 @@ Encryption, HTTP calls, and share-link handling belong in
 - **A passphrase is never a flag value.** Command arguments are visible to every
   process through `ps` and land in shell history. Read it from the terminal
   without echo, or from `FLICK_PASSPHRASE` for scripted use.
-- **Decrypted values never reach stdout by default.** `flick open` saves the
-  payload to a reserved 0600 file
-  (`internal/flickcli/open.go:reserveAutoDestination`) and prints only its
+- **Decrypted values never reach stdout by default.** `flick open`,
+  `flick receive`, and `flick join` save the payload to a reserved 0600 file
+  (`internal/flickcli/open.go:reserveAutoDestination`) and print only its
   path, so secrets stay out of terminal scrollback, pipes, and agent or CI
   logs. `-reveal` opts into stdout — byte-exact text bytes, formatted
-  credential values (`cmd/flick/main.go:runOpen`) — and is what makes
-  `flick open -reveal <link> > secret.txt` write the secret.
-- `-json` carries values only together with `-reveal`
-  (`cmd/flick/main.go:printOpenJSON`); alone it reports the saved path plus a
-  credential structure whose secret-field values are omitted.
+  credential values — and is what makes `flick open -reveal <link> >
+  secret.txt` write the secret. A file secret is always saved to disk, also
+  under `-reveal`, because stdout cannot be reserved for a streamed file.
+  `cmd/flick/main.go:reportOpened` is the one renderer for all three
+  commands, and `cmd/flick/main.go:reportOpenedResult` is its `-json` form,
+  which keeps stdout to exactly one JSON object.
+- Under `-json` (`cmd/flick/main.go:reportOpenedResult`) stdout is exactly one
+  object. A credential's `title`, `notes`, and non-secret field values are in
+  it with or without `-reveal`; secret-field values and text are in it only
+  together with `-reveal`.
 - Prompts, status lines, and the masked credential summary
   (`internal/flickcli/credential.go:SummaryLines`) go to stderr.
-- A consumed secret whose write failed is rescued to a fresh 0600 file, never
-  stdout (`cmd/flick/main.go:writeRescueFile`).
-- Piped stdout stays byte-exact under `-reveal` — no trailing newline is added
-  unless stdout is a terminal.
+- A consumed text or credential payload whose write failed is rescued to a
+  fresh 0600 file in the OS temp directory
+  (`cmd/flick/main.go:writeRescueFile`), never dropped. `flick open`,
+  `flick receive`, and `flick join` report an opened payload through
+  `cmd/flick/main.go:finishOpened`, which calls `cmd/flick/main.go:rescue`
+  when the error carries `internal/flickcli/open.go:ErrWriteAfterConsume`; a
+  failed `-reveal` stdout write is marked that way too, because the consumed
+  payload then exists only in this process. A streamed file secret has no
+  second copy: a disk that fails mid-stream loses it
+  (`internal/flickcli/AGENTS.md`).
+- `cmd/flick/main.go:run` ignores `SIGPIPE` so a write to a pipe whose reader
+  is gone returns an error instead of ending the process, and that error is
+  returned: a share or request link, a saved path, or a live code that stdout
+  could not take (`cmd/flick/main.go:printLine`) ends the command with exit 1
+  instead of exit 0.
+- Under `-reveal` piped text is byte-exact — no trailing newline is added
+  unless stdout is a terminal. A credential prints as `Label: value` lines
+  with one trailing newline (`internal/flickcli/credential.go:RevealText`).
 - `flick send -credential <path|->` sends a structured credential as JSON
   validated against `contracts/credential-payload.schema.json`
   (`internal/flickcli/credential.go:ParseCredentialInput`); an invalid payload

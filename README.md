@@ -40,7 +40,7 @@ Prebuilt binaries for macOS, Linux, and Windows are attached to each `cli/v*` [r
 **macOS and Linux:**
 
 ```bash
-version=v0.2.0
+version=v0.3.0
 platform=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
 base=https://github.com/Felix-LeeSM/flick-drop/releases/download/cli/$version
 
@@ -93,6 +93,11 @@ flick open -reveal https://flick.makana.cc/s/abc123 > recovered.txt
 flick request -ttl 24h -note "the staging password, please"
 flick submit 'https://flick.makana.cc/r/abc#submit=...&fp=...' "here it is"
 flick receive - < retrieval-link.txt
+
+# Live transfer to a nearby device: nothing is stored, the receiver confirms
+# with a 3-digit number read out loud (agents: -confirm auto or -confirm <nnn>)
+flick live "wifi password"
+flick join 305817
 ```
 
 Flags can appear before or after positional arguments. A passphrase is never accepted as a flag, because command arguments show up in `ps` and shell history; for scripted use, set `FLICK_PASSPHRASE` in place of the prompt.

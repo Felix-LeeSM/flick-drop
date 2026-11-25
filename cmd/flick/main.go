@@ -35,6 +35,8 @@ Usage:
   flick request [flags]               Create a one-time request link pair
   flick submit [flags] <link> [text]  Send a secret into a request link
   flick receive [flags] <link|->      Retrieve the reply to a request link
+  flick live [flags] [text]           Stream a secret to a nearby device by code
+  flick join [flags] <code>           Receive a live transfer by its 6-digit code
   flick version                       Print the client version
 
 Run "flick <command> -h" for the flags of a command.
@@ -54,6 +56,13 @@ A request link asks someone to send you a secret once: "flick request" prints
 a submission link to share and a private retrieval link to keep — the retrieval
 link holds the only key, so pipe it instead of leaving it in shell history:
   flick receive - < retrieval-link.txt
+
+A live transfer streams a secret to a nearby device without storing it; the
+receiver confirms themselves with a 3-digit number read out loud:
+  flick live "wifi password"
+  flick join 305817
+Without a terminal, say how to confirm the receiver ("-confirm auto" takes the
+first device, "-confirm 482" waits for that number).
 
 An opened secret is saved to a 0600 file and only its path is printed, so
 decrypted values never land in terminal scrollback or piped command logs.
@@ -85,6 +94,10 @@ func run(args []string) error {
 		return errors.New("no command given")
 	}
 
+	// A write to a pipe whose reader is gone must fail with an error, not kill the
+	// process: under -reveal the payload exists only here and still needs its rescue.
+	signal.Ignore(syscall.SIGPIPE)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -99,9 +112,12 @@ func run(args []string) error {
 		return runSubmit(ctx, args[1:])
 	case "receive":
 		return runReceive(ctx, args[1:])
+	case "live":
+		return runLive(ctx, args[1:])
+	case "join":
+		return runJoin(ctx, args[1:])
 	case "version":
-		fmt.Println(clientVersion())
-		return nil
+		return printLine(clientVersion())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -203,7 +219,10 @@ func runSend(ctx context.Context, args []string) error {
 			"model":      result.Model,
 		})
 	}
-	fmt.Println(result.Link)
+	if err := printLine(result.Link); err != nil {
+		return fmt.Errorf("the secret was created and expires at %s, but its link could not be written to stdout: %w",
+			result.ExpiresAt, err)
+	}
 	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
 		fmt.Fprintf(os.Stderr, "Expires %s. Opens once, then it is gone.\n", t.Format(time.RFC3339))
 	} else {
@@ -220,7 +239,7 @@ func runOpen(ctx context.Context, args []string) error {
 	output := flags.String("output", "", "Write the payload to this exact path")
 	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
 	reveal := flags.Bool("reveal", false,
-		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file secret is always saved to disk)")
 	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
@@ -261,10 +280,24 @@ func runOpen(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if *asJSON {
-		return printOpenJSON(result, *reveal)
+	return finishOpened(result, *reveal, *asJSON, nil)
+}
+
+// finishOpened reports an opened payload and rescues a value whose stdout write
+// failed: once consumed, that value exists only in this process.
+func finishOpened(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
+	err := reportOpenedResult(result, reveal, asJSON, extra)
+	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		return rescue(result, err)
 	}
-	return reportOpened(result, *reveal)
+	return err
+}
+
+// printLine writes one line to stdout and reports a failed write: run ignores
+// SIGPIPE, so a reader that is already gone must not pass for success.
+func printLine(text string) error {
+	_, err := fmt.Println(text)
+	return err
 }
 
 // The common human rendering for every opened payload: path on stdout, values
@@ -275,25 +308,37 @@ func reportOpened(result flickcli.OpenResult, reveal bool) error {
 			fmt.Fprintln(os.Stderr, "flick: the sender's filename could not be decrypted; saved under a generic name.")
 		}
 		// The path is the machine-readable outcome; values stay off stdout.
-		fmt.Println(result.WrittenPath)
+		pathErr := printLine(result.WrittenPath)
 		if result.Credential != nil {
 			for _, line := range result.Credential.SummaryLines() {
 				fmt.Fprintln(os.Stderr, line)
 			}
 			fmt.Fprintln(os.Stderr, "Secret fields are masked here; the values are in the file. Run with -reveal to print them.")
 		}
+		if result.Kind == "file" && reveal {
+			// stdout cannot be reserved, so a streamed file never goes there, not even under -reveal.
+			fmt.Fprintln(os.Stderr, "A file secret is saved, not revealed; the path above is the result.")
+		}
+		if pathErr != nil {
+			return fmt.Errorf("the payload was saved to %s, but its path could not be written to stdout: %w",
+				result.WrittenPath, pathErr)
+		}
 		return nil
 	}
 	if result.Credential != nil {
-		fmt.Println(result.Credential.RevealText())
+		if _, err := fmt.Fprintln(os.Stdout, result.Credential.RevealText()); err != nil {
+			return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+		}
 		return nil
 	}
-	_, err := os.Stdout.Write(result.Plaintext)
-	if err == nil && !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
+	if _, err := os.Stdout.Write(result.Plaintext); err != nil {
+		return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+	}
+	if !strings.HasSuffix(string(result.Plaintext), "\n") && term.IsTerminal(int(os.Stdout.Fd())) {
 		// Keep piped output byte-exact.
 		fmt.Println()
 	}
-	return err
+	return nil
 }
 
 func runRequest(ctx context.Context, args []string) error {
@@ -330,10 +375,18 @@ func runRequest(ctx context.Context, args []string) error {
 			"note":            result.HasNote,
 		})
 	}
-	fmt.Fprintln(os.Stderr, "Share this submission link — it works once, until it expires:")
-	fmt.Println(result.SubmissionLink)
-	fmt.Fprintln(os.Stderr, "Keep this private retrieval link. It carries the only key to the reply; losing it loses the reply:")
-	fmt.Println(result.RetrievalLink)
+	links := []struct{ notice, link, failure string }{
+		{"Share this submission link — it works once, until it expires:", result.SubmissionLink,
+			"but its submission link could not be written to stdout"},
+		{"Keep this private retrieval link. It carries the only key to the reply; losing it loses the reply:", result.RetrievalLink,
+			"but its private retrieval link could not be written to stdout, so a reply to it can no longer be read"},
+	}
+	for _, link := range links {
+		fmt.Fprintln(os.Stderr, link.notice)
+		if err := printLine(link.link); err != nil {
+			return fmt.Errorf("the request was created and expires at %s, %s: %w", result.ExpiresAt, link.failure, err)
+		}
+	}
 	if t, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
 		fmt.Fprintf(os.Stderr, "The request expires %s.\n", t.Format(time.RFC3339))
 	} else {
@@ -435,7 +488,7 @@ func runReceive(ctx context.Context, args []string) error {
 	output := flags.String("output", "", "Write the reply to this exact path")
 	outputDir := flags.String("output-dir", ".", "Directory to save the reply into")
 	reveal := flags.Bool("reveal", false,
-		"Print the reply to stdout instead of saving it (text byte-exact; a credential as label: value lines)")
+		"Print the reply to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file reply is always saved to disk)")
 	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
 	apiURL := flags.String("url", "", "Flick deployment URL (default: taken from the link)")
 	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
@@ -482,7 +535,8 @@ func runReceive(ctx context.Context, args []string) error {
 	})
 	if result.Opened != nil && errors.Is(err, flickcli.ErrOverInlineCap) {
 		fmt.Fprintln(os.Stderr, "flick: the reply passed the inline text limit; it is secured below, but check the sender.")
-		return reportOpened(*result.Opened, *reveal)
+		return finishOpened(*result.Opened, *reveal, *asJSON,
+			map[string]any{"state": result.State, "expires_at": result.ExpiresAt, "over_inline_limit": true})
 	}
 	if result.Opened != nil && errors.Is(err, flickcli.ErrWriteAfterConsume) {
 		return rescue(*result.Opened, err)
@@ -492,16 +546,7 @@ func runReceive(ctx context.Context, args []string) error {
 	}
 
 	if result.Opened != nil {
-		if *asJSON {
-			openJSON, err := openedJSON(*result.Opened, *reveal)
-			if err != nil {
-				return err
-			}
-			openJSON["state"] = result.State
-			openJSON["expires_at"] = result.ExpiresAt
-			return json.NewEncoder(os.Stdout).Encode(openJSON)
-		}
-		return reportOpened(*result.Opened, *reveal)
+		return finishOpened(*result.Opened, *reveal, *asJSON, map[string]any{"state": result.State, "expires_at": result.ExpiresAt})
 	}
 
 	if *asJSON {
@@ -522,15 +567,6 @@ func runReceive(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stderr, "This request was cancelled.")
 	}
 	return nil
-}
-
-// Values appear only under -reveal; the default shape carries the saved path and structure.
-func printOpenJSON(result flickcli.OpenResult, reveal bool) error {
-	out, err := openedJSON(result, reveal)
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(out)
 }
 
 func openedJSON(result flickcli.OpenResult, reveal bool) (map[string]any, error) {
@@ -694,10 +730,14 @@ func promptYesNo(label string) (bool, error) {
 // Byte at a time: a bufio.Reader would swallow input meant for the passphrase reader that follows.
 // Ctrl-D on an empty line is a cancel, never "take the default".
 func readLine() (string, error) {
+	return readLineFrom(os.Stdin)
+}
+
+func readLineFrom(input io.Reader) (string, error) {
 	line := make([]byte, 0, 32)
 	buf := make([]byte, 1)
 	for {
-		read, err := os.Stdin.Read(buf)
+		read, err := input.Read(buf)
 		if read > 0 {
 			if buf[0] == '\n' {
 				break
@@ -848,4 +888,265 @@ func clientVersion() string {
 		return info.Main.Version
 	}
 	return "unknown"
+}
+
+func runLive(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick live", flag.ContinueOnError)
+	filePath := flags.String("file", "", "Encrypt and send this file instead of text")
+	credentialPath := flags.String("credential", "",
+		`Send this credential JSON file instead of text (FLCR1 prefix optional; "-" reads stdin)`)
+	confirm := flags.String("confirm", "",
+		`How to confirm the receiver: "auto" sends to the first waiting device, a 3-digit number waits for it; the default asks on a terminal`)
+	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
+	asJSON := flags.Bool("json", false,
+		"Print the result as JSON; the 6-digit code is written to stderr as soon as the room exists")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+
+	opts := flickcli.LiveSendOptions{}
+	var pick func(pending []flickcli.PipePending) (flickcli.LiveDecision, error)
+	switch {
+	case *confirm == "auto":
+	case pipeConfirmArg(*confirm) != "":
+		want := pipeConfirmArg(*confirm)
+		pick = func(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+			for _, conn := range pending {
+				if conn.VerifyCode == want {
+					return flickcli.LiveDecision{Action: "send", ConnectionID: conn.ConnectionID}, nil
+				}
+			}
+			return flickcli.LiveDecision{Action: "wait"}, nil
+		}
+	case *confirm == "":
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return errors.New(
+				"no terminal to confirm the receiver; pass -confirm auto, or -confirm with the 3-digit number the receiver reads out")
+		}
+		pick = func(pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+			return promptLivePick(ctx, pending)
+		}
+	default:
+		return fmt.Errorf("-confirm must be \"auto\" or a 3-digit number, not %q", *confirm)
+	}
+
+	switch {
+	case *filePath != "":
+		if flags.NArg() > 0 {
+			return errors.New("send a file or text, not both")
+		}
+		if *credentialPath != "" {
+			return errors.New("send a file or a credential, not both")
+		}
+		file, err := os.Open(*filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		opts.File = file
+		opts.FileName = fileNameOf(*filePath)
+	case *credentialPath != "":
+		if flags.NArg() > 0 {
+			return errors.New("send a credential or text, not both")
+		}
+		data, err := readInput(*credentialPath)
+		if err != nil {
+			return err
+		}
+		opts.Credential = string(data)
+	case flags.NArg() == 1:
+		opts.Text = flags.Arg(0)
+	case !term.IsTerminal(int(os.Stdin.Fd())):
+		text, err := readText(nil, 0)
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	default:
+		text, err := promptSecretText()
+		if err != nil {
+			return err
+		}
+		opts.Text = text
+	}
+	opts.Pick = pick
+	opts.Started = func(session flickcli.PipeSession) error {
+		if *asJSON {
+			// The code is needed before the transfer ends, so it goes to stderr and stdout stays one JSON object.
+			fmt.Fprintf(os.Stderr, "Live transfer code: %s (expires in %d seconds)\n", session.Code, session.ExpiresIn)
+			return nil
+		}
+		if err := printLine(session.Code); err != nil {
+			return fmt.Errorf("the live code could not be written to stdout, so nothing was sent: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "The recipient runs: flick join %s — the code expires in %d seconds.\n", session.Code, session.ExpiresIn)
+		fmt.Fprintln(os.Stderr, "Waiting for a device. Nothing is stored on the server.")
+		return nil
+	}
+
+	result, err := flickcli.LiveSend(ctx, flickcli.NewClient(*apiURL, nil), opts)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Cancelled. The code no longer works.")
+		}
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"code":              result.Code,
+			"bytes_transferred": result.BytesTransferred,
+			"verify_code":       result.VerifyCode,
+		})
+	}
+	fmt.Fprintf(os.Stderr, "Sent to the device that read out %s (%d bytes). The transfer is gone from the server.\n",
+		result.VerifyCode, result.BytesTransferred)
+	return nil
+}
+
+// promptLivePick renders the waiting rows and reads the 3-digit number the
+// receiver read out; "d<nnn>" declines that device and an empty line keeps waiting.
+// A terminal read does not return on a signal, so the line is read beside the
+// context and Ctrl-C cancels the session without waiting for Enter.
+func promptLivePick(ctx context.Context, pending []flickcli.PipePending) (flickcli.LiveDecision, error) {
+	fmt.Fprintln(os.Stderr, "Devices waiting:")
+	for _, conn := range pending {
+		fmt.Fprintf(os.Stderr, "  %s  %s (waiting %ds)\n", conn.VerifyCode, conn.Device, conn.ConnectedSeconds)
+	}
+	fmt.Fprint(os.Stderr, "Which number does your receiver see? [d<nnn> to decline, Enter to keep waiting]: ")
+
+	type answer struct {
+		line string
+		err  error
+	}
+	stdin := os.Stdin
+	read := make(chan answer, 1)
+	go func() {
+		line, err := readLineFrom(stdin)
+		read <- answer{line, err}
+	}()
+	var typed string
+	var err error
+	select {
+	case got := <-read:
+		typed, err = got.line, got.err
+	case <-ctx.Done():
+		return flickcli.LiveDecision{}, ctx.Err()
+	}
+	if err != nil {
+		return flickcli.LiveDecision{}, err
+	}
+	typed = strings.TrimSpace(typed)
+	if typed == "" {
+		return flickcli.LiveDecision{Action: "wait"}, nil
+	}
+	if declined, ok := strings.CutPrefix(typed, "d"); ok {
+		if want := pipeConfirmArg(declined); want != "" {
+			for _, conn := range pending {
+				if conn.VerifyCode == want {
+					return flickcli.LiveDecision{Action: "decline", ConnectionID: conn.ConnectionID}, nil
+				}
+			}
+		}
+		return flickcli.LiveDecision{Action: "wait"}, nil
+	}
+	if want := pipeConfirmArg(typed); want != "" {
+		for _, conn := range pending {
+			if conn.VerifyCode == want {
+				return flickcli.LiveDecision{Action: "send", ConnectionID: conn.ConnectionID}, nil
+			}
+		}
+		fmt.Fprintf(os.Stderr, "No device is showing %s.\n", want)
+	}
+	return flickcli.LiveDecision{Action: "wait"}, nil
+}
+
+func pipeConfirmArg(value string) string {
+	if len(value) == 3 && strings.Trim(value, "0123456789") == "" {
+		return value
+	}
+	return ""
+}
+
+func runJoin(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("flick join", flag.ContinueOnError)
+	output := flags.String("output", "", "Write the payload to this exact path")
+	outputDir := flags.String("output-dir", ".", "Directory to save the payload into")
+	reveal := flags.Bool("reveal", false,
+		"Print the payload to stdout instead of saving it (text byte-exact; a credential as label: value lines; a file secret is always saved to disk)")
+	asJSON := flags.Bool("json", false, "Print the result as JSON (values only together with -reveal)")
+	apiURL := flags.String("url", defaultURL(), "Flick deployment URL")
+	if err := flags.Parse(hoistFlags(flags, args)); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("give exactly one 6-digit live transfer code")
+	}
+	if *reveal && *output != "" {
+		return errors.New("choose one destination: -reveal for stdout or -output for a file")
+	}
+	code, err := flickcli.NormalizePipeCode(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	result, err := flickcli.LiveJoin(ctx, flickcli.NewClient(*apiURL, nil), flickcli.LiveJoinOptions{
+		Code:       code,
+		OutputPath: *output,
+		OutputDir:  *outputDir,
+		Reveal:     *reveal,
+		Connected: func(verifyCode string, expiresIn int) error {
+			fmt.Fprintf(os.Stderr, "Read this to the sender: %s\n", verifyCode)
+			fmt.Fprintf(os.Stderr, "Waiting for the sender to send (expires in %d seconds)...\n", expiresIn)
+			return nil
+		},
+	})
+	if errors.Is(err, flickcli.ErrOverInlineCap) {
+		fmt.Fprintln(os.Stderr, "flick: the live payload passed the inline text limit; it is secured below, but check the sender.")
+		return finishOpened(result, *reveal, *asJSON, map[string]any{"code": code, "over_inline_limit": true})
+	}
+	if errors.Is(err, flickcli.ErrWriteAfterConsume) {
+		return rescue(result, err)
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Disconnected from the waiting room.")
+		}
+		return err
+	}
+
+	return finishOpened(result, *reveal, *asJSON, map[string]any{"code": code})
+}
+
+// reportOpenedResult is reportOpened for every command that opens a payload:
+// under -json stdout is exactly one object, whatever branch reported it.
+// Values appear in that object only together with reveal.
+func reportOpenedResult(result flickcli.OpenResult, reveal, asJSON bool, extra map[string]any) error {
+	if !asJSON {
+		return reportOpened(result, reveal)
+	}
+	out, err := openedJSON(result, reveal)
+	if err != nil {
+		return err
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		if reveal && result.WrittenPath == "" {
+			return fmt.Errorf("%w: %w", flickcli.ErrWriteAfterConsume, err)
+		}
+		return undeliveredResult(result, err)
+	}
+	return nil
+}
+
+// undeliveredResult reports a stdout that could not carry the outcome. No value
+// of the payload was on it, so there is nothing to rescue: what was opened is
+// on disk at WrittenPath, or the object carried no such value.
+func undeliveredResult(result flickcli.OpenResult, err error) error {
+	if result.WrittenPath == "" {
+		return fmt.Errorf("write the result to stdout: %w", err)
+	}
+	return fmt.Errorf("the payload was saved to %s, but its result could not be written to stdout: %w",
+		result.WrittenPath, err)
 }
