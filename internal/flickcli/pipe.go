@@ -61,6 +61,12 @@ func (c *Client) pipeRequest(ctx context.Context, method, path string, headers m
 	if err != nil {
 		return nil, fmt.Errorf("could not reach %s: %w", c.baseURL, err)
 	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		defer resp.Body.Close()
+		// Otherwise an http:// -url behind an https upgrade reads as a relay failure.
+		return nil, &APIError{Code: "redirect_refused", Status: resp.StatusCode, Message: fmt.Sprintf(
+			"%s answered with a redirect, which a live transfer request never follows; pass the final origin as -url", c.baseURL)}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		return nil, readAPIError(resp)

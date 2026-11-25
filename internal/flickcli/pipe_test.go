@@ -1454,10 +1454,40 @@ func TestPipeRequestsNeverFollowARedirect(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusFound {
 		t.Fatalf("err = %v, want the redirect itself reported", err)
 	}
+	if apiErr.Code != "redirect_refused" || !strings.Contains(err.Error(), "never follows") {
+		t.Errorf("err = %v, want the refusal named as a redirect and the way out", err)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if reached != 0 {
 		t.Errorf("the redirect target was called %d time(s) with the pipe credentials", reached)
+	}
+}
+
+// abortingTransport drops the connection after cancelling the caller, which is
+// how a long poll cut short by Ctrl-C looks from inside the client.
+type abortingTransport struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (a *abortingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	a.calls++
+	a.cancel()
+	return nil, io.ErrUnexpectedEOF
+}
+
+func TestPipeLongPollNeverRetriesAnAbort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport := &abortingTransport{cancel: cancel}
+
+	_, err := NewClient("https://relay.invalid", &http.Client{Transport: transport}).PipeStatus(ctx, "305817", "connection")
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want the dropped connection", err)
+	}
+	if transport.calls != 1 {
+		t.Errorf("the long poll was sent %d times, want only the one that was cut short", transport.calls)
 	}
 }
 
