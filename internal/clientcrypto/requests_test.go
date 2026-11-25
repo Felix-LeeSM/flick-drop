@@ -5,9 +5,11 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRecipientRoundTripsAFreshIdentity(t *testing.T) {
+	withTimeout(t, time.Minute)
 	identity, err := NewIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +29,7 @@ func TestParseRecipientRoundTripsAFreshIdentity(t *testing.T) {
 }
 
 func TestParseRecipientRejectsSubstitutedForms(t *testing.T) {
+	withTimeout(t, time.Minute)
 	identity, err := NewIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +51,7 @@ func TestParseRecipientRejectsSubstitutedForms(t *testing.T) {
 }
 
 func TestEncryptToRecipientDecryptsWithTheMatchingIdentity(t *testing.T) {
+	withTimeout(t, time.Minute)
 	identity, err := NewIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +91,7 @@ func TestEncryptToRecipientDecryptsWithTheMatchingIdentity(t *testing.T) {
 }
 
 func TestNewAttemptTokenMatchesTheCapabilityShape(t *testing.T) {
+	withTimeout(t, time.Minute)
 	token, err := NewAttemptToken()
 	if err != nil {
 		t.Fatal(err)

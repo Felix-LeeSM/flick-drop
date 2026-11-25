@@ -39,6 +39,16 @@ send/open flows. `cmd/flick` parses flags and calls into here.
 - `credential.go`: parse, validate, and serialize `FLCR1:` credential payloads
   (twin of `web/src/lib/credentials/serialize.ts`), plus the masked stderr
   summary and the `-reveal` rendering.
+- `cassette_test.go` with `testdata/cassettes/*.json`: the `TestCassette*`
+  tests replay recorded responses of a real deployment offline. Recording is
+  a manual run with `FLICK_CASSETTE_RECORD=<deployment url>` that uses fake
+  payloads and consumes every secret it creates, so a committed cassette
+  holds only dead tokens.
+- `SendOptions.Identity` and `RequestOptions.Identity`/`MemoIdentity`
+  (`send.go`, `request.go`) pin delivery keys for that recording only.
+  `cmd/flick` never sets them; a caller must not reuse a pinned identity
+  across deliveries, because each delivery needs a fresh key
+  (`docs/architecture/security-model.md`).
 
 ## Boundaries
 

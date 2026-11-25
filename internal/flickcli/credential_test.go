@@ -3,12 +3,14 @@ package flickcli
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The exact bytes web/src/lib/credentials/serialize.ts produces for a web-created login.
 const webCredential = `FLCR1:{"v":1,"type":"login","fields":[{"id":"username","label":"Username","value":"alice","secret":false},{"id":"password","label":"Password","value":"hunter2","secret":true}],"title":"","notes":""}`
 
 func TestParseCredentialAcceptsTheWebBytes(t *testing.T) {
+	withTimeout(t, time.Minute)
 	cred, ok := ParseCredential([]byte(webCredential))
 	if !ok {
 		t.Fatal("the web serialization was not recognized")
@@ -28,6 +30,7 @@ func TestParseCredentialAcceptsTheWebBytes(t *testing.T) {
 }
 
 func TestSerializeCredentialReproducesTheWebBytes(t *testing.T) {
+	withTimeout(t, time.Minute)
 	cred, ok := ParseCredential([]byte(webCredential))
 	if !ok {
 		t.Fatal("parse failed")
@@ -38,6 +41,7 @@ func TestSerializeCredentialReproducesTheWebBytes(t *testing.T) {
 }
 
 func TestSerializeCredentialDoesNotHTMLEscape(t *testing.T) {
+	withTimeout(t, time.Minute)
 	cred := Credential{Type: "custom", Fields: []CredentialField{
 		{ID: "f", Label: "L", Value: "a<b&c", Secret: false},
 	}}
@@ -51,6 +55,7 @@ func TestSerializeCredentialDoesNotHTMLEscape(t *testing.T) {
 }
 
 func TestParseCredentialRejectsMalformedPayloads(t *testing.T) {
+	withTimeout(t, time.Minute)
 	for name, value := range map[string]string{
 		"no prefix":         `{"v":1,"type":"login","fields":[]}`,
 		"not json":          "FLCR1:not json",
@@ -85,6 +90,7 @@ func TestParseCredentialRejectsMalformedPayloads(t *testing.T) {
 }
 
 func TestParseCredentialInputAcceptsJSONWithoutThePrefix(t *testing.T) {
+	withTimeout(t, time.Minute)
 	cred, err := ParseCredentialInput([]byte(`{"v":1,"type":"card","title":"personal","fields":[{"id":"number","label":"Number","value":"4111","secret":true}]}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -103,6 +109,7 @@ func TestParseCredentialInputAcceptsJSONWithoutThePrefix(t *testing.T) {
 }
 
 func TestCredentialRenderings(t *testing.T) {
+	withTimeout(t, time.Minute)
 	cred, ok := ParseCredential([]byte(webCredential))
 	if !ok {
 		t.Fatal("parse failed")

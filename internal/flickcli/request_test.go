@@ -376,6 +376,7 @@ func (f *fakeFlick) openRequest(w http.ResponseWriter, r *http.Request, stored *
 }
 
 func TestRequestSubmitReceiveTextRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -433,6 +434,7 @@ func TestRequestSubmitReceiveTextRoundTrip(t *testing.T) {
 }
 
 func TestRequestNeverSendsTheIdentityOrTokensInBodies(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -465,6 +467,7 @@ func TestRequestNeverSendsTheIdentityOrTokensInBodies(t *testing.T) {
 }
 
 func TestRequestWithNoteRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -502,6 +505,7 @@ func TestRequestWithNoteRoundTrip(t *testing.T) {
 }
 
 func TestRequestCredentialAndFileRoundTrip(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -553,6 +557,7 @@ func TestRequestCredentialAndFileRoundTrip(t *testing.T) {
 }
 
 func TestRequestLargeFileUsesPresignedUpload(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	fake.inlineMax = 512
 	client := fake.client()
@@ -588,6 +593,7 @@ func TestRequestLargeFileUsesPresignedUpload(t *testing.T) {
 }
 
 func TestSubmitRefusesASubstitutedServerKey(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -623,6 +629,7 @@ func TestSubmitRefusesASubstitutedServerKey(t *testing.T) {
 }
 
 func TestReceiveWithoutAKeyDoesNotConsumeTheReply(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()
@@ -653,6 +660,7 @@ func TestReceiveWithoutAKeyDoesNotConsumeTheReply(t *testing.T) {
 }
 
 func TestRequestRevokeCancelsWithoutConsuming(t *testing.T) {
+	withTimeout(t, time.Minute)
 	fake := newFakeFlick(t)
 	client := fake.client()
 	ctx := context.Background()

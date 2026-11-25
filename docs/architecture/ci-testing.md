@@ -124,6 +124,38 @@ comments, and label-after-review ordering.
 
 Expected coverage:
 
+- `internal/flickcli` and `cmd/flick`: the CLI send/open, request-link, and
+  live-transfer flows against an in-memory fake of the public API, plus
+  cassette replay tests (`internal/flickcli/cassette_test.go`) that run the
+  flows against responses recorded from a real deployment — pinned identities
+  in `internal/flickcli/testdata/cassettes/*.json` make the recorded open
+  bodies decrypt on replay. Replay shows the API's past answers: it fails on a
+  changed request sequence or a changed way of reading an answer, not on a
+  live regression, which is the canary's job. The large-file paths are not
+  recorded (their bodies are megabytes); `scripts/smoke/canary.sh file` covers
+  the secret one against a live deployment. Recording is a manual,
+  network-touching run:
+
+  ```sh
+  FLICK_CASSETTE_RECORD=https://flick.example go test ./internal/flickcli/ -run TestCassette -count=1 -timeout 600s
+  ```
+
+  Recording waits 15 seconds before each cassette, under the API's limit of
+  5 creates per client network per minute
+  (`internal/config/defaults.go:defaultCreateRatePerMinute`). It uses the
+  5-minute minimum TTL and consumes every secret in the same run, so the
+  committed tokens and management tokens are dead, and it rewrites a fixture
+  only after its flow returned normally. The cassettes are committed with
+  the tests, so a missing cassette file fails its test instead of skipping.
+
+  Every test function in the three CLI packages starts with a `withTimeout`
+  budget as its first statement (`timeout_test.go` in each of `cmd/flick`,
+  `internal/flickcli`, and `internal/clientcrypto`): over budget the test
+  binary panics with every goroutine's traceback, the way `go test -timeout`
+  ends a run, so a wedged flow fails the run instead of holding CI.
+  `TestEveryTestRunsUnderABudget` in each of those three files fails when a
+  test's first statement is not that call.
+
 - `internal/config`: env parsing and validation.
 - `internal/secrets`: secret lifecycle and verified open invariants.
 - `internal/storage`: inline payload threshold and large-payload S3 routing behavior.
@@ -457,6 +489,29 @@ Run the same checks by hand:
 go build -o /tmp/flick ./cmd/flick
 FLICK_CANARY_URL=https://flick.example FLICK_BIN=/tmp/flick \
   scripts/smoke/canary.sh text
+```
+
+## Live Relay Smoke
+
+`scripts/smoke/live.sh` runs one live-transfer round trip by hand against a
+deployment with the relay enabled: the sender starts with `-confirm auto`,
+the script joins with the 6-digit code as the only receiver, and the script
+compares the received bytes. The room lives 3 minutes and the relay stores
+nothing (`docs/architecture/live-relay.md`), so a failed run leaves nothing
+behind. The sender's exit status is the completion signal, so the script
+does not depend on the CLI's English output; on any failure its exit trap
+stops a sender that is still running, because a running sender would hand
+the payload to whoever joins with its code. It is not a scheduled workflow;
+run it when changing `internal/flickcli/pipe.go` or the relay endpoints.
+It reads `FLICK_LIVE_URL` (the deployment origin), `FLICK_BIN` (the `flick`
+binary, `flick` on `PATH` by default), `LIVE_CODE_WAIT_SECONDS` (how long
+to wait for the sender's code, 30 by default), and `LIVE_CLI_TIMEOUT_SECONDS`
+(a cap on each CLI call through coreutils `timeout`, 90 by default; a
+macOS host without `timeout` runs uncapped):
+
+```sh
+go build -o /tmp/flick ./cmd/flick
+FLICK_LIVE_URL=https://flick.example FLICK_BIN=/tmp/flick scripts/smoke/live.sh
 ```
 
 ## Image Publish

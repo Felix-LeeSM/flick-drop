@@ -29,6 +29,10 @@ type RequestOptions struct {
 	TTL         time.Duration
 	Note        string
 	ShareOrigin string
+	// Pins the requester (and note) keys instead of generating fresh ones; the
+	// cassette tests use this so recorded responses decrypt on replay. nil = fresh.
+	Identity     *age.HybridIdentity
+	MemoIdentity *age.HybridIdentity
 }
 
 type RequestResult struct {
@@ -47,9 +51,12 @@ func CreateRequest(ctx context.Context, client *Client, opts RequestOptions) (Re
 		return RequestResult{}, fmt.Errorf("TTL %s is above the maximum %s", opts.TTL, MaxTTL)
 	}
 
-	identity, err := clientcrypto.NewIdentity()
-	if err != nil {
-		return RequestResult{}, err
+	var err error
+	identity := opts.Identity
+	if identity == nil {
+		if identity, err = clientcrypto.NewIdentity(); err != nil {
+			return RequestResult{}, err
+		}
 	}
 	recipient := clientcrypto.RecipientStringOf(identity)
 
@@ -62,8 +69,10 @@ func CreateRequest(ctx context.Context, client *Client, opts RequestOptions) (Re
 		if len(opts.Note) > RequestNoteMaxBytes {
 			return RequestResult{}, fmt.Errorf("the note is %d bytes; the most a request carries is %d", len(opts.Note), RequestNoteMaxBytes)
 		}
-		if memo, err = clientcrypto.NewIdentity(); err != nil {
-			return RequestResult{}, err
+		if memo = opts.MemoIdentity; memo == nil {
+			if memo, err = clientcrypto.NewIdentity(); err != nil {
+				return RequestResult{}, err
+			}
 		}
 		sealed, err := sealToRecipient(clientcrypto.RecipientStringOf(memo), []byte(opts.Note))
 		if err != nil {
