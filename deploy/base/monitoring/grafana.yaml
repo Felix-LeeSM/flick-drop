@@ -333,7 +333,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: grafana
-          image: docker.io/grafana/grafana:11.5.2
+          image: docker.io/grafana/grafana:12.4.16
           imagePullPolicy: IfNotPresent
           env:
             - name: GF_SECURITY_ADMIN_USER
